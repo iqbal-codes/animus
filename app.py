@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 from engine_diagnostics import EngineDiagnostics
@@ -85,7 +85,7 @@ def main() -> None:
         raise SystemExit(0)
 
     laps = NativeLaps(Path(__file__).resolve().parent)
-    with HTTPServer(("127.0.0.1", args.port), handler(build_id, laps)) as server:
+    with ThreadingHTTPServer(("127.0.0.1", args.port), handler(build_id, laps)) as server:
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
         server.serve_forever()

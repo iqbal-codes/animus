@@ -78,8 +78,10 @@ HTTP 503, `ok:false`, `error:"engine_prerequisites_unavailable"`, and no success
 catalog. This includes absent settings, a wrong pin, missing tools, invalid native
 JSON, command failures and unresolved bindings. Raw exception/subprocess output
 is not exposed because it may contain credentials. Health and build identity
-remain independent of these prerequisites. Requests have no body or configuration
-inputs; unknown POST paths return 404. No results are cached or persisted.
+remain independent of these prerequisites. The listener handles requests on
+separate threads, so in-flight diagnostics do not block health, build identity,
+or lap list/detail reads. Requests have no body or configuration inputs; unknown
+POST paths return 404. No results are cached or persisted.
 
 ### Native lap inspection
 
@@ -166,6 +168,8 @@ unchanged consumer against a temporary Git-pinned installation and deterministic
 native CLI test fixture: verified catalog, local tools, configured Bun, absent or
 malformed settings, pin mismatch, missing Bun/UV/Git, old Python, malformed native
 JSON, failed subprocess, incomplete discovery and unresolved/invalid bindings.
+It also holds each diagnostic route in flight while health, identity, and lap
+list/detail requests must complete before diagnostics are released.
 The fixture does not substitute for a configured runtime probe. Save the real
 `GET /api/workflows` and `POST /api/doctor` status/bodies, `/build-id` candidate and
 validated revision as `engine-diagnostics.json` in the run artifacts.

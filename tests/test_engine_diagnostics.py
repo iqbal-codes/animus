@@ -1,7 +1,8 @@
 """Exercise HTTP through the real consumer with a temporary pinned CLI installation."""
 from __future__ import annotations
 
-from http.server import HTTPServer
+from concurrent.futures import ThreadPoolExecutor
+from http.server import ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
@@ -97,7 +98,7 @@ print(json.dumps(data))
             path.chmod(0o755)
         self.addCleanup(patch.stopall)
         patch.dict(os.environ, {"PATH": str(self.bin)}).start()
-        self.server = HTTPServer(("127.0.0.1", 0), handler("candidate", NativeLaps(self.project)))
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler("candidate", NativeLaps(self.project)))
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01})
         self.thread.start()
         self.addCleanup(self.stop)
@@ -135,6 +136,44 @@ print(json.dumps(data))
         self.assertNotIn("never-public", json.dumps(body))
         if failed:
             self.assertIs(body["checks"][failed]["ok"], False)
+
+    def test_existing_endpoints_respond_while_each_diagnostic_route_is_in_flight(self):
+        for doctor in (False, True):
+            with self.subTest(doctor=doctor):
+                entered = threading.Event()
+                release = threading.Event()
+
+                def inspect(*, doctor=False):
+                    entered.set()
+                    if not release.wait(timeout=5):
+                        raise TimeoutError("Test did not release diagnostics")
+                    return 503, {"ok": False, "checks": {}}
+
+                lap_id = "11111111-1111-1111-1111-111111111111"
+                lap = {"id": lap_id, "product_status": "running"}
+                with patch("app.EngineDiagnostics.inspect", side_effect=inspect) as diagnostic, \
+                        patch("app.NativeLaps.read", side_effect=lambda run_id: lap if run_id else [lap]) as read, \
+                        ThreadPoolExecutor(max_workers=1) as pool:
+                    pending = pool.submit(self.request, doctor)
+                    try:
+                        self.assertTrue(entered.wait(timeout=2), "Diagnostics never started")
+                        for path, expected in (("/health", {"status": "healthy"}),
+                                               ("/build-id", "candidate"),
+                                               ("/api/laps", [lap]),
+                                               (f"/api/laps/{lap_id}", lap)):
+                            with self.http.open(f"http://127.0.0.1:{self.server.server_port}{path}",
+                                                timeout=1) as response:
+                                self.assertEqual(response.status, 200)
+                                body = response.read().decode("utf-8")
+                                self.assertEqual(body if path == "/build-id" else json.loads(body), expected)
+                            self.assertFalse(release.is_set())
+                            self.assertFalse(pending.done(), "Diagnostics finished before lightweight read")
+                        self.assertEqual(read.call_args_list[0].args, (None,))
+                        self.assertEqual(read.call_args_list[1].args, (lap_id,))
+                        diagnostic.assert_called_once_with(**({"doctor": True} if doctor else {}))
+                    finally:
+                        release.set()
+                    self.assertEqual(pending.result(timeout=2), (503, {"ok": False, "checks": {}}))
 
     def test_validated_catalog_and_doctor_are_read_only(self):
         for doctor in (False, True):
