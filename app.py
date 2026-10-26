@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Loopback health, candidate identity and native lap inspection service."""
+"""Loopback health, identity, pinned engine diagnostics and lap inspection."""
 from __future__ import annotations
 
 import argparse
@@ -8,14 +8,24 @@ import os
 from pathlib import Path
 import signal
 import subprocess
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
+from engine_diagnostics import EngineDiagnostics
 from laps import LapNotFound, NativeLaps, NativeStateError
 
 
 def handler(build_id: str, laps: NativeLaps) -> type[BaseHTTPRequestHandler]:
+    diagnostics = EngineDiagnostics(laps.root)
+
     class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            if urlsplit(self.path).path != "/api/doctor":
+                self.send_error(404)
+                return
+            status, result = diagnostics.inspect(doctor=True)
+            self.respond(status, json.dumps(result).encode("utf-8"), "application/json")
+
         def do_GET(self) -> None:
             path = urlsplit(self.path).path
             status = 200
@@ -25,6 +35,10 @@ def handler(build_id: str, laps: NativeLaps) -> type[BaseHTTPRequestHandler]:
             elif path == "/build-id":
                 body = build_id.encode("utf-8")
                 content_type = "text/plain; charset=utf-8"
+            elif path == "/api/workflows":
+                status, result = diagnostics.inspect()
+                body = json.dumps(result).encode("utf-8")
+                content_type = "application/json"
             elif path == "/api/laps" or path.startswith("/api/laps/"):
                 try:
                     result = laps.read(None if path == "/api/laps" else path[len("/api/laps/"):])
@@ -37,6 +51,9 @@ def handler(build_id: str, laps: NativeLaps) -> type[BaseHTTPRequestHandler]:
             else:
                 self.send_error(404)
                 return
+            self.respond(status, body, content_type)
+
+        def respond(self, status: int, body: bytes, content_type: str) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
@@ -68,7 +85,7 @@ def main() -> None:
         raise SystemExit(0)
 
     laps = NativeLaps(Path(__file__).resolve().parent)
-    with HTTPServer(("127.0.0.1", args.port), handler(build_id, laps)) as server:
+    with ThreadingHTTPServer(("127.0.0.1", args.port), handler(build_id, laps)) as server:
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
         server.serve_forever()

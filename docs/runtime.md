@@ -36,6 +36,8 @@ all network interfaces. No workflow, provider, or scheduler starts at boot.
 | --- | --- | --- | --- |
 | `GET /health` | 200 | `application/json` | `{"status": "healthy"}` |
 | `GET /build-id` | 200 | `text/plain; charset=utf-8` | Exact startup candidate or Git commit, with no added newline |
+| `GET /api/workflows` | 200 | `application/json` | `ok:true`, validated `source`, `revision`, `workflows`, and local `checks` |
+| `POST /api/doctor` | 200 | `application/json` | Validated catalog and required local checks, plus native provider/model binding resolution |
 | `GET /api/laps` | 200 | `application/json` | Array of native `archon-loop` lap projections, or `[]` when no laps exist |
 | `GET /api/laps/:id` | 200 | `application/json` | One lap projection for the exact native ID |
 
@@ -44,6 +46,42 @@ return 404 JSON `{"error":"lap_not_found"}`. Unavailable or malformed native
 state returns 503 JSON `{"error":"native_state_unavailable"}`, never an empty
 success. Other paths return 404. Responses use `Cache-Control: no-store`. Access
 logging is disabled so request targets are not copied into process logs.
+
+### Engine discovery and diagnostics
+
+Both endpoints read the repository's shared `.factory/consumer.json` through
+`factory/consumer.py`. The configured source must be a clean, complete immutable
+installation in a directory named with its full 40-character revision, with locked
+Archon dependencies installed. They use the configured Bun executable and pinned
+CLI entry point, never an ambient `archon` executable or an HTTP-supplied override.
+
+`EngineDiagnostics` calls the consumer's `doctor` boundary for verified pin,
+CLI capabilities, native discovery, pack completeness and native workflow
+validation. Returned workflows come from actual discovery, not the manifest.
+The reported revision is the configured revision verified against source HEAD.
+Both endpoints also require Python >=3.10 and successful `git --version`,
+`uv --version`, and configured `bun --version` subprocesses.
+
+Doctor additionally reads native `ai tier list` and `ai alias list` JSON in the
+application's context. All three tiers and every configured alias must have a
+resolved effective provider/model. It then validates each pinned workflow with
+`--workflow-source` and the application `--cwd`, so native model references use
+the application's configuration. These are local configuration checks, **not**
+proof that a provider credential or remote model works. The
+`provider_authentication` check is explicitly `not_live_tested`, `required:false`,
+with no `ok:true` authentication claim. No AI step, provider authentication probe,
+tracker write, schedule, publication or credential change is performed.
+
+Each required check reports `ok` and `status` (`passed`, `failed`, or `blocked`
+when prerequisites prevent evaluation). Any failed/blocked required check returns
+HTTP 503, `ok:false`, `error:"engine_prerequisites_unavailable"`, and no success
+catalog. This includes absent settings, a wrong pin, missing tools, invalid native
+JSON, command failures and unresolved bindings. Raw exception/subprocess output
+is not exposed because it may contain credentials. Health and build identity
+remain independent of these prerequisites. The listener handles requests on
+separate threads, so in-flight diagnostics do not block health, build identity,
+or lap list/detail reads. Requests have no body or configuration inputs; unknown
+POST paths return 404. No results are cached or persisted.
 
 ### Native lap inspection
 
@@ -125,6 +163,16 @@ fallback, concurrent isolation, and listener release for both shutdown signals.
 `python3 -m unittest tests.test_laps` focuses on the lap HTTP/native read boundary,
 status derivation, stale/incomplete evidence, ten read-only polls, privacy, engine
 failure semantics and two-run isolation. It does not launch provider workflows.
+`python3 -m unittest tests.test_engine_diagnostics` exercises real HTTP and the
+unchanged consumer against a temporary Git-pinned installation and deterministic
+native CLI test fixture: verified catalog, local tools, configured Bun, absent or
+malformed settings, pin mismatch, missing Bun/UV/Git, old Python, malformed native
+JSON, failed subprocess, incomplete discovery and unresolved/invalid bindings.
+It also holds each diagnostic route in flight while health, identity, and lap
+list/detail requests must complete before diagnostics are released.
+The fixture does not substitute for a configured runtime probe. Save the real
+`GET /api/workflows` and `POST /api/doctor` status/bodies, `/build-id` candidate and
+validated revision as `engine-diagnostics.json` in the run artifacts.
 The repository defines no separate application lint or type-check command.
 
 The repository's separately declared ordinary gate is `python3 harness/ci.py`.

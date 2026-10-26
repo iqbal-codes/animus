@@ -109,6 +109,15 @@ class HealthIdentityTests(unittest.TestCase):
         self.assert_identity(second_port, "candidate-b")
         self.assertIsNone(second.poll())
 
+    def test_unfinished_request_does_not_block_other_connections(self) -> None:
+        _, port, _ = self.start("candidate-a")
+        with socket.create_connection(("127.0.0.1", port), timeout=1) as pending:
+            pending.sendall(b"GET /api/doctor HTTP/1.0\r\n")
+            status, body, _ = self.request(port, "/health")
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body), {"status": "healthy"})
+            self.assert_identity(port, "candidate-a")
+
     def test_shutdown_releases_listener(self) -> None:
         for sig in (signal.SIGTERM, signal.SIGINT):
             with self.subTest(signal=sig):
