@@ -27,6 +27,10 @@ class LapNotFound(LookupError):
     pass
 
 
+class ReportNotFound(LookupError):
+    pass
+
+
 class InvalidLapPayload(ValueError):
     pass
 
@@ -154,6 +158,218 @@ def project_lap(run: dict) -> dict:
     }
 
 
+def project_evidence(run: dict, artifacts_dir: Path | str | None = None) -> dict:
+    if isinstance(artifacts_dir, str):
+        artifacts_dir = Path(artifacts_dir)
+    events = run.get("events")
+    if not isinstance(events, list):
+        raise NativeStateError("Native detail has no events array")
+    latest = {}
+    builder_sessions = set()
+    candidate = None
+    for event in sorted(events, key=lambda row: row.get("event_order", 0)):
+        if event.get("workflow_run_id") != run["id"]:
+            raise NativeStateError("Native event belongs to another run")
+        kind, node = event.get("event_type"), event.get("step_name")
+        if kind == "provider_event":
+            continue
+        data = event.get("data") or {}
+        for scope in ("invocation", "attempt"):
+            checkout = data.get(scope, {}).get("checkoutStart", {})
+            if checkout.get("kind") == "git" and checkout.get("commit"):
+                candidate = checkout["commit"]
+        if node:
+            node_lower = node.lower()
+            if not any(ex in node_lower for ex in ("review", "check", "evidence", "subject", "pick", "claim", "land", "briefs", "doctor", "health")):
+                if any(pat in node_lower for pat in ("build", "implement", "deliver", "ship")):
+                    sid = data.get("session_id")
+                    if sid:
+                        builder_sessions.add(str(sid))
+        if kind in ("node_started", "node_completed", "node_failed", "node_skipped"):
+            latest[node] = event
+
+    def output(node_name: str) -> dict:
+        ev = latest.get(node_name, {})
+        if ev.get("event_type") != "node_completed":
+            return {}
+        res = ev.get("data", {}).get("structured_output")
+        return res if isinstance(res, dict) else {}
+
+    subject_out = output("subject")
+    raw_head = candidate or subject_out.get("head")
+    candidate_head = public_text(raw_head) if (isinstance(raw_head, str) and raw_head.strip()) else None
+
+    # Runtime verification projection
+    check_event = latest.get("check-app")
+    evidence_event = latest.get("evidence")
+    if (not check_event or not evidence_event
+            or check_event.get("event_type") != "node_completed"
+            or evidence_event.get("event_type") != "node_completed"):
+        runtime_status = "absent"
+        runtime_verdict = None
+        public_lines = []
+        holdout_dict = {"verdict": None, "lines": []}
+    else:
+        check_out = output("check-app")
+        evidence_out = output("evidence")
+        raw_check_head = check_out.get("head")
+        check_head = public_text(raw_check_head) if (isinstance(raw_check_head, str) and raw_check_head.strip()) else None
+        check_overall = check_out.get("overall")
+        evidence_ok = str(evidence_out.get("ok", "")).lower() == "true"
+
+        raw_lines = check_out.get("lines") or []
+        public_lines = []
+        holdout_lines = []
+        if isinstance(raw_lines, list):
+            for l in raw_lines:
+                if not isinstance(l, dict):
+                    continue
+                lid = public_text(str(l.get("id", "")))
+                lverdict = public_text(str(l.get("verdict", "")))
+                lkind = public_text(str(l.get("kind", "")))
+                if lkind == "holdout":
+                    holdout_lines.append({"id": lid, "verdict": lverdict})
+                else:
+                    public_lines.append({"id": lid, "kind": lkind, "verdict": lverdict})
+
+        if holdout_lines:
+            any_fail = any(l.get("verdict") in ("FAIL", "FAILED", "ERROR") for l in holdout_lines)
+            holdout_verdict = "FAIL" if any_fail else "PASS"
+        else:
+            raw_holdout = check_out.get("holdout")
+            if isinstance(raw_holdout, dict):
+                raw_hv = raw_holdout.get("verdict") or raw_holdout.get("overall")
+                holdout_verdict = public_text(str(raw_hv)) if raw_hv is not None else None
+            else:
+                holdout_verdict = None
+
+        holdout_dict = {"verdict": holdout_verdict, "lines": holdout_lines}
+
+        if not candidate_head or check_head != candidate_head:
+            runtime_status = "inconclusive"
+            runtime_verdict = None
+        elif check_overall == "FAIL" or not evidence_ok or holdout_verdict == "FAIL":
+            runtime_status = "failed"
+            runtime_verdict = "FAIL"
+        elif check_overall == "PASS" and evidence_ok:
+            runtime_status = "verified"
+            runtime_verdict = "PASS"
+        else:
+            runtime_status = "inconclusive"
+            runtime_verdict = None
+
+    # Peer review projection
+    review_event = latest.get("review")
+    if not review_event or review_event.get("event_type") != "node_completed":
+        review_status = "absent"
+        review_sha = None
+        review_outcome = None
+        independent = False
+        reviewer_session = None
+        blocking_findings = 0
+        report_info = {"available": False, "path": None, "url": None}
+    else:
+        review_out = output("review")
+        raw_review_sha = review_out.get("sha")
+        review_sha = public_text(raw_review_sha) if (isinstance(raw_review_sha, str) and raw_review_sha.strip()) else None
+        raw_outcome = review_out.get("outcome")
+        review_outcome = public_text(raw_outcome) if (isinstance(raw_outcome, str) and raw_outcome.strip()) else None
+        raw_session = review_event.get("data", {}).get("session_id")
+        reviewer_session = public_text(str(raw_session)) if raw_session else None
+
+        if not reviewer_session or not builder_sessions:
+            independent = False
+        elif reviewer_session in builder_sessions:
+            independent = False
+        else:
+            independent = True
+
+        blocking_findings = 0
+        seen_finding_ids = set()
+        dispositions = review_out.get("dispositions")
+        if isinstance(dispositions, list):
+            for d in dispositions:
+                if isinstance(d, dict):
+                    if (d.get("action") in ("blocks", "block")
+                            or d.get("disposition") == "blocking"
+                            or d.get("severity") == "blocking"):
+                        fid = d.get("id")
+                        if fid:
+                            seen_finding_ids.add(fid)
+                        blocking_findings += 1
+                elif isinstance(d, str) and "block" in d.lower():
+                    blocking_findings += 1
+
+        if artifacts_dir:
+            for sub in ("review", "reviewer"):
+                findings_path = (artifacts_dir / sub / "findings.json").resolve()
+                if findings_path.is_file() and findings_path.is_relative_to(artifacts_dir.resolve()):
+                    try:
+                        f_data = json.loads(findings_path.read_text(encoding="utf-8"))
+                        if isinstance(f_data, list):
+                            for f in f_data:
+                                if isinstance(f, dict) and f.get("severity") == "blocking" and f.get("status") == "open":
+                                    fid = f.get("id")
+                                    if fid:
+                                        if fid not in seen_finding_ids:
+                                            seen_finding_ids.add(fid)
+                                            blocking_findings += 1
+                                    else:
+                                        blocking_findings += 1
+                    except Exception:
+                        pass
+
+        report_available = False
+        report_rel_path = None
+        if artifacts_dir:
+            for rel in ("reviewer/report.md", "review/report.md"):
+                target = (artifacts_dir / rel).resolve()
+                if target.is_file() and target.is_relative_to(artifacts_dir.resolve()):
+                    report_available = True
+                    report_rel_path = rel
+                    break
+
+        report_info = {
+            "available": report_available,
+            "path": report_rel_path,
+            "url": f"/api/laps/{run['id']}/evidence/report" if report_available else None,
+        }
+
+        if not candidate_head or review_sha != candidate_head:
+            review_status = "stale"
+        elif not independent:
+            review_status = "not_ready"
+        elif blocking_findings > 0 or review_outcome in ("sent-back", "needs-owner", "failed", "rejected"):
+            review_status = "failed"
+        elif runtime_status != "verified":
+            review_status = "not_ready"
+        elif review_outcome in ("approved", "merge"):
+            review_status = "ready"
+        else:
+            review_status = "not_ready"
+
+    return {
+        "id": run["id"],
+        "workflow_name": run.get("workflow_name"),
+        "candidate_head": candidate_head,
+        "runtime_verification": {
+            "status": runtime_status,
+            "verdict": runtime_verdict,
+            "lines": public_lines,
+            "holdout": holdout_dict,
+        },
+        "peer_review": {
+            "status": review_status,
+            "sha": review_sha,
+            "outcome": review_outcome,
+            "independent": independent,
+            "reviewer_session": reviewer_session,
+            "blocking_findings": blocking_findings,
+            "report": report_info,
+        },
+    }
+
+
 class NativeLaps:
     def __init__(self, root: Path):
         self.root = root
@@ -240,8 +456,8 @@ class NativeLaps:
         status = ack.get("status") if isinstance(ack.get("status"), str) else "pending"
         return {"id": run_id, "status": status}
 
-    def read(self, run_id: str | None = None) -> list[dict] | dict:
-        if run_id is not None and re.fullmatch(r"[0-9a-f-]{32,36}", run_id) is None:
+    def _get_run_detail(self, run_id: str) -> dict:
+        if re.fullmatch(r"[0-9a-f-]{32,36}", run_id) is None:
             raise LapNotFound()
         try:
             settings = read_settings(self.root)
@@ -251,11 +467,73 @@ class NativeLaps:
             if (not isinstance(listing.get("runs"), list)
                     or (listing.get("scopeFallback") is True and listing["runs"])):
                 raise NativeStateError("Native run scope unavailable")
+            runs = [row for row in listing["runs"] if row.get("workflow_name") == "archon-loop" and row.get("id") == run_id]
+            if not runs:
+                raise LapNotFound()
+            detail = native_json(settings, source,
+                                 ["workflow", "get", run_id, "--verbose", "--events"], self.root)
+            if detail.get("id") != run_id or detail.get("workflow_name") != "archon-loop":
+                raise NativeStateError("Native detail identity mismatch")
+            return detail
+        except LapNotFound:
+            raise
+        except (ValueError, OSError, KeyError, TypeError, AttributeError, subprocess.SubprocessError) as error:
+            raise NativeStateError("Native lap state unavailable") from error
+
+    def _find_artifacts_dir(self, run_id: str, output_root: str | None = None) -> Path | None:
+        candidates = []
+        if output_root:
+            candidates.append(Path(output_root) / "artifacts" / "runs" / run_id)
+        candidates.append(self.root / "artifacts" / "runs" / run_id)
+        try:
+            candidates.append(shared_root(self.root) / "artifacts" / "runs" / run_id)
+        except Exception:
+            pass
+        for path in candidates:
+            try:
+                resolved = path.resolve()
+                if resolved.is_dir():
+                    return resolved
+            except OSError:
+                continue
+        return None
+
+    def read_evidence(self, run_id: str) -> dict:
+        detail = self._get_run_detail(run_id)
+        artifacts_dir = self._find_artifacts_dir(run_id, detail.get("output_root"))
+        return project_evidence(detail, artifacts_dir)
+
+    def read_report(self, run_id: str) -> tuple[str, str]:
+        detail = self._get_run_detail(run_id)
+        artifacts_dir = self._find_artifacts_dir(run_id, detail.get("output_root"))
+        if not artifacts_dir:
+            raise ReportNotFound()
+        report_file = None
+        for rel in ("reviewer/report.md", "review/report.md"):
+            target = (artifacts_dir / rel).resolve()
+            if target.is_file() and target.is_relative_to(artifacts_dir.resolve()):
+                report_file = target
+                break
+        if not report_file:
+            raise ReportNotFound()
+        try:
+            content = report_file.read_text(encoding="utf-8")
+        except OSError as error:
+            raise NativeStateError("Report read failed") from error
+        return public_text(content), "text/markdown; charset=utf-8"
+
+    def read(self, run_id: str | None = None) -> list[dict] | dict:
+        if run_id is not None:
+            return project_lap(self._get_run_detail(run_id))
+        try:
+            settings = read_settings(self.root)
+            source = verify_source(settings)
+            listing = native_json(settings, source,
+                                  ["workflow", "runs", "--limit", "2147483647"], self.root)
+            if (not isinstance(listing.get("runs"), list)
+                    or (listing.get("scopeFallback") is True and listing["runs"])):
+                raise NativeStateError("Native run scope unavailable")
             runs = [row for row in listing["runs"] if row["workflow_name"] == "archon-loop"]
-            if run_id is not None:
-                runs = [row for row in runs if row["id"] == run_id]
-                if not runs:
-                    raise LapNotFound()
             result = []
             for row in runs:
                 detail = native_json(settings, source,
@@ -263,7 +541,7 @@ class NativeLaps:
                 if detail.get("id") != row["id"] or detail.get("workflow_name") != "archon-loop":
                     raise NativeStateError("Native detail identity mismatch")
                 result.append(project_lap(detail))
-            return result[0] if run_id is not None else result
+            return result
         except LapNotFound:
             raise
         except (ValueError, OSError, KeyError, TypeError, AttributeError, subprocess.SubprocessError) as error:

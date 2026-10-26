@@ -19,6 +19,7 @@ from laps import (
     NativeLaps,
     NativeLaunchError,
     NativeStateError,
+    ReportNotFound,
 )
 
 
@@ -71,14 +72,58 @@ def handler(build_id: str, laps: NativeLaps) -> type[BaseHTTPRequestHandler]:
                 body = json.dumps(result).encode("utf-8")
                 content_type = "application/json"
             elif path == "/api/laps" or path.startswith("/api/laps/"):
-                try:
-                    result = laps.read(None if path == "/api/laps" else path[len("/api/laps/"):])
-                except LapNotFound:
-                    status, result = 404, {"error": "lap_not_found"}
-                except NativeStateError:
-                    status, result = 503, {"error": "native_state_unavailable"}
-                body = json.dumps(result).encode("utf-8")
-                content_type = "application/json"
+                subpath = path[len("/api/laps"):]
+                if not subpath:
+                    try:
+                        result = laps.read(None)
+                    except LapNotFound:
+                        status, result = 404, {"error": "lap_not_found"}
+                    except NativeStateError:
+                        status, result = 503, {"error": "native_state_unavailable"}
+                    body = json.dumps(result).encode("utf-8")
+                    content_type = "application/json"
+                elif subpath.startswith("/"):
+                    rest = subpath[1:]
+                    if rest.endswith("/evidence/report"):
+                        run_id = rest[:-len("/evidence/report")]
+                        try:
+                            content, content_type = laps.read_report(run_id)
+                            body = content.encode("utf-8")
+                        except LapNotFound:
+                            status, result = 404, {"error": "lap_not_found"}
+                            body = json.dumps(result).encode("utf-8")
+                            content_type = "application/json"
+                        except ReportNotFound:
+                            status, result = 404, {"error": "report_not_found"}
+                            body = json.dumps(result).encode("utf-8")
+                            content_type = "application/json"
+                        except NativeStateError:
+                            status, result = 503, {"error": "native_state_unavailable"}
+                            body = json.dumps(result).encode("utf-8")
+                            content_type = "application/json"
+                    elif rest.endswith("/evidence"):
+                        run_id = rest[:-len("/evidence")]
+                        try:
+                            result = laps.read_evidence(run_id)
+                        except LapNotFound:
+                            status, result = 404, {"error": "lap_not_found"}
+                        except NativeStateError:
+                            status, result = 503, {"error": "native_state_unavailable"}
+                        body = json.dumps(result).encode("utf-8")
+                        content_type = "application/json"
+                    else:
+                        run_id = rest
+                        try:
+                            result = laps.read(run_id)
+                        except LapNotFound:
+                            status, result = 404, {"error": "lap_not_found"}
+                        except NativeStateError:
+                            status, result = 503, {"error": "native_state_unavailable"}
+                        body = json.dumps(result).encode("utf-8")
+                        content_type = "application/json"
+                else:
+                    self.send_error(404)
+                    return
             else:
                 self.send_error(404)
                 return

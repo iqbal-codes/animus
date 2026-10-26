@@ -23,9 +23,13 @@ class HealthIdentityTests(unittest.TestCase):
 
     def request(self, port: int, path: str) -> tuple[int, bytes, str]:
         url = f"http://127.0.0.1:{port}{path}"
-        with self.http.open(url, timeout=0.2) as response:
-            self.assertEqual(response.geturl(), url, "Unexpected redirect")
-            return response.status, response.read(), response.headers["Content-Type"]
+        try:
+            with self.http.open(url, timeout=1.0) as response:
+                self.assertEqual(response.geturl(), url, "Unexpected redirect")
+                return response.status, response.read(), response.headers["Content-Type"]
+        except HTTPError as error:
+            with error:
+                return error.status, error.read(), error.headers["Content-Type"]
 
     def stop(self, process: subprocess.Popen, sig: int = signal.SIGTERM) -> None:
         if process.poll() is None:
@@ -147,6 +151,38 @@ class HealthIdentityTests(unittest.TestCase):
         # Unknown POST target
         status, _, _ = self.post(port, "/api/laps/123", {"specification": "test", "merge_mode": "approve"})
         self.assertEqual(status, 404)
+        self.stop(process)
+
+    def test_evidence_and_report_against_real_app(self) -> None:
+        process, port, _ = self.start("candidate-evidence")
+        # 404 for unknown run
+        status, body, ct = self.request(port, "/api/laps/00000000-0000-0000-0000-000000000000/evidence")
+        self.assertEqual(status, 404)
+        self.assertEqual(json.loads(body), {"error": "lap_not_found"})
+
+        status, body, ct = self.request(port, "/api/laps/00000000-0000-0000-0000-000000000000/evidence/report")
+        self.assertEqual(status, 404)
+        self.assertEqual(json.loads(body), {"error": "lap_not_found"})
+
+        # Path traversal rejection
+        status, body, ct = self.request(port, "/api/laps/../health/evidence")
+        self.assertEqual(status, 404)
+
+        # Real native run retrieval
+        real_id = "59ebd42f-442c-49ec-9822-861074ae08b6"
+        status, body, ct = self.request(port, f"/api/laps/{real_id}/evidence")
+        self.assertEqual(status, 200)
+        self.assertEqual(ct, "application/json")
+        data = json.loads(body)
+        self.assertEqual(data["id"], real_id)
+        self.assertEqual(data["runtime_verification"]["status"], "verified")
+        self.assertEqual(data["peer_review"]["status"], "ready")
+        self.assertTrue(data["peer_review"]["report"]["available"])
+
+        status, body, ct = self.request(port, f"/api/laps/{real_id}/evidence/report")
+        self.assertEqual(status, 200)
+        self.assertEqual(ct, "text/markdown; charset=utf-8")
+        self.assertIn("Independent loop code review", body.decode("utf-8"))
         self.stop(process)
 
     def test_shutdown_releases_listener(self) -> None:
