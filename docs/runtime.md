@@ -41,9 +41,12 @@ all network interfaces. No workflow, provider, or scheduler starts at boot.
 | `POST /api/laps` | 202 | `application/json` | `{"id": "<run-id>", "status": "<status>"}` |
 | `GET /api/laps` | 200 | `application/json` | Array of native `archon-loop` lap projections, or `[]` when no laps exist |
 | `GET /api/laps/:id` | 200 | `application/json` | One lap projection for the exact native ID |
+| `GET /api/laps/:id/evidence` | 200 | `application/json` | Candidate head binding, runtime verification verdicts, holdout verdict metadata, and peer-review evaluation |
+| `GET /api/laps/:id/evidence/report` | 200 | `text/markdown; charset=utf-8` | Plain text peer-review markdown report (`reviewer/report.md` or `review/report.md`) |
 
 Endpoints do not redirect. Unknown lap IDs (including IDs of other workflows)
-return 404 JSON `{"error":"lap_not_found"}`. Unavailable or malformed native
+return 404 JSON `{"error":"lap_not_found"}`. Missing review report artifacts return
+404 JSON `{"error":"report_not_found"}`. Unavailable or malformed native
 state returns 503 JSON `{"error":"native_state_unavailable"}`, never an empty
 success. Other paths return 404. Responses use `Cache-Control: no-store`. Access
 logging is disabled so request targets are not copied into process logs.

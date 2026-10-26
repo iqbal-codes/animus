@@ -158,6 +158,9 @@ def project_lap(run: dict) -> dict:
     }
 
 
+REPORT_REL_PATHS: tuple[str, ...] = ("reviewer/report.md", "review/report.md")
+
+
 def project_evidence(run: dict, artifacts_dir: Path | str | None = None) -> dict:
     if isinstance(artifacts_dir, str):
         artifacts_dir = Path(artifacts_dir)
@@ -233,8 +236,12 @@ def project_evidence(run: dict, artifacts_dir: Path | str | None = None) -> dict
                     public_lines.append({"id": lid, "kind": lkind, "verdict": lverdict})
 
         if holdout_lines:
-            any_fail = any(l.get("verdict") in ("FAIL", "FAILED", "ERROR") for l in holdout_lines)
-            holdout_verdict = "FAIL" if any_fail else "PASS"
+            if any(l.get("verdict") in ("FAIL", "FAILED", "ERROR") for l in holdout_lines):
+                holdout_verdict = "FAIL"
+            elif all(l.get("verdict") == "PASS" for l in holdout_lines):
+                holdout_verdict = "PASS"
+            else:
+                holdout_verdict = "INCOMPLETE"
         else:
             raw_holdout = check_out.get("holdout")
             if isinstance(raw_holdout, dict):
@@ -248,10 +255,10 @@ def project_evidence(run: dict, artifacts_dir: Path | str | None = None) -> dict
         if not candidate_head or check_head != candidate_head:
             runtime_status = "inconclusive"
             runtime_verdict = None
-        elif check_overall == "FAIL" or not evidence_ok or holdout_verdict == "FAIL":
+        elif check_overall in ("FAIL", "FAILED", "ERROR") or not evidence_ok or holdout_verdict in ("FAIL", "FAILED", "ERROR"):
             runtime_status = "failed"
             runtime_verdict = "FAIL"
-        elif check_overall == "PASS" and evidence_ok:
+        elif check_overall == "PASS" and evidence_ok and holdout_verdict in ("PASS", None):
             runtime_status = "verified"
             runtime_verdict = "PASS"
         else:
@@ -275,11 +282,12 @@ def project_evidence(run: dict, artifacts_dir: Path | str | None = None) -> dict
         raw_outcome = review_out.get("outcome")
         review_outcome = public_text(raw_outcome) if (isinstance(raw_outcome, str) and raw_outcome.strip()) else None
         raw_session = review_event.get("data", {}).get("session_id")
-        reviewer_session = public_text(str(raw_session)) if raw_session else None
+        raw_session_str = str(raw_session) if raw_session else None
+        reviewer_session = public_text(raw_session_str) if raw_session_str else None
 
-        if not reviewer_session or not builder_sessions:
+        if not raw_session_str or not builder_sessions:
             independent = False
-        elif reviewer_session in builder_sessions:
+        elif raw_session_str in builder_sessions:
             independent = False
         else:
             independent = True
@@ -300,6 +308,7 @@ def project_evidence(run: dict, artifacts_dir: Path | str | None = None) -> dict
                 elif isinstance(d, str) and "block" in d.lower():
                     blocking_findings += 1
 
+        findings_ambiguous = False
         if artifacts_dir:
             for sub in ("review", "reviewer"):
                 findings_path = (artifacts_dir / sub / "findings.json").resolve()
@@ -316,13 +325,15 @@ def project_evidence(run: dict, artifacts_dir: Path | str | None = None) -> dict
                                             blocking_findings += 1
                                     else:
                                         blocking_findings += 1
+                        else:
+                            findings_ambiguous = True
                     except Exception:
-                        pass
+                        findings_ambiguous = True
 
         report_available = False
         report_rel_path = None
         if artifacts_dir:
-            for rel in ("reviewer/report.md", "review/report.md"):
+            for rel in REPORT_REL_PATHS:
                 target = (artifacts_dir / rel).resolve()
                 if target.is_file() and target.is_relative_to(artifacts_dir.resolve()):
                     report_available = True
@@ -337,7 +348,7 @@ def project_evidence(run: dict, artifacts_dir: Path | str | None = None) -> dict
 
         if not candidate_head or review_sha != candidate_head:
             review_status = "stale"
-        elif not independent:
+        elif not independent or findings_ambiguous:
             review_status = "not_ready"
         elif blocking_findings > 0 or review_outcome in ("sent-back", "needs-owner", "failed", "rejected"):
             review_status = "failed"
@@ -509,7 +520,7 @@ class NativeLaps:
         if not artifacts_dir:
             raise ReportNotFound()
         report_file = None
-        for rel in ("reviewer/report.md", "review/report.md"):
+        for rel in REPORT_REL_PATHS:
             target = (artifacts_dir / rel).resolve()
             if target.is_file() and target.is_relative_to(artifacts_dir.resolve()):
                 report_file = target

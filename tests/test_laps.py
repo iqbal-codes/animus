@@ -549,6 +549,43 @@ class EvidenceProjectionTests(unittest.TestCase):
         self.assertEqual(proj["runtime_verification"]["verdict"], "FAIL")
         self.assertNotIn("sensitive prompt", json.dumps(proj))
 
+    def test_holdout_verdict_derivations(self) -> None:
+        incomplete_holdout = [
+            {"id": "C1", "kind": "criterion", "verdict": "PASS"},
+            {"id": "H1", "kind": "holdout", "verdict": "INCOMPLETE"},
+        ]
+        proj = project_evidence(evidence_record(lines=incomplete_holdout))
+        self.assertEqual(proj["runtime_verification"]["holdout"]["verdict"], "INCOMPLETE")
+        self.assertEqual(proj["runtime_verification"]["status"], "inconclusive")
+        self.assertIsNone(proj["runtime_verification"]["verdict"])
+
+        for bad_verdict in ("FAILED", "ERROR"):
+            with self.subTest(bad_verdict=bad_verdict):
+                run = evidence_record(lines=[{"id": "C1", "kind": "criterion", "verdict": "PASS"}])
+                run["events"][2]["data"]["structured_output"]["holdout"] = {"verdict": bad_verdict}
+                proj = project_evidence(run)
+                self.assertEqual(proj["runtime_verification"]["holdout"]["verdict"], bad_verdict)
+                self.assertEqual(proj["runtime_verification"]["status"], "failed")
+                self.assertEqual(proj["runtime_verification"]["verdict"], "FAIL")
+
+        run = evidence_record(lines=[{"id": "C1", "kind": "criterion", "verdict": "PASS"}])
+        run["events"][2]["data"]["structured_output"]["holdout"] = {"verdict": "INCOMPLETE"}
+        proj = project_evidence(run)
+        self.assertEqual(proj["runtime_verification"]["holdout"]["verdict"], "INCOMPLETE")
+        self.assertEqual(proj["runtime_verification"]["status"], "inconclusive")
+        self.assertIsNone(proj["runtime_verification"]["verdict"])
+
+    def test_absent_review_node_with_verified_runtime_is_absent(self) -> None:
+        run = evidence_record()
+        run["events"] = [e for e in run["events"] if e["step_name"] != "review"]
+        proj = project_evidence(run)
+        self.assertEqual(proj["runtime_verification"]["status"], "verified")
+        self.assertEqual(proj["runtime_verification"]["verdict"], "PASS")
+        self.assertEqual(proj["peer_review"]["status"], "absent")
+        self.assertIsNone(proj["peer_review"]["sha"])
+        self.assertFalse(proj["peer_review"]["independent"])
+        self.assertNotEqual(proj["peer_review"]["status"], "ready")
+
     def test_review_stale_when_head_mismatched(self) -> None:
         other_sha = "d" * 40
         proj = project_evidence(evidence_record(review_sha=other_sha))
@@ -569,6 +606,15 @@ class EvidenceProjectionTests(unittest.TestCase):
         pr = proj["peer_review"]
         self.assertEqual(pr["status"], "not_ready")
         self.assertFalse(pr["independent"])
+
+    def test_review_self_attested_with_credentials_not_ready(self) -> None:
+        credential_session = "agent-token=ghp_buildersecret12345"
+        proj = project_evidence(evidence_record(builder_session=credential_session, reviewer_session=credential_session))
+        pr = proj["peer_review"]
+        self.assertEqual(pr["status"], "not_ready")
+        self.assertFalse(pr["independent"])
+        self.assertEqual(pr["reviewer_session"], "agent-token=[redacted]")
+        self.assertNotIn("ghp_buildersecret12345", json.dumps(proj))
 
     def test_review_ambiguous_attribution_not_ready(self) -> None:
         for b_sess, r_sess in (("builder-1", None), (None, "reviewer-1"), (None, None)):
@@ -599,6 +645,23 @@ class EvidenceProjectionTests(unittest.TestCase):
             self.assertEqual(pr["report"]["path"], "review/report.md")
             self.assertEqual(pr["report"]["url"], f"/api/laps/{FIRST}/evidence/report")
 
+    def test_review_blocking_dispositions_marks_review_failed(self) -> None:
+        proj = project_evidence(evidence_record(dispositions=[{"id": "B1", "action": "blocks"}]))
+        pr = proj["peer_review"]
+        self.assertEqual(pr["blocking_findings"], 1)
+        self.assertEqual(pr["status"], "failed")
+
+    def test_corrupt_findings_artifact_marks_review_not_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            artifacts = Path(td)
+            review_dir = artifacts / "review"
+            review_dir.mkdir(parents=True)
+            (review_dir / "findings.json").write_text("{corrupt json content", encoding="utf-8")
+            (review_dir / "report.md").write_text("# Report", encoding="utf-8")
+            proj = project_evidence(evidence_record(), artifacts_dir=artifacts)
+            pr = proj["peer_review"]
+            self.assertEqual(pr["status"], "not_ready")
+
     def test_review_rejected_outcome_failed(self) -> None:
         for outcome in ("sent-back", "needs-owner", "failed", "rejected"):
             with self.subTest(outcome=outcome):
@@ -608,7 +671,14 @@ class EvidenceProjectionTests(unittest.TestCase):
     def test_privacy_and_credential_sentinels_redacted(self) -> None:
         secret = "ghp_supersecretcredential12345"
         token_str = "token=secret_value_123"
-        run = evidence_record()
+        run = evidence_record(
+            reviewer_session=f"agent-{token_str}",
+            lines=[
+                {"id": "C1", "kind": "criterion", "verdict": "PASS", "text": f"probe with {secret}"},
+                {"id": f"P1-{token_str}", "kind": "probe", "verdict": "OK"},
+                {"id": "H1", "kind": "holdout", "verdict": "PASS", "scenario": "sensitive prompt"},
+            ],
+        )
         run["user_message"] = secret
         run["transcript"] = secret
         run["events"][0]["data"]["password"] = secret
@@ -620,7 +690,10 @@ class EvidenceProjectionTests(unittest.TestCase):
         dumped = json.dumps(proj)
         self.assertNotIn(secret, dumped)
         self.assertNotIn("secret_value_123", dumped)
+        self.assertNotIn("sensitive prompt", dumped)
         self.assertNotIn("private_scenario", dumped)
+        self.assertEqual(proj["peer_review"]["reviewer_session"], "agent-token=[redacted]")
+        self.assertEqual(proj["runtime_verification"]["lines"][1]["id"], "P1-token=[redacted]")
 
 
 class EvidenceHTTPTests(unittest.TestCase):
