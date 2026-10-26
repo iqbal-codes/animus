@@ -8,10 +8,17 @@ import signal
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
+from http.server import HTTPServer
+from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
+
+from app import handler
+from factory import consumer
+from laps import Controls, NativeLaps
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -208,6 +215,348 @@ class HealthIdentityTests(unittest.TestCase):
                     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                     listener.bind(("127.0.0.1", port))
                     listener.listen()
+
+
+class ControlsHTTPTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.temp_root = Path(self.temp_dir.name).resolve()
+        subprocess.run(["git", "init"], cwd=self.temp_root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "test-user"], cwd=self.temp_root, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.temp_root, check=True)
+
+        self.controls = Controls(self.temp_root)
+        self.laps = NativeLaps(self.temp_root)
+        self.server = HTTPServer(("127.0.0.1", 0), handler("candidate-controls", self.laps, self.controls))
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01})
+        self.thread.start()
+        self.addCleanup(self.stop_server)
+        self.http = build_opener(ProxyHandler({}))
+
+    def stop_server(self) -> None:
+        self.server.shutdown()
+        self.thread.join(timeout=2)
+        self.server.server_close()
+
+    def get(self, path: str) -> tuple[int, dict, str]:
+        url = f"http://127.0.0.1:{self.server.server_port}{path}"
+        try:
+            with self.http.open(url, timeout=2.0) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return resp.status, data, resp.headers.get("Content-Type", "")
+        except HTTPError as err:
+            with err:
+                data = json.loads(err.read().decode("utf-8"))
+                return err.status, data, err.headers.get("Content-Type", "")
+
+    def post(self, path: str, payload: bytes | dict | None = None) -> tuple[int, dict, str]:
+        url = f"http://127.0.0.1:{self.server.server_port}{path}"
+        if payload is None:
+            data = b""
+            headers = {}
+        elif isinstance(payload, dict):
+            data = json.dumps(payload).encode("utf-8")
+            headers = {"Content-Type": "application/json"}
+        else:
+            data = payload
+            headers = {"Content-Type": "application/json"}
+        req = Request(url, data=data, headers=headers, method="POST")
+        try:
+            with self.http.open(req, timeout=2.0) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+                return resp.status, body, resp.headers.get("Content-Type", "")
+        except HTTPError as err:
+            with err:
+                body = json.loads(err.read().decode("utf-8"))
+                return err.status, body, err.headers.get("Content-Type", "")
+
+    def test_get_controls_initial_state(self) -> None:
+        status, body, ct = self.get("/api/controls")
+        self.assertEqual(status, 200)
+        self.assertEqual(ct, "application/json")
+        self.assertEqual(body, {"halted": False, "paused": False})
+
+    def test_halt_twice_and_unhalt_twice(self) -> None:
+        stop_path = self.temp_root / ".factory/STOP"
+
+        # First halt
+        status, body, _ = self.post("/api/controls/halt")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"halted": True, "paused": False})
+        self.assertTrue(stop_path.exists())
+        self.assertEqual(self.get("/api/controls")[1], {"halted": True, "paused": False})
+
+        # Halt twice leaves halted=true
+        status, body, _ = self.post("/api/controls/halt")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"halted": True, "paused": False})
+        self.assertTrue(stop_path.exists())
+        self.assertEqual(self.get("/api/controls")[1], {"halted": True, "paused": False})
+
+        # First unhalt
+        status, body, _ = self.post("/api/controls/unhalt")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"halted": False, "paused": False})
+        self.assertFalse(stop_path.exists())
+        self.assertEqual(self.get("/api/controls")[1], {"halted": False, "paused": False})
+
+        # Unhalt twice leaves halted=false
+        status, body, _ = self.post("/api/controls/unhalt")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"halted": False, "paused": False})
+        self.assertFalse(stop_path.exists())
+        self.assertEqual(self.get("/api/controls")[1], {"halted": False, "paused": False})
+
+    def test_pause_twice_and_unpause_twice(self) -> None:
+        pause_path = self.temp_root / ".factory/PAUSE"
+
+        # First pause
+        status, body, _ = self.post("/api/controls/pause")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"halted": False, "paused": True})
+        self.assertTrue(pause_path.exists())
+        self.assertEqual(self.get("/api/controls")[1], {"halted": False, "paused": True})
+
+        # Pause twice leaves paused=true
+        status, body, _ = self.post("/api/controls/pause")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"halted": False, "paused": True})
+        self.assertTrue(pause_path.exists())
+        self.assertEqual(self.get("/api/controls")[1], {"halted": False, "paused": True})
+
+        # First unpause
+        status, body, _ = self.post("/api/controls/unpause")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"halted": False, "paused": False})
+        self.assertFalse(pause_path.exists())
+        self.assertEqual(self.get("/api/controls")[1], {"halted": False, "paused": False})
+
+        # Unpause twice leaves paused=false
+        status, body, _ = self.post("/api/controls/unpause")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"halted": False, "paused": False})
+        self.assertFalse(pause_path.exists())
+        self.assertEqual(self.get("/api/controls")[1], {"halted": False, "paused": False})
+
+    def test_unknown_action_returns_400_and_invokes_zero_actions(self) -> None:
+        targets = [
+            "/api/controls",
+            "/api/controls/",
+            "/api/controls/unknown",
+            "/api/controls/schedule",
+            "/api/controls/install",
+            "/api/controls/remove",
+            "/api/controls/cancel",
+            "/api/controls/halt/extra",
+            "/api/controls/restart",
+        ]
+        for path in targets:
+            with self.subTest(path=path):
+                status, body, _ = self.post(path)
+                self.assertEqual(status, 400)
+                self.assertEqual(body, {"error": "unknown_action"})
+                self.assertFalse((self.temp_root / ".factory/STOP").exists())
+                self.assertFalse((self.temp_root / ".factory/PAUSE").exists())
+
+    def test_extra_arguments_returns_400_and_invokes_zero_actions(self) -> None:
+        # Extra query arguments
+        query_cases = [
+            "/api/controls/halt?command=schedule",
+            "/api/controls/halt?cwd=/tmp",
+            "/api/controls/halt?source=bar",
+            "/api/controls/pause?arg=1",
+            "/api/controls/unhalt?extra=val",
+        ]
+        for path in query_cases:
+            with self.subTest(query_path=path):
+                status, body, _ = self.post(path)
+                self.assertEqual(status, 400)
+                self.assertEqual(body, {"error": "invalid_arguments"})
+                self.assertFalse((self.temp_root / ".factory/STOP").exists())
+                self.assertFalse((self.temp_root / ".factory/PAUSE").exists())
+
+        # Extra body arguments
+        body_cases = [
+            {"command": "schedule"},
+            {"source": "foo"},
+            {"cwd": "/tmp"},
+            {"extra": "value"},
+            {"command": "fire", "source": "local", "cwd": "/tmp"},
+        ]
+        for payload in body_cases:
+            with self.subTest(payload=payload):
+                status, body, _ = self.post("/api/controls/halt", payload)
+                self.assertEqual(status, 400)
+                self.assertEqual(body, {"error": "invalid_arguments"})
+                self.assertFalse((self.temp_root / ".factory/STOP").exists())
+
+        # Malformed or non-dict payloads
+        status, body, _ = self.post("/api/controls/halt", b"{malformed")
+        self.assertEqual(status, 400)
+        self.assertEqual(body, {"error": "invalid_payload"})
+
+        status, body, _ = self.post("/api/controls/halt", b"[1, 2, 3]")
+        self.assertEqual(status, 400)
+        self.assertEqual(body, {"error": "invalid_arguments"})
+        self.assertFalse((self.temp_root / ".factory/STOP").exists())
+
+    def test_failed_consumer_action_returns_non_2xx(self) -> None:
+        with patch("laps.invoke", side_effect=RuntimeError("Subprocess failed")):
+            status, body, _ = self.post("/api/controls/halt")
+            self.assertEqual(status, 500)
+            self.assertEqual(body, {"error": "control_action_failed"})
+            self.assertFalse((self.temp_root / ".factory/STOP").exists())
+            # State remains false, not false success
+            self.assertEqual(self.get("/api/controls")[1], {"halted": False, "paused": False})
+
+        with patch("laps.invoke", return_value=1):
+            status, body, _ = self.post("/api/controls/pause")
+            self.assertEqual(status, 500)
+            self.assertEqual(body, {"error": "control_action_failed"})
+            self.assertFalse((self.temp_root / ".factory/PAUSE").exists())
+            self.assertEqual(self.get("/api/controls")[1], {"halted": False, "paused": False})
+
+    def test_brake_semantics_halt_refuses_operations_and_pause_permits_explicit_runs(self) -> None:
+        # Halt refuses run, resume, approve, respond
+        consumer.invoke(self.temp_root, "halt", [])
+        self.assertTrue((self.temp_root / ".factory/STOP").exists())
+
+        for action in ("run", "resume", "approve", "respond"):
+            with self.subTest(refused_action=action):
+                with self.assertRaises(ValueError) as ctx:
+                    consumer.invoke(self.temp_root, action, ["archon-loop"])
+                self.assertIn("Local STOP is set", str(ctx.exception))
+
+        # Cancel is NOT refused by halt
+        with self.assertRaises(ValueError) as ctx:
+            consumer.invoke(self.temp_root, "cancel", ["test-run-id"])
+        self.assertNotIn("Local STOP is set", str(ctx.exception))
+        self.assertIn("Integration pin required", str(ctx.exception))
+
+        # Unhalt clears the block
+        consumer.invoke(self.temp_root, "unhalt", [])
+        self.assertFalse((self.temp_root / ".factory/STOP").exists())
+
+        # Pause permits explicit runs and skips scheduled new launches while retaining wake path
+        consumer.invoke(self.temp_root, "pause", [])
+        self.assertTrue((self.temp_root / ".factory/PAUSE").exists())
+
+        # Explicit run is NOT refused by pause
+        with self.assertRaises(ValueError) as ctx:
+            consumer.invoke(self.temp_root, "run", ["archon-loop"])
+        self.assertNotIn("Local STOP is set", str(ctx.exception))
+        self.assertIn("Integration pin required", str(ctx.exception))
+
+        # Schedule fire under pause
+        trigger_path = self.temp_root / ".factory/trigger.json"
+        trigger_path.parent.mkdir(parents=True, exist_ok=True)
+        trigger_path.write_text(json.dumps({"binding": {"launch": {"workflowName": "archon-loop"}}}), encoding="utf-8")
+        settings_path = self.temp_root / ".factory/consumer.json"
+        settings_path.write_text(json.dumps({"source": str(self.temp_root), "revision": "0" * 40}), encoding="utf-8")
+
+        # Mock execute and verify schedule fire skips launch and executes wake under pause
+        executed_cmds = []
+        real_execute = consumer.execute
+
+        def mock_execute(argv, cwd, **kwargs):
+            if argv[0] == "git" or "git" in argv:
+                return real_execute(argv, cwd, **kwargs)
+            executed_cmds.append(argv)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        with patch("factory.consumer.read_settings", return_value={"source": str(self.temp_root), "revision": "0" * 40}), \
+             patch("factory.consumer.verify_source", return_value=self.temp_root), \
+             patch("factory.consumer.cli", return_value=["mock-cli"]), \
+             patch("factory.consumer.execute", side_effect=mock_execute):
+            rc = consumer.schedule(self.temp_root, ["fire"])
+            self.assertEqual(rc, 0)
+            # Wake was executed
+            self.assertTrue(any("wake" in cmd for cmd in executed_cmds), "Wake command was not called")
+            # Trigger fire was NOT called
+            self.assertFalse(any("fire" in cmd and "trigger" in cmd for cmd in executed_cmds), "Trigger fire was called under pause")
+
+    def test_controls_do_not_cancel_active_runs(self) -> None:
+        # Running laps remain active; controls do not invoke cancel or kill runs
+        executed_cmds = []
+        real_execute = consumer.execute
+
+        def mock_execute(argv, cwd, **kwargs):
+            executed_cmds.append(argv)
+            return real_execute(argv, cwd, **kwargs)
+
+        with patch("factory.consumer.execute", side_effect=mock_execute):
+            self.post("/api/controls/halt")
+            self.post("/api/controls/pause")
+            self.post("/api/controls/unhalt")
+            self.post("/api/controls/unpause")
+            # Verify no workflow commands or cancel/abandon commands were called
+            mutation_cmds = [cmd for cmd in executed_cmds if any(sub in cmd for sub in ("workflow", "cancel", "abandon", "kill"))]
+            self.assertEqual(len(mutation_cmds), 0, f"Controls executed unexpected workflow commands: {mutation_cmds}")
+
+    def test_service_listener_rejects_non_loopback_bind(self) -> None:
+        # Non-loopback addresses must be rejected with exit code 2
+        for bad_host in ("0.0.0.0", "192.168.1.1", "10.0.0.1", "example.com"):
+            with self.subTest(host=bad_host):
+                proc = subprocess.run(
+                    ["python3", "app.py", "--port", "9999", "--host", bad_host],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn(f"Non-loopback bind address '{bad_host}' rejected", proc.stderr)
+
+    def test_real_app_subprocess_controls(self) -> None:
+        with socket.socket() as res:
+            res.bind(("127.0.0.1", 0))
+            port = res.getsockname()[1]
+
+        env = os.environ.copy()
+        env["FACTORY_RUNTIME_STATE"] = str(self.temp_root)
+        env["FACTORY_PROJECT_ROOT"] = str(self.temp_root)
+        env["FACTORY_RUNTIME_CANDIDATE"] = "candidate-controls-subp"
+
+        # Start real app in isolated test repository
+        proc = subprocess.Popen(
+            ["python3", str(ROOT / "app.py"), "--port", str(port)],
+            cwd=self.temp_root,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            started = time.monotonic()
+            while time.monotonic() - started < 5.0:
+                try:
+                    with self.http.open(f"http://127.0.0.1:{port}/health", timeout=0.5) as r:
+                        if r.status == 200:
+                            break
+                except Exception:
+                    time.sleep(0.05)
+            else:
+                self.fail("Real app failed to start within 5s")
+
+            def probe_get(p):
+                with self.http.open(f"http://127.0.0.1:{port}{p}", timeout=1.0) as r:
+                    return r.status, json.loads(r.read().decode("utf-8"))
+
+            def probe_post(p, d=None):
+                req = Request(f"http://127.0.0.1:{port}{p}", data=json.dumps(d).encode("utf-8") if d else b"",
+                              headers={"Content-Type": "application/json"} if d else {}, method="POST")
+                with self.http.open(req, timeout=1.0) as r:
+                    return r.status, json.loads(r.read().decode("utf-8"))
+
+            self.assertEqual(probe_get("/api/controls"), (200, {"halted": False, "paused": False}))
+            self.assertEqual(probe_post("/api/controls/halt"), (200, {"halted": True, "paused": False}))
+            self.assertEqual(probe_get("/api/controls"), (200, {"halted": True, "paused": False}))
+            self.assertEqual(probe_post("/api/controls/unhalt"), (200, {"halted": False, "paused": False}))
+            self.assertEqual(probe_post("/api/controls/pause"), (200, {"halted": False, "paused": True}))
+            self.assertEqual(probe_get("/api/controls"), (200, {"halted": False, "paused": True}))
+            self.assertEqual(probe_post("/api/controls/unpause"), (200, {"halted": False, "paused": False}))
+        finally:
+            proc.terminate()
+            proc.communicate(timeout=3)
 
 
 if __name__ == "__main__":

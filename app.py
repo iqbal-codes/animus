@@ -13,6 +13,9 @@ from urllib.parse import urlsplit
 
 from engine_diagnostics import EngineDiagnostics
 from laps import (
+    ControlActionError,
+    Controls,
+    InvalidControlPayload,
     InvalidLapPayload,
     LapNotFound,
     LaunchBrakeError,
@@ -20,6 +23,7 @@ from laps import (
     NativeLaunchError,
     NativeStateError,
     ReportNotFound,
+    UnknownControlAction,
 )
 
 DASHBOARD_HTML = """<!DOCTYPE html>
@@ -412,14 +416,65 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 """
 
 
-def handler(build_id: str, laps: NativeLaps) -> type[BaseHTTPRequestHandler]:
-    diagnostics = EngineDiagnostics(laps.root)
+def handler(build_id: str, laps: NativeLaps, controls: Controls | None = None) -> type[BaseHTTPRequestHandler]:
+    root = getattr(laps, "root", Path(__file__).resolve().parent)
+    if controls is None:
+        controls = Controls(root)
+    diagnostics = EngineDiagnostics(root)
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
             path = urlsplit(self.path).path
             if path == "/api/doctor":
                 status, result = diagnostics.inspect(doctor=True)
+                self.respond(status, json.dumps(result).encode("utf-8"), "application/json")
+            elif path in ("/api/controls", "/api/controls/"):
+                self.respond(400, json.dumps({"error": "unknown_action"}).encode("utf-8"), "application/json")
+            elif path.startswith("/api/controls/"):
+                subpath = path[len("/api/controls/"):]
+                if not subpath or "/" in subpath:
+                    self.respond(400, json.dumps({"error": "unknown_action"}).encode("utf-8"), "application/json")
+                    return
+                action = subpath
+                if action not in {"halt", "unhalt", "pause", "unpause"}:
+                    self.respond(400, json.dumps({"error": "unknown_action"}).encode("utf-8"), "application/json")
+                    return
+
+                query = urlsplit(self.path).query
+                if query:
+                    self.respond(400, json.dumps({"error": "invalid_arguments"}).encode("utf-8"), "application/json")
+                    return
+
+                try:
+                    content_length = int(self.headers.get("Content-Length", "0"))
+                    if content_length < 0:
+                        content_length = 0
+                except (ValueError, TypeError):
+                    content_length = 0
+                body = self.rfile.read(content_length) if content_length > 0 else b""
+                if len(body) != content_length:
+                    self.respond(400, json.dumps({"error": "invalid_payload"}).encode("utf-8"), "application/json")
+                    return
+
+                if body.strip():
+                    try:
+                        payload = json.loads(body.decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        self.respond(400, json.dumps({"error": "invalid_payload"}).encode("utf-8"), "application/json")
+                        return
+                    if not isinstance(payload, dict) or len(payload) > 0:
+                        self.respond(400, json.dumps({"error": "invalid_arguments"}).encode("utf-8"), "application/json")
+                        return
+
+                try:
+                    result = controls.execute_action(action)
+                    status = 200
+                except UnknownControlAction:
+                    status, result = 400, {"error": "unknown_action"}
+                except ControlActionError:
+                    status, result = 500, {"error": "control_action_failed"}
+                except NativeStateError:
+                    status, result = 503, {"error": "native_state_unavailable"}
                 self.respond(status, json.dumps(result).encode("utf-8"), "application/json")
             elif path == "/api/laps":
                 try:
@@ -459,6 +514,14 @@ def handler(build_id: str, laps: NativeLaps) -> type[BaseHTTPRequestHandler]:
             elif path == "/build-id":
                 body = build_id.encode("utf-8")
                 content_type = "text/plain; charset=utf-8"
+            elif path == "/api/controls":
+                try:
+                    result = controls.get_state()
+                    status = 200
+                except NativeStateError:
+                    status, result = 503, {"error": "native_state_unavailable"}
+                body = json.dumps(result).encode("utf-8")
+                content_type = "application/json"
             elif path == "/api/workflows":
                 status, result = diagnostics.inspect()
                 body = json.dumps(result).encode("utf-8")
@@ -538,8 +601,22 @@ def handler(build_id: str, laps: NativeLaps) -> type[BaseHTTPRequestHandler]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", default="127.0.0.1", help="Bind host (loopback only)")
     parser.add_argument("--port", type=int, required=True)
     args = parser.parse_args()
+
+    import ipaddress
+
+    def is_loopback(host: str) -> bool:
+        if host.lower() in ("localhost", "127.0.0.1", "::1"):
+            return True
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
+
+    if not is_loopback(args.host):
+        parser.error(f"Non-loopback bind address '{args.host}' rejected: service must remain bound to loopback")
 
     build_id = os.environ.get("FACTORY_RUNTIME_CANDIDATE")
     if build_id is None:
@@ -552,8 +629,10 @@ def main() -> None:
     def stop(signum: int, frame: object) -> None:
         raise SystemExit(0)
 
-    laps = NativeLaps(Path(__file__).resolve().parent)
-    with ThreadingHTTPServer(("127.0.0.1", args.port), handler(build_id, laps)) as server:
+    root = Path(os.environ.get("FACTORY_PROJECT_ROOT", Path(__file__).resolve().parent)).resolve()
+    laps = NativeLaps(root)
+    controls = Controls(root)
+    with ThreadingHTTPServer((args.host, args.port), handler(build_id, laps, controls)) as server:
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
         server.serve_forever()
