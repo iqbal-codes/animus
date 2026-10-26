@@ -22,6 +22,7 @@ HEAD = "a" * 40
 PR = "https://github.com/org/repo/pull/7"
 FIRST = "11111111-1111-1111-1111-111111111111"
 SECOND = "22222222-2222-2222-2222-222222222222"
+HEX32 = "422f3cf268fde7a9044739a93e3479d2"
 
 
 def record(run_id: str = FIRST, status: str = "completed") -> dict:
@@ -126,8 +127,16 @@ class LapHTTPTests(unittest.TestCase):
         self.assertTrue(all(call[:2] in (["workflow", "runs"], ["workflow", "get"])
                             for call in self.calls))
 
+    def test_thirty_two_character_hex_run_id_retrieval(self) -> None:
+        self.runs = [record(HEX32)]
+        code, body = self.get(f"/api/laps/{HEX32}")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["id"], HEX32)
+        self.assertEqual(body["session"]["working_path"], f"/worktrees/{HEX32}")
+
     def test_unknown_and_invalid_ids(self) -> None:
-        for value in (SECOND, "--all", "../health", "", FIRST + "/extra"):
+        for value in (SECOND, "--all", "../health", "", FIRST + "/extra",
+                      HEX32[:31], HEX32 + "a" * 5, "z" * 32, "0" * 32):
             with self.subTest(value=value):
                 self.assertEqual(self.get("/api/laps/" + value), (404, {"error": "lap_not_found"}))
 
@@ -334,6 +343,20 @@ class LapSubmissionHTTPTests(unittest.TestCase):
         self.assertTrue(branch2.startswith("archon/lap-"))
         self.assertTrue(conv1.startswith("session-"))
         self.assertTrue(conv2.startswith("session-"))
+
+    def test_submission_returns_32_character_hex_run_id(self) -> None:
+        self.execute_stdout = json.dumps({
+            "ok": True,
+            "action": "run",
+            "detached": True,
+            "runId": HEX32,
+            "workflow": "archon-loop",
+            "branch": "archon/lap-test-hex32",
+            "status": "pending",
+        })
+        status, body = self.post("/api/laps", {"specification": "Hex32 task", "merge_mode": "approve"})
+        self.assertEqual(status, 202)
+        self.assertEqual(body, {"id": HEX32, "status": "pending"})
 
     def test_rejection_of_invalid_and_override_payloads(self) -> None:
         invalid_cases = [
