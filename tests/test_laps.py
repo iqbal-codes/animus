@@ -4,13 +4,15 @@ from __future__ import annotations
 from copy import deepcopy
 from http.server import HTTPServer
 import json
+import os
 from pathlib import Path
 import subprocess
+import tempfile
 import threading
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
-from urllib.request import ProxyHandler, build_opener
+from urllib.request import ProxyHandler, Request, build_opener
 
 from app import handler
 from laps import NativeLaps, project_lap
@@ -213,5 +215,217 @@ class ApprovalTests(unittest.TestCase):
         self.assertIn("[redacted]", encoded)
 
 
+class LapSubmissionHTTPTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.temp_root = Path(self.temp_dir.name).resolve()
+        (self.temp_root / "harness").mkdir(parents=True, exist_ok=True)
+        (self.temp_root / "harness/harness.config.json").write_text(
+            json.dumps({"protected_paths": "MISSION.md,FACTORY.md"}),
+            encoding="utf-8",
+        )
+        self.execute_calls = []
+        self.execute_returncode = 0
+        self.execute_stdout = json.dumps({
+            "ok": True,
+            "action": "run",
+            "detached": True,
+            "runId": FIRST,
+            "workflow": "archon-loop",
+            "branch": "archon/lap-test",
+            "status": "pending",
+        })
+        self.execute_stderr = ""
+        self.execute_side_effect = None
+
+        def fake_execute(argv, cwd, **kwargs):
+            self.execute_calls.append((argv, cwd, kwargs))
+            if self.execute_side_effect:
+                raise self.execute_side_effect
+            return subprocess.CompletedProcess(argv, self.execute_returncode, self.execute_stdout, self.execute_stderr)
+
+        patch("laps.execute", side_effect=fake_execute).start()
+        patch("laps.shared_root", return_value=self.temp_root).start()
+        patch("laps.read_settings", return_value={"bun": "bun"}).start()
+        patch("laps.verify_source", return_value=Path("/pin")).start()
+        self.addCleanup(patch.stopall)
+
+        self.server = HTTPServer(("127.0.0.1", 0), handler("candidate", NativeLaps(self.temp_root)))
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01})
+        self.thread.start()
+        self.addCleanup(self.stop)
+        self.http = build_opener(ProxyHandler({}))
+
+    def stop(self) -> None:
+        self.server.shutdown()
+        self.thread.join(timeout=2)
+        self.server.server_close()
+        self.assertFalse(self.thread.is_alive())
+
+    def post(self, path: str, payload: bytes | str | dict | None = None) -> tuple[int, object]:
+        url = f"http://127.0.0.1:{self.server.server_port}{path}"
+        if isinstance(payload, dict):
+            data = json.dumps(payload).encode("utf-8")
+        elif isinstance(payload, str):
+            data = payload.encode("utf-8")
+        elif isinstance(payload, bytes):
+            data = payload
+        else:
+            data = b""
+        request = Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            response = self.http.open(request, timeout=2)
+        except HTTPError as error:
+            response = error
+        with response:
+            self.assertEqual(response.headers["Content-Type"], "application/json")
+            self.assertEqual(response.headers["Cache-Control"], "no-store")
+            return response.status, json.loads(response.read().decode("utf-8"))
+
+    def test_valid_submission_starts_exactly_one_invocation_and_returns_genuine_run_id(self) -> None:
+        status, body = self.post("/api/laps", {"specification": "Fix login bug", "merge_mode": "approve"})
+        self.assertEqual(status, 202)
+        self.assertEqual(body, {"id": FIRST, "status": "pending"})
+        self.assertEqual(len(self.execute_calls), 1)
+        argv, cwd, _ = self.execute_calls[0]
+        self.assertEqual(cwd, self.temp_root)
+        self.assertIn("workflow", argv)
+        self.assertIn("run", argv)
+        self.assertIn("archon-loop", argv)
+        self.assertIn("--detach", argv)
+        self.assertIn("--json", argv)
+        self.assertIn("merge=approve", argv)
+        self.assertIn("holdout=.factory/holdout/HOLDOUT.md", " ".join(argv))
+        self.assertIn("protected_paths=", " ".join(argv))
+        self.assertTrue(any(arg.startswith("archon/lap-") for arg in argv))
+        self.assertTrue(any(arg.startswith("session-") for arg in argv))
+        self.assertEqual(argv[argv.index("--") + 1:], ["Fix login bug"])
+
+    def test_two_accepted_launches_use_distinct_branch_and_session(self) -> None:
+        status1, body1 = self.post("/api/laps", {"specification": "Task 1", "merge_mode": "approve"})
+        self.assertEqual(status1, 202)
+        self.assertEqual(body1["id"], FIRST)
+
+        self.execute_stdout = json.dumps({
+            "ok": True,
+            "action": "run",
+            "detached": True,
+            "runId": SECOND,
+            "workflow": "archon-loop",
+            "branch": "archon/lap-second",
+            "status": "pending",
+        })
+        status2, body2 = self.post("/api/laps", {"specification": "Task 2", "merge_mode": "approve"})
+        self.assertEqual(status2, 202)
+        self.assertEqual(body2["id"], SECOND)
+
+        self.assertEqual(len(self.execute_calls), 2)
+        argv1 = self.execute_calls[0][0]
+        argv2 = self.execute_calls[1][0]
+        branch1 = argv1[argv1.index("--branch") + 1]
+        branch2 = argv2[argv2.index("--branch") + 1]
+        conv1 = argv1[argv1.index("--conversation-id") + 1]
+        conv2 = argv2[argv2.index("--conversation-id") + 1]
+
+        self.assertNotEqual(branch1, branch2)
+        self.assertNotEqual(conv1, conv2)
+        self.assertTrue(branch1.startswith("archon/lap-"))
+        self.assertTrue(branch2.startswith("archon/lap-"))
+        self.assertTrue(conv1.startswith("session-"))
+        self.assertTrue(conv2.startswith("session-"))
+
+    def test_rejection_of_invalid_and_override_payloads(self) -> None:
+        invalid_cases = [
+            {"specification": "", "merge_mode": "approve"},
+            {"specification": "   \n\t  ", "merge_mode": "approve"},
+            {"specification": 123, "merge_mode": "approve"},
+            {"merge_mode": "approve"},
+            {"specification": "valid", "merge_mode": "auto"},
+            {"specification": "valid", "merge_mode": "direct"},
+            {"specification": "valid"},
+            {"specification": "valid", "merge_mode": "approve", "launch": "override"},
+            {"specification": "valid", "merge_mode": "approve", "source": "/evil"},
+            {"specification": "valid", "merge_mode": "approve", "identity": "fake"},
+            {"specification": "valid", "merge_mode": "approve", "branch": "custom"},
+            {"specification": "valid", "merge_mode": "approve", "conversation_id": "custom"},
+            {"specification": "valid", "merge_mode": "approve", "workflow": "other"},
+            b"{",
+            b"",
+            b"not json",
+            b"[1, 2, 3]",
+        ]
+        for payload in invalid_cases:
+            with self.subTest(payload=payload):
+                status, body = self.post("/api/laps", payload)
+                self.assertEqual(status, 400)
+                self.assertEqual(body, {"error": "invalid_payload"})
+        self.assertEqual(len(self.execute_calls), 0)
+
+    def test_shell_metacharacters_remain_literal_in_specification(self) -> None:
+        shell_spec = 'Fix $(whoami) & `rm -rf /` ; echo "test" | cat > /tmp/out; rm $HOME && ${PATH}'
+        status, body = self.post("/api/laps", {"specification": shell_spec, "merge_mode": "approve"})
+        self.assertEqual(status, 202)
+        self.assertEqual(len(self.execute_calls), 1)
+        argv = self.execute_calls[0][0]
+        self.assertEqual(argv[argv.index("--") + 1:], [shell_spec])
+
+    def test_launch_brake_refusal(self) -> None:
+        stop_file = self.temp_root / ".factory/STOP"
+        stop_file.parent.mkdir(parents=True, exist_ok=True)
+        stop_file.write_text("Operator halted.\n", encoding="utf-8")
+
+        status, body = self.post("/api/laps", {"specification": "Fix bug", "merge_mode": "approve"})
+        self.assertEqual(status, 409)
+        self.assertEqual(body, {"error": "launch_brake_set"})
+        self.assertEqual(len(self.execute_calls), 0)
+        self.assertTrue(stop_file.exists())
+
+    def test_nonzero_native_exit_fails_closed(self) -> None:
+        self.execute_returncode = 1
+        self.execute_stdout = ""
+        self.execute_stderr = "Native engine error: failed to initialize"
+
+        status, body = self.post("/api/laps", {"specification": "Fix bug", "merge_mode": "approve"})
+        self.assertEqual(status, 502)
+        self.assertEqual(body, {"error": "launch_process_failed"})
+        self.assertNotIn("id", body)
+
+    def test_malformed_launch_output_fails_closed(self) -> None:
+        malformed_outputs = [
+            "",
+            "Plain text not json",
+            json.dumps({"ok": False, "error": "native failure"}),
+            json.dumps({"ok": True, "action": "run"}),
+            json.dumps({"ok": True, "runId": ""}),
+            json.dumps({"ok": True, "runId": 12345}),
+        ]
+        for stdout in malformed_outputs:
+            with self.subTest(stdout=stdout):
+                self.execute_calls.clear()
+                self.execute_stdout = stdout
+                status, body = self.post("/api/laps", {"specification": "Fix bug", "merge_mode": "approve"})
+                self.assertEqual(status, 502)
+                self.assertEqual(body, {"error": "launch_process_failed"})
+                self.assertNotIn("id", body)
+
+    def test_native_state_unavailable_on_settings_error(self) -> None:
+        with patch("laps.read_settings", side_effect=ValueError("bad pin")):
+            status, body = self.post("/api/laps", {"specification": "Fix bug", "merge_mode": "approve"})
+            self.assertEqual(status, 503)
+            self.assertEqual(body, {"error": "native_state_unavailable"})
+
+    def test_unknown_post_path_is_404(self) -> None:
+        for path in ("/api/laps/123", "/api/unknown", "/api/laps/"):
+            with self.subTest(path=path):
+                url = f"http://127.0.0.1:{self.server.server_port}{path}"
+                request = Request(url, data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
+                with self.assertRaises(HTTPError) as ctx:
+                    self.http.open(request, timeout=2)
+                self.assertEqual(ctx.exception.code, 404)
+                ctx.exception.close()
+
+
 if __name__ == "__main__":
     unittest.main()
+

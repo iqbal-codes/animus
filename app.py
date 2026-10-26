@@ -12,7 +12,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 from engine_diagnostics import EngineDiagnostics
-from laps import LapNotFound, NativeLaps, NativeStateError
+from laps import (
+    InvalidLapPayload,
+    LapNotFound,
+    LaunchBrakeError,
+    NativeLaps,
+    NativeLaunchError,
+    NativeStateError,
+)
 
 
 def handler(build_id: str, laps: NativeLaps) -> type[BaseHTTPRequestHandler]:
@@ -20,11 +27,35 @@ def handler(build_id: str, laps: NativeLaps) -> type[BaseHTTPRequestHandler]:
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
-            if urlsplit(self.path).path != "/api/doctor":
+            path = urlsplit(self.path).path
+            if path == "/api/doctor":
+                status, result = diagnostics.inspect(doctor=True)
+                self.respond(status, json.dumps(result).encode("utf-8"), "application/json")
+            elif path == "/api/laps":
+                try:
+                    content_length = int(self.headers.get("Content-Length", "0"))
+                    if content_length < 0:
+                        content_length = 0
+                except (ValueError, TypeError):
+                    content_length = 0
+                body = self.rfile.read(content_length) if content_length > 0 else b""
+                if len(body) != content_length:
+                    self.respond(400, json.dumps({"error": "invalid_payload"}).encode("utf-8"), "application/json")
+                    return
+                try:
+                    result = laps.submit(body)
+                    status = 202
+                except InvalidLapPayload:
+                    status, result = 400, {"error": "invalid_payload"}
+                except LaunchBrakeError:
+                    status, result = 409, {"error": "launch_brake_set"}
+                except NativeLaunchError:
+                    status, result = 502, {"error": "launch_process_failed"}
+                except NativeStateError:
+                    status, result = 503, {"error": "native_state_unavailable"}
+                self.respond(status, json.dumps(result).encode("utf-8"), "application/json")
+            else:
                 self.send_error(404)
-                return
-            status, result = diagnostics.inspect(doctor=True)
-            self.respond(status, json.dumps(result).encode("utf-8"), "application/json")
 
         def do_GET(self) -> None:
             path = urlsplit(self.path).path
