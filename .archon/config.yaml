@@ -1,0 +1,28 @@
+# Archon Repository Configuration for labq-software-factory
+assistant: pi
+
+assistants:
+  pi:
+    model: router/ag/gemini-3.8-flash
+
+tiers:
+  small:
+    provider: pi
+    model: router/ag/gemini-3.8-flash
+  medium:
+    provider: pi
+    model: router/ag/gemini-3.8-flash
+  large:
+    provider: pi
+    model: router/cx/gpt-6.1-sol
+
+aliases:
+  '@reasoning':
+    provider: pi
+    model: router/cx/gpt-6.1-sol
+  '@luna':
+    provider: pi
+    model: router/cx/gpt-6-luna
+
+worktree:
+  baseBranch: main

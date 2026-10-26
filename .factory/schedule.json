@@ -1,0 +1,7 @@
+{
+  "workflow": "archon-loop",
+  "parallel": 1,
+  "inputs": {
+    "merge": "approve"
+  }
+}
