@@ -1,11 +1,22 @@
-"""Read-only public projection of the pinned engine's native lap records."""
+"""Public projection and supervised submission of the pinned engine's native lap records."""
 from __future__ import annotations
 
+import json
+from pathlib import Path
 import re
 import subprocess
-from pathlib import Path
+import time
+import uuid
 
-from factory.consumer import native_json, read_settings, verify_source
+from factory.consumer import (
+    cli,
+    execute,
+    native_json,
+    read_settings,
+    shared_root,
+    verify_source,
+    with_default_inputs,
+)
 
 
 class NativeStateError(ValueError):
@@ -14,6 +25,37 @@ class NativeStateError(ValueError):
 
 class LapNotFound(LookupError):
     pass
+
+
+class InvalidLapPayload(ValueError):
+    pass
+
+
+class LaunchBrakeError(RuntimeError):
+    pass
+
+
+class NativeLaunchError(RuntimeError):
+    pass
+
+
+def parse_launch_ack(raw: str) -> dict:
+    if not isinstance(raw, str) or not raw.strip():
+        raise NativeLaunchError("Empty native launch output")
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return data
+    except json.JSONDecodeError:
+        pass
+    for start in reversed([m.start() for m in re.finditer(r"^\{", raw, re.M)]):
+        try:
+            data = json.loads(raw[start:])
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            continue
+    raise NativeLaunchError("Native launch output does not contain valid JSON")
 
 
 def public_text(value: object) -> str | None:
@@ -116,8 +158,90 @@ class NativeLaps:
     def __init__(self, root: Path):
         self.root = root
 
+    def submit(self, payload: bytes | str | dict) -> dict:
+        if isinstance(payload, (bytes, bytearray)):
+            try:
+                payload = payload.decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise InvalidLapPayload("Request body must be valid UTF-8 JSON") from error
+        if isinstance(payload, str):
+            try:
+                data = json.loads(payload)
+            except json.JSONDecodeError as error:
+                raise InvalidLapPayload("Malformed JSON payload") from error
+        elif isinstance(payload, dict):
+            data = payload
+        else:
+            raise InvalidLapPayload("Payload must be a JSON object")
+
+        if not isinstance(data, dict):
+            raise InvalidLapPayload("Payload must be a JSON object")
+
+        if set(data.keys()) != {"specification", "merge_mode"}:
+            raise InvalidLapPayload("Payload must contain only 'specification' and 'merge_mode'")
+
+        specification = data.get("specification")
+        if not isinstance(specification, str) or not specification.strip():
+            raise InvalidLapPayload("Specification must be a non-empty string")
+
+        merge_mode = data.get("merge_mode")
+        if merge_mode != "approve":
+            raise InvalidLapPayload("Only merge_mode='approve' is supported")
+
+        stop_path = shared_root(self.root) / ".factory/STOP"
+        if stop_path.exists() or (self.root / ".factory/STOP").exists():
+            raise LaunchBrakeError("Local launch brake is set")
+
+        try:
+            settings = read_settings(self.root)
+            source = verify_source(settings)
+        except (ValueError, OSError) as error:
+            raise NativeStateError("Native engine configuration unavailable") from error
+
+        unique_id = f"{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
+        branch = f"archon/lap-{unique_id}"
+        conversation_id = f"session-{uuid.uuid4()}"
+
+        args = [
+            "archon-loop",
+            "--detach",
+            "--json",
+            "--branch", branch,
+            "--conversation-id", conversation_id,
+            "--input", "merge=approve",
+        ]
+        args = with_default_inputs("archon-loop", args, args, self.root)
+        argv = [
+            *cli(settings, source),
+            "workflow", "run",
+            "--cwd", str(self.root),
+            "--workflow-source", str(source),
+            *args,
+            "--",
+            specification,
+        ]
+
+        try:
+            result = execute(argv, self.root, capture=True)
+        except (subprocess.SubprocessError, OSError) as error:
+            raise NativeLaunchError("Failed to execute native launch process") from error
+
+        if result.returncode != 0:
+            raise NativeLaunchError(f"Native launch process exited with code {result.returncode}")
+
+        ack = parse_launch_ack(result.stdout)
+        if ack.get("ok") is False:
+            raise NativeLaunchError("Native launch ack reported failure")
+
+        run_id = ack.get("runId") or ack.get("id")
+        if not run_id or not isinstance(run_id, str):
+            raise NativeLaunchError("Native launch ack missing valid runId")
+
+        status = ack.get("status") if isinstance(ack.get("status"), str) else "pending"
+        return {"id": run_id, "status": status}
+
     def read(self, run_id: str | None = None) -> list[dict] | dict:
-        if run_id is not None and re.fullmatch(r"[0-9a-f-]{36}", run_id) is None:
+        if run_id is not None and re.fullmatch(r"[0-9a-f-]{32,36}", run_id) is None:
             raise LapNotFound()
         try:
             settings = read_settings(self.root)

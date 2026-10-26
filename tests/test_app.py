@@ -10,8 +10,8 @@ import subprocess
 import tempfile
 import time
 import unittest
-from urllib.error import URLError
-from urllib.request import ProxyHandler, build_opener
+from urllib.error import HTTPError, URLError
+from urllib.request import ProxyHandler, Request, build_opener
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -117,6 +117,37 @@ class HealthIdentityTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(json.loads(body), {"status": "healthy"})
             self.assert_identity(port, "candidate-a")
+
+    def post(self, port: int, path: str, data: bytes | dict) -> tuple[int, bytes, str]:
+        url = f"http://127.0.0.1:{port}{path}"
+        payload = json.dumps(data).encode("utf-8") if isinstance(data, dict) else data
+        req = Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with self.http.open(req, timeout=1.0) as response:
+                return response.status, response.read(), response.headers["Content-Type"]
+        except HTTPError as error:
+            with error:
+                return error.status, error.read(), error.headers["Content-Type"]
+
+    def test_lap_submission_validation_against_real_app(self) -> None:
+        process, port, _ = self.start("candidate-a")
+        invalid_payloads = [
+            {"specification": "", "merge_mode": "approve"},
+            {"specification": "test", "merge_mode": "auto"},
+            {"specification": "test", "merge_mode": "approve", "launch": "override"},
+            b"{",
+        ]
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                status, body, content_type = self.post(port, "/api/laps", payload)
+                self.assertEqual(status, 400)
+                self.assertEqual(content_type, "application/json")
+                self.assertEqual(json.loads(body), {"error": "invalid_payload"})
+
+        # Unknown POST target
+        status, _, _ = self.post(port, "/api/laps/123", {"specification": "test", "merge_mode": "approve"})
+        self.assertEqual(status, 404)
+        self.stop(process)
 
     def test_shutdown_releases_listener(self) -> None:
         for sig in (signal.SIGTERM, signal.SIGINT):

@@ -38,6 +38,7 @@ all network interfaces. No workflow, provider, or scheduler starts at boot.
 | `GET /build-id` | 200 | `text/plain; charset=utf-8` | Exact startup candidate or Git commit, with no added newline |
 | `GET /api/workflows` | 200 | `application/json` | `ok:true`, validated `source`, `revision`, `workflows`, and local `checks` |
 | `POST /api/doctor` | 200 | `application/json` | Validated catalog and required local checks, plus native provider/model binding resolution |
+| `POST /api/laps` | 202 | `application/json` | `{"id": "<run-id>", "status": "<status>"}` |
 | `GET /api/laps` | 200 | `application/json` | Array of native `archon-loop` lap projections, or `[]` when no laps exist |
 | `GET /api/laps/:id` | 200 | `application/json` | One lap projection for the exact native ID |
 
@@ -146,6 +147,31 @@ common bearer/token/password/API-key assignments and recognized credential token
 forms are redacted in exposed identity strings. Native errors are never returned
 verbatim. As with build identity, do not deliberately use secrets as identifiers.
 
+### Supervised lap submission
+
+`POST /api/laps` submits a supervised lap work item to the pinned engine:
+
+- Request body must be a JSON object with non-empty string `specification` and
+  `merge_mode: "approve"`. Any other merge mode, missing or whitespace-only
+  specification, malformed JSON, or caller-supplied launch, source, or identity
+  overrides return HTTP 400 `{"error": "invalid_payload"}` with zero engine launches.
+- Shell metacharacters in `specification` remain literal message text; arguments
+  are passed directly to the engine without shell interpolation.
+- Before launch, the service verifies the local launch brake (`.factory/STOP` under
+  the shared repository root). If present, submission returns HTTP 409
+  `{"error": "launch_brake_set"}` and creates zero runs. Application code never
+  removes the STOP file.
+- Valid submissions generate an isolated Git worktree branch (`archon/lap-...`)
+  and unique session identifier (`session-...`), carry default holdout and protected
+  paths unchanged, and invoke the pinned Archon engine detached:
+  `workflow run archon-loop --detach --json --branch <branch> --conversation-id <id> --input merge=approve -- <specification>`.
+- Successful launches return HTTP 202 `{"id": "<run-id>", "status": "<status>"}`
+  with the genuine native run ID and initial status (e.g. `pending`).
+- Non-zero native process exit, execution errors, or malformed launch output return
+  HTTP 502 `{"error": "launch_process_failed"}` without returning a false HTTP 202 or
+  synthetic run ID. Unavailable engine configuration returns HTTP 503
+  `{"error": "native_state_unavailable"}`.
+
 Send `SIGTERM` or `SIGINT` to the application process for a clean exit that closes
 the listener. Terminating one instance does not affect another instance's
 listener or identity.
@@ -162,7 +188,9 @@ ports. They check health readiness within five seconds, exact identities, Git
 fallback, concurrent isolation, and listener release for both shutdown signals.
 `python3 -m unittest tests.test_laps` focuses on the lap HTTP/native read boundary,
 status derivation, stale/incomplete evidence, ten read-only polls, privacy, engine
-failure semantics and two-run isolation. It does not launch provider workflows.
+failure semantics, two-run isolation, as well as supervised submission validation,
+local STOP brake refusal, detached execution, shell literal preservation, and process
+failure handling. It does not launch provider workflows.
 `python3 -m unittest tests.test_engine_diagnostics` exercises real HTTP and the
 unchanged consumer against a temporary Git-pinned installation and deterministic
 native CLI test fixture: verified catalog, local tools, configured Bun, absent or
