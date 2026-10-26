@@ -15,7 +15,7 @@ from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from app import handler
-from laps import NativeLaps, project_lap
+from laps import NativeLaps, NativeStateError, ReportNotFound, project_evidence, project_lap
 
 
 HEAD = "a" * 40
@@ -447,6 +447,370 @@ class LapSubmissionHTTPTests(unittest.TestCase):
                     self.http.open(request, timeout=2)
                 self.assertEqual(ctx.exception.code, 404)
                 ctx.exception.close()
+
+
+def evidence_record(run_id: str = FIRST, head: str = HEAD, check_head: str = HEAD,
+                    review_sha: str = HEAD, check_overall: str = "PASS", evidence_ok: str = "true",
+                    review_outcome: str = "approved", builder_session: str | None = "builder-1",
+                    reviewer_session: str | None = "reviewer-2", dispositions: list | None = None,
+                    lines: list | None = None) -> dict:
+    default_lines = [
+        {"id": "C1", "kind": "criterion", "verdict": "PASS", "text": "App check passed"},
+        {"id": "P1", "kind": "probe", "verdict": "OK", "text": "Health probe OK"},
+        {"id": "H1", "kind": "holdout", "verdict": "PASS", "scenario": "secret private scenario text"},
+    ]
+    run = {
+        "id": run_id, "workflow_name": "archon-loop", "status": "completed",
+        "metadata": {"inputs": {"merge": "approve"}},
+        "working_path": f"/worktrees/{run_id}", "conversation_id": f"session-{run_id}",
+        "checkout_baseline": {"commit": "b" * 40},
+        "started_at": "2026-10-26T08:00:00Z", "completed_at": "2026-10-26T08:10:00Z",
+        "events": [],
+    }
+    steps = [
+        ("build", {}, builder_session),
+        ("subject", {"pr": PR, "head": head}, None),
+        ("check-app", {"pr": PR, "head": check_head, "overall": check_overall, "lines": lines if lines is not None else default_lines}, "tester-1"),
+        ("evidence", {"ok": evidence_ok}, None),
+        ("review", {"pr": PR, "sha": review_sha, "outcome": review_outcome, "dispositions": dispositions if dispositions is not None else []}, reviewer_session),
+        ("land", {}, None),
+    ]
+    for order, (node, output, sess) in enumerate(steps, start=1):
+        ev = {
+            "id": f"{run_id}-{order}", "workflow_run_id": run_id, "event_order": order,
+            "event_type": "node_skipped" if node == "land" else "node_completed",
+            "step_name": node, "created_at": f"2026-10-26T08:0{order}:00Z",
+            "data": {
+                "structured_output": output,
+                "attempt": {"checkoutStart": {"kind": "git", "commit": head}},
+            },
+        }
+        if sess:
+            ev["data"]["session_id"] = sess
+        run["events"].append(ev)
+    return run
+
+
+class EvidenceProjectionTests(unittest.TestCase):
+    def test_matching_verified_runtime_report(self) -> None:
+        proj = project_evidence(evidence_record())
+        self.assertEqual(proj["id"], FIRST)
+        self.assertEqual(proj["workflow_name"], "archon-loop")
+        self.assertEqual(proj["candidate_head"], HEAD)
+        rv = proj["runtime_verification"]
+        self.assertEqual(rv["status"], "verified")
+        self.assertEqual(rv["verdict"], "PASS")
+        self.assertEqual(rv["lines"], [
+            {"id": "C1", "kind": "criterion", "verdict": "PASS"},
+            {"id": "P1", "kind": "probe", "verdict": "OK"},
+        ])
+        self.assertEqual(rv["holdout"], {
+            "verdict": "PASS",
+            "lines": [{"id": "H1", "verdict": "PASS"}],
+        })
+        self.assertNotIn("secret private scenario text", json.dumps(proj))
+
+    def test_failed_runtime_report(self) -> None:
+        for check_overall, ev_ok in (("FAIL", "true"), ("PASS", "false"), ("FAIL", "false")):
+            with self.subTest(check_overall=check_overall, ev_ok=ev_ok):
+                proj = project_evidence(evidence_record(check_overall=check_overall, evidence_ok=ev_ok))
+                self.assertEqual(proj["runtime_verification"]["status"], "failed")
+                self.assertEqual(proj["runtime_verification"]["verdict"], "FAIL")
+                self.assertEqual(proj["peer_review"]["status"], "not_ready")
+
+    def test_inconclusive_runtime_report_on_head_mismatch(self) -> None:
+        other_head = "c" * 40
+        proj = project_evidence(evidence_record(check_head=other_head))
+        self.assertEqual(proj["runtime_verification"]["status"], "inconclusive")
+        self.assertIsNone(proj["runtime_verification"]["verdict"])
+        self.assertNotEqual(proj["runtime_verification"]["status"], "verified")
+        self.assertEqual(proj["peer_review"]["status"], "not_ready")
+
+    def test_absent_runtime_report(self) -> None:
+        run = evidence_record()
+        run["events"] = [e for e in run["events"] if e["step_name"] not in ("check-app", "evidence")]
+        proj = project_evidence(run)
+        self.assertEqual(proj["runtime_verification"]["status"], "absent")
+        self.assertIsNone(proj["runtime_verification"]["verdict"])
+        self.assertEqual(proj["runtime_verification"]["lines"], [])
+        self.assertEqual(proj["runtime_verification"]["holdout"], {"verdict": None, "lines": []})
+        self.assertNotEqual(proj["runtime_verification"]["status"], "verified")
+        self.assertEqual(proj["peer_review"]["status"], "not_ready")
+
+    def test_holdout_failure_causes_runtime_verification_failed(self) -> None:
+        failing_holdout = [
+            {"id": "C1", "kind": "criterion", "verdict": "PASS"},
+            {"id": "H1", "kind": "holdout", "verdict": "FAIL", "scenario": "sensitive prompt"},
+        ]
+        proj = project_evidence(evidence_record(lines=failing_holdout))
+        self.assertEqual(proj["runtime_verification"]["holdout"]["verdict"], "FAIL")
+        self.assertEqual(proj["runtime_verification"]["holdout"]["lines"], [{"id": "H1", "verdict": "FAIL"}])
+        self.assertEqual(proj["runtime_verification"]["status"], "failed")
+        self.assertEqual(proj["runtime_verification"]["verdict"], "FAIL")
+        self.assertNotIn("sensitive prompt", json.dumps(proj))
+
+    def test_holdout_verdict_derivations(self) -> None:
+        incomplete_holdout = [
+            {"id": "C1", "kind": "criterion", "verdict": "PASS"},
+            {"id": "H1", "kind": "holdout", "verdict": "INCOMPLETE"},
+        ]
+        proj = project_evidence(evidence_record(lines=incomplete_holdout))
+        self.assertEqual(proj["runtime_verification"]["holdout"]["verdict"], "INCOMPLETE")
+        self.assertEqual(proj["runtime_verification"]["status"], "inconclusive")
+        self.assertIsNone(proj["runtime_verification"]["verdict"])
+
+        for bad_verdict in ("FAILED", "ERROR"):
+            with self.subTest(bad_verdict=bad_verdict):
+                run = evidence_record(lines=[{"id": "C1", "kind": "criterion", "verdict": "PASS"}])
+                run["events"][2]["data"]["structured_output"]["holdout"] = {"verdict": bad_verdict}
+                proj = project_evidence(run)
+                self.assertEqual(proj["runtime_verification"]["holdout"]["verdict"], bad_verdict)
+                self.assertEqual(proj["runtime_verification"]["status"], "failed")
+                self.assertEqual(proj["runtime_verification"]["verdict"], "FAIL")
+
+        run = evidence_record(lines=[{"id": "C1", "kind": "criterion", "verdict": "PASS"}])
+        run["events"][2]["data"]["structured_output"]["holdout"] = {"verdict": "INCOMPLETE"}
+        proj = project_evidence(run)
+        self.assertEqual(proj["runtime_verification"]["holdout"]["verdict"], "INCOMPLETE")
+        self.assertEqual(proj["runtime_verification"]["status"], "inconclusive")
+        self.assertIsNone(proj["runtime_verification"]["verdict"])
+
+    def test_absent_review_node_with_verified_runtime_is_absent(self) -> None:
+        run = evidence_record()
+        run["events"] = [e for e in run["events"] if e["step_name"] != "review"]
+        proj = project_evidence(run)
+        self.assertEqual(proj["runtime_verification"]["status"], "verified")
+        self.assertEqual(proj["runtime_verification"]["verdict"], "PASS")
+        self.assertEqual(proj["peer_review"]["status"], "absent")
+        self.assertIsNone(proj["peer_review"]["sha"])
+        self.assertFalse(proj["peer_review"]["independent"])
+        self.assertNotEqual(proj["peer_review"]["status"], "ready")
+
+    def test_review_stale_when_head_mismatched(self) -> None:
+        other_sha = "d" * 40
+        proj = project_evidence(evidence_record(review_sha=other_sha))
+        self.assertEqual(proj["peer_review"]["status"], "stale")
+        self.assertEqual(proj["peer_review"]["sha"], other_sha)
+
+    def test_review_ready_when_independently_attributed(self) -> None:
+        proj = project_evidence(evidence_record(builder_session="builder-sess", reviewer_session="reviewer-sess"))
+        pr = proj["peer_review"]
+        self.assertEqual(pr["status"], "ready")
+        self.assertEqual(pr["sha"], HEAD)
+        self.assertTrue(pr["independent"])
+        self.assertEqual(pr["reviewer_session"], "reviewer-sess")
+        self.assertEqual(pr["blocking_findings"], 0)
+
+    def test_review_self_attested_not_ready(self) -> None:
+        proj = project_evidence(evidence_record(builder_session="same-agent", reviewer_session="same-agent"))
+        pr = proj["peer_review"]
+        self.assertEqual(pr["status"], "not_ready")
+        self.assertFalse(pr["independent"])
+
+    def test_review_self_attested_with_credentials_not_ready(self) -> None:
+        credential_session = "agent-token=ghp_buildersecret12345"
+        proj = project_evidence(evidence_record(builder_session=credential_session, reviewer_session=credential_session))
+        pr = proj["peer_review"]
+        self.assertEqual(pr["status"], "not_ready")
+        self.assertFalse(pr["independent"])
+        self.assertEqual(pr["reviewer_session"], "agent-token=[redacted]")
+        self.assertNotIn("ghp_buildersecret12345", json.dumps(proj))
+
+    def test_review_ambiguous_attribution_not_ready(self) -> None:
+        for b_sess, r_sess in (("builder-1", None), (None, "reviewer-1"), (None, None)):
+            with self.subTest(b_sess=b_sess, r_sess=r_sess):
+                proj = project_evidence(evidence_record(builder_session=b_sess, reviewer_session=r_sess))
+                pr = proj["peer_review"]
+                self.assertEqual(pr["status"], "not_ready")
+                self.assertFalse(pr["independent"])
+
+    def test_review_blocking_findings_marks_review_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            artifacts = Path(td)
+            review_dir = artifacts / "review"
+            review_dir.mkdir(parents=True)
+            findings = [
+                {"id": "R1", "severity": "blocking", "status": "open", "claim": "leak"},
+                {"id": "R2", "severity": "low", "status": "open", "claim": "nit"},
+                {"id": "R3", "severity": "blocking", "status": "resolved", "claim": "fixed"},
+            ]
+            (review_dir / "findings.json").write_text(json.dumps(findings), encoding="utf-8")
+            (review_dir / "report.md").write_text("# Review Report\nApproved with note", encoding="utf-8")
+
+            proj = project_evidence(evidence_record(), artifacts_dir=artifacts)
+            pr = proj["peer_review"]
+            self.assertEqual(pr["blocking_findings"], 1)
+            self.assertEqual(pr["status"], "failed")
+            self.assertTrue(pr["report"]["available"])
+            self.assertEqual(pr["report"]["path"], "review/report.md")
+            self.assertEqual(pr["report"]["url"], f"/api/laps/{FIRST}/evidence/report")
+
+    def test_review_blocking_dispositions_marks_review_failed(self) -> None:
+        proj = project_evidence(evidence_record(dispositions=[{"id": "B1", "action": "blocks"}]))
+        pr = proj["peer_review"]
+        self.assertEqual(pr["blocking_findings"], 1)
+        self.assertEqual(pr["status"], "failed")
+
+    def test_corrupt_findings_artifact_marks_review_not_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            artifacts = Path(td)
+            review_dir = artifacts / "review"
+            review_dir.mkdir(parents=True)
+            (review_dir / "findings.json").write_text("{corrupt json content", encoding="utf-8")
+            (review_dir / "report.md").write_text("# Report", encoding="utf-8")
+            proj = project_evidence(evidence_record(), artifacts_dir=artifacts)
+            pr = proj["peer_review"]
+            self.assertEqual(pr["status"], "not_ready")
+
+    def test_review_rejected_outcome_failed(self) -> None:
+        for outcome in ("sent-back", "needs-owner", "failed", "rejected"):
+            with self.subTest(outcome=outcome):
+                proj = project_evidence(evidence_record(review_outcome=outcome))
+                self.assertEqual(proj["peer_review"]["status"], "failed")
+
+    def test_privacy_and_credential_sentinels_redacted(self) -> None:
+        secret = "ghp_supersecretcredential12345"
+        token_str = "token=secret_value_123"
+        run = evidence_record(
+            reviewer_session=f"agent-{token_str}",
+            lines=[
+                {"id": "C1", "kind": "criterion", "verdict": "PASS", "text": f"probe with {secret}"},
+                {"id": f"P1-{token_str}", "kind": "probe", "verdict": "OK"},
+                {"id": "H1", "kind": "holdout", "verdict": "PASS", "scenario": "sensitive prompt"},
+            ],
+        )
+        run["user_message"] = secret
+        run["transcript"] = secret
+        run["events"][0]["data"]["password"] = secret
+        run["events"][2]["data"]["structured_output"]["holdout"] = {
+            "verdict": "PASS",
+            "private_scenario": secret,
+        }
+        proj = project_evidence(run)
+        dumped = json.dumps(proj)
+        self.assertNotIn(secret, dumped)
+        self.assertNotIn("secret_value_123", dumped)
+        self.assertNotIn("sensitive prompt", dumped)
+        self.assertNotIn("private_scenario", dumped)
+        self.assertEqual(proj["peer_review"]["reviewer_session"], "agent-token=[redacted]")
+        self.assertEqual(proj["runtime_verification"]["lines"][1]["id"], "P1-token=[redacted]")
+
+
+class EvidenceHTTPTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.temp_root = Path(self.temp_dir.name).resolve()
+        self.artifacts_dir = self.temp_root / "artifacts" / "runs" / FIRST
+        self.artifacts_dir.mkdir(parents=True, exist_ok=True)
+        (self.artifacts_dir / "reviewer").mkdir(parents=True, exist_ok=True)
+        (self.artifacts_dir / "reviewer/report.md").write_text("# Code Review\nApproved with token=secret123.", encoding="utf-8")
+
+        rec = evidence_record(FIRST)
+        rec["output_root"] = str(self.temp_root)
+        self.runs = [rec]
+        self.calls = []
+        self.failure = None
+        self.native = patch("laps.native_json", side_effect=self.query).start()
+        self.addCleanup(patch.stopall)
+        patch("laps.read_settings", return_value={}).start()
+        patch("laps.verify_source", return_value=Path("/pin")).start()
+        self.server = HTTPServer(("127.0.0.1", 0), handler("candidate", NativeLaps(self.temp_root)))
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01})
+        self.thread.start()
+        self.addCleanup(self.stop)
+        self.http = build_opener(ProxyHandler({}))
+
+    def stop(self) -> None:
+        self.server.shutdown()
+        self.thread.join(timeout=2)
+        self.server.server_close()
+        self.assertFalse(self.thread.is_alive())
+
+    def query(self, settings: dict, source: Path, args: list[str], root: Path) -> dict:
+        self.calls.append(args)
+        if self.failure:
+            raise self.failure
+        if args[:2] == ["workflow", "runs"]:
+            return {"runs": self.runs}
+        self.assertEqual(args[:2], ["workflow", "get"])
+        return deepcopy(next(run for run in self.runs if run["id"] == args[2]))
+
+    def get_json(self, path: str) -> tuple[int, object]:
+        url = f"http://127.0.0.1:{self.server.server_port}{path}"
+        try:
+            response = self.http.open(url, timeout=2)
+        except HTTPError as error:
+            response = error
+        with response:
+            self.assertEqual(response.headers["Content-Type"], "application/json")
+            self.assertEqual(response.headers["Cache-Control"], "no-store")
+            return response.status, json.loads(response.read().decode("utf-8"))
+
+    def get_raw(self, path: str) -> tuple[int, bytes, str]:
+        url = f"http://127.0.0.1:{self.server.server_port}{path}"
+        try:
+            response = self.http.open(url, timeout=2)
+        except HTTPError as error:
+            response = error
+        with response:
+            self.assertEqual(response.headers["Cache-Control"], "no-store")
+            return response.status, response.read(), response.headers.get("Content-Type", "")
+
+    def test_get_evidence_200(self) -> None:
+        status, body = self.get_json(f"/api/laps/{FIRST}/evidence")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["id"], FIRST)
+        self.assertEqual(body["candidate_head"], HEAD)
+        self.assertEqual(body["runtime_verification"]["status"], "verified")
+        self.assertEqual(body["peer_review"]["status"], "ready")
+        self.assertTrue(body["peer_review"]["report"]["available"])
+        self.assertEqual(body["peer_review"]["report"]["url"], f"/api/laps/{FIRST}/evidence/report")
+
+    def test_get_evidence_report_200_markdown(self) -> None:
+        status, content, content_type = self.get_raw(f"/api/laps/{FIRST}/evidence/report")
+        self.assertEqual(status, 200)
+        self.assertEqual(content_type, "text/markdown; charset=utf-8")
+        text = content.decode("utf-8")
+        self.assertIn("# Code Review\nApproved with token=[redacted]", text)
+        self.assertNotIn("secret123", text)
+
+    def test_get_evidence_report_404_when_absent(self) -> None:
+        (self.artifacts_dir / "reviewer/report.md").unlink()
+        status, body = self.get_json(f"/api/laps/{FIRST}/evidence/report")
+        self.assertEqual(status, 404)
+        self.assertEqual(body, {"error": "report_not_found"})
+
+    def test_unknown_lap_id_returns_404(self) -> None:
+        unknown = "33333333-3333-3333-3333-333333333333"
+        for sub in ("/evidence", "/evidence/report"):
+            with self.subTest(sub=sub):
+                status, body = self.get_json(f"/api/laps/{unknown}{sub}")
+                self.assertEqual(status, 404)
+                self.assertEqual(body, {"error": "lap_not_found"})
+
+    def test_path_traversal_returns_404(self) -> None:
+        for bad_id in ("../../etc/passwd", "..", "foo/bar", "invalid-id-!", "0" * 31):
+            with self.subTest(bad_id=bad_id):
+                for sub in ("/evidence", "/evidence/report"):
+                    status, body = self.get_json(f"/api/laps/{bad_id}{sub}")
+                    self.assertEqual(status, 404)
+
+    def test_native_state_unavailable_returns_503(self) -> None:
+        self.failure = OSError("disk failure")
+        for sub in ("/evidence", "/evidence/report"):
+            with self.subTest(sub=sub):
+                status, body = self.get_json(f"/api/laps/{FIRST}{sub}")
+                self.assertEqual(status, 503)
+                self.assertEqual(body, {"error": "native_state_unavailable"})
+
+    def test_evidence_endpoints_are_read_only_and_never_execute(self) -> None:
+        calls_before = len(self.calls)
+        self.get_json(f"/api/laps/{FIRST}/evidence")
+        self.get_raw(f"/api/laps/{FIRST}/evidence/report")
+        new_calls = self.calls[calls_before:]
+        self.assertTrue(all(call[:2] in (["workflow", "runs"], ["workflow", "get"]) for call in new_calls))
+        self.assertFalse(any("run" in call or "execute" in call for call in new_calls))
 
 
 if __name__ == "__main__":

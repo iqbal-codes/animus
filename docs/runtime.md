@@ -41,9 +41,12 @@ all network interfaces. No workflow, provider, or scheduler starts at boot.
 | `POST /api/laps` | 202 | `application/json` | `{"id": "<run-id>", "status": "<status>"}` |
 | `GET /api/laps` | 200 | `application/json` | Array of native `archon-loop` lap projections, or `[]` when no laps exist |
 | `GET /api/laps/:id` | 200 | `application/json` | One lap projection for the exact native ID |
+| `GET /api/laps/:id/evidence` | 200 | `application/json` | Candidate head binding, runtime verification verdicts, holdout verdict metadata, and peer-review evaluation |
+| `GET /api/laps/:id/evidence/report` | 200 | `text/markdown; charset=utf-8` | Plain text peer-review markdown report (`reviewer/report.md` or `review/report.md`) |
 
 Endpoints do not redirect. Unknown lap IDs (including IDs of other workflows)
-return 404 JSON `{"error":"lap_not_found"}`. Unavailable or malformed native
+return 404 JSON `{"error":"lap_not_found"}`. Missing review report artifacts return
+404 JSON `{"error":"report_not_found"}`. Unavailable or malformed native
 state returns 503 JSON `{"error":"native_state_unavailable"}`, never an empty
 success. Other paths return 404. Responses use `Cache-Control: no-store`. Access
 logging is disabled so request targets are not copied into process logs.
@@ -172,6 +175,31 @@ verbatim. As with build identity, do not deliberately use secrets as identifiers
   synthetic run ID. Unavailable engine configuration returns HTTP 503
   `{"error": "native_state_unavailable"}`.
 
+### Evidence and report inspection
+
+Operators can inspect candidate-bound runtime verification evidence and peer-review reports for any native `archon-loop` run:
+
+- `GET /api/laps/:id/evidence` returns an allowlisted JSON projection of native runtime/holdout verdict metadata and independent review status:
+  - `id`, `workflow_name`, and `candidate_head`: verified Git commit observed in native invocation/attempt checkouts or structured subject head.
+  - `runtime_verification`:
+    - `status`: `"verified"` when candidate head matches, `check-app` reports `overall="PASS"`, and `evidence` reports `ok="true"`; `"failed"` when verification reports `FAIL` or holdouts fail; `"inconclusive"` when head does not match candidate or verification is incomplete; `"absent"` when verification events are missing.
+    - `verdict`: `"PASS"`, `"FAIL"`, or `null`.
+    - `lines`: allowlisted public criteria/probe items with `id`, `kind`, and `verdict`.
+    - `holdout`: verdict metadata only (`verdict` and `lines` containing `{id, verdict}`). Private scenario text, prompts, and connection parameters are strictly excluded.
+  - `peer_review`:
+    - `status`: `"ready"` only when review evaluates the matching `candidate_head`, reviewer session is independently attributed (distinct from builder sessions), and 0 unresolved blocking findings exist; `"stale"` when reviewing another commit; `"failed"` when unresolved blocking findings exist or review rejected/sent-back; `"not_ready"` when self-attested, ambiguous, or runtime evidence is not verified; `"absent"` when review event is missing.
+    - `sha` and `outcome`: evaluated commit SHA and review outcome (e.g. `approved`).
+    - `independent`: boolean indicating whether reviewer attribution is provably independent of builder sessions.
+    - `reviewer_session`: attributed reviewer session ID (credentials redacted).
+    - `blocking_findings`: integer count of blocking dispositions and open blocking findings in run artifacts.
+    - `report`: `{available: bool, path: str | null, url: str | null}` referencing the independent review report when present (`/api/laps/:id/evidence/report`).
+- `GET /api/laps/:id/evidence/report` returns the plain markdown text (`text/markdown; charset=utf-8`) of the independent review report (`reviewer/report.md` or `review/report.md`) from run artifacts.
+  - Returns HTTP 404 `{"error": "report_not_found"}` if the lap has no review report artifact.
+  - Returns HTTP 404 `{"error": "lap_not_found"}` if the run ID does not exist or fails format validation (`[0-9a-f-]{32,36}`).
+  - Returns HTTP 503 `{"error": "native_state_unavailable"}` if native storage cannot be accessed.
+  - Path traversal and arbitrary artifact browsing are strictly prevented; only allowlisted report paths within the run's artifact tree can be retrieved.
+  - Exposed content is sanitized through credential redaction filters.
+
 Send `SIGTERM` or `SIGINT` to the application process for a clean exit that closes
 the listener. Terminating one instance does not affect another instance's
 listener or identity.
@@ -188,9 +216,11 @@ ports. They check health readiness within five seconds, exact identities, Git
 fallback, concurrent isolation, and listener release for both shutdown signals.
 `python3 -m unittest tests.test_laps` focuses on the lap HTTP/native read boundary,
 status derivation, stale/incomplete evidence, ten read-only polls, privacy, engine
-failure semantics, two-run isolation, as well as supervised submission validation,
-local STOP brake refusal, detached execution, shell literal preservation, and process
-failure handling. It does not launch provider workflows.
+failure semantics, two-run isolation, supervised submission validation,
+local STOP brake refusal, detached execution, shell literal preservation, process
+failure handling, as well as candidate-bound evidence projections, report delivery,
+holdout fencing, credential redaction, path traversal rejection, and independent
+peer review attribution. It does not launch provider workflows.
 `python3 -m unittest tests.test_engine_diagnostics` exercises real HTTP and the
 unchanged consumer against a temporary Git-pinned installation and deterministic
 native CLI test fixture: verified catalog, local tools, configured Bun, absent or
