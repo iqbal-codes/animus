@@ -185,6 +185,20 @@ class HealthIdentityTests(unittest.TestCase):
         self.assertIn("Independent loop code review", body.decode("utf-8"))
         self.stop(process)
 
+    def test_operator_dashboard_endpoint(self) -> None:
+        process, port, _ = self.start("candidate-dash")
+        for target in ("/", "/?refresh=true"):
+            with self.subTest(target=target):
+                status, body, ct = self.request(port, target)
+                self.assertEqual(status, 200)
+                self.assertEqual(ct, "text/html; charset=utf-8")
+                html_text = body.decode("utf-8")
+                self.assertIn("Factory Operator Dashboard", html_text)
+                self.assertIn('id="refresh-button"', html_text)
+                self.assertIn('id="laps-container"', html_text)
+                self.assertIn('id="lap-detail-container"', html_text)
+        self.stop(process)
+
     def test_shutdown_releases_listener(self) -> None:
         for sig in (signal.SIGTERM, signal.SIGINT):
             with self.subTest(signal=sig):

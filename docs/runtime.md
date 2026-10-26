@@ -34,6 +34,7 @@ all network interfaces. No workflow, provider, or scheduler starts at boot.
 
 | Request | Status | Content type | Response body |
 | --- | --- | --- | --- |
+| `GET /` | 200 | `text/html; charset=utf-8` | Read-only operator dashboard HTML |
 | `GET /health` | 200 | `application/json` | `{"status": "healthy"}` |
 | `GET /build-id` | 200 | `text/plain; charset=utf-8` | Exact startup candidate or Git commit, with no added newline |
 | `GET /api/workflows` | 200 | `application/json` | `ok:true`, validated `source`, `revision`, `workflows`, and local `checks` |
@@ -199,6 +200,16 @@ Operators can inspect candidate-bound runtime verification evidence and peer-rev
   - Returns HTTP 503 `{"error": "native_state_unavailable"}` if native storage cannot be accessed.
   - Path traversal and arbitrary artifact browsing are strictly prevented; only allowlisted report paths within the run's artifact tree can be retrieved.
   - Exposed content is sanitized through credential redaction filters.
+
+### Operator dashboard
+
+`GET /` serves the read-only operator dashboard (`text/html; charset=utf-8`):
+- Uses live lap list and detail APIs (`/api/laps` and `/api/laps/:id`).
+- Renders run ID, workflow name, native/product status, timestamps, candidate head, session identity, and work item text.
+- Selecting a run fetches its detail view displaying session identity (conversation ID, working path, agents) and observed lifecycle transitions.
+- Displays explicit empty state ("No runs found") and unavailable state ("Lap data unavailable") on API failure without leaving stale views.
+- Untrusted text is escaped using DOM text nodes, rendering HTML/scripts strictly as literal text.
+- Loading, selecting, and refreshing perform read-only GET requests and trigger zero engine mutation commands.
 
 Send `SIGTERM` or `SIGINT` to the application process for a clean exit that closes
 the listener. Terminating one instance does not affect another instance's
