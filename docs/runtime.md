@@ -39,6 +39,8 @@ all network interfaces. No workflow, provider, or scheduler starts at boot.
 | `GET /build-id` | 200 | `text/plain; charset=utf-8` | Exact startup candidate or Git commit, with no added newline |
 | `GET /api/workflows` | 200 | `application/json` | `ok:true`, validated `source`, `revision`, `workflows`, and local `checks` |
 | `POST /api/doctor` | 200 | `application/json` | Validated catalog and required local checks, plus native provider/model binding resolution |
+| `GET /api/controls` | 200 | `application/json` | Actual launch-brake state: `{"halted": <bool>, "paused": <bool>}` |
+| `POST /api/controls/:action` | 200 | `application/json` | Launch brake action (`halt`, `unhalt`, `pause`, `unpause`): `{"halted": <bool>, "paused": <bool>}` |
 | `POST /api/laps` | 202 | `application/json` | `{"id": "<run-id>", "status": "<status>"}` |
 | `GET /api/laps` | 200 | `application/json` | Array of native `archon-loop` lap projections, or `[]` when no laps exist |
 | `GET /api/laps/:id` | 200 | `application/json` | One lap projection for the exact native ID |
@@ -49,8 +51,32 @@ Endpoints do not redirect. Unknown lap IDs (including IDs of other workflows)
 return 404 JSON `{"error":"lap_not_found"}`. Missing review report artifacts return
 404 JSON `{"error":"report_not_found"}`. Unavailable or malformed native
 state returns 503 JSON `{"error":"native_state_unavailable"}`, never an empty
-success. Other paths return 404. Responses use `Cache-Control: no-store`. Access
+success. Unknown control actions or requests containing extra query/body arguments
+return 400 JSON `{"error":"unknown_action"}` or `{"error":"invalid_arguments"}` and
+invoke zero consumer actions. Other paths return 404. Responses use `Cache-Control: no-store`. Access
 logging is disabled so request targets are not copied into process logs.
+
+### Launch brake controls
+
+`GET /api/controls` and `POST /api/controls/:action` expose the factory's native
+operational launch brakes without changing identities, bypass merge gates, or enabling
+schedules.
+- `GET /api/controls` returns the actual launch-brake state as `{"halted": <bool>, "paused": <bool>}`.
+- `POST /api/controls/:action` accepts only `halt`, `unhalt`, `pause`, and `unpause`. It calls
+  the existing `factory/consumer.py` controls directly with no caller-supplied extra arguments.
+  Calling `halt` twice leaves `halted=true`; calling `unhalt` twice leaves `halted=false`;
+  calling `pause` twice leaves `paused=true`; calling `unpause` twice leaves `paused=false`.
+- Requests containing unknown actions, query arguments (`command`, `source`, `cwd`, etc.), or
+  request bodies with extra arguments return HTTP 400 and invoke zero consumer actions.
+- Failed consumer actions return HTTP 500 without a false success state.
+- Existing brake semantics are preserved: `halt` sets the local STOP marker which refuses
+  `run`, `resume`, `approve`, and `respond` while active work remains running and `cancel`
+  remains available; `pause` sets the PAUSE marker which stops scheduled timer launches
+  while retaining native wake passes and permitting explicit manual runs. Neither control cancels
+  or interrupts in-flight runs.
+- The service listener is strictly restricted to loopback addresses (`127.0.0.1`, `localhost`, `::1`).
+  Any non-loopback bind request (such as `--host 0.0.0.0`) is rejected on startup. No endpoint
+  executes schedule installation, schedule removal, or timer-enabling commands.
 
 ### Engine discovery and diagnostics
 

@@ -9,8 +9,10 @@ import time
 import uuid
 
 from factory.consumer import (
+    PAUSE,
     cli,
     execute,
+    invoke,
     native_json,
     read_settings,
     shared_root,
@@ -37,6 +39,59 @@ class InvalidLapPayload(ValueError):
 
 class LaunchBrakeError(RuntimeError):
     pass
+
+
+class ControlActionError(RuntimeError):
+    pass
+
+
+class UnknownControlAction(ValueError):
+    pass
+
+
+class InvalidControlPayload(ValueError):
+    pass
+
+
+ALLOWED_CONTROL_ACTIONS: frozenset[str] = frozenset({"halt", "unhalt", "pause", "unpause"})
+
+
+class Controls:
+    def __init__(self, root: Path):
+        self.root = Path(root).resolve()
+
+    def _resolve_paths(self) -> tuple[Path, Path]:
+        try:
+            shared = shared_root(self.root)
+        except Exception:
+            shared = self.root
+        return shared / ".factory/STOP", shared / PAUSE
+
+    def get_state(self) -> dict[str, bool]:
+        try:
+            stop_path, pause_path = self._resolve_paths()
+            halted = stop_path.exists() or (self.root / ".factory/STOP").exists()
+            paused = pause_path.exists() or (self.root / PAUSE).exists()
+            return {"halted": bool(halted), "paused": bool(paused)}
+        except Exception as error:
+            raise NativeStateError("Failed to determine launch-brake state") from error
+
+    def execute_action(self, action: str) -> dict[str, bool]:
+        if action not in ALLOWED_CONTROL_ACTIONS:
+            raise UnknownControlAction(f"Unknown control action: {action}")
+        try:
+            rc = invoke(self.root, action, [])
+            if rc != 0:
+                raise ControlActionError(f"Consumer action '{action}' returned non-zero code {rc}")
+            if action == "unhalt":
+                (self.root / ".factory/STOP").unlink(missing_ok=True)
+            elif action == "unpause":
+                (self.root / PAUSE).unlink(missing_ok=True)
+        except Exception as error:
+            if isinstance(error, UnknownControlAction):
+                raise
+            raise ControlActionError(f"Consumer action '{action}' failed: {error}") from error
+        return self.get_state()
 
 
 class NativeLaunchError(RuntimeError):
