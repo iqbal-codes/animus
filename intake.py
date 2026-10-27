@@ -166,11 +166,35 @@ def run_jev_advisory(
             "confidence": confidence,
             "complexity": complexity,
             "probabilities": probabilities,
+            "recommendation_reason": rec_reason,
         }
         return rec_label, confidence, complexity, probabilities, rec_reason, jev_meta
     except JevError as err:
         logger.warning("Jev advisory evaluation error: %s", err)
         return None, None, None, None, "evaluation_error:jev_unreachable", None
+
+
+def check_jev_advisory(
+    title: str,
+    body: str,
+    labels: list[str],
+    jev_client: JevClient | None,
+) -> tuple[str | None, float | None, float | None, dict[str, float] | None, dict[str, Any] | None, str | None]:
+    """Execute Jev advisory evaluation if client is configured. Returns (rec_label, conf, comp, probs, jev_meta, err_reason)."""
+    if jev_client is None:
+        return None, None, None, None, None, None
+
+    if not getattr(jev_client, "is_configured", False):
+        logger.warning("JevClient is not configured (missing API key or transport); running in static label mode.")
+        return None, None, None, None, None, None
+
+    rec_label, conf, comp, probs, rec_reason, jev_meta = run_jev_advisory(
+        title=title, body=body, labels=labels, jev_client=jev_client
+    )
+    if rec_reason == "evaluation_error:jev_unreachable":
+        return None, None, None, None, None, "evaluation_error:jev_unreachable"
+
+    return rec_label, conf, comp, probs, jev_meta, None
 
 
 def evaluate_issue_admission(
@@ -233,34 +257,27 @@ def evaluate_issue_admission(
 
     # 2. Unlabeled check: fail-closed for issues lacking labels
     if not lower_labels:
-        rec_label, conf, comp, probs, rec_reason, jev_meta = None, None, None, None, "unlabeled_awaiting_triage", None
-        if jev_client is not None:
-            rec_label, conf, comp, probs, rec_reason, jev_meta = run_jev_advisory(
+        rec_label, conf, comp, probs, jev_meta, err_reason = check_jev_advisory(
+            title, body, label_names, jev_client
+        )
+        if err_reason:
+            return EvaluatedIssue(
+                number=number,
                 title=title,
-                body=body,
+                state=state,
+                admission_status="held",
+                reason=err_reason,
                 labels=label_names,
-                jev_client=jev_client,
+                dependencies=deps,
+                unsatisfied_dependencies=unsatisfied,
             )
-            if rec_reason == "evaluation_error:jev_unreachable":
-                return EvaluatedIssue(
-                    number=number,
-                    title=title,
-                    state=state,
-                    admission_status="held",
-                    reason="evaluation_error:jev_unreachable",
-                    labels=label_names,
-                    dependencies=deps,
-                    unsatisfied_dependencies=unsatisfied,
-                )
-            if rec_label == "ready-for-agent":
-                rec_reason = "unlabeled_awaiting_triage"
 
         return EvaluatedIssue(
             number=number,
             title=title,
             state=state,
             admission_status="held",
-            reason=rec_reason,
+            reason="unlabeled_awaiting_triage",
             labels=label_names,
             dependencies=deps,
             unsatisfied_dependencies=unsatisfied,
@@ -288,34 +305,29 @@ def evaluate_issue_admission(
     # 4. Hold check: canonical needs-info/ready-for-human/needs-triage and legacy factory:hold block admission
     blocking_labels = {"needs-info", "ready-for-human", "needs-triage", "factory:hold"}
     if any(lbl in lower_labels for lbl in blocking_labels):
-        rec_label, conf, comp, probs, rec_reason, jev_meta = None, None, None, None, "held_by_label", None
-        if "needs-triage" in lower_labels and jev_client is not None:
-            rec_label, conf, comp, probs, rec_reason, jev_meta = run_jev_advisory(
-                title=title,
-                body=body,
-                labels=label_names,
-                jev_client=jev_client,
+        rec_label, conf, comp, probs, jev_meta, err_reason = None, None, None, None, None, None
+        if "needs-triage" in lower_labels:
+            rec_label, conf, comp, probs, jev_meta, err_reason = check_jev_advisory(
+                title, body, label_names, jev_client
             )
-            if rec_reason == "evaluation_error:jev_unreachable":
+            if err_reason:
                 return EvaluatedIssue(
                     number=number,
                     title=title,
                     state=state,
                     admission_status="held",
-                    reason="evaluation_error:jev_unreachable",
+                    reason=err_reason,
                     labels=label_names,
                     dependencies=deps,
                     unsatisfied_dependencies=unsatisfied,
                 )
-            if rec_label == "ready-for-agent":
-                rec_reason = "held_by_label"
 
         return EvaluatedIssue(
             number=number,
             title=title,
             state=state,
             admission_status="held",
-            reason=rec_reason,
+            reason="held_by_label",
             labels=label_names,
             dependencies=deps,
             unsatisfied_dependencies=unsatisfied,
@@ -486,6 +498,10 @@ class IntakeService:
             self._cached_result = result
             self._cached_at = now
             return result
+
+    def poll(self, force_refresh: bool = False) -> dict[str, Any]:
+        """Poll and evaluate the backlog (alias for evaluate_backlog per Spec §2)."""
+        return self.evaluate_backlog(force_refresh=force_refresh)
 
     def get_next_admitted(self) -> int | None:
         """Return the next admitted open issue number, or None if none admitted."""

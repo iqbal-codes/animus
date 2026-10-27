@@ -300,9 +300,25 @@ class AdmissionRuleTests(unittest.TestCase):
         }
         res = evaluate_issue_admission(issue, {51: issue}, jev_client=jev_client)
         self.assertEqual(res.admission_status, "held")
-        self.assertEqual(res.reason, "unclear_acceptance_criteria")
+        self.assertEqual(res.reason, "unlabeled_awaiting_triage")
         self.assertEqual(res.recommended_label, "needs-info")
         self.assertEqual(res.confidence, 0.62)
+        self.assertEqual(res.jev_evaluation["recommendation_reason"], "unclear_acceptance_criteria")
+
+    def test_unconfigured_api_key_operates_in_static_label_mode(self) -> None:
+        """Spec line 54: Unconfigured client operates in static label mode gracefully."""
+        unconfigured_client = JevClient(api_key=None)
+        issue = {
+            "number": 54,
+            "title": "Task without Jev API key",
+            "state": "OPEN",
+            "labels": [],
+            "body": "Static mode test",
+        }
+        res = evaluate_issue_admission(issue, {54: issue}, jev_client=unconfigured_client)
+        self.assertEqual(res.admission_status, "held")
+        self.assertEqual(res.reason, "unlabeled_awaiting_triage")
+        self.assertIsNone(res.recommended_label)
 
     def test_jev_advisory_transport_error_fails_closed(self) -> None:
         """AC4: Transport or API error fails closed to held with evaluation_error:jev_unreachable."""

@@ -56,9 +56,9 @@ Use stable AC identifiers for evidence mapping. Include check commands or artifa
 | Complete, unblocked executable contract, explicitly approved for factory intake | Use `ready-for-agent` plus `factory:ready`; remove a stale hold only with approval. |
 | Rejected work | Use `wontfix` and `factory:exclude` only with an approved disposition. |
 
-These are skill-level publication rules, not a claim that runtime maps canonical labels. Check existing labels before publishing; ask approval for missing label creation. A newly written spec or ticket does not automatically earn readiness.
+These are skill-level publication rules. Check existing labels before publishing; ask approval for missing label creation. A newly written spec or ticket does not automatically earn readiness.
 
-Current `intake.py` requires an OPEN issue, `factory:ready`, no `factory:hold` or `factory:exclude`, all parsed prerequisites CLOSED in the fetched backlog, and no active claim. `ready-for-agent` alone has no admission effect. `needs-owner`, `needs-info`, and `ready-for-human` are not intake blockers by themselves: preserve the corresponding hold/exclusion gate. `needs-owner` always requires an owner decision before implementation.
+`intake.py` admits OPEN issues labeled `ready-for-agent` (with `factory:ready` accepted as a transitional legacy alias) when all referenced prerequisites are CLOSED in the fetched backlog, with no blocking labels (`needs-info`, `ready-for-human`, `needs-triage`, `factory:hold`), no exclusion labels (`wontfix`, `factory:exclude`), and no active loop claim. Unlabeled issues fail-closed to `held` (`unlabeled_awaiting_triage`).
 
 A passing intake result is not proof of engine selection or delivery. The scheduler writes a target, but target binding must be established against the installed engine. Manual runs bypass scheduled intake. Do not promise that holding/excluding a record makes every direct native invocation safe: inspect its workability/selection policy before launch.
 

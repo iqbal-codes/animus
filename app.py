@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 from engine_diagnostics import EngineDiagnostics
+from factory.jev_client import JevClient
 from intake import IntakeFetchError, IntakeService
 from laps import (
     ControlActionError,
@@ -431,7 +432,8 @@ def handler(build_id: str, laps: NativeLaps, controls: Controls | None = None, i
         controls = Controls(root)
     if intake is None:
         target_repo = os.environ.get("FACTORY_TARGET_REPO", "labq-software-factory")
-        intake = IntakeService(repo=target_repo)
+        jev_client = JevClient() if os.environ.get("OPENROUTER_API_KEY") else None
+        intake = IntakeService(repo=target_repo, jev_client=jev_client)
     if promotion is None:
         promotion = PromotionService(root)
     diagnostics = EngineDiagnostics(root)

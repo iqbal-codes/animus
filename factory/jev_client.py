@@ -132,6 +132,11 @@ class JevClient:
         self.timeout = timeout
         self.transport = transport
 
+    @property
+    def is_configured(self) -> bool:
+        """True if client has an API key or an explicit transport provided."""
+        return bool(self.api_key or self.transport)
+
     def evaluate(
         self, state: str, questions: dict[str, Any]
     ) -> JevEvaluationResult:
