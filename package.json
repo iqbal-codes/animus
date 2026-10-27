@@ -1,0 +1,39 @@
+{
+  "name": "labq-software-factory",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "type": "module",
+  "scripts": {
+    "toolchain": "node scripts/health/check-toolchain.mjs",
+    "format": "vp fmt --check apps packages scripts/health tests/integration vite.config.ts tsconfig.json tsconfig.tools.json package.json",
+    "format:write": "vp fmt --write apps packages scripts/health tests/integration vite.config.ts tsconfig.json tsconfig.tools.json package.json",
+    "lint": "vp lint --deny-warnings apps packages scripts/health tests/integration vite.config.ts",
+    "typecheck": "vp check --no-fmt --no-lint",
+    "check": "bun run format && bun run lint && bun run typecheck",
+    "test": "vp run test-all",
+    "build:web": "node scripts/health/build-and-inspect.mjs",
+    "verify": "vp run verify-all"
+  },
+  "devDependencies": {
+    "@labq/client": "workspace:*",
+    "@labq/contracts": "workspace:*",
+    "@playwright/test": "1.64.1",
+    "@types/bun": "1.4.2",
+    "@types/node": "26.6.5",
+    "typescript": "5.9.3",
+    "vite-plus": "1.4.0",
+    "vitest": "5.0.5"
+  },
+  "overrides": {
+    "vite": "npm:@voidzero-dev/vite-plus-core@1.4.0",
+    "vitest": "5.0.5"
+  },
+  "engines": {
+    "bun": "1.4.2",
+    "node": "26.8.1"
+  },
+  "packageManager": "bun@1.4.2"
+}

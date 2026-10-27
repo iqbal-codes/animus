@@ -1,0 +1,13 @@
+{
+  "name": "@labq/web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vp dev",
+    "build": "vp build",
+    "preview": "vp preview"
+  },
+  "dependencies": {
+    "@labq/client": "workspace:*"
+  }
+}

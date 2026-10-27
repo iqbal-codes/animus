@@ -19,3 +19,9 @@ harness/.results/
 *.pem
 secrets.json
 credentials.json
+node_modules/
+apps/web/dist/
+.vite/
+.vite-plus/
+test-results/
+playwright-report/
