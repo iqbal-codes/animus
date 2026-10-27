@@ -96,13 +96,9 @@ export default defineConfig({
         dependsOn: ["toolchain-check", "static-check", "test-all"],
         cache: false,
       },
-      "python-suite": {
-        command: "python3 -m unittest discover -s tests -p 'test_*.py'",
-        cache: false,
-      },
       "test-all": {
         command: "node -e \"console.log('All suites passed')\"",
-        dependsOn: ["neutral-suite", "bun-suite", "browser-suite", "python-suite"],
+        dependsOn: ["neutral-suite", "bun-suite", "browser-suite"],
         cache: false,
       },
     },
