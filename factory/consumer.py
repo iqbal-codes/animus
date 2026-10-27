@@ -787,7 +787,7 @@ def launch_decision(root: Path, settings: dict, source: Path, write,
             return False
 
         if next_admitted is None:
-            write("No launch: no admitted issues in backlog with factory:ready and satisfied dependencies.\n")
+            write("No launch: no admitted issues in backlog with ready-for-agent and satisfied dependencies.\n")
             return False
 
     gate = MANIFEST.get("launch_gates", {}).get(workflow)

@@ -25,7 +25,20 @@ class IntakeParsingTests(unittest.TestCase):
 
 
 class AdmissionRuleTests(unittest.TestCase):
-    def test_unlabeled_issue_is_held(self) -> None:
+    def test_completely_unlabeled_issue_is_held(self) -> None:
+        """AC1: An issue with no labels is held with reason 'unlabeled_awaiting_triage'."""
+        issue = {
+            "number": 10,
+            "title": "Unlabeled work",
+            "state": "OPEN",
+            "labels": [],
+            "body": "Fix bug",
+        }
+        res = evaluate_issue_admission(issue, {10: issue})
+        self.assertEqual(res.admission_status, "held")
+        self.assertEqual(res.reason, "unlabeled_awaiting_triage")
+
+    def test_labeled_without_ready_is_held_missing_ready(self) -> None:
         issue = {
             "number": 10,
             "title": "Unlabeled work",
@@ -37,7 +50,73 @@ class AdmissionRuleTests(unittest.TestCase):
         self.assertEqual(res.admission_status, "held")
         self.assertEqual(res.reason, "missing_ready_label")
 
+    def test_canonical_ready_for_agent_is_admitted(self) -> None:
+        """AC2: Canonical 'ready-for-agent' is admitted with reason 'admitted_ready'."""
+        issue = {
+            "number": 11,
+            "title": "Ready ticket",
+            "state": "OPEN",
+            "labels": [{"name": "ready-for-agent"}],
+            "body": "Do work",
+        }
+        res = evaluate_issue_admission(issue, {11: issue})
+        self.assertEqual(res.admission_status, "admitted")
+        self.assertEqual(res.reason, "admitted_ready")
+
+    def test_canonical_needs_info_blocks_admission(self) -> None:
+        """AC3: 'needs-info' blocks admission."""
+        issue = {
+            "number": 12,
+            "title": "Blocked ticket",
+            "state": "OPEN",
+            "labels": [{"name": "ready-for-agent"}, {"name": "needs-info"}],
+            "body": "Held for info",
+        }
+        res = evaluate_issue_admission(issue, {12: issue})
+        self.assertEqual(res.admission_status, "held")
+        self.assertEqual(res.reason, "held_by_label")
+
+    def test_canonical_ready_for_human_blocks_admission(self) -> None:
+        """AC3: 'ready-for-human' blocks admission."""
+        issue = {
+            "number": 12,
+            "title": "Human only ticket",
+            "state": "OPEN",
+            "labels": [{"name": "ready-for-agent"}, {"name": "ready-for-human"}],
+            "body": "Needs human architecture",
+        }
+        res = evaluate_issue_admission(issue, {12: issue})
+        self.assertEqual(res.admission_status, "held")
+        self.assertEqual(res.reason, "held_by_label")
+
+    def test_canonical_needs_triage_blocks_admission(self) -> None:
+        """AC3: 'needs-triage' blocks admission."""
+        issue = {
+            "number": 12,
+            "title": "Un-triaged ticket",
+            "state": "OPEN",
+            "labels": [{"name": "ready-for-agent"}, {"name": "needs-triage"}],
+            "body": "Needs triage",
+        }
+        res = evaluate_issue_admission(issue, {12: issue})
+        self.assertEqual(res.admission_status, "held")
+        self.assertEqual(res.reason, "held_by_label")
+
+    def test_canonical_wontfix_excludes(self) -> None:
+        """AC4: 'wontfix' excludes the issue."""
+        issue = {
+            "number": 13,
+            "title": "Wontfix ticket",
+            "state": "OPEN",
+            "labels": [{"name": "ready-for-agent"}, {"name": "wontfix"}],
+            "body": "Do not process",
+        }
+        res = evaluate_issue_admission(issue, {13: issue})
+        self.assertEqual(res.admission_status, "excluded")
+        self.assertEqual(res.reason, "excluded_by_label")
+
     def test_factory_ready_only_is_admitted(self) -> None:
+        """AC5: Legacy 'factory:ready' is admitted for backward compatibility."""
         issue = {
             "number": 11,
             "title": "Ready ticket",
@@ -50,6 +129,7 @@ class AdmissionRuleTests(unittest.TestCase):
         self.assertEqual(res.reason, "admitted_ready")
 
     def test_factory_hold_blocks_admission(self) -> None:
+        """AC5: Legacy 'factory:hold' blocks admission."""
         issue = {
             "number": 12,
             "title": "Blocked ticket",
@@ -62,6 +142,7 @@ class AdmissionRuleTests(unittest.TestCase):
         self.assertEqual(res.reason, "held_by_label")
 
     def test_factory_exclude_overrides_everything(self) -> None:
+        """AC5: Legacy 'factory:exclude' overrides everything."""
         issue = {
             "number": 13,
             "title": "Excluded ticket",

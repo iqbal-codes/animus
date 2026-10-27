@@ -135,8 +135,22 @@ def evaluate_issue_admission(
             unsatisfied_dependencies=unsatisfied,
         )
 
-    # 2. Exclude check: factory:exclude overrides everything
-    if "factory:exclude" in lower_labels:
+    # 2. Unlabeled check: fail-closed for issues lacking labels
+    if not lower_labels:
+        return EvaluatedIssue(
+            number=number,
+            title=title,
+            state=state,
+            admission_status="held",
+            reason="unlabeled_awaiting_triage",
+            labels=label_names,
+            dependencies=deps,
+            unsatisfied_dependencies=unsatisfied,
+        )
+
+    # 3. Exclude check: wontfix and legacy factory:exclude override everything
+    exclusion_labels = {"wontfix", "factory:exclude"}
+    if any(lbl in lower_labels for lbl in exclusion_labels):
         return EvaluatedIssue(
             number=number,
             title=title,
@@ -148,8 +162,9 @@ def evaluate_issue_admission(
             unsatisfied_dependencies=unsatisfied,
         )
 
-    # 3. Hold check: factory:hold blocks admission
-    if "factory:hold" in lower_labels:
+    # 4. Hold check: canonical needs-info/ready-for-human/needs-triage and legacy factory:hold block admission
+    blocking_labels = {"needs-info", "ready-for-human", "needs-triage", "factory:hold"}
+    if any(lbl in lower_labels for lbl in blocking_labels):
         return EvaluatedIssue(
             number=number,
             title=title,
@@ -161,8 +176,9 @@ def evaluate_issue_admission(
             unsatisfied_dependencies=unsatisfied,
         )
 
-    # 4. Ready check: factory:ready is strictly required
-    if "factory:ready" not in lower_labels:
+    # 5. Ready check: canonical ready-for-agent or legacy factory:ready is strictly required
+    ready_labels = {"ready-for-agent", "factory:ready"}
+    if not any(lbl in lower_labels for lbl in ready_labels):
         return EvaluatedIssue(
             number=number,
             title=title,
