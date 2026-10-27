@@ -4,12 +4,16 @@ import {
   workflowCatalogSchema,
   lapListSchema,
   lapDetailSchema,
+  launchSubmissionSchema,
+  launchAckSchema,
   operatorErrorSchema,
   type Health,
   type Diagnostics,
   type WorkflowCatalog,
   type LapList,
   type LapDetail,
+  type LaunchSubmission,
+  type LaunchAck,
   type OperatorErrorCode,
 } from "@labq/contracts/operator";
 
@@ -79,6 +83,38 @@ export function createFactoryClient(options: {
     },
     async lap(id: string): Promise<LapDetail> {
       return getJson(`/api/v1/laps/${encodeURIComponent(id)}`, lapDetailSchema);
+    },
+    async launch(submission: LaunchSubmission): Promise<LaunchAck> {
+      const parsed = launchSubmissionSchema.safeParse(submission);
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      const endpoint = new URL("/api/v1/laps", options.baseUrl).href;
+      let response: Response;
+      try {
+        response = await transport(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(parsed.data),
+          redirect: "error",
+          cache: "no-store",
+        });
+      } catch {
+        throw new FactoryClientError("transport_unavailable");
+      }
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        throw new FactoryClientError("invalid_operator_response");
+      }
+      if (!response.ok) {
+        const error = operatorErrorSchema.safeParse(body);
+        throw new FactoryClientError(
+          error.success ? error.data.error : "invalid_operator_response",
+        );
+      }
+      const result = launchAckSchema.safeParse(body);
+      if (!result.success) throw new FactoryClientError("invalid_operator_response");
+      return result.data;
     },
   };
 }

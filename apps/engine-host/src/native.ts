@@ -1,7 +1,13 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
-import type { Diagnostics, WorkflowCatalog, LapSummary, LapDetail } from "@labq/contracts/operator";
+import { createHash, randomUUID } from "node:crypto";
+import type {
+  Diagnostics,
+  WorkflowCatalog,
+  LapSummary,
+  LapDetail,
+  LaunchAck,
+} from "@labq/contracts/operator";
 
 export function readDiagnostics(repoRoot: string): Diagnostics {
   const packPath = join(repoRoot, "factory/pack.json");
@@ -180,4 +186,94 @@ export function readLapDetail(repoRoot: string, lapId: string): LapDetail {
     },
     tokens: { in: 0, out: 0, cache_read: 0, cost_usd: 0 },
   };
+}
+
+export function launchNativeLap(repoRoot: string, specification: string): LaunchAck {
+  const stopPath = join(repoRoot, ".factory/STOP");
+  const pausePath = join(repoRoot, ".factory/PAUSE");
+  if (existsSync(stopPath) || existsSync(pausePath)) {
+    throw new Error("launch_brake_set");
+  }
+
+  const settingsPath = join(repoRoot, ".factory/settings.json");
+  let bunBin = "bun";
+  if (existsSync(settingsPath)) {
+    try {
+      const s = JSON.parse(readFileSync(settingsPath, "utf-8"));
+      if (s.bun) bunBin = s.bun;
+    } catch {}
+  }
+
+  const packPath = join(repoRoot, "factory/pack.json");
+  if (!existsSync(packPath)) {
+    throw new Error("native_source_unavailable");
+  }
+  const pack = JSON.parse(readFileSync(packPath, "utf-8"));
+  const reqRev = pack.integration_revision_required;
+  const sourceDir = join(process.env.HOME || "", ".cache/factory/archon", reqRev);
+  const cliPath = join(sourceDir, "packages/cli/src/cli.ts");
+
+  if (!existsSync(cliPath)) {
+    throw new Error("native_source_unavailable");
+  }
+
+  const defaultInputs = pack.default_inputs?.["archon-loop"] || {};
+  const injectedInputs = Object.entries(defaultInputs).flatMap(([k, v]) => [
+    "--input",
+    `${k}=${String(v)}`,
+  ]);
+
+  const uniqueId = `${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const branch = `archon/lap-${uniqueId}`;
+  const conversationId = `session-${randomUUID()}`;
+
+  const argv = [
+    bunBin,
+    cliPath,
+    "workflow",
+    "run",
+    "--cwd",
+    repoRoot,
+    "--workflow-source",
+    sourceDir,
+    "archon-loop",
+    "--detach",
+    "--json",
+    "--branch",
+    branch,
+    "--conversation-id",
+    conversationId,
+    "--input",
+    "merge=approve",
+    ...injectedInputs,
+    "--",
+    specification,
+  ];
+
+  const result = Bun.spawnSync(argv, {
+    cwd: repoRoot,
+    env: process.env,
+  });
+
+  if (result.exitCode !== 0) {
+    throw new Error("native_launch_failed");
+  }
+
+  const stdout = result.stdout.toString();
+  try {
+    const data = JSON.parse(stdout);
+    if (data.ok === false) {
+      throw new Error("native_launch_failed");
+    }
+    const runId = data.runId || data.id;
+    if (!runId || typeof runId !== "string") {
+      throw new Error("native_launch_failed");
+    }
+    return {
+      id: runId,
+      status: typeof data.status === "string" ? data.status : "pending",
+    };
+  } catch {
+    throw new Error("native_launch_failed");
+  }
 }

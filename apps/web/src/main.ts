@@ -21,6 +21,9 @@ const messages: Record<FactoryErrorCode, string> = {
   native_state_unavailable: "Unavailable: native engine state could not be read.",
   lap_not_found: "Not found: requested lap does not exist.",
   scope_mismatch: "Unavailable: requested resource belongs to another scope.",
+  launch_brake_set: "Refused: local launch brake is active.",
+  native_launch_failed: "Failed: native workflow launch failed.",
+  invalid_payload: "Invalid: launch request payload is malformed.",
 };
 async function load() {
   elements.refresh.disabled = true;

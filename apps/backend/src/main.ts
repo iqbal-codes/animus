@@ -5,6 +5,8 @@ import {
   workflowCatalogSchema,
   lapListSchema,
   lapDetailSchema,
+  launchAckSchema,
+  launchSubmissionSchema,
   type OperatorErrorCode,
 } from "@labq/contracts/operator";
 import { configuration, hostOrigin } from "./config";
@@ -16,12 +18,16 @@ try {
   process.env.NO_PROXY = process.env.no_proxy = new URL(origin).hostname;
   const failure = (error: OperatorErrorCode, status = 503) => Response.json({ error }, { status });
 
-  async function forwardToHost(internalPath: string, schema?: any) {
+  async function forwardToHost(internalPath: string, schema?: any, init?: RequestInit) {
     const deadline = AbortSignal.timeout(3000);
     let response: Response;
+    const requestHeaders = new Headers(init?.headers);
+    requestHeaders.set("Authorization", `Bearer ${config.token}`);
     try {
       response = await fetch(`${origin}${internalPath}`, {
-        headers: { Authorization: `Bearer ${config.token}` },
+        headers: requestHeaders,
+        method: init?.method ?? "GET",
+        body: init?.body,
         redirect: "manual",
         signal: deadline,
       });
@@ -61,19 +67,37 @@ try {
     async fetch(request) {
       const path = new URL(request.url).pathname;
 
-      if (request.method !== "GET")
+      if (request.method !== "GET" && request.method !== "POST")
         return Response.json(
           { error: "method_not_allowed" },
-          { status: 405, headers: { Allow: "GET" } },
+          { status: 405, headers: { Allow: "GET, POST" } },
         );
 
-      if (path === "/health") return Response.json({ status: "healthy" });
-      if (path === "/build-id")
+      if (path === "/health") {
+        if (request.method !== "GET")
+          return Response.json(
+            { error: "method_not_allowed" },
+            { status: 405, headers: { Allow: "GET" } },
+          );
+        return Response.json({ status: "healthy" });
+      }
+      if (path === "/build-id") {
+        if (request.method !== "GET")
+          return Response.json(
+            { error: "method_not_allowed" },
+            { status: 405, headers: { Allow: "GET" } },
+          );
         return new Response(config.buildId, {
           headers: { "Content-Type": "text/plain; charset=utf-8" },
         });
+      }
 
       if (path === "/api/v1/health") {
+        if (request.method !== "GET")
+          return Response.json(
+            { error: "method_not_allowed" },
+            { status: 405, headers: { Allow: "GET" } },
+          );
         let response: Response;
         const deadline = AbortSignal.timeout(2000);
         try {
@@ -116,6 +140,23 @@ try {
       }
 
       if (path === "/api/v1/laps") {
+        if (request.method === "POST") {
+          let body: unknown;
+          try {
+            body = await request.json();
+          } catch {
+            return Response.json({ error: "invalid_payload" }, { status: 400 });
+          }
+          const parsed = launchSubmissionSchema.safeParse(body);
+          if (!parsed.success) {
+            return Response.json({ error: "invalid_payload" }, { status: 400 });
+          }
+          return forwardToHost("/internal/v1/laps", launchAckSchema, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(parsed.data),
+          });
+        }
         return forwardToHost("/internal/v1/laps", lapListSchema);
       }
 

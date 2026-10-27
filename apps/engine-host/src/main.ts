@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import { hostHealthSchema } from "@labq/contracts/host";
+import { hostHealthSchema, hostLaunchSubmissionSchema } from "@labq/contracts/host";
 import { configuration } from "./config";
-import { readDiagnostics, readCatalog, readLaps, readLapDetail } from "./native";
+import { readDiagnostics, readCatalog, readLaps, readLapDetail, launchNativeLap } from "./native";
 
 try {
   const config = configuration();
@@ -10,26 +10,68 @@ try {
   const server = Bun.serve({
     hostname: config.hostname,
     port: config.port,
-    fetch(request) {
+    async fetch(request) {
       if (!timingSafeEqual(expected, digest(request.headers.get("authorization") ?? "")))
         return Response.json({ error: "unauthorized" }, { status: 401 });
       const path = new URL(request.url).pathname;
 
-      if (request.method !== "GET")
+      if (request.method !== "GET" && request.method !== "POST")
         return Response.json(
           { error: "method_not_allowed" },
-          { status: 405, headers: { Allow: "GET" } },
+          { status: 405, headers: { Allow: "GET, POST" } },
         );
 
-      if (path === "/build-id")
+      if (path === "/build-id") {
+        if (request.method !== "GET")
+          return Response.json(
+            { error: "method_not_allowed" },
+            { status: 405, headers: { Allow: "GET" } },
+          );
         return new Response(config.buildId, {
           headers: { "Content-Type": "text/plain; charset=utf-8" },
         });
-      if (path === "/health") return Response.json({ status: "healthy" });
-      if (path === "/internal/v1/health")
+      }
+      if (path === "/health") {
+        if (request.method !== "GET")
+          return Response.json(
+            { error: "method_not_allowed" },
+            { status: 405, headers: { Allow: "GET" } },
+          );
+        return Response.json({ status: "healthy" });
+      }
+      if (path === "/internal/v1/health") {
+        if (request.method !== "GET")
+          return Response.json(
+            { error: "method_not_allowed" },
+            { status: 405, headers: { Allow: "GET" } },
+          );
         return Response.json(
           hostHealthSchema.parse({ status: "healthy", buildId: config.buildId }),
         );
+      }
+
+      if (request.method === "POST") {
+        if (path === "/internal/v1/laps") {
+          let body: unknown;
+          try {
+            body = await request.json();
+          } catch {
+            return Response.json({ error: "invalid_payload" }, { status: 400 });
+          }
+          const parsed = hostLaunchSubmissionSchema.safeParse(body);
+          if (!parsed.success) {
+            return Response.json({ error: "invalid_payload" }, { status: 400 });
+          }
+          try {
+            return Response.json(launchNativeLap(config.repoRoot, parsed.data.specification));
+          } catch (err: any) {
+            const errCode = err.message || "native_launch_failed";
+            const status = errCode === "launch_brake_set" ? 409 : 503;
+            return Response.json({ error: errCode }, { status });
+          }
+        }
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
 
       if (path === "/internal/v1/diagnostics") {
         try {

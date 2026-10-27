@@ -16,9 +16,25 @@ export const operatorErrorSchema = z.object({
     "native_state_unavailable",
     "lap_not_found",
     "scope_mismatch",
+    "launch_brake_set",
+    "native_launch_failed",
+    "invalid_payload",
   ]),
 });
 export type OperatorErrorCode = z.infer<typeof operatorErrorSchema>["error"];
+
+export const launchSubmissionSchema = z
+  .object({
+    specification: z.string().min(1),
+  })
+  .strict();
+export type LaunchSubmission = z.infer<typeof launchSubmissionSchema>;
+
+export const launchAckSchema = z.object({
+  id: z.string(),
+  status: z.string(),
+});
+export type LaunchAck = z.infer<typeof launchAckSchema>;
 
 export const diagnosticsSchema = z.object({
   status: z.enum(["healthy", "degraded", "unavailable"]),

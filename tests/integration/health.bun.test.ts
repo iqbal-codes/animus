@@ -380,4 +380,12 @@ test("backend forwards diagnostics, catalog, and lap history from authenticated 
   expect(client.lap("nonexistent-lap-id")).rejects.toMatchObject({
     code: "lap_not_found",
   });
+
+  // Malformed launch payloads produce classified error
+  expect(client.launch({ specification: "" })).rejects.toMatchObject({
+    code: "invalid_payload",
+  });
+  expect(client.launch({} as any)).rejects.toMatchObject({
+    code: "invalid_payload",
+  });
 });
