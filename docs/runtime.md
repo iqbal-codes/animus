@@ -304,9 +304,24 @@ list/detail requests must complete before diagnostics are released.
 The fixture does not substitute for a configured runtime probe. Save the real
 `GET /api/workflows` and `POST /api/doctor` status/bodies, `/build-id` candidate and
 validated revision as `engine-diagnostics.json` in the run artifacts.
-The repository defines no separate application lint or type-check command.
+The Python application defines no separate lint or type-check command; the new
+TypeScript migration code has separate Vite+ checks described below.
 
 The repository's separately declared ordinary gate is `python3 harness/ci.py`.
 Its protected configuration currently contains shell syntax that its argv-based
 runner does not expand (`$(git ... )`); report that result separately rather than
 changing the judge or treating these focused tests as a successful ordinary gate.
+
+## Separate Bun/Vite+ migration health runtime
+
+Issue #28 adds independently startable `apps/backend`, `apps/engine-host` and
+`apps/web` without changing the Python runtime above. See
+[monorepo health instructions](monorepo-health.md) for pinned Bun 1.4.2 / Node
+26.8.1 / Vite+ 1.4.0, exact start argv, private credential provisioning and checks.
+The new browser journey calls validated client → backend → authenticated loopback
+host health and requires matching exact startup identities. Local `/health` and
+`/build-id` remain independent liveness/identity probes; the host requires auth on
+all routes. `FACTORY_RUNTIME_STATE` is reserved and remains unwritten by this slice.
+This health page is verification infrastructure, not a cutover: Python remains the
+only active owner of every operational behavior documented above. No native
+workflow health, recovery, provider or promotion qualification is implied.

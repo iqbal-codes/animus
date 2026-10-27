@@ -1,0 +1,9 @@
+{
+  "name": "@labq/client",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@labq/contracts": "workspace:*"
+  }
+}

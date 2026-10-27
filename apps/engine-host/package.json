@@ -1,0 +1,11 @@
+{
+  "name": "@labq/engine-host",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun src/main.ts"
+  },
+  "dependencies": {
+    "@labq/contracts": "workspace:*"
+  }
+}

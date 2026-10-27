@@ -1,0 +1,12 @@
+{
+  "name": "@labq/contracts",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./operator": "./src/operator.ts",
+    "./host": "./src/host.ts"
+  },
+  "dependencies": {
+    "zod": "4.1.12"
+  }
+}

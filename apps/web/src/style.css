@@ -1,0 +1,34 @@
+:root {
+  font-family: system-ui, sans-serif;
+  color: #e2e8f0;
+  background: #0f172a;
+}
+main {
+  max-width: 55rem;
+  margin: 4rem auto;
+  padding: 1.5rem;
+}
+h1 {
+  font-size: 1.8rem;
+}
+p {
+  line-height: 1.6;
+}
+dd {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: monospace;
+  margin: 0.5rem 0 1rem;
+}
+button {
+  background: #2563eb;
+  color: white;
+  border: 0;
+  border-radius: 0.35rem;
+  padding: 0.7rem 1rem;
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}

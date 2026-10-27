@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Factory health</title>
+  </head>
+  <body>
+    <main>
+      <h1>Factory health</h1>
+      <p>
+        Migration verification: service connectivity and candidate identity, not native workflow
+        health.
+      </p>
+      <p id="status" role="status">Loading…</p>
+      <dl id="identities" hidden>
+        <dt>Backend candidate</dt>
+        <dd id="backend-id"></dd>
+        <dt>Host candidate</dt>
+        <dd id="host-id"></dd>
+      </dl>
+      <button id="refresh" type="button">Refresh</button>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
