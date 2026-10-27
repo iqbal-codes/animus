@@ -11,6 +11,7 @@ import {
   evaluatedIssueSchema,
   controlStateSchema,
   controlSubmissionSchema,
+  lapEvidenceSchema,
   type OperatorErrorCode,
 } from "@labq/contracts/operator";
 import { configuration, hostOrigin } from "./config";
@@ -167,7 +168,19 @@ try {
       }
 
       if (path.startsWith("/api/v1/laps/")) {
-        const lapId = path.slice("/api/v1/laps/".length);
+        const sub = path.slice("/api/v1/laps/".length);
+        if (sub.endsWith("/evidence/report")) {
+          const lapId = sub.slice(0, -"/evidence/report".length);
+          return forwardToHost(`/internal/v1/laps/${encodeURIComponent(lapId)}/evidence/report`);
+        }
+        if (sub.endsWith("/evidence")) {
+          const lapId = sub.slice(0, -"/evidence".length);
+          return forwardToHost(
+            `/internal/v1/laps/${encodeURIComponent(lapId)}/evidence`,
+            lapEvidenceSchema,
+          );
+        }
+        const lapId = sub;
         return forwardToHost(`/internal/v1/laps/${encodeURIComponent(lapId)}`, lapDetailSchema);
       }
 

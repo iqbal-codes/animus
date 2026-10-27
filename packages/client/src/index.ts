@@ -10,12 +10,14 @@ import {
   evaluatedIssueSchema,
   controlStateSchema,
   controlSubmissionSchema,
+  lapEvidenceSchema,
   operatorErrorSchema,
   type Health,
   type Diagnostics,
   type WorkflowCatalog,
   type LapList,
   type LapDetail,
+  type LapEvidence,
   type LaunchSubmission,
   type LaunchAck,
   type IntakeResult,
@@ -165,6 +167,34 @@ export function createFactoryClient(options: {
       const result = controlStateSchema.safeParse(body);
       if (!result.success) throw new FactoryClientError("invalid_operator_response");
       return result.data;
+    },
+    async evidence(lapId: string): Promise<LapEvidence> {
+      return getJson(`/api/v1/laps/${encodeURIComponent(lapId)}/evidence`, lapEvidenceSchema);
+    },
+    async report(lapId: string): Promise<string> {
+      const endpoint = new URL(
+        `/api/v1/laps/${encodeURIComponent(lapId)}/evidence/report`,
+        options.baseUrl,
+      ).href;
+      let response: Response;
+      try {
+        response = await transport(endpoint, {
+          method: "GET",
+          redirect: "error",
+          cache: "no-store",
+        });
+      } catch {
+        throw new FactoryClientError("transport_unavailable");
+      }
+      if (!response.ok) {
+        let errCode: OperatorErrorCode = "report_not_found";
+        try {
+          const body: any = await response.json();
+          if (body && typeof body.error === "string") errCode = body.error;
+        } catch {}
+        throw new FactoryClientError(errCode);
+      }
+      return response.text();
     },
   };
 }

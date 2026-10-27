@@ -10,6 +10,7 @@ import {
   type IntakeResult,
   type EvaluatedIssue,
   type ControlState,
+  type LapEvidence,
 } from "@labq/contracts/operator";
 import { createFactoryClient, FactoryClientError } from "@labq/client";
 
@@ -227,4 +228,49 @@ test("portable client reads and applies controls consistently", async () => {
   const afterUnhalt = await client.control("unhalt");
   expect(afterUnhalt.halted).toBe(false);
   expect(afterUnhalt.active_brake).toBe("none");
+});
+
+test("portable client reads lap evidence and reports cleanly", async () => {
+  const evidenceData: LapEvidence = {
+    id: "run-1234",
+    workflow_name: "archon-loop",
+    candidate_head: "a".repeat(40),
+    runtime_verification: {
+      status: "verified",
+      verdict: "PASS",
+      lines: [],
+      holdout: { verdict: "PASS", lines: [] },
+    },
+    peer_review: {
+      status: "ready",
+      sha: "a".repeat(40),
+      outcome: "approved",
+      independent: true,
+      reviewer_session: "session-rev",
+      blocking_findings: 0,
+      report: {
+        available: true,
+        path: "reviewer/report.md",
+        url: "/api/v1/laps/run-1234/evidence/report",
+      },
+    },
+  };
+  const reportText = "# Report for run-1234\n\nAll verified.";
+
+  const client = createFactoryClient({
+    baseUrl: "http://localhost:1234",
+    fetch: async (input) => {
+      const url = String(input);
+      if (url.endsWith("/api/v1/laps/run-1234/evidence")) return Response.json(evidenceData);
+      if (url.endsWith("/api/v1/laps/run-1234/evidence/report")) {
+        return new Response(reportText, {
+          headers: { "Content-Type": "text/markdown; charset=utf-8" },
+        });
+      }
+      return Response.json({ error: "not_found" }, { status: 404 });
+    },
+  });
+
+  expect(await client.evidence("run-1234")).toEqual(evidenceData);
+  expect(await client.report("run-1234")).toBe(reportText);
 });

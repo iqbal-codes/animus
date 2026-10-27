@@ -22,6 +22,8 @@ export const operatorErrorSchema = z.object({
     "intake_unavailable",
     "issue_not_found",
     "control_failed",
+    "report_not_found",
+    "evidence_unavailable",
   ]),
 });
 export type OperatorErrorCode = z.infer<typeof operatorErrorSchema>["error"];
@@ -171,3 +173,34 @@ export const lapDetailSchema = lapSummarySchema.extend({
     .optional(),
 });
 export type LapDetail = z.infer<typeof lapDetailSchema>;
+
+export const lapEvidenceSchema = z.object({
+  id: z.string(),
+  workflow_name: z.string().nullable().optional(),
+  candidate_head: z.string().nullable().optional(),
+  runtime_verification: z.object({
+    status: z.enum(["verified", "failed", "inconclusive", "absent"]),
+    verdict: z.string().nullable().optional(),
+    lines: z.array(z.record(z.string(), z.any())).optional(),
+    holdout: z
+      .object({
+        verdict: z.string().nullable().optional(),
+        lines: z.array(z.record(z.string(), z.any())).optional(),
+      })
+      .optional(),
+  }),
+  peer_review: z.object({
+    status: z.enum(["ready", "failed", "stale", "not_ready", "absent"]),
+    sha: z.string().nullable().optional(),
+    outcome: z.string().nullable().optional(),
+    independent: z.boolean(),
+    reviewer_session: z.string().nullable().optional(),
+    blocking_findings: z.number().int().nonnegative(),
+    report: z.object({
+      available: z.boolean(),
+      path: z.string().nullable().optional(),
+      url: z.string().nullable().optional(),
+    }),
+  }),
+});
+export type LapEvidence = z.infer<typeof lapEvidenceSchema>;

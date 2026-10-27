@@ -27,6 +27,8 @@ const messages: Record<FactoryErrorCode, string> = {
   intake_unavailable: "Unavailable: backlog intake could not be loaded.",
   issue_not_found: "Not found: requested issue does not exist.",
   control_failed: "Failed: control action could not be completed.",
+  report_not_found: "Not found: requested evidence report does not exist.",
+  evidence_unavailable: "Unavailable: candidate evidence could not be determined.",
 };
 const controlStatus = document.querySelector<HTMLElement>("#control-status");
 const btnHalt = document.querySelector<HTMLButtonElement>("#btn-halt");
@@ -101,6 +103,47 @@ if (intakeRefresh) {
   });
 }
 void loadIntake();
+const evidenceStatus = document.querySelector<HTMLElement>("#evidence-status");
+const evidenceDetails = document.querySelector<HTMLElement>("#evidence-details");
+const reportContent = document.querySelector<HTMLPreElement>("#report-content");
+
+export async function showEvidence(lapId: string) {
+  if (!evidenceStatus || !evidenceDetails || !reportContent) return;
+  evidenceStatus.textContent = `Loading evidence for ${lapId}…`;
+  evidenceDetails.innerHTML = "";
+  reportContent.hidden = true;
+  try {
+    const ev = await client.evidence(lapId);
+    evidenceStatus.textContent = `Lap ${lapId}: Verification [${ev.runtime_verification.status.toUpperCase()}] | Review [${ev.peer_review.status.toUpperCase()}]`;
+    const summary = document.createElement("p");
+    summary.textContent = `Candidate Head: ${ev.candidate_head ?? "None"} | Outcome: ${ev.peer_review.outcome ?? "None"} | Blocking findings: ${ev.peer_review.blocking_findings}`;
+    evidenceDetails.appendChild(summary);
+
+    if (ev.peer_review.report.available) {
+      const btnReport = document.createElement("button");
+      btnReport.type = "button";
+      btnReport.textContent = "View Report";
+      btnReport.addEventListener("click", async () => {
+        try {
+          const rep = await client.report(lapId);
+          reportContent.textContent = rep;
+          reportContent.hidden = false;
+        } catch (e) {
+          reportContent.textContent =
+            e instanceof FactoryClientError ? messages[e.code] : "Failed to load report.";
+          reportContent.hidden = false;
+        }
+      });
+      evidenceDetails.appendChild(btnReport);
+    }
+  } catch (error) {
+    evidenceStatus.textContent =
+      error instanceof FactoryClientError
+        ? messages[error.code]
+        : "Unavailable: evidence request failed.";
+  }
+}
+
 async function load() {
   elements.refresh.disabled = true;
   elements.identities.hidden = true;

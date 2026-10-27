@@ -10,6 +10,8 @@ import {
   readCatalog,
   readLaps,
   readLapDetail,
+  readLapEvidence,
+  readLapReport,
   launchNativeLap,
   readControlState,
   applyControlAction,
@@ -146,7 +148,29 @@ try {
       }
 
       if (path.startsWith("/internal/v1/laps/")) {
-        const lapId = path.slice("/internal/v1/laps/".length);
+        const sub = path.slice("/internal/v1/laps/".length);
+        if (sub.endsWith("/evidence/report")) {
+          const lapId = sub.slice(0, -"/evidence/report".length);
+          try {
+            const report = readLapReport(config.repoRoot, lapId);
+            return new Response(report, {
+              headers: { "Content-Type": "text/markdown; charset=utf-8" },
+            });
+          } catch (err: any) {
+            const status = err.message === "lap_not_found" ? 404 : 503;
+            return Response.json({ error: err.message || "report_not_found" }, { status });
+          }
+        }
+        if (sub.endsWith("/evidence")) {
+          const lapId = sub.slice(0, -"/evidence".length);
+          try {
+            return Response.json(readLapEvidence(config.repoRoot, lapId));
+          } catch (err: any) {
+            const status = err.message === "lap_not_found" ? 404 : 503;
+            return Response.json({ error: err.message || "native_state_unavailable" }, { status });
+          }
+        }
+        const lapId = sub;
         try {
           return Response.json(readLapDetail(config.repoRoot, lapId));
         } catch (err: any) {

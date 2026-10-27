@@ -408,4 +408,9 @@ test("backend forwards diagnostics, catalog, and lap history from authenticated 
 
   const unpaused = await client.control("unpause");
   expect(unpaused.paused).toBe(false);
+
+  // Evidence query on nonexistent lap returns classified error
+  expect(client.evidence("nonexistent-lap-id")).rejects.toMatchObject({
+    code: "lap_not_found",
+  });
 });

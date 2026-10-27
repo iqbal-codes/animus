@@ -9,6 +9,7 @@ import {
   launchAckSchema,
   controlStateSchema,
   controlSubmissionSchema,
+  lapEvidenceSchema,
 } from "./operator";
 
 export const hostHealthSchema = serviceHealthSchema;
@@ -18,6 +19,7 @@ export const hostDiagnosticsSchema = diagnosticsSchema;
 export const hostWorkflowCatalogSchema = workflowCatalogSchema;
 export const hostLapListSchema = lapListSchema;
 export const hostLapDetailSchema = lapDetailSchema;
+export const hostLapEvidenceSchema = lapEvidenceSchema;
 export const hostLaunchSubmissionSchema = launchSubmissionSchema;
 export const hostLaunchAckSchema = launchAckSchema;
 export const hostControlStateSchema = controlStateSchema;
