@@ -65,8 +65,8 @@ function startApp() {
       console.log("initApp starting");
       setupEventListeners();
       console.log("setupEventListeners done");
-      await fetchLaps();
-      console.log("fetchLaps done");
+      await Promise.all([fetchLaps(), fetchHarnessData()]);
+      console.log("fetchLaps and fetchHarnessData done");
       startPolling();
     } catch (e) {
       console.error("Error in initApp:", e);
@@ -87,6 +87,7 @@ function startApp() {
     if (refreshBtn) {
       refreshBtn.addEventListener('click', () => {
         fetchLaps();
+        fetchHarnessData();
       });
     }
 
@@ -96,8 +97,26 @@ function startApp() {
         tabButtons.forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         activeTab = btn.getAttribute('data-tab');
+        if (activeTab === 'harness') {
+          const harnessSec = document.getElementById('harness-memory-section');
+          if (harnessSec) harnessSec.scrollIntoView({ behavior: 'smooth' });
+          fetchHarnessData();
+        }
       });
     });
+
+    // Harness safe mode toggle
+    const safeModeBtn = document.getElementById('harness-safe-mode-toggle');
+    if (safeModeBtn) {
+      safeModeBtn.addEventListener('click', async () => {
+        await fetch('/api/controls/safe-mode', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({enabled: !harnessSafeMode})
+        });
+        fetchHarnessData();
+      });
+    }
 
     // Engine Switch toggle
     const toggleWrapper = document.getElementById('engine-toggle-wrapper');
@@ -1193,6 +1212,74 @@ function startApp() {
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  }
+
+  let harnessSafeMode = false;
+  async function fetchHarnessData() {
+    try {
+      const [lessonsRes, toolsRes] = await Promise.all([
+        fetch('/api/harness/lessons'),
+        fetch('/api/harness/tools')
+      ]);
+      if (lessonsRes.ok) {
+        const ldata = await lessonsRes.json();
+        harnessSafeMode = !!ldata.safe_mode;
+        const badge = document.getElementById('harness-safe-mode-badge');
+        if (badge) {
+          badge.textContent = harnessSafeMode ? 'Safe Mode: ON' : 'Safe Mode: Off';
+          badge.style.background = harnessSafeMode ? '#7f1d1d' : '#14532d';
+          badge.style.color = harnessSafeMode ? '#fecaca' : '#bbf7d0';
+        }
+        const tbody = document.getElementById('harness-lessons-body');
+        if (tbody) {
+          tbody.innerHTML = '';
+          (ldata.lessons || []).forEach(l => {
+            const tr = document.createElement('tr');
+            tr.style.borderBottom = '1px solid var(--xai-border)';
+            tr.innerHTML = `
+              <td style="padding: 6px 10px; font-family: var(--xai-font-mono); font-size: 11px;">${escapeHtml(l.id)}</td>
+              <td style="padding: 6px 10px;">${escapeHtml(l.topic)}</td>
+              <td style="padding: 6px 10px;">${escapeHtml(l.rule)}</td>
+              <td style="padding: 6px 10px; color: var(--xai-muted);">${escapeHtml(l.evidence)}</td>
+              <td style="padding: 6px 10px; font-family: var(--xai-font-mono);">${escapeHtml(l.occurrence_count || 1)}</td>
+              <td style="padding: 6px 10px;"><span class="badge ${l.vetoed ? 'badge-cancelled' : 'badge-completed'}">${l.vetoed ? 'Vetoed' : 'Active'}</span></td>
+              <td style="padding: 6px 10px;">${!l.vetoed ? `<button class="btn-terminal-action veto-btn" data-id="${escapeHtml(l.id)}" type="button">Veto</button>` : ''}</td>
+            `;
+            tbody.appendChild(tr);
+          });
+          tbody.querySelectorAll('.veto-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+              const id = btn.getAttribute('data-id');
+              await fetch('/api/harness/veto', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({id})
+              });
+              fetchHarnessData();
+            });
+          });
+        }
+      }
+      if (toolsRes.ok) {
+        const tdata = await toolsRes.json();
+        const tbody = document.getElementById('harness-tools-body');
+        if (tbody) {
+          tbody.innerHTML = '';
+          const tools = tdata.tools || {};
+          Object.keys(tools).forEach(task => {
+            const tr = document.createElement('tr');
+            tr.style.borderBottom = '1px solid var(--xai-border)';
+            tr.innerHTML = `
+              <td style="padding: 6px 10px; font-family: var(--xai-font-mono); font-weight: 600;">${escapeHtml(task)}</td>
+              <td style="padding: 6px 10px; font-family: var(--xai-font-mono);">${escapeHtml(tools[task])}</td>
+            `;
+            tbody.appendChild(tr);
+          });
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching harness data:', err);
+    }
   }
 }
 

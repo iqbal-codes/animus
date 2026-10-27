@@ -684,6 +684,145 @@ class IntakeHTTPTests(unittest.TestCase):
         self.assertEqual(body, {"error": "invalid_issue_number"})
 
 
+class HarnessHTTPTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.http = build_opener(ProxyHandler({}))
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_root = Path(self.temp_dir.name)
+        factory_dir = self.temp_root / ".factory"
+        factory_dir.mkdir(parents=True, exist_ok=True)
+
+        # Baseline guidance and lesson
+        (factory_dir / "tool-guidance.json").write_text(
+            json.dumps({"test": "pytest -v", "lint": "ruff check ."}),
+            encoding="utf-8",
+        )
+        lesson_data = {
+            "id": "lsn-20261027-01",
+            "topic": "test-execution",
+            "trigger_patterns": ["tests/*"],
+            "rule": "Run pytest with offline fixtures.",
+            "evidence": "Lap test runs require offline mock transport.",
+            "vetoed": False,
+            "created_at": "2026-10-27T08:00:00Z",
+        }
+        (factory_dir / "lessons.jsonl").write_text(
+            json.dumps(lesson_data) + "\n",
+            encoding="utf-8",
+        )
+
+        from factory.harness_evolution import HarnessEvolutionService
+        self.harness_service = HarnessEvolutionService(self.temp_root)
+        self.mock_laps = MagicMock(spec=NativeLaps)
+        self.mock_laps.root = self.temp_root
+
+        handler_cls = handler("candidate-test", self.mock_laps, harness=self.harness_service)
+        self.server = HTTPServer(("127.0.0.1", 0), handler_cls)
+        self.port = self.server.server_port
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2.0)
+        self.temp_dir.cleanup()
+
+    def get(self, path: str) -> tuple[int, dict, str]:
+        url = f"http://127.0.0.1:{self.port}{path}"
+        try:
+            with self.http.open(url, timeout=2.0) as res:
+                content_type = res.headers.get("Content-Type", "")
+                data = json.loads(res.read().decode("utf-8"))
+                return res.status, data, content_type
+        except HTTPError as err:
+            content_type = err.headers.get("Content-Type", "")
+            data = json.loads(err.read().decode("utf-8"))
+            return err.status, data, content_type
+
+    def post(self, path: str, payload: dict | bytes | None = None) -> tuple[int, dict, str]:
+        url = f"http://127.0.0.1:{self.port}{path}"
+        if payload is None:
+            data = b""
+            headers = {}
+        elif isinstance(payload, dict):
+            data = json.dumps(payload).encode("utf-8")
+            headers = {"Content-Type": "application/json"}
+        else:
+            data = payload
+            headers = {"Content-Type": "application/json"}
+        req = Request(url, data=data, headers=headers, method="POST")
+        try:
+            with self.http.open(req, timeout=2.0) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+                return resp.status, body, resp.headers.get("Content-Type", "")
+        except HTTPError as err:
+            with err:
+                body = json.loads(err.read().decode("utf-8"))
+                return err.status, body, err.headers.get("Content-Type", "")
+
+    def test_get_harness_lessons(self) -> None:
+        status, body, ct = self.get("/api/harness/lessons")
+        self.assertEqual(status, 200)
+        self.assertEqual(ct, "application/json")
+        self.assertEqual(body["total"], 1)
+        self.assertEqual(body["active_count"], 1)
+        self.assertEqual(body["vetoed_count"], 0)
+        self.assertFalse(body["safe_mode"])
+        self.assertEqual(len(body["lessons"]), 1)
+        self.assertEqual(body["lessons"][0]["id"], "lsn-20261027-01")
+
+    def test_get_harness_tools(self) -> None:
+        status, body, ct = self.get("/api/harness/tools")
+        self.assertEqual(status, 200)
+        self.assertEqual(ct, "application/json")
+        self.assertEqual(body["tools"]["test"], "pytest -v")
+        self.assertFalse(body["safe_mode"])
+
+    def test_post_veto_lesson(self) -> None:
+        # Veto valid lesson
+        status, body, _ = self.post("/api/harness/veto", {"id": "lsn-20261027-01"})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["status"], "vetoed")
+        self.assertEqual(body["id"], "lsn-20261027-01")
+
+        # Verify state updated
+        status, body, _ = self.get("/api/harness/lessons")
+        self.assertEqual(body["active_count"], 0)
+        self.assertEqual(body["vetoed_count"], 1)
+
+        # Veto non-existent lesson -> 404
+        status, body, _ = self.post("/api/harness/veto", {"id": "lsn-unknown"})
+        self.assertEqual(status, 404)
+        self.assertEqual(body["error"], "lesson_not_found")
+
+        # Missing id -> 400
+        status, body, _ = self.post("/api/harness/veto", {})
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], "invalid_payload")
+
+    def test_post_safe_mode_toggle(self) -> None:
+        # Enable safe mode
+        status, body, _ = self.post("/api/controls/safe-mode", {"enabled": True})
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"status": "ok", "safe_mode": True})
+        self.assertTrue((self.temp_root / ".factory" / "NO_HARNESS_MEMORY").exists())
+
+        # Verify lessons endpoint reflects safe_mode
+        _, lessons_body, _ = self.get("/api/harness/lessons")
+        self.assertTrue(lessons_body["safe_mode"])
+
+        # Disable safe mode
+        status, body, _ = self.post("/api/controls/safe-mode", {"enabled": False})
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"status": "ok", "safe_mode": False})
+        self.assertFalse((self.temp_root / ".factory" / "NO_HARNESS_MEMORY").exists())
+
+        # Invalid payload -> 400
+        status, body, _ = self.post("/api/controls/safe-mode", {"enabled": "yes"})
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], "invalid_payload")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -143,6 +143,104 @@ aliases:
         with self.assertRaises(PromotionPROverlapError):
             service.prepare_promotion()
 
+    def test_prepare_promotion_includes_harness_summary_when_present(self) -> None:
+        executed_cmds: list[list[str]] = []
+
+        def mock_runner(cmd: list[str], cwd: Path) -> str:
+            executed_cmds.append(cmd)
+            if cmd[:3] == ["git", "rev-parse", "--verify"]:
+                return "abc1234"
+            if cmd[:2] == ["git", "log"]:
+                return "aaa1111|feat: improve memory (#21)|Dev|2026-10-27T01:00:00Z\n"
+            if cmd[:2] == ["git", "diff"]:
+                return (
+                    "diff --git a/.factory/lessons.jsonl b/.factory/lessons.jsonl\n"
+                    "--- a/.factory/lessons.jsonl\n"
+                    "+++ b/.factory/lessons.jsonl\n"
+                    '+{"id": "lsn-20261027-01", "topic": "test-run", "rule": "Use offline mock transport.", "evidence": "Lap logs."}\n'
+                    "diff --git a/.factory/tool-guidance.json b/.factory/tool-guidance.json\n"
+                    "--- a/.factory/tool-guidance.json\n"
+                    "+++ b/.factory/tool-guidance.json\n"
+                    '+  "test": "pytest -v"\n'
+                )
+            if cmd[:3] == ["gh", "pr", "list"]:
+                return "[]"
+            if cmd[:3] == ["gh", "pr", "create"]:
+                return "https://github.com/org/repo/pull/101\n"
+            return ""
+
+        service = PromotionService(self.root, runner=mock_runner)
+        res = service.prepare_promotion()
+        self.assertEqual(res["pr_number"], 101)
+
+        create_calls = [c for c in executed_cmds if c[:3] == ["gh", "pr", "create"]]
+        self.assertEqual(len(create_calls), 1)
+        body = create_calls[0][create_calls[0].index("--body") + 1]
+
+        self.assertIn("## Harness Evolution Summary", body)
+        self.assertIn("### New Lessons", body)
+        self.assertIn("**lsn-20261027-01** (`test-run`): Use offline mock transport.", body)
+        self.assertIn("### Tool Guidance Updates", body)
+        self.assertIn("`test`: `pytest -v`", body)
+
+    def test_prepare_promotion_excludes_vetoed_lessons_from_summary(self) -> None:
+        executed_cmds: list[list[str]] = []
+
+        def mock_runner(cmd: list[str], cwd: Path) -> str:
+            executed_cmds.append(cmd)
+            if cmd[:3] == ["git", "rev-parse", "--verify"]:
+                return "abc1234"
+            if cmd[:2] == ["git", "log"]:
+                return "aaa1111|feat: vetoed lesson (#21)|Dev|2026-10-27T01:00:00Z\n"
+            if cmd[:2] == ["git", "diff"]:
+                return (
+                    "diff --git a/.factory/lessons.jsonl b/.factory/lessons.jsonl\n"
+                    "--- a/.factory/lessons.jsonl\n"
+                    "+++ b/.factory/lessons.jsonl\n"
+                    '+{"id": "lsn-20261027-09", "topic": "bad-rule", "rule": "Never do this.", "vetoed": true}\n'
+                )
+            if cmd[:3] == ["gh", "pr", "list"]:
+                return "[]"
+            if cmd[:3] == ["gh", "pr", "create"]:
+                return "https://github.com/org/repo/pull/103\n"
+            return ""
+
+        service = PromotionService(self.root, runner=mock_runner)
+        res = service.prepare_promotion()
+        self.assertEqual(res["pr_number"], 103)
+
+        create_calls = [c for c in executed_cmds if c[:3] == ["gh", "pr", "create"]]
+        body = create_calls[0][create_calls[0].index("--body") + 1]
+        self.assertNotIn("lsn-20261027-09", body)
+
+    def test_prepare_promotion_handles_harness_summary_when_absent(self) -> None:
+        executed_cmds: list[list[str]] = []
+
+        def mock_runner(cmd: list[str], cwd: Path) -> str:
+            executed_cmds.append(cmd)
+            if cmd[:3] == ["git", "rev-parse", "--verify"]:
+                return "abc1234"
+            if cmd[:2] == ["git", "log"]:
+                return "aaa1111|feat: ordinary work (#21)|Dev|2026-10-27T01:00:00Z\n"
+            if cmd[:2] == ["git", "diff"]:
+                return ""  # No changes in .factory/
+            if cmd[:3] == ["gh", "pr", "list"]:
+                return "[]"
+            if cmd[:3] == ["gh", "pr", "create"]:
+                return "https://github.com/org/repo/pull/102\n"
+            return ""
+
+        service = PromotionService(self.root, runner=mock_runner)
+        res = service.prepare_promotion()
+        self.assertEqual(res["pr_number"], 102)
+
+        create_calls = [c for c in executed_cmds if c[:3] == ["gh", "pr", "create"]]
+        self.assertEqual(len(create_calls), 1)
+        body = create_calls[0][create_calls[0].index("--body") + 1]
+
+        # Invariant: PR description generates cleanly without breaking
+        self.assertIn("## Release Promotion", body)
+
 
 class PromotionHTTPTests(unittest.TestCase):
     def setUp(self) -> None:

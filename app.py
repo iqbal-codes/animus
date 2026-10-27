@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 from engine_diagnostics import EngineDiagnostics
+from factory.harness_evolution import HarnessEvolutionService
 from factory.jev_client import JevClient
 from intake import IntakeFetchError, IntakeService
 from laps import (
@@ -170,6 +171,44 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             </tr>
           </thead>
           <tbody id="detail-transitions-list"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="harness-memory-container" class="detail-card" style="margin-top: 24px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h2>Harness &amp; Memory Controls</h2>
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <span id="safe-mode-badge" class="badge badge-completed">Safe Mode: Off</span>
+          <button id="safe-mode-toggle-btn" type="button">Toggle Safe Mode</button>
+        </div>
+      </div>
+
+      <h3>Verified Tool Guidance</h3>
+      <div id="tool-guidance-card" style="margin-bottom: 20px;">
+        <table class="detail-table" id="tools-table">
+          <thead>
+            <tr><th>Task</th><th>Verified Command</th></tr>
+          </thead>
+          <tbody id="tools-list"></tbody>
+        </table>
+      </div>
+
+      <h3>Repository Lessons</h3>
+      <div id="lessons-card">
+        <table class="detail-table" id="lessons-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Topic</th>
+              <th>Rule</th>
+              <th>Evidence</th>
+              <th>Occurrences</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="lessons-list"></tbody>
         </table>
       </div>
     </div>
@@ -414,11 +453,94 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         detailContainer.style.display = 'block';
       }
 
+      let currentSafeMode = false;
+      async function fetchHarnessMemory() {
+        try {
+          const [lessonsRes, toolsRes] = await Promise.all([
+            fetch('/api/harness/lessons'),
+            fetch('/api/harness/tools')
+          ]);
+          if (lessonsRes.ok) {
+            const ldata = await lessonsRes.json();
+            currentSafeMode = !!ldata.safe_mode;
+            const badge = document.getElementById('safe-mode-badge');
+            if (badge) {
+              badge.textContent = currentSafeMode ? 'Safe Mode: ON' : 'Safe Mode: Off';
+              badge.className = 'badge ' + (currentSafeMode ? 'badge-failed' : 'badge-completed');
+            }
+            const llist = document.getElementById('lessons-list');
+            if (llist) {
+              llist.textContent = '';
+              (ldata.lessons || []).forEach(l => {
+                const tr = createEl('tr');
+                tr.appendChild(createEl('td', '', l.id));
+                tr.appendChild(createEl('td', '', l.topic));
+                tr.appendChild(createEl('td', '', l.rule));
+                tr.appendChild(createEl('td', '', l.evidence));
+                tr.appendChild(createEl('td', '', l.occurrence_count || 1));
+                const tdStatus = createEl('td');
+                const badgeSpan = createEl('span', 'badge ' + (l.vetoed ? 'badge-cancelled' : 'badge-completed'), l.vetoed ? 'Vetoed' : 'Active');
+                tdStatus.appendChild(badgeSpan);
+                tr.appendChild(tdStatus);
+
+                const tdAct = createEl('td');
+                if (!l.vetoed) {
+                  const vetoBtn = createEl('button', '', 'Veto');
+                  vetoBtn.type = 'button';
+                  vetoBtn.addEventListener('click', async () => {
+                    await fetch('/api/harness/veto', {
+                      method: 'POST',
+                      headers: {'Content-Type': 'application/json'},
+                      body: JSON.stringify({id: l.id})
+                    });
+                    fetchHarnessMemory();
+                  });
+                  tdAct.appendChild(vetoBtn);
+                }
+                tr.appendChild(tdAct);
+                llist.appendChild(tr);
+              });
+            }
+          }
+
+          if (toolsRes.ok) {
+            const tdata = await toolsRes.json();
+            const tlist = document.getElementById('tools-list');
+            if (tlist) {
+              tlist.textContent = '';
+              const tools = tdata.tools || {};
+              Object.keys(tools).forEach(k => {
+                const tr = createEl('tr');
+                tr.appendChild(createEl('td', '', k));
+                tr.appendChild(createEl('td', '', tools[k]));
+                tlist.appendChild(tr);
+              });
+            }
+          }
+        } catch (e) {
+          console.error('Failed to load harness memory:', e);
+        }
+      }
+
+      const safeModeToggleBtn = document.getElementById('safe-mode-toggle-btn');
+      if (safeModeToggleBtn) {
+        safeModeToggleBtn.addEventListener('click', async () => {
+          await fetch('/api/controls/safe-mode', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({enabled: !currentSafeMode})
+          });
+          fetchHarnessMemory();
+        });
+      }
+
       refreshBtn.addEventListener('click', () => {
         fetchLaps();
+        fetchHarnessMemory();
       });
 
       fetchLaps();
+      fetchHarnessMemory();
     })();
   </script>
 </body>
@@ -426,7 +548,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 """
 
 
-def handler(build_id: str, laps: NativeLaps, controls: Controls | None = None, intake: IntakeService | None = None, promotion: PromotionService | None = None) -> type[BaseHTTPRequestHandler]:
+def handler(
+    build_id: str,
+    laps: NativeLaps,
+    controls: Controls | None = None,
+    intake: IntakeService | None = None,
+    promotion: PromotionService | None = None,
+    harness: HarnessEvolutionService | None = None,
+) -> type[BaseHTTPRequestHandler]:
     root = getattr(laps, "root", Path(__file__).resolve().parent)
     if controls is None:
         controls = Controls(root)
@@ -436,6 +565,8 @@ def handler(build_id: str, laps: NativeLaps, controls: Controls | None = None, i
         intake = IntakeService(repo=target_repo, jev_client=jev_client)
     if promotion is None:
         promotion = PromotionService(root)
+    if harness is None:
+        harness = HarnessEvolutionService(root)
     diagnostics = EngineDiagnostics(root)
 
     class Handler(BaseHTTPRequestHandler):
@@ -446,6 +577,47 @@ def handler(build_id: str, laps: NativeLaps, controls: Controls | None = None, i
                 self.respond(status, json.dumps(result).encode("utf-8"), "application/json")
             elif path in ("/api/controls", "/api/controls/", "/api/control", "/api/control/"):
                 self.respond(400, json.dumps({"error": "unknown_action"}).encode("utf-8"), "application/json")
+            elif path in ("/api/controls/safe-mode", "/api/controls/safe-mode/"):
+                try:
+                    content_length = int(self.headers.get("Content-Length", "0"))
+                    if content_length < 0:
+                        content_length = 0
+                except (ValueError, TypeError):
+                    content_length = 0
+                body = self.rfile.read(content_length) if content_length > 0 else b""
+                try:
+                    payload = json.loads(body.decode("utf-8")) if body.strip() else {}
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    self.respond(400, json.dumps({"error": "invalid_payload"}).encode("utf-8"), "application/json")
+                    return
+                if not isinstance(payload, dict) or "enabled" not in payload or not isinstance(payload["enabled"], bool):
+                    self.respond(400, json.dumps({"error": "invalid_payload", "message": "'enabled' boolean required"}).encode("utf-8"), "application/json")
+                    return
+                enabled = payload["enabled"]
+                harness.set_safe_mode(enabled)
+                self.respond(200, json.dumps({"status": "ok", "safe_mode": enabled}).encode("utf-8"), "application/json")
+            elif path in ("/api/harness/veto", "/api/harness/veto/"):
+                try:
+                    content_length = int(self.headers.get("Content-Length", "0"))
+                    if content_length < 0:
+                        content_length = 0
+                except (ValueError, TypeError):
+                    content_length = 0
+                body = self.rfile.read(content_length) if content_length > 0 else b""
+                try:
+                    payload = json.loads(body.decode("utf-8")) if body.strip() else {}
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    self.respond(400, json.dumps({"error": "invalid_payload"}).encode("utf-8"), "application/json")
+                    return
+                if not isinstance(payload, dict) or "id" not in payload or not isinstance(payload["id"], str) or not payload["id"].strip():
+                    self.respond(400, json.dumps({"error": "invalid_payload", "message": "Missing 'id' parameter"}).encode("utf-8"), "application/json")
+                    return
+                lesson_id = payload["id"].strip()
+                success = harness.veto_lesson(lesson_id)
+                if not success:
+                    self.respond(404, json.dumps({"error": "lesson_not_found", "id": lesson_id}).encode("utf-8"), "application/json")
+                    return
+                self.respond(200, json.dumps({"status": "vetoed", "id": lesson_id}).encode("utf-8"), "application/json")
             elif path.startswith("/api/controls/") or path.startswith("/api/control/"):
                 prefix = "/api/controls/" if path.startswith("/api/controls/") else "/api/control/"
                 subpath = path[len(prefix):]
@@ -613,6 +785,27 @@ def handler(build_id: str, laps: NativeLaps, controls: Controls | None = None, i
                 content_type = "application/json"
             elif path == "/api/workflows":
                 status, result = diagnostics.inspect()
+                body = json.dumps(result).encode("utf-8")
+                content_type = "application/json"
+            elif path in ("/api/harness/lessons", "/api/harness/lessons/"):
+                all_lessons = harness.get_all_lessons_raw()
+                active = [l for l in all_lessons if not l.vetoed]
+                vetoed = [l for l in all_lessons if l.vetoed]
+                result = {
+                    "total": len(all_lessons),
+                    "active_count": len(active),
+                    "vetoed_count": len(vetoed),
+                    "safe_mode": harness.is_safe_mode(),
+                    "lessons": [l.to_dict() for l in all_lessons],
+                }
+                body = json.dumps(result).encode("utf-8")
+                content_type = "application/json"
+            elif path in ("/api/harness/tools", "/api/harness/tools/"):
+                tools = harness.get_tools()
+                result = {
+                    "tools": tools,
+                    "safe_mode": harness.is_safe_mode(),
+                }
                 body = json.dumps(result).encode("utf-8")
                 content_type = "application/json"
             elif path == "/api/promotion/status":

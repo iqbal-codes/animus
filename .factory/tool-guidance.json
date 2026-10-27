@@ -1,0 +1,4 @@
+{
+  "test": "python3 -m unittest discover -s tests -p 'test_*.py'",
+  "typecheck": "python3 -m py_compile app.py intake.py laps.py promotion.py factory/harness_evolution.py factory/jev_client.py"
+}
