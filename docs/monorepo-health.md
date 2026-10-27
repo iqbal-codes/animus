@@ -154,10 +154,10 @@ For focused development use `vp` via `node_modules/.bin/vp`, never a global CLI 
 ```sh
 node_modules/.bin/vp test run tests/integration/client.test.ts
 bun test tests/integration/health.bun.test.ts
-node node_modules/@playwright/test/cli.js test --config tests/integration/playwright.config.ts
+bun run build:web && node node_modules/@playwright/test/cli.js test --config tests/integration/playwright.config.ts
 ```
 
-Provision Chromium **before** offline testing:
+Build the web assets (`bun run build:web`) and provision Chromium **before** offline testing:
 `node node_modules/@playwright/test/cli.js install chromium`. Tests make only
 loopback network requests, use random test-only credentials, and own/stop their
 processes. Process tests cover real auth, exact/empty/unusual/Git identities,
