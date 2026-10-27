@@ -131,7 +131,7 @@ export const lapTransitionSchema = z.object({
 export type LapTransition = z.infer<typeof lapTransitionSchema>;
 
 export const lapSessionAgentSchema = z.object({
-  node: z.string().nullable().optional(),
+  node_name: z.string().nullable().optional(),
   session_id: z.string().nullable().optional(),
 });
 
