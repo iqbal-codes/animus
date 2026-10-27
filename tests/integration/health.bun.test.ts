@@ -14,17 +14,37 @@ const states: string[] = [];
 const adapters: ReturnType<typeof Bun.serve>[] = [];
 
 afterEach(async () => {
-  for (const child of children.splice(0).reverse()) {
-    if (child.exitCode === null) child.kill("SIGTERM");
-    expect(await Promise.race([child.exited, Bun.sleep(3000).then(() => "timeout")])).toBe(0);
-    expect(await new Response(child.stderr).text()).not.toContain(token);
-    expect(await new Response(child.stdout).text()).not.toContain(token);
-  }
+  const outcomes = await Promise.allSettled(
+    children
+      .splice(0)
+      .reverse()
+      .map(async (child) => {
+        if (child.exitCode === null) child.kill("SIGTERM");
+        const code = await Promise.race([child.exited, Bun.sleep(3000).then(() => "timeout")]);
+        if (code === "timeout") {
+          child.kill("SIGKILL");
+          await child.exited;
+        }
+        expect(code).toBe(0);
+        expect(await new Response(child.stderr).text()).not.toContain(token);
+        const reader = child.stdout.getReader();
+        try {
+          for (;;) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            expect(new TextDecoder().decode(chunk.value)).not.toContain(token);
+          }
+        } finally {
+          reader.releaseLock();
+        }
+      }),
+  );
   for (const adapter of adapters.splice(0)) await adapter.stop(true);
   for (const state of states.splice(0)) {
     expect(await readdir(state)).toEqual([]);
     await rm(state, { recursive: true });
   }
+  for (const outcome of outcomes) if (outcome.status === "rejected") throw outcome.reason;
 });
 
 async function start(app: string, env: Record<string, string | undefined> = {}) {
