@@ -11,9 +11,15 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from intake import IntakeFetchError, IntakeService
+
 MANIFEST = json.loads((HERE / "pack.json").read_text(encoding="utf-8"))
 SETTINGS = ".factory/consumer.json"
 ENTRY = "packages/cli/src/cli.ts"
@@ -432,6 +438,9 @@ def base_branch(root: Path, schedule_data: dict) -> str | None:
         if not isinstance(named, str) or not re.fullmatch(r"[A-Za-z0-9._/-]+", named):
             raise ValueError("schedule.json base_branch must be a branch name")
         return named
+    workflow = schedule_data.get("workflow", "archon-loop")
+    if workflow == "archon-loop":
+        return "develop"
     result = execute(["git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], root)
     head = result.stdout.strip() if result.returncode == 0 else ""
     return head.split("/", 1)[1] if head.startswith("origin/") else None
@@ -685,14 +694,70 @@ def empty_lap_since(runs: list[dict], since: float) -> bool:
     return False
 
 
-def launch_decision(root: Path, settings: dict, source: Path, write) -> bool:
-    """Whether this tick should start a lap. A workflow without a launch gate always
-    launches. With one, the tick first clears runs that never started and claims of runs
-    that ended, then launches only when there is workable work and no lap is still
-    choosing its item, plus one lap per idle period for bookkeeping. Any failure to read
-    the board launches, as before the gate existed."""
+def is_within_work_window(schedule_data: dict, now_dt: datetime | None = None) -> bool:
+    """Evaluate whether the current time falls within schedule.json work_window."""
+    window = schedule_data.get("work_window")
+    if not window:
+        return True
+    start_str, end_str = "", ""
+    tz_str = "UTC"
+    if isinstance(window, str):
+        parts = window.split("-")
+        if len(parts) == 2:
+            start_str, end_str = parts[0].strip(), parts[1].strip()
+    elif isinstance(window, dict):
+        start_str = str(window.get("start", "")).strip()
+        end_str = str(window.get("end", "")).strip()
+        tz_str = str(window.get("timezone", "UTC")).strip()
+
+    if not start_str or not end_str:
+        return True
+
     try:
-        binding = json.loads((shared_root(root) / TRIGGER).read_text(encoding="utf-8"))["binding"]
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(tz_str)
+    except Exception:
+        tz = timezone.utc
+
+    if now_dt is None:
+        now_dt = datetime.now(tz)
+    else:
+        if now_dt.tzinfo is None:
+            now_dt = now_dt.replace(tzinfo=tz)
+        else:
+            now_dt = now_dt.astimezone(tz)
+
+    try:
+        parts_start = [int(p) for p in start_str.split(":")]
+        parts_end = [int(p) for p in end_str.split(":")]
+        start_mins = parts_start[0] * 60 + parts_start[1]
+        end_mins = parts_end[0] * 60 + parts_end[1]
+    except (ValueError, IndexError):
+        return True
+
+    cur_minutes = now_dt.hour * 60 + now_dt.minute
+    if start_mins <= end_mins:
+        return start_mins <= cur_minutes < end_mins
+    else:
+        # Window spans across midnight (e.g. 20:00 to 05:00)
+        return cur_minutes >= start_mins or cur_minutes < end_mins
+
+
+def launch_decision(root: Path, settings: dict, source: Path, write,
+                    now_dt: datetime | None = None,
+                    intake_service: IntakeService | None = None) -> bool:
+    """Whether this tick should start a lap. Evaluates Candidate Freeze (.factory/PAUSE),
+    work window hours, intake backlog admission (binding target=#<id>), capacity, and
+    native gate script."""
+    # 1. Candidate Freeze / PAUSE drain
+    if (shared_root(root) / PAUSE).exists():
+        write("No launch: .factory/PAUSE is set (candidate freeze or drain active).\n")
+        return False
+
+    trigger_path = shared_root(root) / TRIGGER
+    try:
+        trigger_raw = json.loads(trigger_path.read_text(encoding="utf-8"))
+        binding = trigger_raw["binding"]
         launch_config = binding["launch"]
         workflow, inputs = launch_config["workflowName"], launch_config.get("inputs") or {}
         capacity = binding.get("capacity")
@@ -702,18 +767,51 @@ def launch_decision(root: Path, settings: dict, source: Path, write) -> bool:
         schedule_data = json.loads((shared_root(root) / SCHEDULE).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         schedule_data = {}
+
+    # 2. Work window enforcement
+    if not is_within_work_window(schedule_data, now_dt):
+        window = schedule_data.get("work_window")
+        write(f"No launch: outside configured work window ({window}).\n")
+        return False
+
+    # 3. Intake backlog admission check & explicit target binding
+    next_admitted = None
+    if workflow == "archon-loop":
+        if intake_service is None:
+            target_repo = os.environ.get("FACTORY_TARGET_REPO", schedule_data.get("repository", "pabriq-app"))
+            intake_service = IntakeService(repo=target_repo)
+        try:
+            next_admitted = intake_service.get_next_admitted()
+        except Exception as exc:
+            write(f"No launch: unable to query intake backlog ({exc}).\n")
+            return False
+
+        if next_admitted is None:
+            write("No launch: no admitted issues in backlog with ready-for-agent and satisfied dependencies.\n")
+            return False
+
     gate = MANIFEST.get("launch_gates", {}).get(workflow)
     script = source / MANIFEST["source_directory"] / gate if gate else None
-    if script is None or not script.is_file():
-        return True
     state = tick_state(root)
 
     signature = ""
 
     def launch(reason: str) -> bool:
-        write(f"Launch: {reason}\n")
+        if next_admitted is not None:
+            write(f"Launch: target #{next_admitted} bound; {reason}\n")
+            try:
+                curr_trig = json.loads(trigger_path.read_text(encoding="utf-8"))
+                curr_trig.setdefault("binding", {}).setdefault("launch", {}).setdefault("inputs", {})["target"] = f"#{next_admitted}"
+                trigger_path.write_text(json.dumps(curr_trig, indent=2) + "\n", encoding="utf-8")
+            except Exception as exc:
+                write(f"Warning: failed to persist target binding into trigger.json ({exc})\n")
+        else:
+            write(f"Launch: {reason}\n")
         tick_state(root, last_launch=time.time(), last_launch_board=signature)
         return True
+
+    if script is None or not script.is_file():
+        return launch(f"workflow '{workflow}' has no launch gate script.")
 
     try:
         listed = native_json(settings, source, ["workflow", "runs", "--limit", "100"], root)

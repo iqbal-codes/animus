@@ -1,0 +1,84 @@
+# Software factory skill workflow
+
+Read this contract for brainstorming, specs, tickets, implementation, or review in this repo. Stage order:
+
+`/factory-grill → /factory-spec → /factory-tickets → /factory-implement → /factory-review`
+
+Each stage hands off an artifact, not permission to run the next stage. Read `issue-tracker.md` for tracker operations and `triage-labels.md` for label roles. Resolve the target repository explicitly: this factory's own backlog and a configured product backlog can differ. Use an explicit repository on tracker writes.
+
+## Authority and current truth
+
+Repository-local skills under `.claude/skills/` use the `factory-` prefix to distinguish this workflow from the global Matt skills. Keep factory-specific rules here; the global skills remain unchanged. Use the factory-prefixed commands for this lifecycle.
+
+Before acting, read current code, configuration, the source issue and comments, applicable glossary/ADRs, and any existing PR. Design documents describe intent until executable behavior establishes it. Read `.factory/consumer.json` to locate the pinned engine; inspect that source's loop/triage commands when their contract matters. Do not use an ambient engine or hard-code a cache path/revision.
+
+Publication, readiness labels, launching a lap, pushing a branch, merging, promotion, and deployment are separate permissions. Present proposed tracker writes and obtain approval unless the user already authorized those exact operations. Approval to split tickets authorizes that approved publication, not execution or promotion. Keep unrelated working-tree changes intact.
+
+## Work-item contract
+
+Existing factory tickets (for example, issues #1–#7) use this shape. It carries Archon's six semantic contract elements without prescribing implementation design:
+
+```markdown
+## Source and problem
+<Source spec reference and section; what is wrong/missing today, why it matters,
+and why now. Use settled intent, not invented urgency.>
+
+## Outcome
+<The observable behavior this ticket delivers.>
+
+## Invariants
+<Properties that must remain true, including authority and data boundaries.>
+
+## Acceptance criteria
+- [ ] AC1: <Observable condition and how it is verified.>
+- [ ] AC2: <Relevant failure, boundary, or state-transition behavior.>
+
+## Boundary
+<Explicit exclusions and any issue-owned enabling work.>
+
+Depends on: None
+```
+
+For blocked work replace the last line with, for example, `Depends on: #12, #14`. Keep that line at the start of its own line, outside code fences in the published body. Use only issue references there: intake extracts all digits in the clause. Put dependency reasons in separate prose. Include `Part of #<parent>` near the top when a source spec issue exists, and create native parent/sub-issue links when supported.
+
+Native GitHub blocking edges are useful UI metadata but insufficient for execution: both current intake and the pinned loop read textual `Depends on:` clauses. Maintain both representations when native edges are available; verify they agree. An open, missing, or unverifiable prerequisite is not complete. Historical dependency declarations in comments also affect intake; surface contradictions for an approved correction rather than declaring readiness from the body alone.
+
+Use stable AC identifiers for evidence mapping. Include check commands or artifact names when known and relevant; design, root cause, file paths, and test commands are not universal admission requirements. Keep implementation steering limited to agreed decisions. Parent specs describe the complete outcome; executable tickets are self-contained, independently verifiable slices.
+
+## Readiness is not admission
+
+| State | Skill action |
+| --- | --- |
+| Parent spec / planning-only record | Keep out of execution with `factory:exclude`; use `needs-triage` or `needs-info` as appropriate. |
+| Missing or contradictory intent | Record the exact open question; use `needs-info` (or `needs-triage` pending assessment) and `factory:hold`. |
+| Human implementation required | Use `ready-for-human` and `factory:hold`. |
+| Complete executable contract with prerequisites still open | Use `ready-for-agent` and `factory:hold`; retain dependency edges. |
+| Complete, unblocked executable contract, explicitly approved for factory intake | Use `ready-for-agent` plus `factory:ready`; remove a stale hold only with approval. |
+| Rejected work | Use `wontfix` and `factory:exclude` only with an approved disposition. |
+
+These are skill-level publication rules. Check existing labels before publishing; ask approval for missing label creation. A newly written spec or ticket does not automatically earn readiness.
+
+`intake.py` admits OPEN issues labeled `ready-for-agent` (with `factory:ready` accepted as a transitional legacy alias) when all referenced prerequisites are CLOSED in the fetched backlog, with no blocking labels (`needs-info`, `ready-for-human`, `needs-triage`, `factory:hold`), no exclusion labels (`wontfix`, `factory:exclude`), and no active loop claim. Unlabeled issues fail-closed to `held` (`unlabeled_awaiting_triage`).
+
+A passing intake result is not proof of engine selection or delivery. The scheduler writes a target, but target binding must be established against the installed engine. Manual runs bypass scheduled intake. Do not promise that holding/excluding a record makes every direct native invocation safe: inspect its workability/selection policy before launch.
+
+## Implementation and evidence
+
+`/factory-implement` prepares or implements approved frontier tickets; it does not replace the native workflow with a parallel scheduler. Discover the configured base, current merge mode, ownership, and existing PR before starting. Do not assume `main`, `develop`, or automatic merge. A prerequisite is complete only when its required outcome is present on the chosen base, not merely because a sibling branch exists or an issue is closed.
+
+For native delivery retain the pinned loop's ownership:
+
+`pick → claim → build/ship → subject → check-app → evidence → review → land → release`
+
+The installed graph may include an optional deployment node. The builder supplies per-criterion checks and a PR Evidence section, then independent runtime/peer review evaluates the exact candidate. The builder does not approve or land their own work. Preserve holdout secrecy and protected paths; ordinary harness checks and independent runtime evidence are distinct results. A local `/factory-review` report cannot fabricate native evidence records or mark native approval complete.
+
+Record source ticket/spec, AC identifier, observed result, command/scenario, artifact path, and tested candidate/head. Distinguish PASS, FAIL, BLOCKED, and NOT RUN. After code or base changes, rerun affected checks and refresh head-bound evidence. Publish or close work only under the authorized tracker/merge policy; close a parent only after every required outcome is verified.
+
+## Operational caveats
+
+- PAUSE stops scheduled launches, not manual runs, native wakes, or work already in flight. It is not a verified integration freeze.
+- Promotion preparation creates a develop-to-main PR and writes PAUSE; this alone is not proof of frozen-head review, release verification, or deployment.
+- A `waiting_approval` projection records native history, not fresh forge approval or a merge.
+- Runtime and peer-review evidence must refer to the candidate being reviewed. An absent spec, unavailable dependency, stale evidence, or missing provider prerequisite is an honest blocked/incomplete state.
+
+Consult `intake.py`, `factory/consumer.py`, `laps.py`, `promotion.py`, their behavior tests, and the configured pinned engine when verifying these boundaries. If they change, update this contract and its skill evaluations together.

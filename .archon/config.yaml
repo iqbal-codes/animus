@@ -20,9 +20,6 @@ aliases:
   '@reasoning':
     provider: pi
     model: router/cx/gpt-6.1-sol
-  '@luna':
-    provider: pi
-    model: router/cx/gpt-6-luna
 
 worktree:
   baseBranch: main
