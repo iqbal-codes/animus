@@ -203,6 +203,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               <th>Topic</th>
               <th>Rule</th>
               <th>Evidence</th>
+              <th>Occurrences</th>
               <th>Status</th>
               <th>Action</th>
             </tr>
@@ -476,6 +477,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 tr.appendChild(createEl('td', '', l.topic));
                 tr.appendChild(createEl('td', '', l.rule));
                 tr.appendChild(createEl('td', '', l.evidence));
+                tr.appendChild(createEl('td', '', l.occurrence_count || 1));
                 const tdStatus = createEl('td');
                 const badgeSpan = createEl('span', 'badge ' + (l.vetoed ? 'badge-cancelled' : 'badge-completed'), l.vetoed ? 'Vetoed' : 'Active');
                 tdStatus.appendChild(badgeSpan);

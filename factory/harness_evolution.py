@@ -49,6 +49,7 @@ class Lesson:
     rule: str
     evidence: str
     vetoed: bool = False
+    occurrence_count: int = 1
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -65,6 +66,7 @@ class Lesson:
             rule=str(data.get("rule", "")),
             evidence=str(data.get("evidence", "")),
             vetoed=bool(data.get("vetoed", False)),
+            occurrence_count=int(data.get("occurrence_count", 1)),
             created_at=str(data.get("created_at", "")),
         )
 
@@ -146,73 +148,77 @@ def add_lesson(
     jev_client: JevClient | None = None,
 ) -> Lesson:
     """Evaluate candidate lesson via TypeSafe Jev and append if approved."""
-    if jev_client and jev_client.is_configured:
-        questions = {
-            "is_grounded": {
-                "type": "noul",
-                "instructions": (
-                    "Is this lesson rule strictly grounded in the execution evidence "
-                    "without hallucination or unverified speculation?"
-                ),
-            },
-            "importance": {
-                "type": "score",
-                "instructions": "Rate importance and utility of the rule for future agent laps",
-                "criteria": [
-                    "trivial_or_redundant",
-                    "low_value_cosmetic",
-                    "actionable_gotcha",
-                    "critical_architectural_rule",
-                ],
-            },
-        }
-        context = (
-            f"Topic: {candidate.topic}\n"
-            f"Rule: {candidate.rule}\n"
-            f"Evidence: {candidate.evidence}\n"
-            f"Trigger Patterns: {candidate.trigger_patterns}"
+    if jev_client is None or not jev_client.is_configured:
+        raise LessonRejectedError(
+            "JevClient must be configured to curate candidate lessons via System 1"
         )
 
-        try:
-            eval_result = jev_client.evaluate(context, questions)
-            grounded_ans = eval_result.answers.get("is_grounded")
-            importance_ans = eval_result.answers.get("importance")
+    questions = {
+        "is_grounded": {
+            "type": "noul",
+            "instructions": (
+                "Is this lesson rule strictly grounded in the execution evidence "
+                "without hallucination or unverified speculation?"
+            ),
+        },
+        "importance": {
+            "type": "score",
+            "instructions": "Rate importance and utility of the rule for future agent laps",
+            "criteria": [
+                "trivial_or_redundant",
+                "low_value_cosmetic",
+                "actionable_gotcha",
+                "critical_architectural_rule",
+            ],
+        },
+    }
+    context = (
+        f"Topic: {candidate.topic}\n"
+        f"Rule: {candidate.rule}\n"
+        f"Evidence: {candidate.evidence}\n"
+        f"Trigger Patterns: {candidate.trigger_patterns}"
+    )
 
-            is_grounded = (
-                isinstance(grounded_ans, NoulAnswer) and grounded_ans.noul >= 0.70
-            )
-            is_important = (
-                isinstance(importance_ans, ScoreAnswer)
-                and importance_ans.confidence >= 0.70
-                and importance_ans.score >= 1.0
-            )
+    try:
+        eval_result = jev_client.evaluate(context, questions)
+        grounded_ans = eval_result.answers.get("is_grounded")
+        importance_ans = eval_result.answers.get("importance")
 
-            if not is_grounded or not is_important:
-                reasons = []
-                if not is_grounded:
-                    reasons.append(
-                        f"low_groundedness ({grounded_ans.noul if isinstance(grounded_ans, NoulAnswer) else 'missing'} < 0.70)"
-                    )
-                if not is_important:
-                    reasons.append("low_importance_or_confidence")
-                raise LessonRejectedError(
-                    f"Candidate lesson rejected by Jev: {', '.join(reasons)}"
+        is_grounded = (
+            isinstance(grounded_ans, NoulAnswer) and grounded_ans.noul >= 0.70
+        )
+        is_important = (
+            isinstance(importance_ans, ScoreAnswer)
+            and importance_ans.confidence >= 0.70
+            and importance_ans.score >= 1.0
+        )
+
+        if not is_grounded or not is_important:
+            reasons = []
+            if not is_grounded:
+                reasons.append(
+                    f"low_groundedness ({grounded_ans.noul if isinstance(grounded_ans, NoulAnswer) else 'missing'} < 0.70)"
                 )
-        except LessonRejectedError:
-            raise
-        except Exception as err:
-            logger.warning(f"Jev evaluation failed: {err}; failing closed.")
-            raise LessonRejectedError(f"Jev evaluation failed: {err}") from err
+            if not is_important:
+                reasons.append("low_importance_or_confidence")
+            raise LessonRejectedError(
+                f"Candidate lesson rejected by Jev: {', '.join(reasons)}"
+            )
+    except LessonRejectedError:
+        raise
+    except Exception as err:
+        logger.warning(f"Jev evaluation failed: {err}; failing closed.")
+        raise LessonRejectedError(f"Jev evaluation failed: {err}") from err
 
     # Generate sequence ID
     date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
     existing_lessons = load_lessons(root, include_vetoed=True)
     today_prefix = f"lsn-{date_str}-"
     today_seqs = []
-    for l in existing_lessons:
-        if l.id.startswith(today_prefix):
+    for existing_lesson in existing_lessons:
+        if existing_lesson.id.startswith(today_prefix):
             try:
-                seq = int(l.id[len(today_prefix) :])
+                seq = int(existing_lesson.id[len(today_prefix) :])
                 today_seqs.append(seq)
             except ValueError:
                 pass
@@ -227,6 +233,7 @@ def add_lesson(
         rule=candidate.rule,
         evidence=candidate.evidence,
         vetoed=False,
+        occurrence_count=1,
         created_at=datetime.now(timezone.utc).isoformat(),
     )
 
@@ -278,13 +285,35 @@ def update_tool_guidance(root: Path, task: str, command: str) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
-def load_tool_guidance(root: Path) -> dict[str, str]:
+def deprecate_tool_guidance(root: Path, task: str) -> None:
+    """Flag a tool command as deprecated when it fails in a subsequent run."""
+    path = _get_tool_guidance_path(root)
+    if not path.is_file():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as err:
+        logger.warning(f"Could not parse tool guidance: {err}")
+        return
+
+    if task in data:
+        if not data[task].startswith("[DEPRECATED]"):
+            data[task] = f"[DEPRECATED] {data[task]}"
+        else:
+            del data[task]
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def load_tool_guidance(root: Path, include_deprecated: bool = False) -> dict[str, str]:
     """Load tool guidance mapping."""
     path = _get_tool_guidance_path(root)
     if not path.is_file():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not include_deprecated:
+            data = {k: v for k, v in data.items() if not str(v).startswith("[DEPRECATED]")}
+        return data
     except Exception as err:
         logger.warning(f"Could not load tool guidance: {err}")
         return {}

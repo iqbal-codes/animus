@@ -183,6 +183,36 @@ aliases:
         self.assertIn("### Tool Guidance Updates", body)
         self.assertIn("`test`: `pytest -v`", body)
 
+    def test_prepare_promotion_excludes_vetoed_lessons_from_summary(self) -> None:
+        executed_cmds: list[list[str]] = []
+
+        def mock_runner(cmd: list[str], cwd: Path) -> str:
+            executed_cmds.append(cmd)
+            if cmd[:3] == ["git", "rev-parse", "--verify"]:
+                return "abc1234"
+            if cmd[:2] == ["git", "log"]:
+                return "aaa1111|feat: vetoed lesson (#21)|Dev|2026-10-27T01:00:00Z\n"
+            if cmd[:2] == ["git", "diff"]:
+                return (
+                    "diff --git a/.factory/lessons.jsonl b/.factory/lessons.jsonl\n"
+                    "--- a/.factory/lessons.jsonl\n"
+                    "+++ b/.factory/lessons.jsonl\n"
+                    '+{"id": "lsn-20261027-09", "topic": "bad-rule", "rule": "Never do this.", "vetoed": true}\n'
+                )
+            if cmd[:3] == ["gh", "pr", "list"]:
+                return "[]"
+            if cmd[:3] == ["gh", "pr", "create"]:
+                return "https://github.com/org/repo/pull/103\n"
+            return ""
+
+        service = PromotionService(self.root, runner=mock_runner)
+        res = service.prepare_promotion()
+        self.assertEqual(res["pr_number"], 103)
+
+        create_calls = [c for c in executed_cmds if c[:3] == ["gh", "pr", "create"]]
+        body = create_calls[0][create_calls[0].index("--body") + 1]
+        self.assertNotIn("lsn-20261027-09", body)
+
     def test_prepare_promotion_handles_harness_summary_when_absent(self) -> None:
         executed_cmds: list[list[str]] = []
 

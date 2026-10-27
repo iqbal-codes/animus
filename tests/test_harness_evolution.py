@@ -10,8 +10,10 @@ from factory.harness_evolution import (
     LessonCandidate,
     LessonRejectedError,
     add_lesson,
+    deprecate_tool_guidance,
     is_safe_mode_active,
     load_lessons,
+    load_tool_guidance,
     set_safe_mode,
     update_tool_guidance,
     veto_lesson,
@@ -181,6 +183,33 @@ class TestHarnessEvolution(unittest.TestCase):
         update_tool_guidance(self.root, "test", "pytest -v")
         data = json.loads(self.guidance_file.read_text(encoding="utf-8"))
         self.assertEqual(data["test"], "pytest -v")
+
+        # Deprecate command
+        deprecate_tool_guidance(self.root, "lint")
+        active_tools = load_tool_guidance(self.root)
+        self.assertNotIn("lint", active_tools)
+        all_tools = load_tool_guidance(self.root, include_deprecated=True)
+        self.assertTrue(all_tools["lint"].startswith("[DEPRECATED]"))
+
+    def test_unconfigured_jev_client_fails_closed(self) -> None:
+        candidate = LessonCandidate(
+            topic="test-topic",
+            trigger_patterns=["*.py"],
+            rule="Do something.",
+            evidence="Some evidence.",
+        )
+        # Without jev client
+        with self.assertRaises(LessonRejectedError):
+            add_lesson(self.root, candidate, jev_client=None)
+
+        # With unconfigured jev client
+        unconfigured = JevClient(api_key=None, transport=None)
+        with self.assertRaises(LessonRejectedError):
+            add_lesson(self.root, candidate, jev_client=unconfigured)
+
+    def test_lesson_occurrence_count(self) -> None:
+        lessons = load_lessons(self.root)
+        self.assertEqual(lessons[0].occurrence_count, 1)
 
     def test_safe_mode_sentinel_lifecycle(self) -> None:
         sentinel = self.factory_dir / "NO_HARNESS_MEMORY"

@@ -138,6 +138,8 @@ class PromotionService:
                     if current_file == "lessons.jsonl" and added.startswith("{"):
                         try:
                             item = json.loads(added)
+                            if item.get("vetoed", False):
+                                continue
                             lid = item.get("id", "")
                             topic = item.get("topic", "")
                             rule = item.get("rule", "")

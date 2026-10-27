@@ -1241,6 +1241,7 @@ function startApp() {
               <td style="padding: 6px 10px;">${escapeHtml(l.topic)}</td>
               <td style="padding: 6px 10px;">${escapeHtml(l.rule)}</td>
               <td style="padding: 6px 10px; color: var(--xai-muted);">${escapeHtml(l.evidence)}</td>
+              <td style="padding: 6px 10px; font-family: var(--xai-font-mono);">${escapeHtml(l.occurrence_count || 1)}</td>
               <td style="padding: 6px 10px;"><span class="badge ${l.vetoed ? 'badge-cancelled' : 'badge-completed'}">${l.vetoed ? 'Vetoed' : 'Active'}</span></td>
               <td style="padding: 6px 10px;">${!l.vetoed ? `<button class="btn-terminal-action veto-btn" data-id="${escapeHtml(l.id)}" type="button">Veto</button>` : ''}</td>
             `;
