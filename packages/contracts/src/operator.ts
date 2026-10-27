@@ -19,9 +19,52 @@ export const operatorErrorSchema = z.object({
     "launch_brake_set",
     "native_launch_failed",
     "invalid_payload",
+    "intake_unavailable",
+    "issue_not_found",
   ]),
 });
 export type OperatorErrorCode = z.infer<typeof operatorErrorSchema>["error"];
+
+export const jevEvaluationSchema = z.object({
+  id: z.string().optional(),
+  model: z.string().optional(),
+  is_actionable: z.number().optional(),
+  choice: z.string().optional(),
+  confidence: z.number().optional(),
+  complexity: z.number().nullable().optional(),
+  probabilities: z.record(z.string(), z.number()).nullable().optional(),
+  recommendation_reason: z.string().optional(),
+});
+export type JevEvaluation = z.infer<typeof jevEvaluationSchema>;
+
+export const evaluatedIssueSchema = z.object({
+  number: z.number().int().positive(),
+  title: z.string(),
+  state: z.string(),
+  admission_status: z.enum(["admitted", "held", "excluded"]),
+  reason: z.string(),
+  labels: z.array(z.string()),
+  dependencies: z.array(z.number().int()),
+  unsatisfied_dependencies: z.array(z.number().int()),
+  recommended_label: z.string().nullable().optional(),
+  confidence: z.number().nullable().optional(),
+  complexity: z.number().nullable().optional(),
+  probabilities: z.record(z.string(), z.number()).nullable().optional(),
+  jev_evaluation: jevEvaluationSchema.nullable().optional(),
+});
+export type EvaluatedIssue = z.infer<typeof evaluatedIssueSchema>;
+
+export const intakeResultSchema = z.object({
+  repo: z.string(),
+  as_of: z.string(),
+  cached: z.boolean(),
+  total_count: z.number().int().nonnegative(),
+  admitted_count: z.number().int().nonnegative(),
+  held_count: z.number().int().nonnegative(),
+  excluded_count: z.number().int().nonnegative(),
+  issues: z.array(evaluatedIssueSchema),
+});
+export type IntakeResult = z.infer<typeof intakeResultSchema>;
 
 export const launchSubmissionSchema = z
   .object({

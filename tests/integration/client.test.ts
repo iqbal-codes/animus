@@ -7,6 +7,8 @@ import {
   type WorkflowCatalog,
   type LapList,
   type LapDetail,
+  type IntakeResult,
+  type EvaluatedIssue,
 } from "@labq/contracts/operator";
 import { createFactoryClient, FactoryClientError } from "@labq/client";
 
@@ -142,4 +144,43 @@ test("portable client exposes only classified errors, never raw transport/upstre
     },
   });
   await expect(client.health()).rejects.toEqual(new FactoryClientError("transport_unavailable"));
+});
+
+test("portable client reads backlog intake and individual evaluated issues", async () => {
+  const issueData: EvaluatedIssue = {
+    number: 31,
+    title: "Inspect canonical admission and Jev advisory results end to end",
+    state: "OPEN",
+    admission_status: "admitted",
+    reason: "admitted_ready",
+    labels: ["ready-for-agent"],
+    dependencies: [28],
+    unsatisfied_dependencies: [],
+  };
+  const intakeData: IntakeResult = {
+    repo: "iqbal-codes/labq-software-factory",
+    as_of: "2026-10-27T00:00:00Z",
+    cached: false,
+    total_count: 1,
+    admitted_count: 1,
+    held_count: 0,
+    excluded_count: 0,
+    issues: [issueData],
+  };
+
+  const client = createFactoryClient({
+    baseUrl: "http://localhost:1234",
+    fetch: async (input) => {
+      const url = String(input);
+      if (url.includes("/api/v1/intake?refresh=true"))
+        return Response.json({ ...intakeData, cached: false });
+      if (url.endsWith("/api/v1/intake")) return Response.json(intakeData);
+      if (url.endsWith("/api/v1/intake/31")) return Response.json(issueData);
+      return Response.json({ error: "not_found" }, { status: 404 });
+    },
+  });
+
+  expect(await client.intake()).toEqual(intakeData);
+  expect(await client.intake({ refresh: true })).toEqual(intakeData);
+  expect(await client.issue(31)).toEqual(issueData);
 });

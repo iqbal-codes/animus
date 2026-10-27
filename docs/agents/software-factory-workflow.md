@@ -20,20 +20,25 @@ Existing factory tickets (for example, issues #1–#7) use this shape. It carrie
 
 ```markdown
 ## Source and problem
+
 <Source spec reference and section; what is wrong/missing today, why it matters,
 and why now. Use settled intent, not invented urgency.>
 
 ## Outcome
+
 <The observable behavior this ticket delivers.>
 
 ## Invariants
+
 <Properties that must remain true, including authority and data boundaries.>
 
 ## Acceptance criteria
+
 - [ ] AC1: <Observable condition and how it is verified.>
 - [ ] AC2: <Relevant failure, boundary, or state-transition behavior.>
 
 ## Boundary
+
 <Explicit exclusions and any issue-owned enabling work.>
 
 Depends on: None
@@ -45,20 +50,18 @@ Native GitHub blocking edges are useful UI metadata but insufficient for executi
 
 Use stable AC identifiers for evidence mapping. Include check commands or artifact names when known and relevant; design, root cause, file paths, and test commands are not universal admission requirements. Keep implementation steering limited to agreed decisions. Parent specs describe the complete outcome; executable tickets are self-contained, independently verifiable slices.
 
-## Readiness is not admission
+## Canonical admission and readiness
 
-| State | Skill action |
-| --- | --- |
-| Parent spec / planning-only record | Keep out of execution with `factory:exclude`; use `needs-triage` or `needs-info` as appropriate. |
-| Missing or contradictory intent | Record the exact open question; use `needs-info` (or `needs-triage` pending assessment) and `factory:hold`. |
-| Human implementation required | Use `ready-for-human` and `factory:hold`. |
-| Complete executable contract with prerequisites still open | Use `ready-for-agent` and `factory:hold`; retain dependency edges. |
-| Complete, unblocked executable contract, explicitly approved for factory intake | Use `ready-for-agent` plus `factory:ready`; remove a stale hold only with approval. |
-| Rejected work | Use `wontfix` and `factory:exclude` only with an approved disposition. |
+| State                                                        | Canonical label action                                                                   |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
+| Parent spec / planning-only record                           | Use `needs-triage` or `needs-info` as appropriate.                                       |
+| Missing or contradictory intent                              | Record the exact open question; use `needs-info` (or `needs-triage` pending assessment). |
+| Human implementation required                                | Use `ready-for-human`.                                                                   |
+| Complete executable contract with prerequisites still open   | Use `ready-for-agent`; retain dependency edges.                                          |
+| Complete, unblocked executable contract, approved for intake | Use `ready-for-agent`.                                                                   |
+| Rejected work                                                | Use `wontfix` only with an approved disposition.                                         |
 
-These are skill-level publication rules. Check existing labels before publishing; ask approval for missing label creation. A newly written spec or ticket does not automatically earn readiness.
-
-`intake.py` admits OPEN issues labeled `ready-for-agent` (with `factory:ready` accepted as a transitional legacy alias) when all referenced prerequisites are CLOSED in the fetched backlog, with no blocking labels (`needs-info`, `ready-for-human`, `needs-triage`, `factory:hold`), no exclusion labels (`wontfix`, `factory:exclude`), and no active loop claim. Unlabeled issues fail-closed to `held` (`unlabeled_awaiting_triage`).
+Admission policy evaluates OPEN issues labeled `ready-for-agent` when all referenced prerequisites are CLOSED in the fetched backlog, with no blocking labels (`needs-info`, `ready-for-human`, `needs-triage`), no exclusion labels (`wontfix`), and no active loop claim. Unlabeled issues fail-closed to `held` (`unlabeled_awaiting_triage`). Legacy `factory:` prefixed labels have no authority.
 
 A passing intake result is not proof of engine selection or delivery. The scheduler writes a target, but target binding must be established against the installed engine. Manual runs bypass scheduled intake. Do not promise that holding/excluding a record makes every direct native invocation safe: inspect its workability/selection policy before launch.
 

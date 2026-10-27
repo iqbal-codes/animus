@@ -388,4 +388,11 @@ test("backend forwards diagnostics, catalog, and lap history from authenticated 
   expect(client.launch({} as any)).rejects.toMatchObject({
     code: "invalid_payload",
   });
+
+  // End-to-end intake reading through backend client
+  const intake = await client.intake();
+  expect(typeof intake.repo).toBe("string");
+  expect(typeof intake.total_count).toBe("number");
+  expect(Array.isArray(intake.issues)).toBe(true);
+  expect(typeof intake.cached).toBe("boolean");
 });

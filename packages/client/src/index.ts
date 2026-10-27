@@ -6,6 +6,8 @@ import {
   lapDetailSchema,
   launchSubmissionSchema,
   launchAckSchema,
+  intakeResultSchema,
+  evaluatedIssueSchema,
   operatorErrorSchema,
   type Health,
   type Diagnostics,
@@ -14,6 +16,8 @@ import {
   type LapDetail,
   type LaunchSubmission,
   type LaunchAck,
+  type IntakeResult,
+  type EvaluatedIssue,
   type OperatorErrorCode,
 } from "@labq/contracts/operator";
 
@@ -115,6 +119,13 @@ export function createFactoryClient(options: {
       const result = launchAckSchema.safeParse(body);
       if (!result.success) throw new FactoryClientError("invalid_operator_response");
       return result.data;
+    },
+    async intake(options?: { refresh?: boolean }): Promise<IntakeResult> {
+      const path = options?.refresh ? "/api/v1/intake?refresh=true" : "/api/v1/intake";
+      return getJson(path, intakeResultSchema);
+    },
+    async issue(number: number): Promise<EvaluatedIssue> {
+      return getJson(`/api/v1/intake/${encodeURIComponent(number)}`, evaluatedIssueSchema);
     },
   };
 }

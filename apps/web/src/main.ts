@@ -24,7 +24,46 @@ const messages: Record<FactoryErrorCode, string> = {
   launch_brake_set: "Refused: local launch brake is active.",
   native_launch_failed: "Failed: native workflow launch failed.",
   invalid_payload: "Invalid: launch request payload is malformed.",
+  intake_unavailable: "Unavailable: backlog intake could not be loaded.",
+  issue_not_found: "Not found: requested issue does not exist.",
 };
+const intakeList = document.querySelector<HTMLElement>("#intake-list");
+const intakeStatus = document.querySelector<HTMLElement>("#intake-status");
+const intakeRefresh = document.querySelector<HTMLButtonElement>("#intake-refresh");
+
+async function loadIntake(force = false) {
+  if (!intakeList || !intakeStatus) return;
+  if (intakeRefresh) intakeRefresh.disabled = true;
+  intakeStatus.textContent = "Loading intake…";
+  try {
+    const intake = await client.intake({ refresh: force });
+    intakeStatus.textContent = `Intake: ${intake.admitted_count} admitted, ${intake.held_count} held, ${intake.excluded_count} excluded (total ${intake.total_count}).`;
+    intakeList.innerHTML = "";
+    for (const issue of intake.issues) {
+      const item = document.createElement("li");
+      item.setAttribute("data-issue-number", String(issue.number));
+      item.setAttribute("data-status", issue.admission_status);
+      const labelText = issue.labels.join(", ") || "no labels";
+      const recText = issue.recommended_label ? ` [rec: ${issue.recommended_label}]` : "";
+      item.textContent = `#${issue.number} ${issue.title} - ${issue.admission_status.toUpperCase()} (${issue.reason}) [${labelText}]${recText}`;
+      intakeList.appendChild(item);
+    }
+  } catch (error) {
+    intakeStatus.textContent =
+      error instanceof FactoryClientError
+        ? messages[error.code]
+        : "Unavailable: intake request failed.";
+  } finally {
+    if (intakeRefresh) intakeRefresh.disabled = false;
+  }
+}
+
+if (intakeRefresh) {
+  intakeRefresh.addEventListener("click", () => {
+    void loadIntake(true);
+  });
+}
+void loadIntake();
 async function load() {
   elements.refresh.disabled = true;
   elements.identities.hidden = true;
