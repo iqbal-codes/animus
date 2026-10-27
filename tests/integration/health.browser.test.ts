@@ -48,7 +48,9 @@ async function stop(child: ChildProcess) {
         void closed.finally(() => clearTimeout(deadline));
       }),
     ]);
-    expect(child.exitCode === 0 || child.signalCode === "SIGTERM").toBe(true);
+    expect(
+      child.exitCode === 0 || (child.spawnargs[0] === "node" && child.signalCode === "SIGTERM"),
+    ).toBe(true);
     await released(url);
     children.delete(child);
   } finally {
@@ -250,6 +252,6 @@ test("failed readiness cleans the listening process before returning the error",
       ],
       url,
     ),
-  ).rejects.toThrow();
+  ).rejects.toThrow(/toBe/);
   await released(url);
 });
