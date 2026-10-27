@@ -215,6 +215,23 @@ async function getAvailablePort(): Promise<number> {
   });
 }
 
+export function killProcessTree(pid: number, signal: NodeJS.Signals = "SIGTERM"): void {
+  if (process.platform === "win32") {
+    try {
+      execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
+    } catch {}
+  } else {
+    try {
+      // Send signal to process group
+      process.kill(-pid, signal);
+    } catch {
+      try {
+        process.kill(pid, signal);
+      } catch {}
+    }
+  }
+}
+
 export interface CandidateEnvironmentOptions {
   slot: string;
   resourceRoot: string;
@@ -298,8 +315,23 @@ export async function startCandidateEnvironment(
   const proc = spawn(exe, interpolatedArgs, {
     cwd: resourceRoot,
     env: cleanEnv,
+    detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"],
   });
+
+  const pid = proc.pid;
+
+  const cleanup = () => {
+    if (pid) {
+      killProcessTree(pid, "SIGKILL");
+    }
+    rmSync(tmpState, { recursive: true, force: true });
+  };
+
+  // Register foreground parent exit/death cleanup
+  process.once("exit", cleanup);
+  process.once("SIGINT", cleanup);
+  process.once("SIGTERM", cleanup);
 
   const url = `http://127.0.0.1:${resolvedPort}`;
   const deadline = Date.now() + timeoutMs;
@@ -307,6 +339,10 @@ export async function startCandidateEnvironment(
 
   while (Date.now() < deadline) {
     if (proc.exitCode !== null) {
+      cleanup();
+      process.removeListener("exit", cleanup);
+      process.removeListener("SIGINT", cleanup);
+      process.removeListener("SIGTERM", cleanup);
       throw new Error("app stopped before readiness");
     }
     try {
@@ -320,8 +356,10 @@ export async function startCandidateEnvironment(
   }
 
   if (!ready) {
-    proc.kill("SIGKILL");
-    rmSync(tmpState, { recursive: true, force: true });
+    cleanup();
+    process.removeListener("exit", cleanup);
+    process.removeListener("SIGINT", cleanup);
+    process.removeListener("SIGTERM", cleanup);
     throw new Error("app readiness/identity refused");
   }
 
@@ -333,13 +371,25 @@ export async function startCandidateEnvironment(
     stateDir: tmpState,
     url,
     async stop() {
-      proc.kill("SIGTERM");
+      process.removeListener("exit", cleanup);
+      process.removeListener("SIGINT", cleanup);
+      process.removeListener("SIGTERM", cleanup);
+      if (pid) {
+        killProcessTree(pid, "SIGTERM");
+      }
       await new Promise<void>((resolve) => {
         if (proc.exitCode !== null) {
           resolve();
           return;
         }
-        proc.on("exit", () => resolve());
+        const timer = setTimeout(() => {
+          if (pid) killProcessTree(pid, "SIGKILL");
+          resolve();
+        }, 3000);
+        proc.on("exit", () => {
+          clearTimeout(timer);
+          resolve();
+        });
       });
       rmSync(tmpState, { recursive: true, force: true });
     },

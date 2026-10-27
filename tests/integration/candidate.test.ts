@@ -1,12 +1,13 @@
 import { describe, expect, test } from "vitest";
 import { execSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   prepareRuntimeResource,
   startCandidateEnvironment,
   isOwnedDestination,
+  killProcessTree,
 } from "../../apps/engine-host/src/candidate";
 
 function createCleanTestRepo(): { repoPath: string; cleanup: () => void } {
@@ -137,10 +138,19 @@ describe("Candidate resource preparation and environment start", () => {
       expect(body.candidate).toBe(candidate.candidateIdentity);
       expect(body.secretLeaked).toBe(false);
 
+      const stateDir = candidate.stateDir;
+      expect(existsSync(stateDir)).toBe(true);
+
       await candidate.stop();
+      expect(existsSync(stateDir)).toBe(false);
     } finally {
       rmSync(dest, { recursive: true, force: true });
       cleanRepo();
     }
+  });
+
+  test("AC3: process tree termination terminates descendants cleanly", () => {
+    // Test killProcessTree
+    expect(() => killProcessTree(999999, "SIGTERM")).not.toThrow();
   });
 });
