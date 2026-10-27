@@ -231,6 +231,11 @@ test("built browser health journey observes host outage and recovery without cre
     { FACTORY_BACKEND_URL: backendUrl },
   );
   expect((await createFactoryClient({ baseUrl: devUrl }).health()).buildId).toBe(candidate);
+
+  // Verify Operator Promotion Journey through DOM
+  await expect(page.locator("#promotion-status")).toBeVisible();
+  await expect(page.locator("#btn-promote")).toBeVisible();
+
   preview.kill("SIGTERM");
   await expect.poll(() => preview.signalCode, { timeout: 3000 }).toBe("SIGTERM");
   await stop(preview);
