@@ -646,6 +646,43 @@ class IntakeHTTPTests(unittest.TestCase):
         self.assertEqual(body["error"], "intake_unavailable")
         self.assertIn("gh token expired", body["detail"])
 
+    def test_get_intake_specific_issue_success(self) -> None:
+        mock_issue = {
+            "number": 42,
+            "title": "Add webhook verify",
+            "state": "OPEN",
+            "admission_status": "admitted",
+            "reason": "admitted_ready",
+            "labels": ["ready-for-agent"],
+            "dependencies": [],
+            "unsatisfied_dependencies": [],
+            "recommended_label": "ready-for-agent",
+            "confidence": 0.95,
+            "complexity": 1.5,
+        }
+        self.mock_intake.get_evaluated_issue.return_value = mock_issue
+
+        status, body, ct = self.get("/api/intake/42")
+        self.assertEqual(status, 200)
+        self.assertEqual(ct, "application/json")
+        self.assertEqual(body["number"], 42)
+        self.assertEqual(body["recommended_label"], "ready-for-agent")
+        self.assertEqual(body["confidence"], 0.95)
+        self.assertEqual(body["complexity"], 1.5)
+        self.mock_intake.get_evaluated_issue.assert_called_with(42, force_refresh=False)
+
+    def test_get_intake_specific_issue_not_found(self) -> None:
+        self.mock_intake.get_evaluated_issue.return_value = None
+
+        status, body, _ = self.get("/api/intake/999")
+        self.assertEqual(status, 404)
+        self.assertEqual(body, {"error": "issue_not_found", "number": 999})
+
+    def test_get_intake_specific_issue_invalid_number(self) -> None:
+        status, body, _ = self.get("/api/intake/not-a-number")
+        self.assertEqual(status, 400)
+        self.assertEqual(body, {"error": "invalid_issue_number"})
+
 
 
 if __name__ == "__main__":

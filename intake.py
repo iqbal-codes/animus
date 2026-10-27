@@ -495,6 +495,14 @@ class IntakeService:
                 return int(issue["number"])
         return None
 
+    def get_evaluated_issue(self, number: int, force_refresh: bool = False) -> dict[str, Any] | None:
+        """Return the evaluation result for a specific issue number, or None if not found."""
+        backlog = self.evaluate_backlog(force_refresh=force_refresh)
+        for issue in backlog.get("issues", []):
+            if issue.get("number") == number:
+                return issue
+        return None
+
     def invalidate_cache(self) -> None:
         with self._lock:
             self._cached_result = None

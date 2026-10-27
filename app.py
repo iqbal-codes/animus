@@ -625,12 +625,30 @@ def handler(build_id: str, laps: NativeLaps, controls: Controls | None = None, i
                 result = read_models_config(root)
                 body = json.dumps(result).encode("utf-8")
                 content_type = "application/json"
-            elif path in ("/api/intake", "/api/intake/"):
+            elif path in ("/api/intake", "/api/intake/", "/intake", "/intake/"):
                 query = urlsplit(self.path).query
                 force_refresh = "refresh=true" in query or "refresh=1" in query
                 try:
                     result = intake.evaluate_backlog(force_refresh=force_refresh)
                     status = 200
+                except IntakeFetchError as exc:
+                    status, result = 503, {"error": "intake_unavailable", "detail": str(exc)}
+                body = json.dumps(result).encode("utf-8")
+                content_type = "application/json"
+            elif path.startswith("/api/intake/") or path.startswith("/intake/"):
+                prefix = "/api/intake/" if path.startswith("/api/intake/") else "/intake/"
+                num_str = path[len(prefix):].strip("/")
+                try:
+                    issue_num = int(num_str)
+                    query = urlsplit(self.path).query
+                    force_refresh = "refresh=true" in query or "refresh=1" in query
+                    issue = intake.get_evaluated_issue(issue_num, force_refresh=force_refresh)
+                    if issue is None:
+                        status, result = 404, {"error": "issue_not_found", "number": issue_num}
+                    else:
+                        status, result = 200, issue
+                except ValueError:
+                    status, result = 400, {"error": "invalid_issue_number"}
                 except IntakeFetchError as exc:
                     status, result = 503, {"error": "intake_unavailable", "detail": str(exc)}
                 body = json.dumps(result).encode("utf-8")

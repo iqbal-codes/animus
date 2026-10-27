@@ -41,7 +41,8 @@ all network interfaces. No workflow, provider, or scheduler starts at boot.
 | `POST /api/doctor` | 200 | `application/json` | Validated catalog and required local checks, plus native provider/model binding resolution |
 | `GET /api/controls` | 200 | `application/json` | Actual launch-brake state: `{"halted": <bool>, "paused": <bool>}` |
 | `POST /api/controls/:action` | 200 | `application/json` | Launch brake action (`halt`, `unhalt`, `pause`, `unpause`): `{"halted": <bool>, "paused": <bool>}` |
-| `GET /api/intake` | 200 | `application/json` | Evaluated backlog with admission status (`admitted`, `held`, `excluded`), reasons, and satisfied dependencies |
+| `GET /api/intake` | 200 | `application/json` | Evaluated backlog with admission status (`admitted`, `held`, `excluded`), reasons, Jev advisory recommendations, and satisfied dependencies |
+| `GET /api/intake/:number` | 200 | `application/json` | Evaluated admission and Jev advisory metadata for a specific issue number |
 | `GET /api/promotion/status` | 200 | `application/json` | Unpromoted commit count, delivered ticket list, candidate freeze flag, and open PR status |
 | `POST /api/promotion/prepare` | 201 | `application/json` | Creates batch promotion PR develop → main and activates Candidate Freeze (`.factory/PAUSE`) |
 | `GET /api/config/schedule` | 200 | `application/json` | Active schedule settings (`parallel`, `work_window`, `base_branch`, etc.) |
