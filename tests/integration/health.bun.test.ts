@@ -9,7 +9,7 @@ import { createFactoryClient } from "@labq/client";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const token = randomBytes(32).toString("hex");
-const children: ReturnType<typeof Bun.spawn>[] = [];
+const children: Bun.Subprocess<"ignore", "pipe", "pipe">[] = [];
 const states: string[] = [];
 const adapters: ReturnType<typeof Bun.serve>[] = [];
 
@@ -39,6 +39,7 @@ async function start(app: string, env: Record<string, string | undefined> = {}) 
       FACTORY_HOST_TOKEN: token,
       ...env,
     },
+    stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
   });
