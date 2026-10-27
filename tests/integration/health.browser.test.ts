@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
@@ -74,6 +74,49 @@ async function start(argv: string[], url: string, env: Record<string, string> = 
     .toBe(200);
   return child;
 }
+
+test("web refuses missing configuration, invalid targets and every remote bind syntax", () => {
+  for (const command of ["dev", "preview"]) {
+    for (const [args, backend] of [
+      [[], "http://127.0.0.1:1"],
+      [["--port", "0"], "http://127.0.0.1:1"],
+      [["--port", "65536"], "http://127.0.0.1:1"],
+      [["--port", "12345", "--host", "0.0.0.0"], "http://127.0.0.1:1"],
+      [["--port=12345", "--host=0.0.0.0"], "http://127.0.0.1:1"],
+      [["--port=12345", "--host=127.0.0.1", "--host=0.0.0.0"], "http://127.0.0.1:1"],
+      [["--port=12345", "--host=localhost"], "http://127.0.0.1:1"],
+      [["--port", "12345"], undefined],
+      [["--port", "12345"], "http://private-secret@127.0.0.1:1"],
+      [["--port", "12345"], "http://example.com:1234"],
+      [["--port", "12345"], "http://127.0.0.1:0"],
+    ] as const) {
+      const result = spawnSync(
+        "node",
+        [
+          "node_modules/vite-plus/bin/vp",
+          command,
+          "apps/web",
+          "--config",
+          "apps/web/vite.config.ts",
+          ...args,
+        ],
+        {
+          cwd: root,
+          env: {
+            ...process.env,
+            FACTORY_BACKEND_URL: backend,
+            FACTORY_RUNTIME_CANDIDATE: candidate,
+          },
+          encoding: "utf8",
+          timeout: 5000,
+        },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).not.toContain("private-secret");
+    }
+  }
+});
 
 test("built browser health journey observes host outage and recovery without credentials", async ({
   page,

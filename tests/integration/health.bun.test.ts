@@ -17,6 +17,8 @@ afterEach(async () => {
   for (const child of children.splice(0).reverse()) {
     if (child.exitCode === null) child.kill("SIGTERM");
     expect(await Promise.race([child.exited, Bun.sleep(3000).then(() => "timeout")])).toBe(0);
+    expect(await new Response(child.stderr).text()).not.toContain(token);
+    expect(await new Response(child.stdout).text()).not.toContain(token);
   }
   for (const adapter of adapters.splice(0)) await adapter.stop(true);
   for (const state of states.splice(0)) {
@@ -49,7 +51,9 @@ async function start(app: string, env: Record<string, string | undefined> = {}) 
     }),
   ]);
   if (!first.value) throw new Error(await new Response(child.stderr).text());
-  const { url, runtime } = JSON.parse(new TextDecoder().decode(first.value)) as {
+  const startup = new TextDecoder().decode(first.value);
+  expect(startup).not.toContain(token);
+  const { url, runtime } = JSON.parse(startup) as {
     url: string;
     runtime: string;
   };
@@ -216,6 +220,7 @@ test("invalid or missing private settings and remote binds refuse startup withou
   for (const app of ["backend", "engine-host"]) {
     const cases: { args?: string[]; env?: Record<string, string | undefined> }[] = [
       { env: { FACTORY_HOST_TOKEN: undefined } },
+      { env: { FACTORY_RUNTIME_CANDIDATE: undefined, PATH: "/nonexistent-factory-test-path" } },
       { env: { FACTORY_HOST_TOKEN: "short-secret" } },
       { env: { FACTORY_HOST_TOKEN: "with whitespace".repeat(4) } },
       { args: ["--host", "0.0.0.0"] },

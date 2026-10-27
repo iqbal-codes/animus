@@ -2,6 +2,7 @@ import { defineConfig, type Plugin, type ProxyOptions } from "vite-plus";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { parseArgs } from "node:util";
 
 function backendOrigin() {
   const value = process.env.FACTORY_BACKEND_URL;
@@ -18,17 +19,29 @@ function backendOrigin() {
 
 export default defineConfig(({ command, isPreview }) => {
   if (command === "serve" || isPreview) {
-    const port = process.argv[process.argv.indexOf("--port") + 1];
-    const hostIndex = process.argv.indexOf("--host");
+    const { values } = parseArgs({
+      args: process.argv.slice(2),
+      strict: false,
+      allowPositionals: true,
+      options: {
+        port: { type: "string", multiple: true },
+        host: { type: "string", multiple: true },
+      },
+    });
     if (
-      !process.argv.includes("--port") ||
-      !port ||
-      !/^\d+$/.test(port) ||
-      Number(port) < 1 ||
-      Number(port) > 65535
+      !values.port?.length ||
+      values.port.some(
+        (port) =>
+          typeof port !== "string" ||
+          !/^\d+$/.test(port) ||
+          Number(port) < 1 ||
+          Number(port) > 65535,
+      )
     )
       throw new Error("Explicit valid --port required");
-    if (hostIndex !== -1 && !["127.0.0.1", "::1"].includes(process.argv[hostIndex + 1] ?? ""))
+    if (
+      values.host?.some((host) => typeof host !== "string" || !["127.0.0.1", "::1"].includes(host))
+    )
       throw new Error("Loopback --host required");
   }
   const buildId =
