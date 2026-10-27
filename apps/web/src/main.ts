@@ -17,6 +17,10 @@ const messages: Record<FactoryErrorCode, string> = {
   candidate_mismatch: "Unavailable: backend and host candidates differ.",
   transport_unavailable: "Unavailable: backend is not reachable.",
   invalid_operator_response: "Unavailable: backend returned invalid data.",
+  native_source_unavailable: "Unavailable: native engine source is not configured or reachable.",
+  native_state_unavailable: "Unavailable: native engine state could not be read.",
+  lap_not_found: "Not found: requested lap does not exist.",
+  scope_mismatch: "Unavailable: requested resource belongs to another scope.",
 };
 async function load() {
   elements.refresh.disabled = true;

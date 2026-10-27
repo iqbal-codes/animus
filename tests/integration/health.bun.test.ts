@@ -85,7 +85,7 @@ async function start(
     url: string;
     runtime: string;
   };
-  expect(runtime).toBe("Bun 1.4.2");
+  expect(runtime).toBe(`Bun ${Bun.version}`);
   reader.releaseLock();
   return { child, url };
 }
@@ -356,4 +356,28 @@ test("invalid or missing private settings and remote binds refuse startup withou
       expect(await new Response(child.stdout).text()).toBe("");
     }
   }
+});
+
+test("backend forwards diagnostics, catalog, and lap history from authenticated engine-host", async () => {
+  const host = await start("engine-host");
+  const backend = await start("backend", { FACTORY_HOST_URL: host.url });
+  const client = createFactoryClient({ baseUrl: backend.url });
+
+  const diagnostics = await client.diagnostics();
+  expect(["healthy", "unavailable"]).toContain(diagnostics.status);
+  expect(typeof diagnostics.revision_required).toBe("string");
+  expect(typeof diagnostics.digest).toBe("string");
+  expect(diagnostics.source_directory).toBe(".archon/workflows/sdlc");
+
+  const catalog = await client.catalog();
+  expect(Array.isArray(catalog.workflows)).toBe(true);
+  expect(catalog.workflows.some((w) => w.name === "archon-loop")).toBe(true);
+
+  const laps = await client.laps();
+  expect(Array.isArray(laps)).toBe(true);
+
+  // Attempt reading a non-existent lap ID returns classified error
+  expect(client.lap("nonexistent-lap-id")).rejects.toMatchObject({
+    code: "lap_not_found",
+  });
 });

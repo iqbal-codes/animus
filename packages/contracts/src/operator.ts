@@ -5,12 +5,91 @@ export const healthSchema = serviceHealthSchema
   .extend({ host: serviceHealthSchema })
   .refine((value) => value.buildId === value.host.buildId);
 export type Health = z.infer<typeof healthSchema>;
+
 export const operatorErrorSchema = z.object({
   error: z.enum([
     "host_unavailable",
     "host_unauthorized",
     "invalid_host_response",
     "candidate_mismatch",
+    "native_source_unavailable",
+    "native_state_unavailable",
+    "lap_not_found",
+    "scope_mismatch",
   ]),
 });
 export type OperatorErrorCode = z.infer<typeof operatorErrorSchema>["error"];
+
+export const diagnosticsSchema = z.object({
+  status: z.enum(["healthy", "degraded", "unavailable"]),
+  revision_required: z.string(),
+  digest: z.string(),
+  captured_at: z.string().nullable(),
+  source_directory: z.string(),
+  file_count: z.number().int().nonnegative(),
+  default_workflows_loaded: z.boolean(),
+});
+export type Diagnostics = z.infer<typeof diagnosticsSchema>;
+
+export const workflowCatalogItemSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  default_inputs: z.record(z.string(), z.string()).optional(),
+});
+export const workflowCatalogSchema = z.object({
+  workflows: z.array(workflowCatalogItemSchema),
+});
+export type WorkflowCatalog = z.infer<typeof workflowCatalogSchema>;
+
+export const lapTransitionSchema = z.object({
+  id: z.string().nullable().optional(),
+  event_type: z.string().nullable().optional(),
+  step_name: z.string().nullable().optional(),
+  created_at: z.string().nullable().optional(),
+  event_order: z.number().int().optional(),
+});
+export type LapTransition = z.infer<typeof lapTransitionSchema>;
+
+export const lapSessionAgentSchema = z.object({
+  node: z.string().nullable().optional(),
+  session_id: z.string().nullable().optional(),
+});
+
+export const lapSummarySchema = z.object({
+  id: z.string(),
+  workflow_name: z.string(),
+  native_status: z.string(),
+  product_status: z.string(),
+  started_at: z.string().nullable().optional(),
+  completed_at: z.string().nullable().optional(),
+  last_activity_at: z.string().nullable().optional(),
+  candidate_head: z.string().nullable().optional(),
+  work_item: z.string().nullable().optional(),
+  pull_request: z.string().nullable().optional(),
+  transitions: z.array(lapTransitionSchema).optional(),
+});
+export const lapListSchema = z.array(lapSummarySchema);
+export type LapSummary = z.infer<typeof lapSummarySchema>;
+export type LapList = z.infer<typeof lapListSchema>;
+
+export const lapDetailSchema = lapSummarySchema.extend({
+  source: z.record(z.string(), z.string().nullable()).optional(),
+  source_commit: z.string().nullable().optional(),
+  session: z
+    .object({
+      conversation_id: z.string().nullable().optional(),
+      working_path: z.string().nullable().optional(),
+      agents: z.array(lapSessionAgentSchema).optional(),
+    })
+    .optional(),
+  approval_evidence: z.record(z.string(), z.any()).nullable().optional(),
+  tokens: z
+    .object({
+      in: z.number().int().default(0),
+      out: z.number().int().default(0),
+      cache_read: z.number().int().default(0),
+      cost_usd: z.number().default(0.0),
+    })
+    .optional(),
+});
+export type LapDetail = z.infer<typeof lapDetailSchema>;
