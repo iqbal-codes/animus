@@ -220,6 +220,31 @@ test("candidate values, independent lifetimes, concurrent connections and releas
   }
 });
 
+test("independent pairs retain their candidates and host listener releases on SIGINT", async () => {
+  const absent = await start("backend", { FACTORY_HOST_URL: "http://127.0.0.1:1" });
+  expect((await fetch(`${absent.url}/health`)).status).toBe(200);
+  const firstHost = await start("engine-host", { FACTORY_RUNTIME_CANDIDATE: "first" });
+  const secondHost = await start("engine-host", { FACTORY_RUNTIME_CANDIDATE: "second" });
+  const first = await start("backend", {
+    FACTORY_HOST_URL: firstHost.url,
+    FACTORY_RUNTIME_CANDIDATE: "first",
+  });
+  const second = await start("backend", {
+    FACTORY_HOST_URL: secondHost.url,
+    FACTORY_RUNTIME_CANDIDATE: "second",
+  });
+  expect((await createFactoryClient({ baseUrl: first.url }).health()).buildId).toBe("first");
+  await stop(first.child);
+  await stop(firstHost.child, "SIGINT");
+  expect((await createFactoryClient({ baseUrl: second.url }).health()).buildId).toBe("second");
+  const listener = Bun.serve({
+    hostname: "127.0.0.1",
+    port: Number(new URL(firstHost.url).port),
+    fetch: () => new Response(),
+  });
+  await listener.stop(true);
+});
+
 test("unknown methods and paths do not become healthy", async () => {
   const host = await start("engine-host");
   const backend = await start("backend", { FACTORY_HOST_URL: host.url });
