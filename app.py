@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 from engine_diagnostics import EngineDiagnostics
+from intake import IntakeFetchError, IntakeService
 from laps import (
     ControlActionError,
     Controls,
@@ -24,6 +25,14 @@ from laps import (
     NativeStateError,
     ReportNotFound,
     UnknownControlAction,
+)
+from promotion import (
+    NoUnpromotedCommitsError,
+    PromotionExecutionError,
+    PromotionPROverlapError,
+    PromotionService,
+    read_models_config,
+    read_schedule_config,
 )
 
 DASHBOARD_HTML = """<!DOCTYPE html>
@@ -416,10 +425,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 """
 
 
-def handler(build_id: str, laps: NativeLaps, controls: Controls | None = None) -> type[BaseHTTPRequestHandler]:
+def handler(build_id: str, laps: NativeLaps, controls: Controls | None = None, intake: IntakeService | None = None, promotion: PromotionService | None = None) -> type[BaseHTTPRequestHandler]:
     root = getattr(laps, "root", Path(__file__).resolve().parent)
     if controls is None:
         controls = Controls(root)
+    if intake is None:
+        target_repo = os.environ.get("FACTORY_TARGET_REPO", "labq-software-factory")
+        intake = IntakeService(repo=target_repo)
+    if promotion is None:
+        promotion = PromotionService(root)
     diagnostics = EngineDiagnostics(root)
 
     class Handler(BaseHTTPRequestHandler):
@@ -428,10 +442,11 @@ def handler(build_id: str, laps: NativeLaps, controls: Controls | None = None) -
             if path == "/api/doctor":
                 status, result = diagnostics.inspect(doctor=True)
                 self.respond(status, json.dumps(result).encode("utf-8"), "application/json")
-            elif path in ("/api/controls", "/api/controls/"):
+            elif path in ("/api/controls", "/api/controls/", "/api/control", "/api/control/"):
                 self.respond(400, json.dumps({"error": "unknown_action"}).encode("utf-8"), "application/json")
-            elif path.startswith("/api/controls/"):
-                subpath = path[len("/api/controls/"):]
+            elif path.startswith("/api/controls/") or path.startswith("/api/control/"):
+                prefix = "/api/controls/" if path.startswith("/api/controls/") else "/api/control/"
+                subpath = path[len(prefix):]
                 if not subpath or "/" in subpath:
                     self.respond(400, json.dumps({"error": "unknown_action"}).encode("utf-8"), "application/json")
                     return
@@ -499,16 +514,88 @@ def handler(build_id: str, laps: NativeLaps, controls: Controls | None = None) -
                 except NativeStateError:
                     status, result = 503, {"error": "native_state_unavailable"}
                 self.respond(status, json.dumps(result).encode("utf-8"), "application/json")
+            elif path == "/api/promotion/prepare":
+                try:
+                    content_length = int(self.headers.get("Content-Length", "0"))
+                    if content_length < 0:
+                        content_length = 0
+                except (ValueError, TypeError):
+                    content_length = 0
+                body = self.rfile.read(content_length) if content_length > 0 else b""
+                title = None
+                summary = None
+                if body.strip():
+                    try:
+                        payload = json.loads(body.decode("utf-8"))
+                        if isinstance(payload, dict):
+                            title = payload.get("title")
+                            summary = payload.get("summary")
+                    except Exception:
+                        pass
+                try:
+                    result = promotion.prepare_promotion(title=title, summary=summary)
+                    status = 201
+                except NoUnpromotedCommitsError as exc:
+                    status, result = 409, {"error": "no_unpromoted_commits", "message": str(exc)}
+                except PromotionPROverlapError as exc:
+                    status, result = 409, {"error": "promotion_pr_already_open", "message": str(exc)}
+                except PromotionExecutionError as exc:
+                    status, result = 502, {"error": "promotion_failed", "detail": str(exc)}
+                self.respond(status, json.dumps(result).encode("utf-8"), "application/json")
             else:
                 self.send_error(404)
 
         def do_GET(self) -> None:
             path = urlsplit(self.path).path
             status = 200
-            if path in ("/", ""):
-                body = DASHBOARD_HTML.encode("utf-8")
-                content_type = "text/html; charset=utf-8"
-            elif path == "/health":
+
+            web_dir = (root / "web").resolve()
+            static_file = None
+            if path in ("/", "", "/index.html"):
+                index_candidate = web_dir / "index.html"
+                if index_candidate.is_file():
+                    static_file = index_candidate
+                    content_type = "text/html; charset=utf-8"
+                else:
+                    body = DASHBOARD_HTML.encode("utf-8")
+                    content_type = "text/html; charset=utf-8"
+            elif path.startswith("/static/") or path in ("/style.css", "/app.js", "/favicon.ico"):
+                rel_path = path[len("/static/"):] if path.startswith("/static/") else path.lstrip("/")
+                candidate = (web_dir / rel_path).resolve()
+                try:
+                    if candidate.is_file() and candidate.is_relative_to(web_dir):
+                        static_file = candidate
+                        if candidate.suffix == ".css":
+                            content_type = "text/css; charset=utf-8"
+                        elif candidate.suffix == ".js":
+                            content_type = "application/javascript; charset=utf-8"
+                        elif candidate.suffix == ".html":
+                            content_type = "text/html; charset=utf-8"
+                        elif candidate.suffix == ".json":
+                            content_type = "application/json"
+                        elif candidate.suffix == ".png":
+                            content_type = "image/png"
+                        elif candidate.suffix == ".svg":
+                            content_type = "image/svg+xml"
+                        else:
+                            content_type = "application/octet-stream"
+                    else:
+                        self.send_error(404)
+                        return
+                except (ValueError, OSError):
+                    self.send_error(404)
+                    return
+
+            if static_file is not None:
+                try:
+                    data = static_file.read_bytes()
+                    self.respond(200, data, content_type)
+                    return
+                except OSError:
+                    self.send_error(500)
+                    return
+
+            if path == "/health":
                 body = json.dumps({"status": "healthy"}).encode("utf-8")
                 content_type = "application/json"
             elif path == "/build-id":
@@ -524,6 +611,28 @@ def handler(build_id: str, laps: NativeLaps, controls: Controls | None = None) -
                 content_type = "application/json"
             elif path == "/api/workflows":
                 status, result = diagnostics.inspect()
+                body = json.dumps(result).encode("utf-8")
+                content_type = "application/json"
+            elif path == "/api/promotion/status":
+                result = promotion.get_status()
+                body = json.dumps(result).encode("utf-8")
+                content_type = "application/json"
+            elif path == "/api/config/schedule":
+                result = read_schedule_config(root)
+                body = json.dumps(result).encode("utf-8")
+                content_type = "application/json"
+            elif path == "/api/config/models":
+                result = read_models_config(root)
+                body = json.dumps(result).encode("utf-8")
+                content_type = "application/json"
+            elif path in ("/api/intake", "/api/intake/"):
+                query = urlsplit(self.path).query
+                force_refresh = "refresh=true" in query or "refresh=1" in query
+                try:
+                    result = intake.evaluate_backlog(force_refresh=force_refresh)
+                    status = 200
+                except IntakeFetchError as exc:
+                    status, result = 503, {"error": "intake_unavailable", "detail": str(exc)}
                 body = json.dumps(result).encode("utf-8")
                 content_type = "application/json"
             elif path == "/api/laps" or path.startswith("/api/laps/"):
@@ -558,14 +667,19 @@ def handler(build_id: str, laps: NativeLaps, controls: Controls | None = None) -
                             content_type = "application/json"
                     elif rest.endswith("/evidence"):
                         run_id = rest[:-len("/evidence")]
-                        try:
-                            result = laps.read_evidence(run_id)
-                        except LapNotFound:
-                            status, result = 404, {"error": "lap_not_found"}
-                        except NativeStateError:
-                            status, result = 503, {"error": "native_state_unavailable"}
-                        body = json.dumps(result).encode("utf-8")
-                        content_type = "application/json"
+                        if not hasattr(laps, "read_evidence"):
+                            status, result = 404, {"error": "evidence_not_found"}
+                            body = json.dumps(result).encode("utf-8")
+                            content_type = "application/json"
+                        else:
+                            try:
+                                result = laps.read_evidence(run_id)
+                            except LapNotFound:
+                                status, result = 404, {"error": "lap_not_found"}
+                            except NativeStateError:
+                                status, result = 503, {"error": "native_state_unavailable"}
+                            body = json.dumps(result).encode("utf-8")
+                            content_type = "application/json"
                     else:
                         run_id = rest
                         try:
@@ -589,8 +703,11 @@ def handler(build_id: str, laps: NativeLaps, controls: Controls | None = None) -
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
+            self.wfile.flush()
+            self.close_connection = True
 
         def log_message(self, format: str, *args: object) -> None:
             # Request targets can contain secrets; do not emit access logs.
@@ -632,7 +749,9 @@ def main() -> None:
     root = Path(os.environ.get("FACTORY_PROJECT_ROOT", Path(__file__).resolve().parent)).resolve()
     laps = NativeLaps(root)
     controls = Controls(root)
-    with ThreadingHTTPServer((args.host, args.port), handler(build_id, laps, controls)) as server:
+    intake = IntakeService()
+    promotion = PromotionService(root)
+    with ThreadingHTTPServer((args.host, args.port), handler(build_id, laps, controls, intake=intake, promotion=promotion)) as server:
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
         server.serve_forever()

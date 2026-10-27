@@ -197,6 +197,12 @@ def project_lap(run: dict) -> dict:
                     "review_outcome": review["outcome"], "land": "node_skipped"}
     baseline = run.get("checkout_baseline") or {}
     source = run.get("metadata", {}).get("workflow_source", {})
+    meta = run.get("metadata") or {}
+    tokens_in = run.get("total_tokens_in") or meta.get("total_tokens_in") or 0
+    tokens_out = run.get("total_tokens_out") or meta.get("total_tokens_out") or 0
+    cache_read = run.get("total_cache_read_tokens") or meta.get("total_cache_read_tokens") or 0
+    cost_usd = run.get("total_cost_usd") if run.get("total_cost_usd") is not None else meta.get("total_cost_usd")
+
     return {
         **fields(run, ("id", "workflow_name", "started_at", "completed_at", "last_activity_at")),
         "native_status": run["status"],
@@ -210,6 +216,12 @@ def project_lap(run: dict) -> dict:
                     "agents": sessions},
         "transitions": transitions,
         "approval_evidence": approval,
+        "tokens": {
+            "in": int(tokens_in) if isinstance(tokens_in, (int, float)) else 0,
+            "out": int(tokens_out) if isinstance(tokens_out, (int, float)) else 0,
+            "cache_read": int(cache_read) if isinstance(cache_read, (int, float)) else 0,
+            "cost_usd": float(cost_usd) if isinstance(cost_usd, (int, float)) else 0.0,
+        },
     }
 
 
@@ -439,6 +451,9 @@ def project_evidence(run: dict, artifacts_dir: Path | str | None = None) -> dict
 class NativeLaps:
     def __init__(self, root: Path):
         self.root = root
+        self._run_cache: dict[tuple, dict] = {}
+        self._list_cache: list[dict] | None = None
+        self._list_cache_time: float = 0.0
 
     def submit(self, payload: bytes | str | dict) -> dict:
         if isinstance(payload, (bytes, bytearray)):
@@ -536,10 +551,15 @@ class NativeLaps:
             runs = [row for row in listing["runs"] if row.get("workflow_name") == "archon-loop" and row.get("id") == run_id]
             if not runs:
                 raise LapNotFound()
+            row = runs[0]
+            cache_key = (run_id, row.get("status"), row.get("last_activity_at"))
+            if cache_key in self._run_cache:
+                return self._run_cache[cache_key]
             detail = native_json(settings, source,
                                  ["workflow", "get", run_id, "--verbose", "--events"], self.root)
             if detail.get("id") != run_id or detail.get("workflow_name") != "archon-loop":
                 raise NativeStateError("Native detail identity mismatch")
+            self._run_cache[cache_key] = detail
             return detail
         except LapNotFound:
             raise
@@ -602,10 +622,16 @@ class NativeLaps:
             runs = [row for row in listing["runs"] if row["workflow_name"] == "archon-loop"]
             result = []
             for row in runs:
-                detail = native_json(settings, source,
-                                     ["workflow", "get", row["id"], "--verbose", "--events"], self.root)
-                if detail.get("id") != row["id"] or detail.get("workflow_name") != "archon-loop":
-                    raise NativeStateError("Native detail identity mismatch")
+                rid = row["id"]
+                cache_key = (rid, row.get("status"), row.get("last_activity_at"))
+                if cache_key in self._run_cache:
+                    detail = self._run_cache[cache_key]
+                else:
+                    detail = native_json(settings, source,
+                                         ["workflow", "get", rid, "--verbose", "--events"], self.root)
+                    if detail.get("id") != rid or detail.get("workflow_name") != "archon-loop":
+                        raise NativeStateError("Native detail identity mismatch")
+                    self._run_cache[cache_key] = detail
                 result.append(project_lap(detail))
             return result
         except LapNotFound:

@@ -12,12 +12,13 @@ import threading
 import time
 import unittest
 from http.server import HTTPServer
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from app import handler
 from factory import consumer
+from intake import IntakeService
 from laps import Controls, NativeLaps
 
 
@@ -557,6 +558,94 @@ class ControlsHTTPTests(unittest.TestCase):
         finally:
             proc.terminate()
             proc.communicate(timeout=3)
+
+
+class IntakeHTTPTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.http = build_opener(ProxyHandler({}))
+        self.mock_laps = MagicMock(spec=NativeLaps)
+        self.mock_laps.root = ROOT
+        self.mock_intake = MagicMock(spec=IntakeService)
+
+        handler_cls = handler("candidate-test", self.mock_laps, intake=self.mock_intake)
+        self.server = HTTPServer(("127.0.0.1", 0), handler_cls)
+        self.port = self.server.server_port
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2.0)
+
+    def get(self, path: str) -> tuple[int, dict, str]:
+        url = f"http://127.0.0.1:{self.port}{path}"
+        try:
+            with self.http.open(url, timeout=2.0) as res:
+                content_type = res.headers.get("Content-Type", "")
+                data = json.loads(res.read().decode("utf-8"))
+                return res.status, data, content_type
+        except HTTPError as err:
+            content_type = err.headers.get("Content-Type", "")
+            data = json.loads(err.read().decode("utf-8"))
+            return err.status, data, content_type
+
+    def test_get_intake_success(self) -> None:
+        mock_backlog = {
+            "repo": "pabriq-app",
+            "as_of": "2026-10-27T00:00:00Z",
+            "cached": False,
+            "total_count": 2,
+            "admitted_count": 1,
+            "held_count": 1,
+            "excluded_count": 0,
+            "issues": [
+                {
+                    "number": 42,
+                    "title": "Add webhook verify",
+                    "state": "OPEN",
+                    "admission_status": "admitted",
+                    "reason": "admitted_ready",
+                    "labels": ["factory:ready"],
+                    "dependencies": [],
+                    "unsatisfied_dependencies": [],
+                },
+                {
+                    "number": 43,
+                    "title": "Rate limit",
+                    "state": "OPEN",
+                    "admission_status": "held",
+                    "reason": "missing_ready_label",
+                    "labels": [],
+                    "dependencies": [],
+                    "unsatisfied_dependencies": [],
+                },
+            ],
+        }
+        self.mock_intake.evaluate_backlog.return_value = mock_backlog
+
+        status, body, content_type = self.get("/api/intake")
+        self.assertEqual(status, 200)
+        self.assertEqual(content_type, "application/json")
+        self.assertEqual(body["admitted_count"], 1)
+        self.assertEqual(body["held_count"], 1)
+        self.mock_intake.evaluate_backlog.assert_called_with(force_refresh=False)
+
+    def test_get_intake_refresh_query(self) -> None:
+        self.mock_intake.evaluate_backlog.return_value = {"cached": False, "issues": []}
+        status, _, _ = self.get("/api/intake?refresh=true")
+        self.assertEqual(status, 200)
+        self.mock_intake.evaluate_backlog.assert_called_with(force_refresh=True)
+
+    def test_get_intake_fetch_error_returns_503(self) -> None:
+        from intake import IntakeFetchError
+        self.mock_intake.evaluate_backlog.side_effect = IntakeFetchError("gh token expired")
+
+        status, body, _ = self.get("/api/intake")
+        self.assertEqual(status, 503)
+        self.assertEqual(body["error"], "intake_unavailable")
+        self.assertIn("gh token expired", body["detail"])
+
 
 
 if __name__ == "__main__":

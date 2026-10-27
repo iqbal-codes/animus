@@ -41,6 +41,11 @@ all network interfaces. No workflow, provider, or scheduler starts at boot.
 | `POST /api/doctor` | 200 | `application/json` | Validated catalog and required local checks, plus native provider/model binding resolution |
 | `GET /api/controls` | 200 | `application/json` | Actual launch-brake state: `{"halted": <bool>, "paused": <bool>}` |
 | `POST /api/controls/:action` | 200 | `application/json` | Launch brake action (`halt`, `unhalt`, `pause`, `unpause`): `{"halted": <bool>, "paused": <bool>}` |
+| `GET /api/intake` | 200 | `application/json` | Evaluated backlog with admission status (`admitted`, `held`, `excluded`), reasons, and satisfied dependencies |
+| `GET /api/promotion/status` | 200 | `application/json` | Unpromoted commit count, delivered ticket list, candidate freeze flag, and open PR status |
+| `POST /api/promotion/prepare` | 201 | `application/json` | Creates batch promotion PR develop → main and activates Candidate Freeze (`.factory/PAUSE`) |
+| `GET /api/config/schedule` | 200 | `application/json` | Active schedule settings (`parallel`, `work_window`, `base_branch`, etc.) |
+| `GET /api/config/models` | 200 | `application/json` | Configured AI provider model tiers and aliases from `.archon/config.yaml` |
 | `POST /api/laps` | 202 | `application/json` | `{"id": "<run-id>", "status": "<status>"}` |
 | `GET /api/laps` | 200 | `application/json` | Array of native `archon-loop` lap projections, or `[]` when no laps exist |
 | `GET /api/laps/:id` | 200 | `application/json` | One lap projection for the exact native ID |
@@ -77,6 +82,34 @@ schedules.
 - The service listener is strictly restricted to loopback addresses (`127.0.0.1`, `localhost`, `::1`).
   Any non-loopback bind request (such as `--host 0.0.0.0`) is rejected on startup. No endpoint
   executes schedule installation, schedule removal, or timer-enabling commands.
+
+### Intake ledger and admission gating
+
+`GET /api/intake` evaluates the backlog of target repository issues (default `pabriq-app` or
+`FACTORY_TARGET_REPO`):
+- **Admission rules**:
+  - `admitted`: issue is `OPEN`, carries `factory:ready`, carries neither `factory:hold` nor `factory:exclude`,
+    all referenced `Depends on: #...` prerequisites are closed, and has no active loop claim.
+  - `held`: missing `factory:ready`, has `factory:hold`, issue is `CLOSED`, waiting on open dependency, or actively claimed.
+  - `excluded`: carries `factory:exclude` (overrides ready status).
+- **Caching**: Queries are cached in-memory for 60 seconds to protect GitHub API rate limits.
+  Adding `?refresh=true` or `?refresh=1` forces an immediate cache refresh.
+- **Failures**: When the `gh` CLI is unauthenticated or fails, the endpoint returns HTTP 503
+  JSON `{"error": "intake_unavailable", "detail": "..."}` without returning false empty state.
+
+### Promotion engine and Candidate Freeze
+
+- `GET /api/promotion/status` calculates `git log origin/main..origin/develop` (or local branches),
+  extracts all closed ticket numbers (`#<num>`), returns unpromoted commit count, candidate freeze
+  status (`.factory/PAUSE`), and existing promotion PR status.
+- `POST /api/promotion/prepare` triggers batch promotion:
+  - Verifies `unpromoted_count > 0` (returns HTTP 409 `{"error": "no_unpromoted_commits"}` if none).
+  - Verifies no promotion PR is already open (returns HTTP 409 `{"error": "promotion_pr_already_open"}` if open).
+  - Automatically compiles a markdown summary of delivered work items and commits.
+  - Creates the promotion PR targeting `main` via `gh pr create --base main --head develop`.
+  - Enacts **Candidate Freeze** by writing `.factory/PAUSE`, halting further develop integrations until operator sign-off.
+- `GET /api/config/schedule` and `GET /api/config/models` provide read-only inspection of factory
+  runtime constraints and model mappings.
 
 ### Engine discovery and diagnostics
 
