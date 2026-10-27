@@ -11,7 +11,10 @@ export interface HarnessConfig {
   protected_paths?: string;
 }
 
-export function runChecks(repoRoot: string, _options?: { quick?: boolean }): { success: boolean; output: string } {
+export function runChecks(
+  repoRoot: string,
+  _options?: { quick?: boolean },
+): { success: boolean; output: string } {
   const configPath = join(repoRoot, "harness/harness.config.json");
   if (!existsSync(configPath)) {
     throw new Error("harness.config.json not found");
@@ -36,8 +39,14 @@ export function runChecks(repoRoot: string, _options?: { quick?: boolean }): { s
     }
 
     if (config.unit_count_pattern) {
-      const match = new RegExp(config.unit_count_pattern).exec(res.stdout + res.stderr);
-      const count = match ? parseInt(match[1], 10) : 0;
+      const allOutput = res.stdout + res.stderr;
+      const countMatch = new RegExp(config.unit_count_pattern).exec(allOutput);
+      const fileMatch = /(\d+)\s+passed\s+\((\d+)\)/.exec(allOutput);
+      const count = countMatch
+        ? parseInt(countMatch[1], 10)
+        : fileMatch
+          ? parseInt(fileMatch[2], 10)
+          : 0;
       if (count === 0) {
         logs.push("UNIT_ERROR: the runner reported 0 tests", "GATE_FAILED: unit");
         return { success: false, output: logs.join("\n") };
