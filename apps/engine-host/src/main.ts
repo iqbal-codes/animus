@@ -3,6 +3,7 @@ import {
   hostHealthSchema,
   hostLaunchSubmissionSchema,
   hostControlSubmissionSchema,
+  hostPromotionSubmissionSchema,
 } from "@labq/contracts/host";
 import { configuration } from "./config";
 import {
@@ -16,9 +17,11 @@ import {
   readControlState,
   applyControlAction,
 } from "./native";
+import { PromotionService } from "./promotion";
 
 try {
   const config = configuration();
+  const promotionService = new PromotionService(config.repoRoot);
   const digest = (value: string) => createHash("sha256").update(value).digest();
   const expected = digest(`Bearer ${config.token}`);
   const server = Bun.serve({
@@ -103,7 +106,41 @@ try {
           }
         }
 
+        if (path === "/internal/v1/promotion/prepare") {
+          let body: unknown = {};
+          try {
+            const text = await request.text();
+            if (text.trim().length > 0) body = JSON.parse(text);
+          } catch {
+            return Response.json({ error: "invalid_payload" }, { status: 400 });
+          }
+          const parsed = hostPromotionSubmissionSchema.safeParse(body);
+          if (!parsed.success) {
+            return Response.json({ error: "invalid_payload" }, { status: 400 });
+          }
+          try {
+            const res = promotionService.preparePromotion(parsed.data);
+            return Response.json(res, { status: 201 });
+          } catch (err: any) {
+            const code = err.message || "promotion_failed";
+            const status =
+              code === "no_unpromoted_commits" || code === "promotion_pr_already_open" ? 409 : 500;
+            return Response.json({ error: code }, { status });
+          }
+        }
+
         return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
+      if (path === "/internal/v1/promotion/status") {
+        try {
+          return Response.json(promotionService.getStatus());
+        } catch (err: any) {
+          return Response.json(
+            { error: err.message || "native_state_unavailable" },
+            { status: 500 },
+          );
+        }
       }
 
       if (path === "/internal/v1/controls") {

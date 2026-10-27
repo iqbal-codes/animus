@@ -11,6 +11,9 @@ import {
   controlStateSchema,
   controlSubmissionSchema,
   lapEvidenceSchema,
+  promotionStatusSchema,
+  promotionSubmissionSchema,
+  promotionResultSchema,
   operatorErrorSchema,
   type Health,
   type Diagnostics,
@@ -18,6 +21,9 @@ import {
   type LapList,
   type LapDetail,
   type LapEvidence,
+  type PromotionStatus,
+  type PromotionSubmission,
+  type PromotionResult,
   type LaunchSubmission,
   type LaunchAck,
   type IntakeResult,
@@ -195,6 +201,41 @@ export function createFactoryClient(options: {
         throw new FactoryClientError(errCode);
       }
       return response.text();
+    },
+    async promotionStatus(): Promise<PromotionStatus> {
+      return getJson("/api/v1/promotion/status", promotionStatusSchema);
+    },
+    async preparePromotion(submission?: PromotionSubmission): Promise<PromotionResult> {
+      const parsed = promotionSubmissionSchema.safeParse(submission ?? {});
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      const endpoint = new URL("/api/v1/promotion/prepare", options.baseUrl).href;
+      let response: Response;
+      try {
+        response = await transport(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(parsed.data),
+          redirect: "error",
+          cache: "no-store",
+        });
+      } catch {
+        throw new FactoryClientError("transport_unavailable");
+      }
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        throw new FactoryClientError("invalid_operator_response");
+      }
+      if (!response.ok) {
+        const error = operatorErrorSchema.safeParse(body);
+        throw new FactoryClientError(
+          error.success ? error.data.error : "invalid_operator_response",
+        );
+      }
+      const result = promotionResultSchema.safeParse(body);
+      if (!result.success) throw new FactoryClientError("invalid_operator_response");
+      return result.data;
     },
   };
 }

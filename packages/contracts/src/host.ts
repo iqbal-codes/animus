@@ -10,6 +10,9 @@ import {
   controlStateSchema,
   controlSubmissionSchema,
   lapEvidenceSchema,
+  promotionStatusSchema,
+  promotionSubmissionSchema,
+  promotionResultSchema,
 } from "./operator";
 
 export const hostHealthSchema = serviceHealthSchema;
@@ -24,3 +27,6 @@ export const hostLaunchSubmissionSchema = launchSubmissionSchema;
 export const hostLaunchAckSchema = launchAckSchema;
 export const hostControlStateSchema = controlStateSchema;
 export const hostControlSubmissionSchema = controlSubmissionSchema;
+export const hostPromotionStatusSchema = promotionStatusSchema;
+export const hostPromotionSubmissionSchema = promotionSubmissionSchema;
+export const hostPromotionResultSchema = promotionResultSchema;

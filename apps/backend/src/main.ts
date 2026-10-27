@@ -12,6 +12,9 @@ import {
   controlStateSchema,
   controlSubmissionSchema,
   lapEvidenceSchema,
+  promotionStatusSchema,
+  promotionSubmissionSchema,
+  promotionResultSchema,
   type OperatorErrorCode,
 } from "@labq/contracts/operator";
 import { configuration, hostOrigin } from "./config";
@@ -248,6 +251,39 @@ try {
           });
         }
         return forwardToHost("/internal/v1/controls", controlStateSchema);
+      }
+
+      if (path === "/api/v1/promotion/status") {
+        if (request.method !== "GET")
+          return Response.json(
+            { error: "method_not_allowed" },
+            { status: 405, headers: { Allow: "GET" } },
+          );
+        return forwardToHost("/internal/v1/promotion/status", promotionStatusSchema);
+      }
+
+      if (path === "/api/v1/promotion/prepare") {
+        if (request.method !== "POST")
+          return Response.json(
+            { error: "method_not_allowed" },
+            { status: 405, headers: { Allow: "POST" } },
+          );
+        let body: unknown = {};
+        try {
+          const text = await request.text();
+          if (text.trim().length > 0) body = JSON.parse(text);
+        } catch {
+          return Response.json({ error: "invalid_payload" }, { status: 400 });
+        }
+        const parsed = promotionSubmissionSchema.safeParse(body);
+        if (!parsed.success) {
+          return Response.json({ error: "invalid_payload" }, { status: 400 });
+        }
+        return forwardToHost("/internal/v1/promotion/prepare", promotionResultSchema, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(parsed.data),
+        });
       }
 
       return Response.json({ error: "not_found" }, { status: 404 });

@@ -29,6 +29,10 @@ const messages: Record<FactoryErrorCode, string> = {
   control_failed: "Failed: control action could not be completed.",
   report_not_found: "Not found: requested evidence report does not exist.",
   evidence_unavailable: "Unavailable: candidate evidence could not be determined.",
+  no_unpromoted_commits: "Refused: no unpromoted commits found between develop and main.",
+  promotion_pr_already_open: "Refused: a promotion PR is already open.",
+  promotion_failed: "Failed: promotion PR creation failed.",
+  partial_promotion_effect: "Warning: PR created, but local freeze brake failed.",
 };
 const controlStatus = document.querySelector<HTMLElement>("#control-status");
 const btnHalt = document.querySelector<HTMLButtonElement>("#btn-halt");
@@ -169,3 +173,53 @@ elements.refresh.addEventListener("click", () => {
   void load();
 });
 void load();
+
+const promotionStatus = document.querySelector<HTMLElement>("#promotion-status");
+const promotionDetails = document.querySelector<HTMLElement>("#promotion-details");
+const btnPromote = document.querySelector<HTMLButtonElement>("#btn-promote");
+
+async function loadPromotionStatus() {
+  if (!promotionStatus || !promotionDetails) return;
+  promotionStatus.textContent = "Loading promotion status…";
+  try {
+    const status = await client.promotionStatus();
+    promotionStatus.textContent = `Promotion: ${status.unpromoted_count} unpromoted commits (Freeze: ${status.candidate_freeze ? "ACTIVE" : "None"}). Ready: ${status.ready_to_promote ? "YES" : "NO"}`;
+    promotionDetails.innerHTML = "";
+    if (status.existing_pr) {
+      const p = document.createElement("p");
+      p.textContent = `Open PR: #${status.existing_pr.number} - ${status.existing_pr.title} (${status.existing_pr.url})`;
+      promotionDetails.appendChild(p);
+    }
+    if (btnPromote) btnPromote.disabled = !status.ready_to_promote;
+  } catch (error) {
+    promotionStatus.textContent =
+      error instanceof FactoryClientError
+        ? messages[error.code]
+        : "Unavailable: promotion status failed.";
+  }
+}
+
+async function handlePromote() {
+  if (!promotionStatus || !promotionDetails) return;
+  promotionStatus.textContent = "Preparing promotion PR…";
+  if (btnPromote) btnPromote.disabled = true;
+  try {
+    const res = await client.preparePromotion();
+    if (res.partial_effect) {
+      promotionStatus.textContent = `Warning: PR #${res.pr_number} created, but local freeze failed: ${res.local_effect_error}`;
+    } else {
+      promotionStatus.textContent = `Success: PR #${res.pr_number} prepared! Candidate freeze active.`;
+    }
+    void loadPromotionStatus();
+    void loadControls();
+  } catch (error) {
+    promotionStatus.textContent =
+      error instanceof FactoryClientError
+        ? messages[error.code]
+        : "Failed: promotion prepare failed.";
+    if (btnPromote) btnPromote.disabled = false;
+  }
+}
+
+btnPromote?.addEventListener("click", () => void handlePromote());
+void loadPromotionStatus();

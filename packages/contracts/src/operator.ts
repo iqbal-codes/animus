@@ -24,6 +24,10 @@ export const operatorErrorSchema = z.object({
     "control_failed",
     "report_not_found",
     "evidence_unavailable",
+    "no_unpromoted_commits",
+    "promotion_pr_already_open",
+    "promotion_failed",
+    "partial_promotion_effect",
   ]),
 });
 export type OperatorErrorCode = z.infer<typeof operatorErrorSchema>["error"];
@@ -204,3 +208,37 @@ export const lapEvidenceSchema = z.object({
   }),
 });
 export type LapEvidence = z.infer<typeof lapEvidenceSchema>;
+
+export const promotionStatusSchema = z.object({
+  main_branch: z.string(),
+  develop_branch: z.string(),
+  unpromoted_count: z.number().int().nonnegative(),
+  delivered_tickets: z.array(z.number().int()),
+  candidate_freeze: z.boolean(),
+  existing_pr: z
+    .object({
+      number: z.number().int().positive(),
+      url: z.string(),
+      title: z.string(),
+    })
+    .nullable(),
+  ready_to_promote: z.boolean(),
+});
+export type PromotionStatus = z.infer<typeof promotionStatusSchema>;
+
+export const promotionSubmissionSchema = z.object({
+  title: z.string().min(1).optional(),
+  summary: z.string().optional(),
+});
+export type PromotionSubmission = z.infer<typeof promotionSubmissionSchema>;
+
+export const promotionResultSchema = z.object({
+  pr_number: z.number().int().positive(),
+  pr_url: z.string(),
+  title: z.string(),
+  unpromoted_count: z.number().int().nonnegative(),
+  candidate_freeze: z.boolean(),
+  partial_effect: z.boolean().default(false),
+  local_effect_error: z.string().nullable().optional(),
+});
+export type PromotionResult = z.infer<typeof promotionResultSchema>;
