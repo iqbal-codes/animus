@@ -13,7 +13,7 @@ Read `docs/agents/software-factory-workflow.md` and the tracker/label docs it po
 1. Resolve the source conversation/issue/path and target repository. Read the source in full, including comments, relevant code, glossary and ADRs. Check whether the requested outcome already exists or overlaps another issue.
 2. Separate observed current behavior from the proposal. Carry forward agreed decisions and exclusions exactly; cite source sections and relevant code evidence. Describe test seams using existing public behavior where possible. New design is a proposal unless already agreed.
 3. Write the spec below. Give acceptance criteria stable identifiers for later ticket and evidence mapping. Include only relevant states, failures, and authority boundaries; do not pad with exhaustive invented user stories.
-4. Present the draft, material gaps, target repository, and proposed labels. Publish or update the source issue only when those writes are authorized. A parent spec is planning-only: use `factory:exclude` and the appropriate triage state, not automatic execution readiness. Read back any publication and return its exact URL.
+4. Present the draft, material gaps, target repository, and proposed labels. Publish or update the source issue only when those writes are authorized. A parent spec is planning-only: use canonical triage labels (`ready-for-human`, `needs-info`, or `wontfix` to hold/exclude from agent execution; never `ready-for-agent` for parent specs). Read back any publication and return its exact URL.
 5. Handoff: spec path/URL, complete vs incomplete contract, unresolved decisions, and suggested `/factory-tickets` input. Stop before decomposition or execution unless separately requested.
 
 ## Spec shape
