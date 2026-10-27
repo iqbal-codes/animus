@@ -233,6 +233,9 @@
           <button class="tab-btn" data-tab="tokens" type="button">
             Token economics &amp; stats
           </button>
+          <button class="tab-btn" data-tab="harness" type="button">
+            Harness &amp; Memory
+          </button>
         </nav>
 
         <!-- SDLC Pipeline Stepper -->
@@ -425,6 +428,48 @@
               <h4 style="font-size: 12px; margin-bottom: 6px; color: var(--xai-text-secondary);">Evidence</h4>
               <div id="detail-evidence-report-content" style="font-family: var(--xai-font-mono); font-size: 11px; background: #000; padding: 10px; border-radius: 6px;"></div>
             </div>
+          </div>
+        </section>
+
+        <!-- Harness & Memory Controls Section -->
+        <section class="card" id="harness-memory-section" style="margin-top: 10px;">
+          <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+              <h2 class="card-title" style="font-size: 15px;">Harness &amp; Memory Controls</h2>
+              <span class="card-subtitle">Repository knowledge, lessons, verified tools, and safe mode</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span id="harness-safe-mode-badge" class="badge" style="background: #14532d; color: #bbf7d0; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 600;">Safe Mode: Off</span>
+              <button id="harness-safe-mode-toggle" class="btn-terminal-action" type="button">Toggle Safe Mode</button>
+            </div>
+          </div>
+
+          <div style="margin-top: 15px;">
+            <h3 style="font-size: 13px; font-weight: 600; text-transform: uppercase; color: var(--xai-muted); margin-bottom: 8px;">Verified Tool Guidance</h3>
+            <table id="harness-tools-table" class="lap-table" style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+              <thead>
+                <tr>
+                  <th style="padding: 6px 10px; font-size: 11px; text-transform: uppercase; border-bottom: 1px solid var(--xai-border);">Task</th>
+                  <th style="padding: 6px 10px; font-size: 11px; text-transform: uppercase; border-bottom: 1px solid var(--xai-border);">Verified Recipe Command</th>
+                </tr>
+              </thead>
+              <tbody id="harness-tools-body"></tbody>
+            </table>
+
+            <h3 style="font-size: 13px; font-weight: 600; text-transform: uppercase; color: var(--xai-muted); margin-bottom: 8px;">Evidence-Backed Lessons</h3>
+            <table id="harness-lessons-table" class="lap-table" style="width: 100%; border-collapse: collapse;">
+              <thead>
+                <tr>
+                  <th style="padding: 6px 10px; font-size: 11px; text-transform: uppercase; border-bottom: 1px solid var(--xai-border);">ID</th>
+                  <th style="padding: 6px 10px; font-size: 11px; text-transform: uppercase; border-bottom: 1px solid var(--xai-border);">Topic</th>
+                  <th style="padding: 6px 10px; font-size: 11px; text-transform: uppercase; border-bottom: 1px solid var(--xai-border);">Rule</th>
+                  <th style="padding: 6px 10px; font-size: 11px; text-transform: uppercase; border-bottom: 1px solid var(--xai-border);">Evidence</th>
+                  <th style="padding: 6px 10px; font-size: 11px; text-transform: uppercase; border-bottom: 1px solid var(--xai-border);">Status</th>
+                  <th style="padding: 6px 10px; font-size: 11px; text-transform: uppercase; border-bottom: 1px solid var(--xai-border);">Action</th>
+                </tr>
+              </thead>
+              <tbody id="harness-lessons-body"></tbody>
+            </table>
           </div>
         </section>
       </div>
