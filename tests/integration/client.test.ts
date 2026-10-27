@@ -1,5 +1,21 @@
-import { expect, test } from "vitest";
+import { expect, expectTypeOf, test } from "vitest";
+import { hostHealthSchema, type HostHealth } from "@labq/contracts/host";
+import { healthSchema, type Health } from "@labq/contracts/operator";
 import { createFactoryClient, FactoryClientError } from "@labq/client";
+
+test("private host and public health values conform without propagating additive fields", () => {
+  expectTypeOf<HostHealth>().toEqualTypeOf<Health["host"]>();
+  const host = hostHealthSchema.parse({
+    status: "healthy",
+    buildId: "candidate",
+    privateExtra: "secret",
+  });
+  expect(healthSchema.parse({ status: "healthy", buildId: "candidate", host })).toEqual({
+    status: "healthy",
+    buildId: "candidate",
+    host: { status: "healthy", buildId: "candidate" },
+  });
+});
 
 test("portable client validates exact identities and refuses malformed operator data", async () => {
   const candidate = "  candidate-é\n";

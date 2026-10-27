@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { serviceHealthSchema } from "./health";
 
-export const hostHealthSchema = z.object({ status: z.literal("healthy"), buildId: z.string() });
+export const hostHealthSchema = serviceHealthSchema;
 export type HostHealth = z.infer<typeof hostHealthSchema>;

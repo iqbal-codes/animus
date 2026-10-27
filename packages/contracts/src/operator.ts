@@ -1,11 +1,8 @@
 import { z } from "zod";
+import { serviceHealthSchema } from "./health";
 
-export const healthSchema = z
-  .object({
-    status: z.literal("healthy"),
-    buildId: z.string(),
-    host: z.object({ status: z.literal("healthy"), buildId: z.string() }),
-  })
+export const healthSchema = serviceHealthSchema
+  .extend({ host: serviceHealthSchema })
   .refine((value) => value.buildId === value.host.buildId);
 export type Health = z.infer<typeof healthSchema>;
 export const operatorErrorSchema = z.object({

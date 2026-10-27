@@ -44,6 +44,7 @@ export default defineConfig({
           "apps/web/src/**/*.{ts,js}",
           "packages/client/src/**/*.{ts,js}",
           "packages/contracts/src/operator.ts",
+          "packages/contracts/src/health.ts",
         ],
         rules: {
           "no-restricted-imports": [

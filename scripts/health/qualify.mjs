@@ -79,6 +79,7 @@ try {
     ["apps/web/src/main.ts", 'import "@labq/contracts/host";'],
     ["packages/client/src/index.ts", 'import "node:fs";'],
     ["packages/contracts/src/operator.ts", 'import "./host";'],
+    ["packages/contracts/src/health.ts", 'import "./host";'],
     ["apps/backend/src/main.ts", 'import "../../engine-host/src/config";'],
   ]) {
     mutation(path, `${readFileSync(`${checkout}/${path}`, "utf8")}\n${statement}\n`, () =>
@@ -91,7 +92,7 @@ try {
     `${readFileSync(`${checkout}/${browser}`, "utf8")}\nexport const invalidBunGlobal = Bun.version;\n`,
     () => run(["bun", "run", "typecheck"], "Bun"),
   );
-  const contract = "packages/contracts/src/operator.ts";
+  const contract = "packages/contracts/src/health.ts";
   mutation(
     contract,
     readFileSync(`${checkout}/${contract}`, "utf8").replace(
@@ -99,6 +100,16 @@ try {
       "buildId: z.number()",
     ),
     () => run(["bun", "run", "typecheck"], "apps/web/src/main.ts"),
+  );
+
+  const privateContract = "packages/contracts/src/host.ts";
+  mutation(
+    privateContract,
+    readFileSync(`${checkout}/${privateContract}`, "utf8").replace(
+      "export const hostHealthSchema = serviceHealthSchema;",
+      "export const hostHealthSchema = serviceHealthSchema.extend({ drift: z.string() });",
+    ),
+    () => run(["bun", "run", "typecheck"], "tests/integration/client.test.ts"),
   );
 
   const configPath = "vite.config.ts";
