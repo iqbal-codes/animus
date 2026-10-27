@@ -7,25 +7,56 @@ import { fileURLToPath } from "node:url";
 import { createFactoryClient } from "@labq/client";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const children: ChildProcess[] = [];
+const children = new Map<ChildProcess, string>();
 const candidate = "  browser-<candidate>-é\n";
 const token = randomBytes(32).toString("hex");
 let logs = "";
 
-async function stop(child: ChildProcess) {
-  if (child.exitCode !== null) return;
-  const exited = once(child, "exit");
-  child.kill("SIGTERM");
-  const timeout = setTimeout(() => child.kill("SIGKILL"), 3000);
+async function released(url: string) {
+  const listener = createServer();
   try {
-    const [code, signal] = await exited;
-    expect(code === 0 || (child.spawnargs[0] === "node" && signal === "SIGTERM")).toBe(true);
+    listener.listen(Number(new URL(url).port), "127.0.0.1");
+    await once(listener, "listening");
+  } finally {
+    if (listener.listening)
+      await new Promise<void>((resolve, reject) =>
+        listener.close((error) => (error ? reject(error) : resolve())),
+      );
+  }
+}
+async function stop(child: ChildProcess) {
+  const url = children.get(child);
+  if (!url) return;
+  const signalGroup = (signal: NodeJS.Signals) => {
+    if (!child.pid) throw new Error("Missing owned process group");
+    try {
+      process.kill(-child.pid, signal);
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
+    }
+  };
+  const closed =
+    child.stdout?.closed && child.stderr?.closed ? Promise.resolve() : once(child, "close");
+  // Vite+ wrappers can exit before their server children; signal the owned group either way.
+  signalGroup("SIGTERM");
+  const timeout = setTimeout(() => signalGroup("SIGKILL"), 3000);
+  try {
+    await Promise.race([
+      closed,
+      new Promise((_, reject) => {
+        const deadline = setTimeout(() => reject(new Error("Process cleanup deadline")), 5000);
+        void closed.finally(() => clearTimeout(deadline));
+      }),
+    ]);
+    expect(child.exitCode === 0 || child.signalCode === "SIGTERM").toBe(true);
+    await released(url);
+    children.delete(child);
   } finally {
     clearTimeout(timeout);
   }
 }
 test.afterEach(async () => {
-  const outcomes = await Promise.allSettled(children.splice(0).reverse().map(stop));
+  const outcomes = await Promise.allSettled([...children.keys()].reverse().map(stop));
   for (const outcome of outcomes) if (outcome.status === "rejected") throw outcome.reason;
   expect(logs).not.toContain(token);
 });
@@ -45,33 +76,39 @@ async function start(argv: string[], url: string, env: Record<string, string> = 
     cwd: root,
     env: { ...process.env, FACTORY_RUNTIME_CANDIDATE: candidate, ...env },
     stdio: ["ignore", "pipe", "pipe"],
+    detached: true,
   });
-  children.push(child);
+  children.set(child, url);
   child.stdout?.on("data", (data: Buffer) => {
     logs += data.toString();
   });
   child.stderr?.on("data", (data: Buffer) => {
     logs += data.toString();
   });
-  await expect
-    .poll(
-      async () => {
-        if (child.exitCode !== null) throw new Error(`Process exited: ${logs}`);
-        try {
-          return (
-            await fetch(`${url}/health`, {
-              headers: env.FACTORY_HOST_TOKEN
-                ? { Authorization: `Bearer ${env.FACTORY_HOST_TOKEN}` }
-                : {},
-            })
-          ).status;
-        } catch {
-          return 0;
-        }
-      },
-      { timeout: 5000, intervals: [10, 50, 100] },
-    )
-    .toBe(200);
+  try {
+    await expect
+      .poll(
+        async () => {
+          if (child.exitCode !== null) throw new Error(`Process exited: ${logs}`);
+          try {
+            return (
+              await fetch(`${url}/health`, {
+                headers: env.FACTORY_HOST_TOKEN
+                  ? { Authorization: `Bearer ${env.FACTORY_HOST_TOKEN}` }
+                  : {},
+              })
+            ).status;
+          } catch {
+            return 0;
+          }
+        },
+        { timeout: 5000, intervals: [10, 50, 100] },
+      )
+      .toBe(200);
+  } catch (error) {
+    await stop(child);
+    throw error;
+  }
   return child;
 }
 
@@ -135,7 +172,7 @@ test("built browser health journey observes host outage and recovery without cre
     FACTORY_HOST_URL: hostUrl,
   });
   expect((await createFactoryClient({ baseUrl: backendUrl }).health()).buildId).toBe(candidate);
-  await start(
+  const preview = await start(
     [
       "node",
       "node_modules/vite-plus/bin/vp",
@@ -174,7 +211,7 @@ test("built browser health journey observes host outage and recovery without cre
   expect(await page.content()).not.toContain(token);
   const devPort = await port();
   const devUrl = `http://127.0.0.1:${devPort}`;
-  await start(
+  const dev = await start(
     [
       "node",
       "node_modules/vite-plus/bin/vp",
@@ -192,4 +229,27 @@ test("built browser health journey observes host outage and recovery without cre
     { FACTORY_BACKEND_URL: backendUrl },
   );
   expect((await createFactoryClient({ baseUrl: devUrl }).health()).buildId).toBe(candidate);
+  preview.kill("SIGTERM");
+  await expect.poll(() => preview.signalCode, { timeout: 3000 }).toBe("SIGTERM");
+  await stop(preview);
+  await stop(dev);
+});
+
+test("failed readiness cleans the listening process before returning the error", async () => {
+  const unavailablePort = await port();
+  const url = `http://127.0.0.1:${unavailablePort}`;
+  await expect(
+    start(
+      [
+        "node",
+        "--input-type=module",
+        "-e",
+        `import { createServer } from "node:http";
+     createServer((_, response) => { response.writeHead(503); response.end(); })
+       .listen(${unavailablePort}, "127.0.0.1");`,
+      ],
+      url,
+    ),
+  ).rejects.toThrow();
+  await released(url);
 });
