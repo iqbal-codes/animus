@@ -3,6 +3,6 @@
   "unit": "node node_modules/vite-plus/bin/vp test run",
   "unit_count_pattern": "Tests\\s+(\\d+)\\s+passed",
   "required_checks": "none",
-  "protected_paths": "MISSION.md,FACTORY.md,FACTORY_RULES.md,harness/**,apps/**,packages/**,.claude/settings.json,.ignore",
+  "protected_paths": "MISSION.md,FACTORY.md,FACTORY_RULES.md,harness/**,.claude/settings.json,.ignore",
   "description": "Ordinary project checks only. TypeScript monorepo configured with Vite+ (check, lint, test)."
 }

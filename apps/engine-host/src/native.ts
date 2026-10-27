@@ -134,8 +134,7 @@ export function readLaps(repoRoot: string): LapSummary[] {
   );
 
   if (!existsSync(cliPath)) {
-    // If CLI is not present in test root, check local runs directory or return empty
-    return [];
+    throw new Error("native_source_unavailable");
   }
 
   const result = Bun.spawnSync([bunBin, cliPath, "workflow", "runs", "--limit", "100", "--json"], {
@@ -241,8 +240,7 @@ export function readLapReport(repoRoot: string, lapId: string): string {
       return readFileSync(c, "utf-8");
     }
   }
-  // Generate a verified redaction-safe report summary if on-disk artifact is synthetic
-  return `# Peer Review Report for Lap ${detail.id}\n\nCandidate: ${detail.candidate_head ?? "unknown"}\nOutcome: Approved\nStatus: Verified\n`;
+  throw new Error("report_unavailable");
 }
 
 export function launchNativeLap(repoRoot: string, specification: string): LaunchAck {
