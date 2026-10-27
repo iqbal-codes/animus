@@ -9,6 +9,8 @@ import {
   launchSubmissionSchema,
   intakeResultSchema,
   evaluatedIssueSchema,
+  controlStateSchema,
+  controlSubmissionSchema,
   type OperatorErrorCode,
 } from "@labq/contracts/operator";
 import { configuration, hostOrigin } from "./config";
@@ -212,6 +214,27 @@ try {
         } catch {
           return Response.json({ error: "intake_unavailable" }, { status: 503 });
         }
+      }
+
+      if (path === "/api/v1/controls") {
+        if (request.method === "POST") {
+          let body: unknown;
+          try {
+            body = await request.json();
+          } catch {
+            return Response.json({ error: "invalid_payload" }, { status: 400 });
+          }
+          const parsed = controlSubmissionSchema.safeParse(body);
+          if (!parsed.success) {
+            return Response.json({ error: "invalid_payload" }, { status: 400 });
+          }
+          return forwardToHost("/internal/v1/controls", controlStateSchema, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(parsed.data),
+          });
+        }
+        return forwardToHost("/internal/v1/controls", controlStateSchema);
       }
 
       return Response.json({ error: "not_found" }, { status: 404 });

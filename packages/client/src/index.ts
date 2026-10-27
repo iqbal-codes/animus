@@ -8,6 +8,8 @@ import {
   launchAckSchema,
   intakeResultSchema,
   evaluatedIssueSchema,
+  controlStateSchema,
+  controlSubmissionSchema,
   operatorErrorSchema,
   type Health,
   type Diagnostics,
@@ -18,6 +20,8 @@ import {
   type LaunchAck,
   type IntakeResult,
   type EvaluatedIssue,
+  type ControlState,
+  type ControlAction,
   type OperatorErrorCode,
 } from "@labq/contracts/operator";
 
@@ -126,6 +130,41 @@ export function createFactoryClient(options: {
     },
     async issue(number: number): Promise<EvaluatedIssue> {
       return getJson(`/api/v1/intake/${encodeURIComponent(number)}`, evaluatedIssueSchema);
+    },
+    async controlState(): Promise<ControlState> {
+      return getJson("/api/v1/controls", controlStateSchema);
+    },
+    async control(action: ControlAction): Promise<ControlState> {
+      const parsed = controlSubmissionSchema.safeParse({ action });
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      const endpoint = new URL("/api/v1/controls", options.baseUrl).href;
+      let response: Response;
+      try {
+        response = await transport(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(parsed.data),
+          redirect: "error",
+          cache: "no-store",
+        });
+      } catch {
+        throw new FactoryClientError("transport_unavailable");
+      }
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        throw new FactoryClientError("invalid_operator_response");
+      }
+      if (!response.ok) {
+        const error = operatorErrorSchema.safeParse(body);
+        throw new FactoryClientError(
+          error.success ? error.data.error : "invalid_operator_response",
+        );
+      }
+      const result = controlStateSchema.safeParse(body);
+      if (!result.success) throw new FactoryClientError("invalid_operator_response");
+      return result.data;
     },
   };
 }

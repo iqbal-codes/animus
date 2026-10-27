@@ -9,6 +9,7 @@ import {
   type LapDetail,
   type IntakeResult,
   type EvaluatedIssue,
+  type ControlState,
 } from "@labq/contracts/operator";
 import { createFactoryClient, FactoryClientError } from "@labq/client";
 
@@ -183,4 +184,47 @@ test("portable client reads backlog intake and individual evaluated issues", asy
   expect(await client.intake()).toEqual(intakeData);
   expect(await client.intake({ refresh: true })).toEqual(intakeData);
   expect(await client.issue(31)).toEqual(issueData);
+});
+
+test("portable client reads and applies controls consistently", async () => {
+  let currentState: ControlState = {
+    halted: false,
+    paused: false,
+    active_brake: "none",
+    updated_at: "2026-10-27T00:00:00Z",
+  };
+
+  const client = createFactoryClient({
+    baseUrl: "http://localhost:1234",
+    fetch: async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/v1/controls")) {
+        if (init?.method === "POST") {
+          const body = JSON.parse(init.body as string);
+          if (body.action === "halt") {
+            currentState = { ...currentState, halted: true, active_brake: "stop" };
+          } else if (body.action === "unhalt") {
+            currentState = { ...currentState, halted: false, active_brake: "none" };
+          }
+          return Response.json(currentState);
+        }
+        return Response.json(currentState);
+      }
+      return Response.json({ error: "not_found" }, { status: 404 });
+    },
+  });
+
+  expect(await client.controlState()).toEqual({
+    halted: false,
+    paused: false,
+    active_brake: "none",
+    updated_at: "2026-10-27T00:00:00Z",
+  });
+  const afterHalt = await client.control("halt");
+  expect(afterHalt.halted).toBe(true);
+  expect(afterHalt.active_brake).toBe("stop");
+
+  const afterUnhalt = await client.control("unhalt");
+  expect(afterUnhalt.halted).toBe(false);
+  expect(afterUnhalt.active_brake).toBe("none");
 });

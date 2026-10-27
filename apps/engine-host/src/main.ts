@@ -1,7 +1,19 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import { hostHealthSchema, hostLaunchSubmissionSchema } from "@labq/contracts/host";
+import {
+  hostHealthSchema,
+  hostLaunchSubmissionSchema,
+  hostControlSubmissionSchema,
+} from "@labq/contracts/host";
 import { configuration } from "./config";
-import { readDiagnostics, readCatalog, readLaps, readLapDetail, launchNativeLap } from "./native";
+import {
+  readDiagnostics,
+  readCatalog,
+  readLaps,
+  readLapDetail,
+  launchNativeLap,
+  readControlState,
+  applyControlAction,
+} from "./native";
 
 try {
   const config = configuration();
@@ -70,7 +82,34 @@ try {
             return Response.json({ error: errCode }, { status });
           }
         }
+
+        if (path === "/internal/v1/controls") {
+          let body: unknown;
+          try {
+            body = await request.json();
+          } catch {
+            return Response.json({ error: "invalid_payload" }, { status: 400 });
+          }
+          const parsed = hostControlSubmissionSchema.safeParse(body);
+          if (!parsed.success) {
+            return Response.json({ error: "invalid_payload" }, { status: 400 });
+          }
+          try {
+            return Response.json(applyControlAction(config.repoRoot, parsed.data.action));
+          } catch (err: any) {
+            return Response.json({ error: err.message || "control_failed" }, { status: 500 });
+          }
+        }
+
         return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
+      if (path === "/internal/v1/controls") {
+        try {
+          return Response.json(readControlState(config.repoRoot));
+        } catch (err: any) {
+          return Response.json({ error: err.message || "control_failed" }, { status: 500 });
+        }
       }
 
       if (path === "/internal/v1/diagnostics") {

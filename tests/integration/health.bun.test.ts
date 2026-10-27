@@ -395,4 +395,17 @@ test("backend forwards diagnostics, catalog, and lap history from authenticated 
   expect(typeof intake.total_count).toBe("number");
   expect(Array.isArray(intake.issues)).toBe(true);
   expect(typeof intake.cached).toBe("boolean");
+
+  // End-to-end control inspection and execution through backend client
+  const initialControls = await client.controlState();
+  expect(typeof initialControls.halted).toBe("boolean");
+  expect(typeof initialControls.paused).toBe("boolean");
+  expect(["none", "stop", "pause", "both"]).toContain(initialControls.active_brake);
+
+  const paused = await client.control("pause");
+  expect(paused.paused).toBe(true);
+  expect(["pause", "both"]).toContain(paused.active_brake);
+
+  const unpaused = await client.control("unpause");
+  expect(unpaused.paused).toBe(false);
 });

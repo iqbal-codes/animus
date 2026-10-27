@@ -21,9 +21,28 @@ export const operatorErrorSchema = z.object({
     "invalid_payload",
     "intake_unavailable",
     "issue_not_found",
+    "control_failed",
   ]),
 });
 export type OperatorErrorCode = z.infer<typeof operatorErrorSchema>["error"];
+
+export const controlActionSchema = z.enum(["halt", "unhalt", "pause", "unpause"]);
+export type ControlAction = z.infer<typeof controlActionSchema>;
+
+export const controlSubmissionSchema = z
+  .object({
+    action: controlActionSchema,
+  })
+  .strict();
+export type ControlSubmission = z.infer<typeof controlSubmissionSchema>;
+
+export const controlStateSchema = z.object({
+  halted: z.boolean(),
+  paused: z.boolean(),
+  active_brake: z.enum(["none", "stop", "pause", "both"]),
+  updated_at: z.string(),
+});
+export type ControlState = z.infer<typeof controlStateSchema>;
 
 export const jevEvaluationSchema = z.object({
   id: z.string().optional(),

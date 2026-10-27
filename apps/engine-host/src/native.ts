@@ -1,4 +1,12 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  writeFileSync,
+  unlinkSync,
+  mkdirSync,
+} from "node:fs";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type {
@@ -7,6 +15,8 @@ import type {
   LapSummary,
   LapDetail,
   LaunchAck,
+  ControlState,
+  ControlAction,
 } from "@labq/contracts/operator";
 
 export function readDiagnostics(repoRoot: string): Diagnostics {
@@ -189,9 +199,10 @@ export function readLapDetail(repoRoot: string, lapId: string): LapDetail {
 }
 
 export function launchNativeLap(repoRoot: string, specification: string): LaunchAck {
-  const stopPath = join(repoRoot, ".factory/STOP");
-  const pausePath = join(repoRoot, ".factory/PAUSE");
-  if (existsSync(stopPath) || existsSync(pausePath)) {
+  const shared = resolveSharedRoot(repoRoot);
+  const stopPaths = [join(repoRoot, ".factory/STOP"), join(shared, ".factory/STOP")];
+  const pausePaths = [join(repoRoot, ".factory/PAUSE"), join(shared, ".factory/PAUSE")];
+  if (stopPaths.some((p) => existsSync(p)) || pausePaths.some((p) => existsSync(p))) {
     throw new Error("launch_brake_set");
   }
 
@@ -276,4 +287,75 @@ export function launchNativeLap(repoRoot: string, specification: string): Launch
   } catch {
     throw new Error("native_launch_failed");
   }
+}
+
+export function resolveSharedRoot(repoRoot: string): string {
+  try {
+    const res = Bun.spawnSync(["git", "rev-parse", "--git-common-dir"], { cwd: repoRoot });
+    if (res.exitCode === 0) {
+      const common = res.stdout.toString().trim();
+      if (common) {
+        return join(repoRoot, common, "..");
+      }
+    }
+  } catch {}
+  return repoRoot;
+}
+
+export function readControlState(repoRoot: string): ControlState {
+  const shared = resolveSharedRoot(repoRoot);
+  const stopPaths = [join(repoRoot, ".factory/STOP"), join(shared, ".factory/STOP")];
+  const pausePaths = [join(repoRoot, ".factory/PAUSE"), join(shared, ".factory/PAUSE")];
+  const halted = stopPaths.some((p) => existsSync(p));
+  const paused = pausePaths.some((p) => existsSync(p));
+  let active_brake: "none" | "stop" | "pause" | "both" = "none";
+  if (halted && paused) active_brake = "both";
+  else if (halted) active_brake = "stop";
+  else if (paused) active_brake = "pause";
+
+  return {
+    halted,
+    paused,
+    active_brake,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+export function applyControlAction(repoRoot: string, action: ControlAction): ControlState {
+  const shared = resolveSharedRoot(repoRoot);
+  const factoryDir = join(shared, ".factory");
+  if (!existsSync(factoryDir)) {
+    try {
+      mkdirSync(factoryDir, { recursive: true });
+    } catch {}
+  }
+  const stopPath = join(factoryDir, "STOP");
+  const pausePath = join(factoryDir, "PAUSE");
+  const localStopPath = join(repoRoot, ".factory/STOP");
+  const localPausePath = join(repoRoot, ".factory/PAUSE");
+
+  switch (action) {
+    case "halt":
+      if (!existsSync(stopPath)) {
+        writeFileSync(stopPath, `Halted by operator at ${new Date().toISOString()}\n`);
+      }
+      break;
+    case "unhalt":
+      if (existsSync(stopPath)) unlinkSync(stopPath);
+      if (existsSync(localStopPath)) unlinkSync(localStopPath);
+      break;
+    case "pause":
+      if (!existsSync(pausePath)) {
+        writeFileSync(pausePath, `Paused by operator at ${new Date().toISOString()}\n`);
+      }
+      break;
+    case "unpause":
+      if (existsSync(pausePath)) unlinkSync(pausePath);
+      if (existsSync(localPausePath)) unlinkSync(localPausePath);
+      break;
+    default:
+      throw new Error("invalid_payload");
+  }
+
+  return readControlState(repoRoot);
 }

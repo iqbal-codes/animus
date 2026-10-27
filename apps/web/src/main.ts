@@ -26,7 +26,44 @@ const messages: Record<FactoryErrorCode, string> = {
   invalid_payload: "Invalid: launch request payload is malformed.",
   intake_unavailable: "Unavailable: backlog intake could not be loaded.",
   issue_not_found: "Not found: requested issue does not exist.",
+  control_failed: "Failed: control action could not be completed.",
 };
+const controlStatus = document.querySelector<HTMLElement>("#control-status");
+const btnHalt = document.querySelector<HTMLButtonElement>("#btn-halt");
+const btnUnhalt = document.querySelector<HTMLButtonElement>("#btn-unhalt");
+const btnPause = document.querySelector<HTMLButtonElement>("#btn-pause");
+const btnUnpause = document.querySelector<HTMLButtonElement>("#btn-unpause");
+
+async function loadControls() {
+  if (!controlStatus) return;
+  try {
+    const state = await client.controlState();
+    controlStatus.textContent = `Controls: ${state.halted ? "HALTED" : "Running"} | ${state.paused ? "PAUSED" : "Active"} (Brake: ${state.active_brake.toUpperCase()})`;
+  } catch (error) {
+    controlStatus.textContent =
+      error instanceof FactoryClientError
+        ? messages[error.code]
+        : "Unavailable: control request failed.";
+  }
+}
+
+async function handleControl(action: "halt" | "unhalt" | "pause" | "unpause") {
+  if (!controlStatus) return;
+  controlStatus.textContent = `Applying ${action}…`;
+  try {
+    const state = await client.control(action);
+    controlStatus.textContent = `Controls: ${state.halted ? "HALTED" : "Running"} | ${state.paused ? "PAUSED" : "Active"} (Brake: ${state.active_brake.toUpperCase()})`;
+  } catch (error) {
+    controlStatus.textContent =
+      error instanceof FactoryClientError ? messages[error.code] : "Failed: control action failed.";
+  }
+}
+
+btnHalt?.addEventListener("click", () => void handleControl("halt"));
+btnUnhalt?.addEventListener("click", () => void handleControl("unhalt"));
+btnPause?.addEventListener("click", () => void handleControl("pause"));
+btnUnpause?.addEventListener("click", () => void handleControl("unpause"));
+void loadControls();
 const intakeList = document.querySelector<HTMLElement>("#intake-list");
 const intakeStatus = document.querySelector<HTMLElement>("#intake-status");
 const intakeRefresh = document.querySelector<HTMLButtonElement>("#intake-refresh");
