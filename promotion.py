@@ -109,6 +109,71 @@ class PromotionService:
         except Exception:
             return None
 
+    def _extract_harness_summary(self, rev_range: str | None) -> str:
+        """Extract added lessons and updated tool guidance from git diff."""
+        if not rev_range:
+            return ""
+
+        lessons_added: list[str] = []
+        tools_updated: list[str] = []
+
+        try:
+            diff_output = self._runner(
+                ["git", "diff", rev_range, "--", ".factory/lessons.jsonl", ".factory/tool-guidance.json"],
+                self.root,
+            )
+            if not diff_output.strip():
+                return ""
+
+            current_file = None
+            for raw_line in diff_output.splitlines():
+                if "b/.factory/" in raw_line:
+                    current_file = raw_line.split("b/.factory/", 1)[1].strip()
+                    continue
+
+                if raw_line.startswith("+") and not raw_line.startswith("+++"):
+                    added = raw_line[1:].strip()
+                    if not added:
+                        continue
+                    if current_file == "lessons.jsonl" and added.startswith("{"):
+                        try:
+                            item = json.loads(added)
+                            lid = item.get("id", "")
+                            topic = item.get("topic", "")
+                            rule = item.get("rule", "")
+                            if lid and rule:
+                                lessons_added.append(f"- **{lid}** (`{topic}`): {rule}")
+                        except Exception:
+                            pass
+                    elif current_file == "tool-guidance.json" and ":" in added:
+                        try:
+                            parts = added.rstrip(",").split(":", 1)
+                            if len(parts) == 2:
+                                task = parts[0].strip().strip('"')
+                                cmd = parts[1].strip().strip('"')
+                                if task and cmd:
+                                    tools_updated.append(f"- `{task}`: `{cmd}`")
+                        except Exception:
+                            pass
+        except Exception as exc:
+            logger.warning("Failed to extract harness summary from git diff (%s): %s", rev_range, exc)
+            return ""
+
+        if not lessons_added and not tools_updated:
+            return ""
+
+        sections = ["## Harness Evolution Summary", ""]
+        if lessons_added:
+            sections.append("### New Lessons")
+            sections.extend(lessons_added)
+            sections.append("")
+        if tools_updated:
+            sections.append("### Tool Guidance Updates")
+            sections.extend(tools_updated)
+            sections.append("")
+
+        return "\n".join(sections)
+
     def get_existing_promotion_pr(self) -> dict[str, Any] | None:
         """Check if an open promotion PR already exists from develop to main."""
         cmd = [
@@ -233,6 +298,10 @@ class PromotionService:
             lines.append(f"- *...and {len(status['commits']) - 30} more commits*")
 
         lines.append("")
+        harness_summary = self._extract_harness_summary(status["rev_range"])
+        if harness_summary:
+            lines.append(harness_summary)
+
         lines.append("### Candidate Verification Summary")
         lines.append("- All intermediate pull requests verified through Archon SDLC stages before landing into develop.")
         lines.append("- Staging candidate frozen via `.factory/PAUSE` during operator review.")
