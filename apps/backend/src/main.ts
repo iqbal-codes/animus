@@ -5,6 +5,8 @@ import { configuration, hostOrigin } from "./config";
 try {
   const config = configuration();
   const origin = hostOrigin();
+  // Bun 1.4.2 still resolves ambient proxies with fetch({ proxy: "" }).
+  process.env.NO_PROXY = process.env.no_proxy = new URL(origin).hostname;
   const failure = (error: OperatorErrorCode, status = 503) => Response.json({ error }, { status });
   const server = Bun.serve({
     hostname: config.hostname,

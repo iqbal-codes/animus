@@ -47,22 +47,29 @@ afterEach(async () => {
   for (const outcome of outcomes) if (outcome.status === "rejected") throw outcome.reason;
 });
 
-async function start(app: string, env: Record<string, string | undefined> = {}) {
+async function start(
+  app: string,
+  env: Record<string, string | undefined> = {},
+  hostname = "127.0.0.1",
+) {
   const state = await mkdtemp(join(tmpdir(), "factory-health-"));
   states.push(state);
-  const child = Bun.spawn([process.execPath, `${root}apps/${app}/src/main.ts`, "--port", "0"], {
-    cwd: "/tmp",
-    env: {
-      ...process.env,
-      FACTORY_RUNTIME_STATE: state,
-      FACTORY_RUNTIME_CANDIDATE: "  candidate-é\n",
-      FACTORY_HOST_TOKEN: token,
-      ...env,
+  const child = Bun.spawn(
+    [process.execPath, `${root}apps/${app}/src/main.ts`, "--port", "0", "--host", hostname],
+    {
+      cwd: "/tmp",
+      env: {
+        ...process.env,
+        FACTORY_RUNTIME_STATE: state,
+        FACTORY_RUNTIME_CANDIDATE: "  candidate-é\n",
+        FACTORY_HOST_TOKEN: token,
+        ...env,
+      },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
     },
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  );
   children.push(child);
   const reader = child.stdout.getReader();
   const first = await Promise.race([
@@ -182,6 +189,49 @@ test("operator classifies controlled malformed, upstream and deadline failures w
     expect(await response.json()).toEqual({ error: code });
   }
   expect(targetRequests).toBe(0);
+});
+
+test("private host traffic bypasses ambient proxies for success, auth refusal and outage", async () => {
+  const proxyRequests: { url: string; authorization: string | null }[] = [];
+  const proxy = adapter((request) => {
+    proxyRequests.push({ url: request.url, authorization: request.headers.get("authorization") });
+    return Response.json({ status: "healthy", buildId: "  candidate-é\n" });
+  });
+  for (const [key, hostname] of [
+    ["HTTP_PROXY", "127.0.0.1"],
+    ["http_proxy", "127.0.0.1"],
+    ["HTTP_PROXY", "::1"],
+    ["http_proxy", "::1"],
+  ]) {
+    const host = await start("engine-host", {}, hostname);
+    const env = {
+      FACTORY_HOST_URL: host.url,
+      HTTP_PROXY: undefined,
+      http_proxy: undefined,
+      HTTPS_PROXY: proxy,
+      https_proxy: proxy,
+      ALL_PROXY: proxy,
+      all_proxy: proxy,
+      NO_PROXY: "",
+      no_proxy: "",
+      [key]: proxy,
+    };
+    const backend = await start("backend", env);
+    const client = createFactoryClient({ baseUrl: backend.url });
+    expect((await client.health()).buildId).toBe("  candidate-é\n");
+    const wrong = await start("backend", { ...env, FACTORY_HOST_TOKEN: "x".repeat(64) });
+    expect(
+      await createFactoryClient({ baseUrl: wrong.url })
+        .health()
+        .catch((error: unknown) => error),
+    ).toMatchObject({ code: "host_unauthorized" });
+    await stop(host.child);
+    expect(await client.health().catch((error: unknown) => error)).toMatchObject({
+      code: "host_unavailable",
+    });
+    expect(proxyRequests.length).toBe(0);
+    expect(JSON.stringify(proxyRequests).includes(token)).toBe(false);
+  }
 });
 
 test("candidate values, independent lifetimes, concurrent connections and released listeners", async () => {

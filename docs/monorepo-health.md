@@ -103,8 +103,9 @@ own the independently launched host.
 
 Host authenticates before routing using constant-time comparison of fixed-size
 hashes. Missing/wrong credentials both return 401 `{"error":"unauthorized"}`.
-Backend sends its token only to the configured internal health endpoint, never
-follows redirects, never retries, and bounds headers/body by a two-second deadline.
+Backend sends its token only to the configured internal health endpoint, bypasses
+ambient HTTP proxies for that loopback host, never follows redirects, never retries,
+and bounds headers/body by a two-second deadline.
 Unknown service paths return 404; unsupported methods on declared paths return
 405. Error bodies contain no upstream text or private configuration:
 
