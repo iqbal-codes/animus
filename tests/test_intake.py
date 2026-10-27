@@ -6,6 +6,15 @@ import time
 import unittest
 from unittest.mock import MagicMock
 
+from factory.jev_client import (
+    ChoiceAnswer,
+    JevAPIError,
+    JevClient,
+    JevEvaluationResult,
+    JevTimeoutError,
+    NoulAnswer,
+    ScoreAnswer,
+)
 from intake import (
     IntakeFetchError,
     IntakeService,
@@ -221,6 +230,134 @@ class AdmissionRuleTests(unittest.TestCase):
         self.assertEqual(res.admission_status, "held")
         self.assertEqual(res.reason, "actively_claimed")
 
+    def test_jev_advisory_high_confidence_ready_for_agent(self) -> None:
+        """AC1, AC2: High confidence ready_for_agent gets recommended_label ready-for-agent."""
+        mock_eval = JevEvaluationResult(
+            id="jev-1",
+            model="typesafe/jev-1.14",
+            answers={
+                "is_actionable": NoulAnswer(noul=0.85),
+                "triage_category": ChoiceAnswer(
+                    choice="ready_for_agent",
+                    confidence=0.92,
+                    probabilities={"ready_for_agent": 0.92, "needs_info": 0.08},
+                ),
+                "complexity": ScoreAnswer(
+                    score=1.5,
+                    confidence=0.88,
+                    legend={0: "trivial", 1: "small"},
+                    probabilities={0: 0.2, 1: 0.8},
+                ),
+            },
+        )
+        jev_client = MagicMock(spec=JevClient)
+        jev_client.evaluate.return_value = mock_eval
+
+        issue = {
+            "number": 50,
+            "title": "Clear actionable task",
+            "state": "OPEN",
+            "labels": [],
+            "body": "Clear AC: 1. Do this 2. Do that",
+        }
+        res = evaluate_issue_admission(issue, {50: issue}, jev_client=jev_client)
+        self.assertEqual(res.admission_status, "held")
+        self.assertEqual(res.reason, "unlabeled_awaiting_triage")
+        self.assertEqual(res.recommended_label, "ready-for-agent")
+        self.assertEqual(res.confidence, 0.92)
+        self.assertEqual(res.complexity, 1.5)
+        self.assertEqual(res.probabilities, {"ready_for_agent": 0.92, "needs_info": 0.08})
+
+    def test_jev_advisory_low_confidence_needs_info(self) -> None:
+        """AC3: Low confidence (< 0.70) gets recommended_label needs-info."""
+        mock_eval = JevEvaluationResult(
+            id="jev-2",
+            model="typesafe/jev-1.14",
+            answers={
+                "is_actionable": NoulAnswer(noul=0.55),
+                "triage_category": ChoiceAnswer(
+                    choice="ready_for_agent",
+                    confidence=0.62,
+                    probabilities={"ready_for_agent": 0.62, "needs_info": 0.38},
+                ),
+                "complexity": ScoreAnswer(
+                    score=2.0,
+                    confidence=0.70,
+                    legend={0: "trivial", 1: "small"},
+                    probabilities={0: 0.1, 1: 0.9},
+                ),
+            },
+        )
+        jev_client = MagicMock(spec=JevClient)
+        jev_client.evaluate.return_value = mock_eval
+
+        issue = {
+            "number": 51,
+            "title": "Vague task",
+            "state": "OPEN",
+            "labels": [],
+            "body": "Fix it please",
+        }
+        res = evaluate_issue_admission(issue, {51: issue}, jev_client=jev_client)
+        self.assertEqual(res.admission_status, "held")
+        self.assertEqual(res.reason, "unclear_acceptance_criteria")
+        self.assertEqual(res.recommended_label, "needs-info")
+        self.assertEqual(res.confidence, 0.62)
+
+    def test_jev_advisory_transport_error_fails_closed(self) -> None:
+        """AC4: Transport or API error fails closed to held with evaluation_error:jev_unreachable."""
+        jev_client = MagicMock(spec=JevClient)
+        jev_client.evaluate.side_effect = JevTimeoutError("Timed out")
+
+        issue = {
+            "number": 52,
+            "title": "Task during outage",
+            "state": "OPEN",
+            "labels": [],
+            "body": "Do work",
+        }
+        res = evaluate_issue_admission(issue, {52: issue}, jev_client=jev_client)
+        self.assertEqual(res.admission_status, "held")
+        self.assertEqual(res.reason, "evaluation_error:jev_unreachable")
+        self.assertIsNone(res.recommended_label)
+
+    def test_needs_triage_issue_evaluated_by_jev(self) -> None:
+        """AC1, AC5: Issue with needs-triage is evaluated and receives recommendation."""
+        mock_eval = JevEvaluationResult(
+            id="jev-3",
+            model="typesafe/jev-1.14",
+            answers={
+                "is_actionable": NoulAnswer(noul=0.91),
+                "triage_category": ChoiceAnswer(
+                    choice="ready_for_agent",
+                    confidence=0.89,
+                    probabilities={"ready_for_agent": 0.89, "needs_info": 0.11},
+                ),
+                "complexity": ScoreAnswer(
+                    score=1.0,
+                    confidence=0.90,
+                    legend={0: "trivial", 1: "small"},
+                    probabilities={0: 0.1, 1: 0.9},
+                ),
+            },
+        )
+        jev_client = MagicMock(spec=JevClient)
+        jev_client.evaluate.return_value = mock_eval
+
+        issue = {
+            "number": 53,
+            "title": "Needs triage item",
+            "state": "OPEN",
+            "labels": [{"name": "needs-triage"}],
+            "body": "Well-specified ticket with test steps",
+        }
+        res = evaluate_issue_admission(issue, {53: issue}, jev_client=jev_client)
+        self.assertEqual(res.admission_status, "held")
+        self.assertEqual(res.reason, "held_by_label")
+        self.assertEqual(res.recommended_label, "ready-for-agent")
+        self.assertEqual(res.confidence, 0.89)
+        self.assertIsNotNone(res.jev_evaluation)
+
 
 class IntakeServiceTests(unittest.TestCase):
     def test_evaluate_backlog_with_mock_runner(self) -> None:
@@ -296,6 +433,52 @@ class IntakeServiceTests(unittest.TestCase):
         service = IntakeService(repo="fail-repo", runner=runner)
         with self.assertRaises(IntakeFetchError):
             service.evaluate_backlog()
+
+    def test_intake_service_with_jev_advisory(self) -> None:
+        """AC1, AC5: IntakeService integrates JevClient and populates metadata in backlog response."""
+        mock_data = [
+            {
+                "number": 100,
+                "title": "Raw proposal",
+                "state": "OPEN",
+                "labels": [],
+                "body": "AC: Verify X, Y, Z",
+            }
+        ]
+        mock_eval = JevEvaluationResult(
+            id="jev-svc-1",
+            model="typesafe/jev-1.14",
+            answers={
+                "is_actionable": NoulAnswer(noul=0.88),
+                "triage_category": ChoiceAnswer(
+                    choice="ready_for_agent",
+                    confidence=0.91,
+                    probabilities={"ready_for_agent": 0.91, "needs_info": 0.09},
+                ),
+                "complexity": ScoreAnswer(
+                    score=1.2,
+                    confidence=0.85,
+                    legend={0: "trivial", 1: "small"},
+                    probabilities={0: 0.2, 1: 0.8},
+                ),
+            },
+        )
+        runner = MagicMock(return_value=json.dumps(mock_data))
+        jev_client = MagicMock(spec=JevClient)
+        jev_client.evaluate.return_value = mock_eval
+
+        service = IntakeService(repo="test-repo", runner=runner, jev_client=jev_client)
+        res = service.evaluate_backlog()
+
+        self.assertEqual(len(res["issues"]), 1)
+        issue_res = res["issues"][0]
+        self.assertEqual(issue_res["number"], 100)
+        self.assertEqual(issue_res["admission_status"], "held")
+        self.assertEqual(issue_res["recommended_label"], "ready-for-agent")
+        self.assertEqual(issue_res["confidence"], 0.91)
+        self.assertEqual(issue_res["complexity"], 1.2)
+        self.assertIn("ready_for_agent", issue_res["probabilities"])
+        self.assertEqual(issue_res["jev_evaluation"]["id"], "jev-svc-1")
 
 
 if __name__ == "__main__":

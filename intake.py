@@ -11,11 +11,45 @@ import subprocess
 import threading
 from typing import Any, Callable
 
+from factory.jev_client import (
+    ChoiceAnswer,
+    JevClient,
+    JevError,
+    NoulAnswer,
+    ScoreAnswer,
+)
+
 logger = logging.getLogger(__name__)
 
 DEPENDS_ON_PATTERN = re.compile(r"(?i)depends\s+on\s*:\s*([^\n\r]+)")
 ISSUE_NUM_PATTERN = re.compile(r"#?(\d+)")
 CLAIM_PATTERN = re.compile(r"Loop claim: run ([a-zA-Z0-9_\-]+)")
+
+JEV_TRIAGE_QUESTIONS = {
+    "is_actionable": {
+        "type": "noul",
+        "instructions": "Does the issue have clear and unambiguous acceptance criteria?",
+    },
+    "triage_category": {
+        "type": "choice",
+        "instructions": "Categorize the issue",
+        "criteria": {
+            "ready_for_agent": "Fully specified with unambiguous acceptance criteria",
+            "needs_info": "Vague or missing acceptance criteria",
+            "ready_for_human": "Requires human decision or high-level architecture",
+        },
+    },
+    "complexity": {
+        "type": "score",
+        "instructions": "Rate complexity of the task",
+        "criteria": [
+            "trivial_single_line",
+            "small_single_file",
+            "medium_multi_file",
+            "large_system_wide",
+        ],
+    },
+}
 
 
 class IntakeError(Exception):
@@ -38,9 +72,14 @@ class EvaluatedIssue:
     labels: list[str] = field(default_factory=list)
     dependencies: list[int] = field(default_factory=list)
     unsatisfied_dependencies: list[int] = field(default_factory=list)
+    recommended_label: str | None = None
+    confidence: float | None = None
+    complexity: float | None = None
+    probabilities: dict[str, float] | None = None
+    jev_evaluation: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "number": self.number,
             "title": self.title,
             "state": self.state,
@@ -50,6 +89,17 @@ class EvaluatedIssue:
             "dependencies": list(self.dependencies),
             "unsatisfied_dependencies": list(self.unsatisfied_dependencies),
         }
+        if self.recommended_label is not None:
+            data["recommended_label"] = self.recommended_label
+        if self.confidence is not None:
+            data["confidence"] = self.confidence
+        if self.complexity is not None:
+            data["complexity"] = self.complexity
+        if self.probabilities is not None:
+            data["probabilities"] = dict(self.probabilities)
+        if self.jev_evaluation is not None:
+            data["jev_evaluation"] = dict(self.jev_evaluation)
+        return data
 
 
 def parse_dependencies(text: str) -> list[int]:
@@ -78,9 +128,55 @@ def is_active_claim(comments: list[dict[str, Any]]) -> bool:
     return False
 
 
+def run_jev_advisory(
+    title: str,
+    body: str,
+    labels: list[str],
+    jev_client: JevClient,
+) -> tuple[str | None, float | None, float | None, dict[str, float] | None, str, dict[str, Any] | None]:
+    """Execute Jev System 1 advisory evaluation on state context."""
+    state_text = f"Title: {title}\nBody: {body}\nLabels: {', '.join(labels)}"
+    try:
+        eval_result = jev_client.evaluate(state_text, JEV_TRIAGE_QUESTIONS)
+        noul_ans = eval_result.answers.get("is_actionable")
+        choice_ans = eval_result.answers.get("triage_category")
+        score_ans = eval_result.answers.get("complexity")
+
+        is_actionable = noul_ans.noul if isinstance(noul_ans, NoulAnswer) else 0.0
+        choice = choice_ans.choice if isinstance(choice_ans, ChoiceAnswer) else ""
+        confidence = choice_ans.confidence if isinstance(choice_ans, ChoiceAnswer) else 0.0
+        probabilities = choice_ans.probabilities if isinstance(choice_ans, ChoiceAnswer) else None
+        complexity = score_ans.score if isinstance(score_ans, ScoreAnswer) else None
+
+        if choice == "ready_for_agent" and confidence >= 0.70 and is_actionable >= 0.70:
+            rec_label = "ready-for-agent"
+            rec_reason = "clear_acceptance_criteria"
+        elif choice == "ready_for_human" and confidence >= 0.70:
+            rec_label = "ready-for-human"
+            rec_reason = "requires_human_architecture"
+        else:
+            rec_label = "needs-info"
+            rec_reason = "unclear_acceptance_criteria"
+
+        jev_meta = {
+            "id": eval_result.id,
+            "model": eval_result.model,
+            "is_actionable": is_actionable,
+            "choice": choice,
+            "confidence": confidence,
+            "complexity": complexity,
+            "probabilities": probabilities,
+        }
+        return rec_label, confidence, complexity, probabilities, rec_reason, jev_meta
+    except JevError as err:
+        logger.warning("Jev advisory evaluation error: %s", err)
+        return None, None, None, None, "evaluation_error:jev_unreachable", None
+
+
 def evaluate_issue_admission(
     issue: dict[str, Any],
     all_issues_by_number: dict[int, dict[str, Any]],
+    jev_client: JevClient | None = None,
 ) -> EvaluatedIssue:
     number = int(issue.get("number", 0))
     title = str(issue.get("title", ""))
@@ -137,15 +233,42 @@ def evaluate_issue_admission(
 
     # 2. Unlabeled check: fail-closed for issues lacking labels
     if not lower_labels:
+        rec_label, conf, comp, probs, rec_reason, jev_meta = None, None, None, None, "unlabeled_awaiting_triage", None
+        if jev_client is not None:
+            rec_label, conf, comp, probs, rec_reason, jev_meta = run_jev_advisory(
+                title=title,
+                body=body,
+                labels=label_names,
+                jev_client=jev_client,
+            )
+            if rec_reason == "evaluation_error:jev_unreachable":
+                return EvaluatedIssue(
+                    number=number,
+                    title=title,
+                    state=state,
+                    admission_status="held",
+                    reason="evaluation_error:jev_unreachable",
+                    labels=label_names,
+                    dependencies=deps,
+                    unsatisfied_dependencies=unsatisfied,
+                )
+            if rec_label == "ready-for-agent":
+                rec_reason = "unlabeled_awaiting_triage"
+
         return EvaluatedIssue(
             number=number,
             title=title,
             state=state,
             admission_status="held",
-            reason="unlabeled_awaiting_triage",
+            reason=rec_reason,
             labels=label_names,
             dependencies=deps,
             unsatisfied_dependencies=unsatisfied,
+            recommended_label=rec_label,
+            confidence=conf,
+            complexity=comp,
+            probabilities=probs,
+            jev_evaluation=jev_meta,
         )
 
     # 3. Exclude check: wontfix and legacy factory:exclude override everything
@@ -165,15 +288,42 @@ def evaluate_issue_admission(
     # 4. Hold check: canonical needs-info/ready-for-human/needs-triage and legacy factory:hold block admission
     blocking_labels = {"needs-info", "ready-for-human", "needs-triage", "factory:hold"}
     if any(lbl in lower_labels for lbl in blocking_labels):
+        rec_label, conf, comp, probs, rec_reason, jev_meta = None, None, None, None, "held_by_label", None
+        if "needs-triage" in lower_labels and jev_client is not None:
+            rec_label, conf, comp, probs, rec_reason, jev_meta = run_jev_advisory(
+                title=title,
+                body=body,
+                labels=label_names,
+                jev_client=jev_client,
+            )
+            if rec_reason == "evaluation_error:jev_unreachable":
+                return EvaluatedIssue(
+                    number=number,
+                    title=title,
+                    state=state,
+                    admission_status="held",
+                    reason="evaluation_error:jev_unreachable",
+                    labels=label_names,
+                    dependencies=deps,
+                    unsatisfied_dependencies=unsatisfied,
+                )
+            if rec_label == "ready-for-agent":
+                rec_reason = "held_by_label"
+
         return EvaluatedIssue(
             number=number,
             title=title,
             state=state,
             admission_status="held",
-            reason="held_by_label",
+            reason=rec_reason,
             labels=label_names,
             dependencies=deps,
             unsatisfied_dependencies=unsatisfied,
+            recommended_label=rec_label,
+            confidence=conf,
+            complexity=comp,
+            probabilities=probs,
+            jev_evaluation=jev_meta,
         )
 
     # 5. Ready check: canonical ready-for-agent or legacy factory:ready is strictly required
@@ -238,10 +388,12 @@ class IntakeService:
         repo: str = "labq-software-factory",
         ttl_seconds: float = 60.0,
         runner: Callable[[list[str]], str] | None = None,
+        jev_client: JevClient | None = None,
     ) -> None:
         self.repo = repo
         self.ttl_seconds = ttl_seconds
         self._runner = runner or self._default_runner
+        self.jev_client = jev_client
         self._lock = threading.Lock()
         self._cached_result: dict[str, Any] | None = None
         self._cached_at: float = 0.0
@@ -311,7 +463,7 @@ class IntakeService:
 
             evaluated: list[EvaluatedIssue] = []
             for issue in raw_issues:
-                evaluated.append(evaluate_issue_admission(issue, by_number))
+                evaluated.append(evaluate_issue_admission(issue, by_number, jev_client=self.jev_client))
 
             # Sort by issue number ascending
             evaluated.sort(key=lambda x: x.number)
