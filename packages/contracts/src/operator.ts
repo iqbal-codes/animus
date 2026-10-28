@@ -28,6 +28,12 @@ export const operatorErrorSchema = z.object({
     "promotion_pr_already_open",
     "promotion_failed",
     "partial_promotion_effect",
+    "project_not_found",
+    "project_already_exists",
+    "project_checkout_invalid",
+    "project_has_active_runs",
+    "partial_registration_effect",
+    "retarget_rejected",
   ]),
 });
 export type OperatorErrorCode = z.infer<typeof operatorErrorSchema>["error"];
@@ -242,3 +248,68 @@ export const promotionResultSchema = z.object({
   local_effect_error: z.string().nullable().optional(),
 });
 export type PromotionResult = z.infer<typeof promotionResultSchema>;
+
+export const projectStatusSchema = z.enum(["active", "held", "tombstone"]);
+export type ProjectStatus = z.infer<typeof projectStatusSchema>;
+
+export const projectSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  repo_id: z.number().int().positive(),
+  repo_name: z.string().min(1),
+  checkout_path: z.string().min(1),
+  status: projectStatusSchema,
+  status_reason: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type Project = z.infer<typeof projectSchema>;
+
+export const projectListSchema = z.array(projectSchema);
+export type ProjectList = z.infer<typeof projectListSchema>;
+
+export const projectRegistrationLocalCheckoutSchema = z.object({
+  method: z.literal("local_checkout"),
+  name: z.string().min(1),
+  checkout_path: z.string().min(1),
+});
+export type ProjectRegistrationLocalCheckout = z.infer<
+  typeof projectRegistrationLocalCheckoutSchema
+>;
+
+export const projectRegistrationGithubCloneSchema = z.object({
+  method: z.literal("github_clone"),
+  name: z.string().min(1),
+  repo: z.string().min(1),
+  target_path: z.string().min(1),
+});
+export type ProjectRegistrationGithubClone = z.infer<typeof projectRegistrationGithubCloneSchema>;
+
+export const projectRegistrationGithubCreateSchema = z.object({
+  method: z.literal("github_create"),
+  name: z.string().min(1),
+  repo: z.string().min(1),
+  target_path: z.string().min(1),
+  private: z.boolean().optional(),
+});
+export type ProjectRegistrationGithubCreate = z.infer<typeof projectRegistrationGithubCreateSchema>;
+
+export const projectRegistrationSchema = z.discriminatedUnion("method", [
+  projectRegistrationLocalCheckoutSchema,
+  projectRegistrationGithubCloneSchema,
+  projectRegistrationGithubCreateSchema,
+]);
+export type ProjectRegistration = z.infer<typeof projectRegistrationSchema>;
+
+export const projectRetargetSchema = z
+  .object({
+    checkout_path: z.string().min(1),
+  })
+  .strict();
+export type ProjectRetarget = z.infer<typeof projectRetargetSchema>;
+
+export const deregisterResultSchema = z.object({
+  status: z.literal("tombstone"),
+  id: z.string(),
+});
+export type DeregisterResult = z.infer<typeof deregisterResultSchema>;
