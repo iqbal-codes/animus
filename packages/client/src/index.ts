@@ -20,6 +20,19 @@ import {
   projectRegistrationSchema,
   projectRetargetSchema,
   deregisterResultSchema,
+  commandStateSchema,
+  commandProvenanceSchema,
+  commandOutcomeSchema,
+  commandRecordSchema,
+  commandListSchema,
+  commandSubmissionSchema,
+  commandReconciliationResultSchema,
+  globalBrakeStateSchema,
+  projectBrakeStateSchema,
+  brakeSubmissionSchema,
+  projectBrakeSubmissionSchema,
+  backupSubmissionSchema,
+  backupResultSchema,
   type Health,
   type Diagnostics,
   type WorkflowCatalog,
@@ -42,6 +55,19 @@ import {
   type ProjectRetarget,
   type DeregisterResult,
   type ProjectStatus,
+  type CommandState,
+  type CommandProvenance,
+  type CommandOutcome,
+  type CommandRecord,
+  type CommandList,
+  type CommandSubmission,
+  type CommandReconciliationResult,
+  type GlobalBrakeState,
+  type ProjectBrakeState,
+  type BrakeSubmission,
+  type ProjectBrakeSubmission,
+  type BackupSubmission,
+  type BackupResult,
 } from "@labq/contracts/operator";
 
 export {
@@ -50,12 +76,38 @@ export {
   projectRegistrationSchema,
   projectRetargetSchema,
   deregisterResultSchema,
+  commandStateSchema,
+  commandProvenanceSchema,
+  commandOutcomeSchema,
+  commandRecordSchema,
+  commandListSchema,
+  commandSubmissionSchema,
+  commandReconciliationResultSchema,
+  globalBrakeStateSchema,
+  projectBrakeStateSchema,
+  brakeSubmissionSchema,
+  projectBrakeSubmissionSchema,
+  backupSubmissionSchema,
+  backupResultSchema,
   type Project,
   type ProjectList,
   type ProjectRegistration,
   type ProjectRetarget,
   type DeregisterResult,
   type ProjectStatus,
+  type CommandState,
+  type CommandProvenance,
+  type CommandOutcome,
+  type CommandRecord,
+  type CommandList,
+  type CommandSubmission,
+  type CommandReconciliationResult,
+  type GlobalBrakeState,
+  type ProjectBrakeState,
+  type BrakeSubmission,
+  type ProjectBrakeSubmission,
+  type BackupSubmission,
+  type BackupResult,
 };
 
 export type FactoryErrorCode =
@@ -273,6 +325,43 @@ export function createFactoryClient(options: {
     async deregisterProject(id: string): Promise<DeregisterResult> {
       return deleteJson(`/api/v1/projects/${encodeURIComponent(id)}`, deregisterResultSchema);
     },
+    async commands(opts?: {
+      projectId?: string;
+      state?: CommandState;
+      limit?: number;
+    }): Promise<CommandList> {
+      const params = new URLSearchParams();
+      if (opts?.projectId) params.set("projectId", opts.projectId);
+      if (opts?.state) params.set("state", opts.state);
+      if (opts?.limit) params.set("limit", String(opts.limit));
+      const qs = params.toString();
+      const path = qs ? `/api/v1/commands?${qs}` : "/api/v1/commands";
+      return getJson(path, commandListSchema);
+    },
+    async command(requestId: string): Promise<CommandRecord> {
+      return getJson(`/api/v1/commands/${encodeURIComponent(requestId)}`, commandRecordSchema);
+    },
+    async dispatchCommand(submission: CommandSubmission): Promise<CommandRecord> {
+      const parsed = commandSubmissionSchema.safeParse(submission);
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      return postJson("/api/v1/commands", parsed.data, commandRecordSchema);
+    },
+    async reconcileCommands(): Promise<CommandReconciliationResult> {
+      return postJson("/api/v1/commands/reconcile", {}, commandReconciliationResultSchema);
+    },
+    async brakes(): Promise<GlobalBrakeState> {
+      return getJson("/api/v1/brakes", globalBrakeStateSchema);
+    },
+    async setBrake(submission: BrakeSubmission): Promise<GlobalBrakeState> {
+      const parsed = brakeSubmissionSchema.safeParse(submission);
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      return postJson("/api/v1/brakes", parsed.data, globalBrakeStateSchema);
+    },
+    async backupLedger(destinationPath: string): Promise<BackupResult> {
+      const parsed = backupSubmissionSchema.safeParse({ destinationPath });
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      return postJson("/api/v1/commands/backup", parsed.data, backupResultSchema);
+    },
     forProject(projectId: string) {
       const encId = encodeURIComponent(projectId);
       const scopedBase = `/api/v1/projects/${encId}`;
@@ -287,6 +376,36 @@ export function createFactoryClient(options: {
         },
         async deregister(): Promise<DeregisterResult> {
           return deleteJson(scopedBase, deregisterResultSchema);
+        },
+        async commands(opts?: { state?: CommandState; limit?: number }): Promise<CommandList> {
+          const params = new URLSearchParams();
+          if (opts?.state) params.set("state", opts.state);
+          if (opts?.limit) params.set("limit", String(opts.limit));
+          const qs = params.toString();
+          const path = qs ? `${scopedBase}/commands?${qs}` : `${scopedBase}/commands`;
+          return getJson(path, commandListSchema);
+        },
+        async command(requestId: string): Promise<CommandRecord> {
+          return getJson(
+            `${scopedBase}/commands/${encodeURIComponent(requestId)}`,
+            commandRecordSchema,
+          );
+        },
+        async dispatchCommand(
+          submission: Omit<CommandSubmission, "projectId">,
+        ): Promise<CommandRecord> {
+          const payload = { ...submission, projectId };
+          const parsed = commandSubmissionSchema.safeParse(payload);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(`${scopedBase}/commands`, parsed.data, commandRecordSchema);
+        },
+        async brakes(): Promise<ProjectBrakeState> {
+          return getJson(`${scopedBase}/brakes`, projectBrakeStateSchema);
+        },
+        async setBrake(submission: ProjectBrakeSubmission): Promise<ProjectBrakeState> {
+          const parsed = projectBrakeSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(`${scopedBase}/brakes`, parsed.data, projectBrakeStateSchema);
         },
         async intake(opts?: { refresh?: boolean }): Promise<IntakeResult> {
           const path = opts?.refresh ? `${scopedBase}/intake?refresh=true` : `${scopedBase}/intake`;

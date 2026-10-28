@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { applyCommandMigrations } from "../command/db";
 
 export function resolveStateDir(): string {
   const custom = process.env.FACTORY_STATE_DIR;
@@ -66,6 +67,8 @@ export function initializeDatabase(dbPath?: string): DatabaseSync {
       updated_at TEXT NOT NULL
     );
   `);
+
+  applyCommandMigrations(db);
 
   return db;
 }
