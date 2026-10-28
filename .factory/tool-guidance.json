@@ -3,5 +3,7 @@
   "lint": "bun run lint",
   "format": "bun run format",
   "typecheck": "bun run typecheck",
-  "build": "bun run build:web"
+  "build": "bun run build:web",
+  "verify": "vp run verify-all",
+  "architecture": "node scripts/health/check-architecture.mjs"
 }
