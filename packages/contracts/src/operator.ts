@@ -43,6 +43,36 @@ export const operatorErrorSchema = z.object({
     "target_drift",
     "admission_rejected",
     "spec_parse_error",
+    "method_not_allowed",
+    "plan_not_found",
+    "child_not_in_plan",
+    "child_already_integrated",
+    "spec_not_found",
+    "project_not_active",
+    "prerequisites_not_satisfied",
+    "coordination_pipeline_halted",
+    "coordination_failed",
+    "integration_conflict",
+    "integration_drift",
+    "integration_branch_unresolvable",
+    "worktree_lock_conflict",
+    "starting_sha_mismatch",
+    "starting_sha_unresolvable",
+    "branch_cleanliness_check_failed",
+    "worktree_dirty",
+    "unintegrated_children_remain",
+    "invalid_primitive",
+    "invalid_targeted_submission",
+    "contract_digest_mismatch",
+    "final_pr_failed",
+    "dispatch_failed",
+    "invalid_spec_number",
+    "dependency_cycle_detected",
+    "dependency_resolution_stuck",
+    "git_command_failed",
+    "git_ref_error",
+    "checkout_failed",
+    "rev_parse_failed",
   ]),
 });
 export type OperatorErrorCode = z.infer<typeof operatorErrorSchema>["error"];
@@ -527,3 +557,113 @@ export const backupResultSchema = z.object({
   timestamp: z.string(),
 });
 export type BackupResult = z.infer<typeof backupResultSchema>;
+
+// Coordination schemas (Issue #62)
+export const childTicketStatusSchema = z.enum([
+  "pending",
+  "dispatched",
+  "running",
+  "integrated_to_branch",
+  "failed",
+]);
+export type ChildTicketStatus = z.infer<typeof childTicketStatusSchema>;
+
+export const frozenContractSchema = z.object({
+  sourceAndProblem: z.string().optional(),
+  outcome: z.string().optional(),
+  invariants: z.array(z.string()).optional(),
+  acceptanceCriteria: z.array(z.string()).optional(),
+  boundary: z.string().optional(),
+  rawBody: z.string(),
+  digest: z.string(),
+});
+export type FrozenContract = z.infer<typeof frozenContractSchema>;
+
+export const coordinatedChildTicketSchema = z.object({
+  number: z.number().int().positive(),
+  title: z.string(),
+  dependencies: z.array(z.number().int().positive()),
+  status: childTicketStatusSchema,
+  contract: frozenContractSchema,
+  worktreePath: z.string().nullable().optional(),
+  branch: z.string().nullable().optional(),
+  commitSha: z.string().nullable().optional(),
+  error: z.string().nullable().optional(),
+});
+export type CoordinatedChildTicket = z.infer<typeof coordinatedChildTicketSchema>;
+
+export const finalPullRequestInfoSchema = z.object({
+  number: z.number().int().positive(),
+  url: z.string(),
+  title: z.string(),
+  head: z.string(),
+  base: z.string(),
+});
+export type FinalPullRequestInfo = z.infer<typeof finalPullRequestInfoSchema>;
+
+export const haltAttributionSchema = z.object({
+  childIssueNumber: z.number().int().positive().optional(),
+  stage: z.string(),
+  error: z.string(),
+  worktreePath: z.string().optional(),
+  preservedSha: z.string().optional(),
+});
+export type HaltAttribution = z.infer<typeof haltAttributionSchema>;
+
+export const specCoordinationPlanSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  specIssueNumber: z.number().int().positive(),
+  isStandalone: z.boolean(),
+  integrationBranch: z.string(),
+  baseBranch: z.string(),
+  baseSha: z.string(),
+  currentIntegrationSha: z.string(),
+  status: z.enum(["planning", "active", "halted", "completed"]),
+  dag: z.record(z.string(), z.array(z.number().int().positive())),
+  children: z.array(coordinatedChildTicketSchema),
+  snapshotTimestamp: z.string(),
+  finalPullRequest: finalPullRequestInfoSchema.nullable().optional(),
+  haltReason: z.string().nullable().optional(),
+  haltAttribution: haltAttributionSchema.nullable().optional(),
+});
+export type SpecCoordinationPlan = z.infer<typeof specCoordinationPlanSchema>;
+
+export const targetedImplementSubmissionSchema = z.object({
+  specIssueNumber: z.number().int().positive(),
+  childIssueNumber: z.number().int().positive(),
+  worktreePath: z.string(),
+  branch: z.string(),
+  startSha: z.string(),
+  contract: frozenContractSchema,
+  primitive: z.literal("archon-implement"),
+});
+export type TargetedImplementSubmission = z.infer<typeof targetedImplementSubmissionSchema>;
+
+export const targetedImplementResultSchema = z.object({
+  success: z.boolean(),
+  childIssueNumber: z.number().int().positive(),
+  headSha: z.string().optional(),
+  commitMessage: z.string().optional(),
+  error: z.string().optional(),
+  exitCode: z.number().int().optional(),
+});
+export type TargetedImplementResult = z.infer<typeof targetedImplementResultSchema>;
+
+export const coordinationFinalPrSubmissionSchema = z.object({
+  specIssueNumber: z.number().int().positive(),
+  baseBranch: z.string().default("main"),
+  title: z.string().optional(),
+  body: z.string().optional(),
+});
+export type CoordinationFinalPrSubmission = z.infer<typeof coordinationFinalPrSubmissionSchema>;
+
+export const coordinationFinalPrResultSchema = z.object({
+  prNumber: z.number().int().positive(),
+  url: z.string(),
+  title: z.string(),
+  head: z.string(),
+  base: z.string(),
+  integratedChildren: z.array(z.number().int().positive()),
+});
+export type CoordinationFinalPrResult = z.infer<typeof coordinationFinalPrResultSchema>;

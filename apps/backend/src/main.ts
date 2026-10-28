@@ -37,6 +37,7 @@ import { configuration, hostOrigin } from "./config";
 import { IntakeService, handleProjectIntakeRoute } from "./intake";
 import { initializeDatabase, ProjectRegistryService, ProjectRegistryError } from "./registry";
 import { CommandService, CommandError } from "./command";
+import { SpecCoordinatorService, handleProjectCoordinationRoute } from "./coordination";
 
 try {
   const config = configuration();
@@ -127,6 +128,19 @@ try {
       intakeServiceInstance = new IntakeService(reg.getDb(), reg.getForge());
     }
     return intakeServiceInstance;
+  };
+
+  let coordinationServiceInstance: SpecCoordinatorService | null = null;
+  const getCoordinationService = (): SpecCoordinatorService => {
+    if (!coordinationServiceInstance) {
+      const reg = getRegistryService();
+      const cmd = getCommandService();
+      coordinationServiceInstance = new SpecCoordinatorService(reg.getDb(), reg.getForge(), {
+        ledger: cmd.ledger,
+        commandService: cmd,
+      });
+    }
+    return coordinationServiceInstance;
   };
   // Bun 1.4.2 still resolves ambient proxies with fetch({ proxy: "" }).
   process.env.NO_PROXY = process.env.no_proxy = new URL(origin).hostname;
@@ -746,6 +760,17 @@ try {
             getIntakeService(),
           );
           if (intakeRes) return intakeRes;
+          return Response.json({ error: "not_found" }, { status: 404 });
+        }
+
+        if (scopedAction === "coordination") {
+          const coordRes = await handleProjectCoordinationRoute(
+            request,
+            projectId,
+            parts,
+            getCoordinationService(),
+          );
+          if (coordRes) return coordRes;
           return Response.json({ error: "not_found" }, { status: 404 });
         }
 

@@ -29,6 +29,24 @@ export interface UpdateIssueInput {
   labels?: string[];
 }
 
+export interface ForgePullRequest {
+  number: number;
+  title: string;
+  body: string;
+  head: string;
+  base: string;
+  state: string; // "OPEN" | "CLOSED" | "MERGED"
+  html_url?: string;
+}
+
+export interface CreatePullRequestInput {
+  title: string;
+  body: string;
+  head: string;
+  base: string;
+  draft?: boolean;
+}
+
 export interface ForgeAdapter {
   getRepository(repo: string): Promise<ForgeRepoInfo>;
   createRepository(repo: string, isPrivate?: boolean): Promise<ForgeRepoInfo>;
@@ -38,6 +56,9 @@ export interface ForgeAdapter {
   getIssue?(repo: string, issueNumber: number): Promise<ForgeIssue | null>;
   createIssue?(repo: string, input: CreateIssueInput): Promise<ForgeIssue>;
   updateIssue?(repo: string, issueNumber: number, input: UpdateIssueInput): Promise<ForgeIssue>;
+  createPullRequest?(repo: string, input: CreatePullRequestInput): Promise<ForgePullRequest>;
+  listPullRequests?(repo: string): Promise<ForgePullRequest[]>;
+  getPullRequest?(repo: string, prNumber: number): Promise<ForgePullRequest | null>;
 }
 
 export interface IssueForgeAdapter extends ForgeAdapter {
@@ -45,6 +66,9 @@ export interface IssueForgeAdapter extends ForgeAdapter {
   getIssue(repo: string, issueNumber: number): Promise<ForgeIssue | null>;
   createIssue(repo: string, input: CreateIssueInput): Promise<ForgeIssue>;
   updateIssue(repo: string, issueNumber: number, input: UpdateIssueInput): Promise<ForgeIssue>;
+  createPullRequest(repo: string, input: CreatePullRequestInput): Promise<ForgePullRequest>;
+  listPullRequests(repo: string): Promise<ForgePullRequest[]>;
+  getPullRequest(repo: string, prNumber: number): Promise<ForgePullRequest | null>;
 }
 
 export function assertIssueForge(forge: ForgeAdapter): IssueForgeAdapter {
@@ -350,11 +374,125 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
       );
     }
   }
+
+  async createPullRequest(repo: string, input: CreatePullRequestInput): Promise<ForgePullRequest> {
+    const cleanRepo = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+    const args = [
+      "pr",
+      "create",
+      "--repo",
+      cleanRepo,
+      "--title",
+      input.title,
+      "--body",
+      input.body,
+      "--head",
+      input.head,
+      "--base",
+      input.base,
+    ];
+    if (input.draft) args.push("--draft");
+    try {
+      const output = execFileSync("gh", args, {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      const match = output.match(/\/pull\/(\d+)/);
+      const prNumber = match && match[1] ? parseInt(match[1], 10) : 1;
+      return {
+        number: prNumber,
+        title: input.title,
+        body: input.body,
+        head: input.head,
+        base: input.base,
+        state: "OPEN",
+        html_url: output.trim(),
+      };
+    } catch (error: any) {
+      throw new Error(
+        `Failed to create pull request for ${cleanRepo}: ${error?.message || String(error)}`,
+      );
+    }
+  }
+
+  async listPullRequests(repo: string): Promise<ForgePullRequest[]> {
+    const cleanRepo = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+    try {
+      const output = execFileSync(
+        "gh",
+        [
+          "pr",
+          "list",
+          "--repo",
+          cleanRepo,
+          "--state",
+          "all",
+          "--limit",
+          "100",
+          "--json",
+          "number,title,body,headRefName,baseRefName,state,url",
+        ],
+        {
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      const items = JSON.parse(output);
+      return items.map((i: any) => ({
+        number: i.number,
+        title: i.title,
+        body: i.body || "",
+        head: i.headRefName,
+        base: i.baseRefName,
+        state: i.state,
+        html_url: i.url,
+      }));
+    } catch (error: any) {
+      throw new Error(
+        `Failed to list pull requests for ${cleanRepo}: ${error?.message || String(error)}`,
+      );
+    }
+  }
+
+  async getPullRequest(repo: string, prNumber: number): Promise<ForgePullRequest | null> {
+    const cleanRepo = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+    try {
+      const output = execFileSync(
+        "gh",
+        [
+          "pr",
+          "view",
+          String(prNumber),
+          "--repo",
+          cleanRepo,
+          "--json",
+          "number,title,body,headRefName,baseRefName,state,url",
+        ],
+        {
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      const i = JSON.parse(output);
+      return {
+        number: i.number,
+        title: i.title,
+        body: i.body || "",
+        head: i.headRefName,
+        base: i.baseRefName,
+        state: i.state,
+        html_url: i.url,
+      };
+    } catch {
+      return null;
+    }
+  }
 }
 
 export class SyntheticForgeAdapter implements IssueForgeAdapter {
   private repos = new Map<string, ForgeRepoInfo>();
   private issuesByRepo = new Map<string, Map<number, ForgeIssue>>();
+  private pullRequestsByRepo = new Map<string, Map<number, ForgePullRequest>>();
   private nextId = 1000;
   public failNextClone = false;
   public failNextCreate = false;
@@ -484,5 +622,53 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
       found = this.addRepository(remote);
     }
     return found;
+  }
+
+  addPullRequest(repo: string, pr: ForgePullRequest): ForgePullRequest {
+    const key = repo.toLowerCase();
+    let prMap = this.pullRequestsByRepo.get(key);
+    if (!prMap) {
+      prMap = new Map<number, ForgePullRequest>();
+      this.pullRequestsByRepo.set(key, prMap);
+    }
+    prMap.set(pr.number, { ...pr });
+    return pr;
+  }
+
+  async listPullRequests(repo: string): Promise<ForgePullRequest[]> {
+    const key = repo.toLowerCase();
+    const prMap = this.pullRequestsByRepo.get(key);
+    if (!prMap) return [];
+    return Array.from(prMap.values()).map((p) => ({ ...p }));
+  }
+
+  async getPullRequest(repo: string, prNumber: number): Promise<ForgePullRequest | null> {
+    const key = repo.toLowerCase();
+    const prMap = this.pullRequestsByRepo.get(key);
+    if (!prMap) return null;
+    const found = prMap.get(prNumber);
+    return found ? { ...found } : null;
+  }
+
+  async createPullRequest(repo: string, input: CreatePullRequestInput): Promise<ForgePullRequest> {
+    const key = repo.toLowerCase();
+    let prMap = this.pullRequestsByRepo.get(key);
+    if (!prMap) {
+      prMap = new Map<number, ForgePullRequest>();
+      this.pullRequestsByRepo.set(key, prMap);
+    }
+    const maxNum = Array.from(prMap.keys()).reduce((max, n) => Math.max(max, n), 0);
+    const prNumber = maxNum + 1;
+    const pr: ForgePullRequest = {
+      number: prNumber,
+      title: input.title,
+      body: input.body,
+      head: input.head,
+      base: input.base,
+      state: "OPEN",
+      html_url: `https://github.com/${repo}/pull/${prNumber}`,
+    };
+    prMap.set(prNumber, pr);
+    return { ...pr };
   }
 }
