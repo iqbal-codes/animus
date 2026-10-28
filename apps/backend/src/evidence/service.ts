@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import type { DatabaseSync } from "node:sqlite";
 import type {
   CandidateVerificationSubmission,
@@ -38,7 +39,7 @@ export class EvidenceService {
     private ledger?: CommandLedger,
   ) {
     this.verificationEngine = new CandidateVerificationEngine(db);
-    this.landingGuard = new LandingGuard(this.verificationEngine);
+    this.landingGuard = new LandingGuard(this.verificationEngine, db);
     this.tieredActions = new TieredActionMatrix();
     this.runControls = new RunControlManager(db);
     this.gateAndRelease = new GateAndReleaseManager(db, this.verificationEngine);
@@ -50,10 +51,9 @@ export class EvidenceService {
     projectId: string,
     submission: CandidateVerificationSubmission,
   ): CandidateVerificationRecord {
-    const record = this.verificationEngine.recordVerification(projectId, submission);
+    const requestId = `cmd_verif_${projectId}_pr${submission.prNumber}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
     if (this.ledger) {
-      const requestId = `cmd_verif_${projectId}_pr${submission.prNumber}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       this.ledger.recordBeforeDispatch({
         requestId,
         actor: submission.producerIdentity?.id ?? "evaluator",
@@ -65,18 +65,37 @@ export class EvidenceService {
           status: submission.verificationStatus,
         },
       });
-      this.ledger.updateOutcome(requestId, {
-        state: submission.verificationStatus === "passed" ? "succeeded" : "failed",
-        provenance: {
-          source: submission.producerIdentity.id,
-          timestamp: new Date().toISOString(),
-          details: `Candidate verification status: ${submission.verificationStatus}`,
-        },
-        result: record as unknown as Record<string, unknown>,
-      });
     }
 
-    return record;
+    try {
+      const record = this.verificationEngine.recordVerification(projectId, submission);
+
+      if (this.ledger) {
+        this.ledger.updateOutcome(requestId, {
+          state: submission.verificationStatus === "passed" ? "succeeded" : "failed",
+          provenance: {
+            source: submission.producerIdentity?.id ?? "evaluator",
+            timestamp: new Date().toISOString(),
+            details: `Candidate verification status: ${submission.verificationStatus}`,
+          },
+          result: record as unknown as Record<string, unknown>,
+        });
+      }
+
+      return record;
+    } catch (err: any) {
+      if (this.ledger) {
+        this.ledger.updateOutcome(requestId, {
+          state: "failed",
+          provenance: {
+            source: submission.producerIdentity?.id ?? "evaluator",
+            timestamp: new Date().toISOString(),
+          },
+          error: err.message,
+        });
+      }
+      throw err;
+    }
   }
 
   getVerificationByPr(projectId: string, prNumber: number): CandidateVerificationRecord | null {
@@ -279,13 +298,58 @@ export class EvidenceService {
     return this.sanitizer.sanitizeMarkdown(rawContent);
   }
 
-  private getProjectRepoName(projectId: string): string {
+  createLiveFreshnessResolver(projectId: string): FreshnessResolver {
+    const project = this.getProject(projectId);
+    return {
+      resolveBranchSha: (targetBranch: string) => {
+        try {
+          const sha = execFileSync("git", ["rev-parse", targetBranch], {
+            cwd: project.checkout_path,
+            encoding: "utf-8",
+            stdio: ["ignore", "pipe", "pipe"],
+          }).trim();
+          return sha;
+        } catch (err: any) {
+          throw new EvidenceError(
+            "freshness_check_failed",
+            `Failed to resolve live branch SHA for ${targetBranch}: ${err?.message || String(err)}`,
+            { targetBranch, projectId },
+          );
+        }
+      },
+      checkPrerequisite: (key: string) => {
+        if (key === "gate_approved") {
+          const row = this.db
+            .prepare(
+              "SELECT id FROM gate_approvals WHERE project_id = ? AND decision = 'approved' LIMIT 1",
+            )
+            .get(projectId);
+          return row ? "true" : "false";
+        }
+        if (key === "verification_passed") {
+          const row = this.db
+            .prepare(
+              "SELECT id FROM candidate_verifications WHERE project_id = ? AND verification_status = 'passed' LIMIT 1",
+            )
+            .get(projectId);
+          return row ? "true" : "false";
+        }
+        return undefined;
+      },
+    };
+  }
+
+  getProject(projectId: string): { id: string; checkout_path: string; repo_name: string } {
     const row = this.db
-      .prepare("SELECT repo_name FROM projects WHERE id = ?")
+      .prepare("SELECT id, checkout_path, repo_name FROM projects WHERE id = ?")
       .get(projectId) as any;
     if (!row) {
       throw new EvidenceError("project_not_found", `Project '${projectId}' does not exist.`);
     }
-    return row.repo_name;
+    return row;
+  }
+
+  private getProjectRepoName(projectId: string): string {
+    return this.getProject(projectId).repo_name;
   }
 }

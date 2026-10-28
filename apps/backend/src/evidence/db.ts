@@ -60,4 +60,22 @@ export function applyEvidenceMigrations(db: DatabaseSync): void {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_run_proc_proj ON run_processes(project_id);
   `);
+
+  // Table for landed candidates (AC1, AC2, AC5)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS candidate_landings (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      pr_number INTEGER NOT NULL,
+      candidate_head_sha TEXT NOT NULL,
+      merge_base_sha TEXT NOT NULL,
+      merge_sha TEXT NOT NULL,
+      landed_by TEXT NOT NULL,
+      landed_at TEXT NOT NULL
+    );
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_cand_landings_proj_head ON candidate_landings(project_id, candidate_head_sha);
+  `);
 }

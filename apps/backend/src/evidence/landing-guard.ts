@@ -1,4 +1,5 @@
 import type { LandingGuardResult, LandingExecutionResult } from "@labq/contracts/operator";
+import type { DatabaseSync } from "node:sqlite";
 import type { CandidateVerificationEngine } from "./verification";
 import type { ForgeAdapter } from "../registry/forge";
 import { EvidenceError } from "./errors";
@@ -23,7 +24,10 @@ export interface ExecuteLandingOptions {
 }
 
 export class LandingGuard {
-  constructor(private verificationEngine: CandidateVerificationEngine) {}
+  constructor(
+    private verificationEngine: CandidateVerificationEngine,
+    private db?: DatabaseSync,
+  ) {}
 
   async evaluateLanding(options: EvaluateLandingOptions): Promise<LandingGuardResult> {
     const { projectId, prNumber, repoName, forge } = options;
@@ -161,6 +165,27 @@ export class LandingGuard {
     if (forge && (forge as any).mergePullRequest) {
       const res = await (forge as any).mergePullRequest(repoName, prNumber);
       if (res && res.sha) mergeSha = res.sha;
+    }
+
+    const landingId = `land_${projectId}_pr${prNumber}_${Date.now()}`;
+    const landedAt = new Date().toISOString();
+    if (this.db) {
+      this.db
+        .prepare(
+          `INSERT INTO candidate_landings (
+            id, project_id, pr_number, candidate_head_sha, merge_base_sha, merge_sha, landed_by, landed_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          landingId,
+          projectId,
+          prNumber,
+          expectedHeadSha,
+          expectedBaseSha,
+          mergeSha,
+          options.actor ?? "operator",
+          landedAt,
+        );
     }
 
     return {

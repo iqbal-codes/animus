@@ -525,7 +525,7 @@ describe("Candidate-Bound Verification, Landing Guard & Tiered Action Freshness 
           decision: "approved",
         });
       }).toThrow(
-        "Gate approval specifies candidate 'sha_STALE_OLD_SHA', but current active candidate is 'sha_NEW_INTEGRATED_SHA'",
+        "Gate approval specifies candidate 'sha_STALE_OLD_SHA', but active coordination candidate does not match.",
       );
     });
 
@@ -537,7 +537,7 @@ describe("Candidate-Bound Verification, Landing Guard & Tiered Action Freshness 
       );
     });
 
-    test("release-complete declared ONLY when all policy-required stages pass", () => {
+    test("release-complete declared ONLY when all policy-required stages pass", async () => {
       const candidateSha = "sha_complete_candidate";
 
       // 1. Initial state: all stages pending
@@ -581,13 +581,20 @@ describe("Candidate-Bound Verification, Landing Guard & Tiered Action Freshness 
         decision: "approved",
       });
 
-      // 4. Mark landing verified in DB
-      db.prepare(
-        `INSERT INTO project_spec_coordinations (
-          id, project_id, spec_issue_number, integration_branch, base_branch,
-          base_sha, current_integration_sha, status, plan_snapshot, created_at, updated_at
-        ) VALUES ('coord_landing', ?, 58, 'factory/spec-58', 'main', 'sha_base_000', ?, 'completed', '{}', datetime('now'), datetime('now'))`,
-      ).run(projectId, candidateSha);
+      // 4. Execute real landing via landingGuard (truthful verification)
+      forge.addPullRequest("owner/repo-evidence", {
+        number: 20,
+        title: "feat: release candidate PR",
+        body: "body",
+        head: candidateSha,
+        base: "sha_base_000",
+        state: "OPEN",
+      });
+      await evidenceService.executeLanding(projectId, {
+        prNumber: 20,
+        expectedHeadSha: candidateSha,
+        expectedBaseSha: "sha_base_000",
+      });
 
       // Now all stages pass -> release-complete is true!
       readiness = evidenceService.getReleaseReadiness(projectId, candidateSha);
@@ -644,7 +651,7 @@ describe("Candidate-Bound Verification, Landing Guard & Tiered Action Freshness 
 
   describe("HTTP Routes & Scoped Client SDK Integration (@labq/client)", () => {
     test("handles full verification, landing guard, and release readiness lifecycle via HTTP and @labq/client", async () => {
-      // Create custom transport routing to handleProjectEvidenceRoute
+      // Create custom transport routing identical to main.ts subPath splitting
       const client = createFactoryClient({
         baseUrl: "http://localhost:4000",
         fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -652,11 +659,15 @@ describe("Candidate-Bound Verification, Landing Guard & Tiered Action Freshness 
             typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
           const url = new URL(urlStr);
           const req = new Request(url.toString(), init);
-          const parts = url.pathname.replace(/^\/api\/v1\//, "").split("/");
 
-          if (parts[0] === "projects" && parts[2] === "evidence") {
-            const res = await handleProjectEvidenceRoute(req, parts[1], parts, evidenceService);
-            if (res) return res;
+          // Exercises exact main.ts routing: slice("/api/v1/projects/".length).split("/")
+          if (url.pathname.startsWith("/api/v1/projects/")) {
+            const subPath = url.pathname.slice("/api/v1/projects/".length);
+            const parts = subPath.split("/");
+            if (parts[1] === "evidence") {
+              const res = await handleProjectEvidenceRoute(req, parts[0], parts, evidenceService);
+              if (res) return res;
+            }
           }
           return new Response(JSON.stringify({ error: "not_found" }), { status: 404 });
         },
@@ -693,16 +704,22 @@ describe("Candidate-Bound Verification, Landing Guard & Tiered Action Freshness 
       });
       expect(approval.decision).toBe("approved");
 
-      // 5. Tiered action via client
+      // 5. Tiered action via client exercising live git branch freshness
+      const currentMainSha = execFileSync("git", ["rev-parse", "main"], {
+        cwd: repoPath,
+        encoding: "utf-8",
+      }).trim();
+
       const tieredResult = await client.forProject(projectId).executeTieredAction({
         action: "launch",
         targetBranch: "main",
-        expectedBranchSha: "sha_client_head_50",
+        expectedBranchSha: currentMainSha,
         issueNumbers: [63],
         confirmed: true,
       });
       expect(tieredResult.success).toBe(true);
       expect(tieredResult.freshnessVerified).toBe(true);
+      expect(tieredResult.branchSha).toBe(currentMainSha);
 
       // 6. Sanitized report via client
       const report = await client.forProject(projectId).getSanitizedReport(50);

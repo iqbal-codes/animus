@@ -31,17 +31,17 @@ export class GateAndReleaseManager {
     }
 
     // Verify candidate SHA is not drifted if there is a plan or active coordination
-    const coord = this.db
+    const coords = this.db
       .prepare(
-        "SELECT current_integration_sha FROM project_spec_coordinations WHERE project_id = ? ORDER BY updated_at DESC LIMIT 1",
+        "SELECT current_integration_sha FROM project_spec_coordinations WHERE project_id = ? AND status = 'active'",
       )
-      .get(projectId) as any;
+      .all(projectId) as Array<{ current_integration_sha: string }>;
 
-    if (coord && coord.current_integration_sha && coord.current_integration_sha !== candidateSha) {
+    if (coords.length > 0 && !coords.some((c) => c.current_integration_sha === candidateSha)) {
       throw new EvidenceError(
         "stale_candidate_drift",
-        `Gate approval specifies candidate '${candidateSha}', but current active candidate is '${coord.current_integration_sha}'.`,
-        { expectedSha: candidateSha, currentActiveSha: coord.current_integration_sha },
+        `Gate approval specifies candidate '${candidateSha}', but active coordination candidate does not match.`,
+        { expectedSha: candidateSha, activeShas: coords.map((c) => c.current_integration_sha) },
       );
     }
 
@@ -161,11 +161,11 @@ export class GateAndReleaseManager {
     });
     if (!gatePassed) pendingStages.push("gate_approval");
 
-    // Stage 4: Landing Verified
+    // Stage 4: Landing Verified (Truthful verification of actual executed landing)
     const landingRow = this.db
       .prepare(
-        `SELECT final_pr_number, status FROM project_spec_coordinations
-         WHERE project_id = ? AND current_integration_sha = ? AND status = 'completed'
+        `SELECT id, merge_sha, landed_at FROM candidate_landings
+         WHERE project_id = ? AND candidate_head_sha = ?
          LIMIT 1`,
       )
       .get(projectId, candidateSha) as any;
@@ -174,7 +174,9 @@ export class GateAndReleaseManager {
       stage: "landing_verified",
       passed: landingPassed,
       status: landingPassed ? "passed" : "pending",
-      details: landingPassed ? "Final PR merged / landing verified" : "Landing pending",
+      details: landingPassed
+        ? `Landed at ${landingRow.merge_sha} (${landingRow.landed_at})`
+        : "Candidate landing has not been executed",
     });
     if (!landingPassed) pendingStages.push("landing_verified");
 

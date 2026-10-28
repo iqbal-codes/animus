@@ -152,9 +152,9 @@ export class RunControlManager {
       .prepare("UPDATE run_processes SET status = 'cancelled', terminated_at = ? WHERE run_id = ?")
       .run(now, runId);
 
-    // Also update project_runs so deregistration / status queries reflect completion
+    // Also update project_runs truthfully to 'cancelled' (AC13 truthful status)
     this.db
-      .prepare("UPDATE project_runs SET status = 'completed', updated_at = ? WHERE id = ?")
+      .prepare("UPDATE project_runs SET status = 'cancelled', updated_at = ? WHERE id = ?")
       .run(now, runId);
 
     return {

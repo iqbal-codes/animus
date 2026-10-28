@@ -22,10 +22,12 @@ export async function handleProjectEvidenceRoute(
   parts: string[],
   service: EvidenceService,
 ): Promise<Response | null> {
-  // Expected parts: ["projects", projectId, "evidence", subAction, ...]
-  if (parts.length < 3 || parts[2] !== "evidence") return null;
+  // Support both parts = ["projects", projectId, "evidence", subAction, ...]
+  // and parts = [projectId, "evidence", subAction, ...] from main.ts
+  const offset = parts[0] === "projects" ? 1 : 0;
+  if (parts.length < offset + 2 || parts[offset + 1] !== "evidence") return null;
 
-  const subAction = parts[3];
+  const subAction = parts[offset + 2];
 
   try {
     // 1. Verification Records (AC1, AC2)
@@ -46,8 +48,8 @@ export async function handleProjectEvidenceRoute(
       }
 
       if (request.method === "GET") {
-        if (parts.length === 5) {
-          const prNumber = parseInt(parts[4], 10);
+        if (parts.length === offset + 4) {
+          const prNumber = parseInt(parts[offset + 3], 10);
           if (isNaN(prNumber) || prNumber <= 0) {
             return Response.json({ error: "invalid_payload" }, { status: 400 });
           }
@@ -75,10 +77,10 @@ export async function handleProjectEvidenceRoute(
           { status: 405, headers: { Allow: "GET" } },
         );
       }
-      if (parts.length !== 5) {
+      if (parts.length !== offset + 4) {
         return Response.json({ error: "invalid_payload" }, { status: 400 });
       }
-      const prNumber = parseInt(parts[4], 10);
+      const prNumber = parseInt(parts[offset + 3], 10);
       if (isNaN(prNumber) || prNumber <= 0) {
         return Response.json({ error: "invalid_payload" }, { status: 400 });
       }
@@ -137,13 +139,8 @@ export async function handleProjectEvidenceRoute(
         return Response.json({ error: "invalid_payload" }, { status: 400 });
       }
 
-      // Default resolver checking project checkout branch SHA
-      const resolver = {
-        resolveBranchSha: (_branch: string) => {
-          // If expectedBranchSha was sent, resolve via git or return candidate SHA
-          return parsed.data.expectedBranchSha;
-        },
-      };
+      // Live freshness resolver querying git checkout & live prerequisites (AC3)
+      const resolver = service.createLiveFreshnessResolver(projectId);
 
       const result = await service.executeTieredAction(projectId, parsed.data, resolver);
       return Response.json(tieredActionResultSchema.parse(result));
@@ -203,24 +200,24 @@ export async function handleProjectEvidenceRoute(
           { status: 405, headers: { Allow: "GET" } },
         );
       }
-      if (parts.length !== 5) {
+      if (parts.length !== offset + 4) {
         return Response.json({ error: "invalid_payload" }, { status: 400 });
       }
-      const candidateSha = decodeURIComponent(parts[4]);
+      const candidateSha = decodeURIComponent(parts[offset + 3]);
       const result = service.getReleaseReadiness(projectId, candidateSha);
       return Response.json(releaseReadinessResultSchema.parse(result));
     }
 
-    // 8. Sanitized Reports (AC6)
-    if (subAction === "report" && parts.length >= 5) {
+    // 8. Sanitized Reports (AC6 - Invariant 4: Always sanitized)
+    if (subAction === "report" && parts.length >= offset + 4) {
       if (request.method !== "GET") {
         return Response.json(
           { error: "method_not_allowed" },
           { status: 405, headers: { Allow: "GET" } },
         );
       }
-      const prNumber = parseInt(parts[4], 10);
-      const isSanitized = parts[5] === "sanitized";
+      const prNumber = parseInt(parts[offset + 3], 10);
+      const isSanitized = parts[offset + 4] === "sanitized";
       const verif = service.getVerificationByPr(projectId, prNumber);
       if (!verif) {
         return Response.json({ error: "report_not_found" }, { status: 404 });
@@ -238,12 +235,14 @@ ${verif.checks.map((c) => `- [${c.result}] ${c.name}: \`${c.command}\``).join("\
 ## Review
 ${verif.review ? verif.review.summary : "No review conducted."}`;
 
-      if (isSanitized) {
-        const sanitized = service.sanitizeReport(rawReport);
+      // Invariant 4: Always sanitized before transport to client
+      const sanitized = service.sanitizeReport(rawReport);
+
+      if (isSanitized || request.headers.get("Accept")?.includes("application/json")) {
         return Response.json(sanitizedReportSchema.parse(sanitized));
       }
 
-      return new Response(rawReport, {
+      return new Response(sanitized.report, {
         headers: { "Content-Type": "text/markdown; charset=utf-8" },
       });
     }
