@@ -166,7 +166,6 @@ export const ConsoleView: React.FC = () => {
   const [controlStatusText, setControlStatusText] = useState("Loading controls…");
   const [promotionStatusText, setPromotionStatusText] = useState("Loading promotion status…");
   const [promotionDetailsText, setPromotionDetailsText] = useState("");
-  const [isPromoteDisabled, setIsPromoteDisabled] = useState(true);
 
   // 1. Health check function
   const refreshHealth = useCallback(async () => {
@@ -269,7 +268,6 @@ export const ConsoleView: React.FC = () => {
       setPromotionStatusText(
         `Promotion: ${promotionData.unpromoted_count} unpromoted commits (Freeze: ${promotionData.candidate_freeze ? "ACTIVE" : "None"}). Ready: ${promotionData.ready_to_promote ? "YES" : "NO"}`,
       );
-      setIsPromoteDisabled(!promotionData.ready_to_promote);
       if (promotionData.existing_pr) {
         setPromotionDetailsText(
           `Open PR: #${promotionData.existing_pr.number} - ${promotionData.existing_pr.title} (${promotionData.existing_pr.url})`,
@@ -576,13 +574,7 @@ export const ConsoleView: React.FC = () => {
           <div id="promotion-details" style={{ fontSize: "12px", color: "#4ADE80" }}>
             {promotionDetailsText}
           </div>
-          <Button
-            id="btn-promote"
-            size="sm"
-            variant="default"
-            disabled={isPromoteDisabled}
-            onClick={openPromotionModal}
-          >
+          <Button id="btn-promote" size="sm" variant="default" onClick={openPromotionModal}>
             Prepare Promotion
           </Button>
         </div>

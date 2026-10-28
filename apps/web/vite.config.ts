@@ -63,7 +63,7 @@ export default defineConfig(({ command, isPreview }) => {
     const path = request.url?.split("?")[0];
     if (
       path?.startsWith("/internal/") ||
-      (path?.startsWith("/api/") && path !== "/api/v1/health")
+      (path?.startsWith("/api/") && !path?.startsWith("/api/v1/"))
     ) {
       response.writeHead(404);
       response.end();
