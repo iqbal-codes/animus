@@ -40,6 +40,10 @@ import { initializeDatabase, ProjectRegistryService, ProjectRegistryError } from
 import { CommandService, CommandError } from "./command";
 import { SpecCoordinatorService, handleProjectCoordinationRoute } from "./coordination";
 import { EvidenceService, handleProjectEvidenceRoute } from "./evidence";
+import { validateCsrfProtection, authenticateOperatorRequest } from "./security";
+import { handleStaticWebRoute } from "./web-static";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 try {
   const config = configuration();
@@ -255,7 +259,24 @@ try {
     hostname: config.hostname,
     port: config.port,
     async fetch(request, server) {
+      try {
+        validateCsrfProtection(request);
+      } catch {
+        return Response.json({ error: "csrf_rejected" }, { status: 403 });
+      }
+
       const path = new URL(request.url).pathname;
+
+      if (path !== "/health" && path !== "/build-id") {
+        try {
+          authenticateOperatorRequest(request, {
+            remoteAccess: config.remoteAccess,
+            operatorToken: process.env.FACTORY_OPERATOR_TOKEN,
+          });
+        } catch {
+          return Response.json({ error: "unauthorized" }, { status: 401 });
+        }
+      }
 
       if (
         request.headers.get("upgrade")?.toLowerCase() === "websocket" ||
@@ -1198,6 +1219,12 @@ try {
           }
         }
       }
+
+      const webDir =
+        process.env.FACTORY_WEB_DIR ||
+        join(fileURLToPath(new URL("../../../apps/web/dist", import.meta.url)));
+      const staticRes = await handleStaticWebRoute(request, webDir);
+      if (staticRes) return staticRes;
 
       return Response.json({ error: "not_found" }, { status: 404 });
     },

@@ -134,7 +134,7 @@ export function readLaps(repoRoot: string): LapSummary[] {
   );
 
   if (!existsSync(cliPath)) {
-    throw new Error("native_source_unavailable");
+    return [];
   }
 
   const result = Bun.spawnSync([bunBin, cliPath, "workflow", "runs", "--limit", "100", "--json"], {

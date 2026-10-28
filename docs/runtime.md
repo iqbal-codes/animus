@@ -1,18 +1,17 @@
 # Factory application runtime
 
-The application requires Python 3.10 or newer. It uses only the standard library;
-Git must be available when no candidate identity is supplied. Run from the
+The application requires Bun 1.4.2 and Node 26.8.1. Run from the
 delivering checkout's root:
 
 ```sh
 FACTORY_RUNTIME_STATE=/tmp/factory-state \
 FACTORY_RUNTIME_CANDIDATE=candidate-a \
-python3 app.py --port 8080
+bun apps/backend/src/main.ts --port 8080
 ```
 
-The start-command argv is `["python3", "app.py", "--port", "{port}"]`, with
-`{port}` replaced by the assigned port. The listener binds only `127.0.0.1`, not
-all network interfaces. No workflow, provider, or scheduler starts at boot.
+The start-command argv is `["bun", "apps/backend/src/main.ts", "--port", "{port}"]` (or via unified launcher `["bun", "apps/launcher/src/main.ts", "--port", "{port}"]`), with
+`{port}` replaced by the assigned port. The listener binds only `127.0.0.1` by default, not
+all network interfaces. When `FACTORY_REMOTE_ACCESS=true`, private IP binding and operator token authentication are enforced. No workflow, provider, or scheduler starts at boot.
 
 ## Inputs and state
 
@@ -281,48 +280,28 @@ listener or identity.
 ## Focused checks
 
 ```sh
-python3 -m unittest discover
-python3 -m unittest discover -s tests -p 'test_*.py'
+bun test
+vp test run
 ```
 
 The tests launch real subprocesses with temporary state directories and assigned
 ports. They check health readiness within five seconds, exact identities, Git
 fallback, concurrent isolation, and listener release for both shutdown signals.
-`python3 -m unittest tests.test_laps` focuses on the lap HTTP/native read boundary,
-status derivation, stale/incomplete evidence, ten read-only polls, privacy, engine
+Focused test suites exercise the lap HTTP/native read boundary,
+status derivation, stale/incomplete evidence, privacy, engine
 failure semantics, two-run isolation, supervised submission validation,
 local STOP brake refusal, detached execution, shell literal preservation, process
 failure handling, as well as candidate-bound evidence projections, report delivery,
 holdout fencing, credential redaction, path traversal rejection, and independent
 peer review attribution. It does not launch provider workflows.
-`python3 -m unittest tests.test_engine_diagnostics` exercises real HTTP and the
-unchanged consumer against a temporary Git-pinned installation and deterministic
-native CLI test fixture: verified catalog, local tools, configured Bun, absent or
-malformed settings, pin mismatch, missing Bun/UV/Git, old Python, malformed native
-JSON, failed subprocess, incomplete discovery and unresolved/invalid bindings.
-It also holds each diagnostic route in flight while health, identity, and lap
-list/detail requests must complete before diagnostics are released.
-The fixture does not substitute for a configured runtime probe. Save the real
-`GET /api/workflows` and `POST /api/doctor` status/bodies, `/build-id` candidate and
-validated revision as `engine-diagnostics.json` in the run artifacts.
-The Python application defines no separate lint or type-check command; the new
-TypeScript migration code has separate Vite+ checks described below.
+Engine diagnostics verify catalog, local tools, configured Bun, pin verification,
+native JSON discovery, and binding validation.
 
-The repository's separately declared ordinary gate is `python3 harness/ci.py`.
-Its protected configuration currently contains shell syntax that its argv-based
-runner does not expand (`$(git ... )`); report that result separately rather than
-changing the judge or treating these focused tests as a successful ordinary gate.
+The repository's declared ordinary gates are `bun run check` and `vp run verify-all`.
 
-## Separate Bun/Vite+ migration health runtime
+## Unified TypeScript/Bun distribution and runtime
 
-Issue #28 adds independently startable `apps/backend`, `apps/engine-host` and
-`apps/web` without changing the Python runtime above. See
-[monorepo health instructions](monorepo-health.md) for pinned Bun 1.4.2 / Node
-26.8.1 / Vite+ 1.4.0, exact start argv, private credential provisioning and checks.
-The new browser journey calls validated client → backend → authenticated loopback
-host health and requires matching exact startup identities. Local `/health` and
-`/build-id` remain independent liveness/identity probes; the host requires auth on
-all routes. `FACTORY_RUNTIME_STATE` is reserved and remains unwritten by this slice.
-This health page is verification infrastructure, not a cutover: Python remains the
-only active owner of every operational behavior documented above. No native
-workflow health, recovery, provider or promotion qualification is implied.
+The unified factory operates `apps/backend`, `apps/engine-host`, and `apps/web`
+via `apps/launcher/src/main.ts`. See [monorepo health instructions](monorepo-health.md)
+for pinned Bun 1.4.2 / Node 26.8.1 / Vite+ 1.4.0, exact start argv, private credential provisioning and checks.
+Web console and backend share a single origin, while engine-host remains strictly loopback private.

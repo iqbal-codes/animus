@@ -5,10 +5,15 @@
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "types": ["node"],
+    "types": ["node", "bun"],
     "skipLibCheck": true,
     "allowJs": true,
     "checkJs": true
   },
-  "include": ["vite.config.ts", "apps/web/vite.config.ts", "scripts/health/**/*.mjs"]
+  "include": [
+    "vite.config.ts",
+    "apps/web/vite.config.ts",
+    "scripts/health/**/*.mjs",
+    "scripts/release/**/*.ts"
+  ]
 }

@@ -20,6 +20,7 @@ harness/.results/
 secrets.json
 credentials.json
 node_modules/
+dist/
 apps/web/dist/
 artifacts/
 .vite/

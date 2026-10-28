@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate-static:
+    name: "Gate 1: Static Lint, Format & Architecture Check"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Frozen dependency install
+        run: bun install --frozen-lockfile
+
+      - name: Executable architecture boundary check
+        run: node scripts/health/check-architecture.mjs
+
+      - name: Format check
+        run: bun run format
+
+      - name: Lint check
+        run: bun run lint
+
+  gate-verify:
+    name: "Gate 2: Typecheck, Unit & Offline Integration Verification"
+    needs: [gate-static]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Frozen dependency install
+        run: bun install --frozen-lockfile
+
+      - name: TypeScript typecheck
+        run: bun run typecheck
+
+      - name: Toolchain check
+        run: node scripts/health/check-toolchain.mjs
+
+      - name: Offline test suite & browser journeys
+        run: bun run test
+
+  gate-build:
+    name: "Gate 3: Frontend Build & Packaging Validation"
+    needs: [gate-verify]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Frozen dependency install
+        run: bun install --frozen-lockfile
+
+      - name: Build web frontend
+        run: bun run build:web
+
+      - name: Verify release packaging
+        run: bun run package:release
