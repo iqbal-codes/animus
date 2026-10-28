@@ -1,4 +1,5 @@
 import { defineConfig, type Plugin, type ProxyOptions } from "vite-plus";
+import tailwindcss from "@tailwindcss/vite";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -89,7 +90,12 @@ export default defineConfig(({ command, isPreview }) => {
       ? { "^/api/v1(?:/|$)": { target: backendOrigin(), ws: true } }
       : {};
   return {
-    plugins: [health],
+    plugins: [tailwindcss(), health],
+    resolve: {
+      alias: {
+        "@": fileURLToPath(new URL("./src", import.meta.url)),
+      },
+    },
     server: { host: "127.0.0.1", strictPort: true, proxy },
     preview: { host: "127.0.0.1", strictPort: true, proxy },
   };

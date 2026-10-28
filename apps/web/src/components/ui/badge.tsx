@@ -1,76 +1,47 @@
-import React from "react";
+import * as React from "react";
+import { cva, type VariantProps } from "class-variance-authority";
+import { cn } from "cn";
+import { Slot } from "radix-ui";
 
-export interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
-  variant?: "default" | "secondary" | "outline" | "success" | "warning" | "destructive" | "accent";
-}
+const badgeVariants = cva(
+  "group/badge inline-flex h-5 w-fit shrink-0 items-center justify-center gap-1 overflow-hidden rounded-2xl border border-transparent px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-all focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&>svg]:pointer-events-none [&>svg]:size-3!",
+  {
+    variants: {
+      variant: {
+        default: "bg-primary text-primary-foreground [a]:hover:bg-primary/80",
+        secondary: "bg-secondary text-secondary-foreground [a]:hover:bg-secondary/80",
+        accent: "bg-[rgba(255,99,8,0.15)] text-[#FF6308] border-[rgba(255,99,8,0.4)]",
+        success: "bg-[rgba(22,163,74,0.15)] text-[#4ADE80] border-[rgba(22,163,74,0.4)]",
+        warning: "bg-[rgba(217,119,6,0.15)] text-[#FBBF24] border-[rgba(217,119,6,0.4)]",
+        destructive:
+          "bg-destructive/10 text-destructive focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:focus-visible:ring-destructive/40 [a]:hover:bg-destructive/20",
+        outline: "border-border text-foreground [a]:hover:bg-muted [a]:hover:text-muted-foreground",
+        ghost: "hover:bg-muted hover:text-muted-foreground dark:hover:bg-muted/50",
+        link: "text-primary underline-offset-4 hover:underline",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+    },
+  },
+);
 
-export const Badge: React.FC<BadgeProps> = ({
+function Badge({
+  className,
   variant = "default",
-  style,
-  className = "",
-  children,
+  asChild = false,
   ...props
-}) => {
-  const baseStyle: React.CSSProperties = {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: "2px 8px",
-    borderRadius: "4px",
-    fontSize: "11px",
-    fontWeight: 600,
-    fontFamily: "var(--font-mono)",
-    letterSpacing: "0.02em",
-    lineHeight: "1.2",
-    whiteSpace: "nowrap",
-    border: "1px solid transparent",
-    ...style,
-  };
-
-  const variantStyles: Record<string, React.CSSProperties> = {
-    default: {
-      backgroundColor: "#1F2228",
-      color: "#EDEDED",
-      borderColor: "#2D3139",
-    },
-    secondary: {
-      backgroundColor: "#262626",
-      color: "#A1A1AA",
-      borderColor: "#333333",
-    },
-    outline: {
-      backgroundColor: "transparent",
-      color: "#EDEDED",
-      borderColor: "#1F2228",
-    },
-    accent: {
-      backgroundColor: "rgba(255, 99, 8, 0.15)",
-      color: "#FF6308",
-      borderColor: "rgba(255, 99, 8, 0.4)",
-    },
-    success: {
-      backgroundColor: "rgba(22, 163, 74, 0.15)",
-      color: "#4ADE80",
-      borderColor: "rgba(22, 163, 74, 0.4)",
-    },
-    warning: {
-      backgroundColor: "rgba(217, 119, 6, 0.15)",
-      color: "#FBBF24",
-      borderColor: "rgba(217, 119, 6, 0.4)",
-    },
-    destructive: {
-      backgroundColor: "rgba(220, 38, 38, 0.15)",
-      color: "#F87171",
-      borderColor: "rgba(220, 38, 38, 0.4)",
-    },
-  };
+}: React.ComponentProps<"span"> & VariantProps<typeof badgeVariants> & { asChild?: boolean }) {
+  const Comp = asChild ? Slot.Root : "span";
 
   return (
-    <span
-      style={{ ...baseStyle, ...variantStyles[variant] }}
-      className={`ui-badge ${className}`}
+    <Comp
+      data-slot="badge"
+      data-variant={variant}
+      className={cn(badgeVariants({ variant }), className)}
       {...props}
-    >
-      {children}
-    </span>
+    />
   );
-};
+}
+
+export { Badge, badgeVariants };

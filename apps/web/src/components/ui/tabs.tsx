@@ -1,138 +1,77 @@
-import React, { createContext, useContext, useState } from "react";
+import * as React from "react";
+import { cva, type VariantProps } from "class-variance-authority";
+import { cn } from "cn";
+import { Tabs as TabsPrimitive } from "radix-ui";
 
-interface TabsContextType {
-  value: string;
-  onValueChange: (val: string) => void;
-}
-
-const TabsContext = createContext<TabsContextType | null>(null);
-
-export interface TabsProps {
-  defaultValue?: string;
-  value?: string;
-  onValueChange?: (val: string) => void;
-  children: React.ReactNode;
-  style?: React.CSSProperties;
-  className?: string;
-}
-
-export const Tabs: React.FC<TabsProps> = ({
-  defaultValue,
-  value: controlledValue,
-  onValueChange,
-  children,
-  style,
-  className = "",
-}) => {
-  const [uncontrolledValue, setUncontrolledValue] = useState(defaultValue ?? "");
-  const value = controlledValue !== undefined ? controlledValue : uncontrolledValue;
-
-  const handleValueChange = (val: string) => {
-    if (controlledValue === undefined) {
-      setUncontrolledValue(val);
-    }
-    onValueChange?.(val);
-  };
-
-  return (
-    <TabsContext.Provider value={{ value, onValueChange: handleValueChange }}>
-      <div style={{ width: "100%", ...style }} className={`ui-tabs ${className}`}>
-        {children}
-      </div>
-    </TabsContext.Provider>
-  );
-};
-
-export const TabsList: React.FC<React.HTMLAttributes<HTMLDivElement>> = ({
-  style,
-  className = "",
-  children,
+function Tabs({
+  className,
+  orientation = "horizontal",
   ...props
-}) => (
-  <div
-    role="tablist"
-    style={{
-      display: "flex",
-      alignItems: "center",
-      gap: "4px",
-      backgroundColor: "#141414",
-      padding: "4px",
-      borderRadius: "6px",
-      border: "1px solid #1F2228",
-      ...style,
-    }}
-    className={`ui-tabs-list ${className}`}
-    {...props}
-  >
-    {children}
-  </div>
+}: React.ComponentProps<typeof TabsPrimitive.Root>) {
+  return (
+    <TabsPrimitive.Root
+      data-slot="tabs"
+      data-orientation={orientation}
+      className={cn("group/tabs flex gap-2 data-horizontal:flex-col", className)}
+      {...props}
+    />
+  );
+}
+
+const tabsListVariants = cva(
+  "group/tabs-list inline-flex w-fit items-center justify-center rounded-2xl p-[3px] text-muted-foreground group-data-horizontal/tabs:h-8 group-data-vertical/tabs:h-fit group-data-vertical/tabs:flex-col group-data-vertical/tabs:p-1 data-[variant=line]:rounded-none",
+  {
+    variants: {
+      variant: {
+        default: "bg-muted",
+        line: "gap-1 bg-transparent",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+    },
+  },
 );
 
-export interface TabsTriggerProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  value: string;
+function TabsList({
+  className,
+  variant = "default",
+  ...props
+}: React.ComponentProps<typeof TabsPrimitive.List> & VariantProps<typeof tabsListVariants>) {
+  return (
+    <TabsPrimitive.List
+      data-slot="tabs-list"
+      data-variant={variant}
+      className={cn(tabsListVariants({ variant }), className)}
+      {...props}
+    />
+  );
 }
 
-export const TabsTrigger: React.FC<TabsTriggerProps> = ({
-  value,
-  style,
-  className = "",
-  children,
-  ...props
-}) => {
-  const ctx = useContext(TabsContext);
-  if (!ctx) throw new Error("TabsTrigger must be used inside Tabs");
-  const isSelected = ctx.value === value;
-
+function TabsTrigger({ className, ...props }: React.ComponentProps<typeof TabsPrimitive.Trigger>) {
   return (
-    <button
-      role="tab"
-      aria-selected={isSelected}
-      onClick={() => ctx.onValueChange(value)}
-      style={{
-        padding: "6px 12px",
-        fontSize: "13px",
-        fontWeight: 500,
-        fontFamily: "var(--font-sans)",
-        borderRadius: "4px",
-        border: "none",
-        cursor: "pointer",
-        transition: "all 0.15s ease",
-        backgroundColor: isSelected ? "#1F2228" : "transparent",
-        color: isSelected ? "#EDEDED" : "#A1A1AA",
-        outline: "none",
-        ...style,
-      }}
-      className={`ui-tabs-trigger ${className}`}
+    <TabsPrimitive.Trigger
+      data-slot="tabs-trigger"
+      className={cn(
+        "relative inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-2xl border border-transparent! px-1.5 py-0.5 text-sm font-medium whitespace-nowrap text-foreground/60 transition-all group-data-vertical/tabs:w-full group-data-vertical/tabs:justify-start group-data-vertical/tabs:px-3 group-data-vertical/tabs:py-0.5 hover:text-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50 dark:text-muted-foreground dark:hover:text-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        "group-data-[variant=line]/tabs-list:bg-transparent group-data-[variant=line]/tabs-list:data-active:bg-transparent dark:group-data-[variant=line]/tabs-list:data-active:border-transparent dark:group-data-[variant=line]/tabs-list:data-active:bg-transparent",
+        "data-active:bg-background data-active:text-foreground dark:data-active:border-input dark:data-active:bg-input/30 dark:data-active:text-foreground",
+        "after:absolute after:bg-foreground after:opacity-0 after:transition-opacity group-data-horizontal/tabs:after:inset-x-0 group-data-horizontal/tabs:after:bottom-[-5px] group-data-horizontal/tabs:after:h-0.5 group-data-vertical/tabs:after:inset-y-0 group-data-vertical/tabs:after:-right-1 group-data-vertical/tabs:after:w-0.5 group-data-[variant=line]/tabs-list:data-active:after:opacity-100",
+        className,
+      )}
       {...props}
-    >
-      {children}
-    </button>
+    />
   );
-};
-
-export interface TabsContentProps extends React.HTMLAttributes<HTMLDivElement> {
-  value: string;
 }
 
-export const TabsContent: React.FC<TabsContentProps> = ({
-  value,
-  style,
-  className = "",
-  children,
-  ...props
-}) => {
-  const ctx = useContext(TabsContext);
-  if (!ctx) throw new Error("TabsContent must be used inside Tabs");
-  if (ctx.value !== value) return null;
-
+function TabsContent({ className, ...props }: React.ComponentProps<typeof TabsPrimitive.Content>) {
   return (
-    <div
-      role="tabpanel"
-      style={{ marginTop: "16px", ...style }}
-      className={`ui-tabs-content ${className}`}
+    <TabsPrimitive.Content
+      data-slot="tabs-content"
+      className={cn("flex-1 text-sm outline-none", className)}
       {...props}
-    >
-      {children}
-    </div>
+    />
   );
-};
+}
+
+export { Tabs, TabsList, TabsTrigger, TabsContent, tabsListVariants };
