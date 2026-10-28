@@ -2,6 +2,8 @@ import { DatabaseSync } from "node:sqlite";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { applyCommandMigrations } from "../command/db";
+import { applyCoordinationMigrations } from "../coordination/db";
 
 export function resolveStateDir(): string {
   const custom = process.env.FACTORY_STATE_DIR;
@@ -66,6 +68,21 @@ export function initializeDatabase(dbPath?: string): DatabaseSync {
       updated_at TEXT NOT NULL
     );
   `);
+
+  // Table to track verified local branch integration status for subtickets/issues
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS project_issue_integrations (
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      issue_number INTEGER NOT NULL,
+      branch TEXT NOT NULL,
+      commit_sha TEXT,
+      integrated_at TEXT NOT NULL,
+      PRIMARY KEY (project_id, issue_number)
+    );
+  `);
+
+  applyCommandMigrations(db);
+  applyCoordinationMigrations(db);
 
   return db;
 }

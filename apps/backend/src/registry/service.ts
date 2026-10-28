@@ -43,6 +43,14 @@ export class ProjectRegistryService {
     this.forge = forge ?? new SystemForgeAdapter();
   }
 
+  getDb(): DatabaseSync {
+    return this.db;
+  }
+
+  getForge(): ForgeAdapter {
+    return this.forge;
+  }
+
   private mapRow(row: ProjectRow): Project {
     return {
       id: row.id,

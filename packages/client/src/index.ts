@@ -20,6 +20,38 @@ import {
   projectRegistrationSchema,
   projectRetargetSchema,
   deregisterResultSchema,
+  commandStateSchema,
+  commandProvenanceSchema,
+  commandOutcomeSchema,
+  commandRecordSchema,
+  commandListSchema,
+  commandSubmissionSchema,
+  commandReconciliationResultSchema,
+  globalBrakeStateSchema,
+  projectBrakeStateSchema,
+  brakeSubmissionSchema,
+  projectBrakeSubmissionSchema,
+  backupSubmissionSchema,
+  backupResultSchema,
+  labelEffectsSchema,
+  admissionPreviewSchema,
+  intakePreviewSubmissionSchema,
+  intakePreviewResultSchema,
+  intakePublishSubmissionSchema,
+  intakePublishResultSchema,
+  intakeUpdateSubmissionSchema,
+  targetBindingSubmissionSchema,
+  targetBindingResultSchema,
+  branchIntegrationSubmissionSchema,
+  branchIntegrationResultSchema,
+  specCoordinationPlanSchema,
+  targetedImplementResultSchema,
+  coordinationFinalPrResultSchema,
+  coordinationFinalPrSubmissionSchema,
+  type SpecCoordinationPlan,
+  type TargetedImplementResult,
+  type CoordinationFinalPrResult,
+  type CoordinationFinalPrSubmission,
   type Health,
   type Diagnostics,
   type WorkflowCatalog,
@@ -42,6 +74,30 @@ import {
   type ProjectRetarget,
   type DeregisterResult,
   type ProjectStatus,
+  type CommandState,
+  type CommandProvenance,
+  type CommandOutcome,
+  type CommandRecord,
+  type CommandList,
+  type CommandSubmission,
+  type CommandReconciliationResult,
+  type GlobalBrakeState,
+  type ProjectBrakeState,
+  type BrakeSubmission,
+  type ProjectBrakeSubmission,
+  type BackupSubmission,
+  type BackupResult,
+  type LabelEffects,
+  type AdmissionPreview,
+  type IntakePreviewSubmission,
+  type IntakePreviewResult,
+  type IntakePublishSubmission,
+  type IntakePublishResult,
+  type IntakeUpdateSubmission,
+  type TargetBindingSubmission,
+  type TargetBindingResult,
+  type BranchIntegrationSubmission,
+  type BranchIntegrationResult,
 } from "@labq/contracts/operator";
 
 export {
@@ -50,12 +106,60 @@ export {
   projectRegistrationSchema,
   projectRetargetSchema,
   deregisterResultSchema,
+  commandStateSchema,
+  commandProvenanceSchema,
+  commandOutcomeSchema,
+  commandRecordSchema,
+  commandListSchema,
+  commandSubmissionSchema,
+  commandReconciliationResultSchema,
+  globalBrakeStateSchema,
+  projectBrakeStateSchema,
+  brakeSubmissionSchema,
+  projectBrakeSubmissionSchema,
+  backupSubmissionSchema,
+  backupResultSchema,
+  labelEffectsSchema,
+  admissionPreviewSchema,
+  intakePreviewSubmissionSchema,
+  intakePreviewResultSchema,
+  intakePublishSubmissionSchema,
+  intakePublishResultSchema,
+  intakeUpdateSubmissionSchema,
+  targetBindingSubmissionSchema,
+  targetBindingResultSchema,
+  branchIntegrationSubmissionSchema,
+  branchIntegrationResultSchema,
   type Project,
   type ProjectList,
   type ProjectRegistration,
   type ProjectRetarget,
   type DeregisterResult,
   type ProjectStatus,
+  type CommandState,
+  type CommandProvenance,
+  type CommandOutcome,
+  type CommandRecord,
+  type CommandList,
+  type CommandSubmission,
+  type CommandReconciliationResult,
+  type GlobalBrakeState,
+  type ProjectBrakeState,
+  type BrakeSubmission,
+  type ProjectBrakeSubmission,
+  type BackupSubmission,
+  type BackupResult,
+  type LabelEffects,
+  type AdmissionPreview,
+  type IntakePreviewSubmission,
+  type IntakePreviewResult,
+  type IntakePublishSubmission,
+  type IntakePublishResult,
+  type IntakeUpdateSubmission,
+  type TargetBindingSubmission,
+  type TargetBindingResult,
+  type BranchIntegrationSubmission,
+  type BranchIntegrationResult,
 };
 
 export type FactoryErrorCode =
@@ -273,6 +377,43 @@ export function createFactoryClient(options: {
     async deregisterProject(id: string): Promise<DeregisterResult> {
       return deleteJson(`/api/v1/projects/${encodeURIComponent(id)}`, deregisterResultSchema);
     },
+    async commands(opts?: {
+      projectId?: string;
+      state?: CommandState;
+      limit?: number;
+    }): Promise<CommandList> {
+      const params = new URLSearchParams();
+      if (opts?.projectId) params.set("projectId", opts.projectId);
+      if (opts?.state) params.set("state", opts.state);
+      if (opts?.limit) params.set("limit", String(opts.limit));
+      const qs = params.toString();
+      const path = qs ? `/api/v1/commands?${qs}` : "/api/v1/commands";
+      return getJson(path, commandListSchema);
+    },
+    async command(requestId: string): Promise<CommandRecord> {
+      return getJson(`/api/v1/commands/${encodeURIComponent(requestId)}`, commandRecordSchema);
+    },
+    async dispatchCommand(submission: CommandSubmission): Promise<CommandRecord> {
+      const parsed = commandSubmissionSchema.safeParse(submission);
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      return postJson("/api/v1/commands", parsed.data, commandRecordSchema);
+    },
+    async reconcileCommands(): Promise<CommandReconciliationResult> {
+      return postJson("/api/v1/commands/reconcile", {}, commandReconciliationResultSchema);
+    },
+    async brakes(): Promise<GlobalBrakeState> {
+      return getJson("/api/v1/brakes", globalBrakeStateSchema);
+    },
+    async setBrake(submission: BrakeSubmission): Promise<GlobalBrakeState> {
+      const parsed = brakeSubmissionSchema.safeParse(submission);
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      return postJson("/api/v1/brakes", parsed.data, globalBrakeStateSchema);
+    },
+    async backupLedger(destinationPath: string): Promise<BackupResult> {
+      const parsed = backupSubmissionSchema.safeParse({ destinationPath });
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      return postJson("/api/v1/commands/backup", parsed.data, backupResultSchema);
+    },
     forProject(projectId: string) {
       const encId = encodeURIComponent(projectId);
       const scopedBase = `/api/v1/projects/${encId}`;
@@ -288,6 +429,36 @@ export function createFactoryClient(options: {
         async deregister(): Promise<DeregisterResult> {
           return deleteJson(scopedBase, deregisterResultSchema);
         },
+        async commands(opts?: { state?: CommandState; limit?: number }): Promise<CommandList> {
+          const params = new URLSearchParams();
+          if (opts?.state) params.set("state", opts.state);
+          if (opts?.limit) params.set("limit", String(opts.limit));
+          const qs = params.toString();
+          const path = qs ? `${scopedBase}/commands?${qs}` : `${scopedBase}/commands`;
+          return getJson(path, commandListSchema);
+        },
+        async command(requestId: string): Promise<CommandRecord> {
+          return getJson(
+            `${scopedBase}/commands/${encodeURIComponent(requestId)}`,
+            commandRecordSchema,
+          );
+        },
+        async dispatchCommand(
+          submission: Omit<CommandSubmission, "projectId">,
+        ): Promise<CommandRecord> {
+          const payload = { ...submission, projectId };
+          const parsed = commandSubmissionSchema.safeParse(payload);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(`${scopedBase}/commands`, parsed.data, commandRecordSchema);
+        },
+        async brakes(): Promise<ProjectBrakeState> {
+          return getJson(`${scopedBase}/brakes`, projectBrakeStateSchema);
+        },
+        async setBrake(submission: ProjectBrakeSubmission): Promise<ProjectBrakeState> {
+          const parsed = projectBrakeSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(`${scopedBase}/brakes`, parsed.data, projectBrakeStateSchema);
+        },
         async intake(opts?: { refresh?: boolean }): Promise<IntakeResult> {
           const path = opts?.refresh ? `${scopedBase}/intake?refresh=true` : `${scopedBase}/intake`;
           return getJson(path, intakeResultSchema);
@@ -296,6 +467,58 @@ export function createFactoryClient(options: {
           return getJson(
             `${scopedBase}/intake/${encodeURIComponent(number)}`,
             evaluatedIssueSchema,
+          );
+        },
+        async previewIntake(submission: IntakePreviewSubmission): Promise<IntakePreviewResult> {
+          const parsed = intakePreviewSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(`${scopedBase}/intake/preview`, parsed.data, intakePreviewResultSchema);
+        },
+        async publishTicket(submission: IntakePublishSubmission): Promise<IntakePublishResult> {
+          const parsed = intakePublishSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(`${scopedBase}/intake/publish`, parsed.data, intakePublishResultSchema);
+        },
+        async updateTicket(
+          number: number,
+          submission: IntakeUpdateSubmission,
+        ): Promise<EvaluatedIssue> {
+          const parsed = intakeUpdateSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/intake/${encodeURIComponent(number)}/update`,
+            parsed.data,
+            evaluatedIssueSchema,
+          );
+        },
+        async bindTarget(
+          number: number,
+          submission: TargetBindingSubmission,
+        ): Promise<TargetBindingResult> {
+          const parsed = targetBindingSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/intake/${encodeURIComponent(number)}/bind`,
+            parsed.data,
+            targetBindingResultSchema,
+          );
+        },
+        async recordBranchIntegration(
+          number: number,
+          submission: BranchIntegrationSubmission,
+        ): Promise<BranchIntegrationResult> {
+          const parsed = branchIntegrationSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/intake/${encodeURIComponent(number)}/integrate`,
+            parsed.data,
+            branchIntegrationResultSchema,
+          );
+        },
+        async getBranchIntegration(number: number): Promise<BranchIntegrationResult> {
+          return getJson(
+            `${scopedBase}/intake/${encodeURIComponent(number)}/integration`,
+            branchIntegrationResultSchema,
           );
         },
         async laps(): Promise<LapList> {
@@ -355,6 +578,44 @@ export function createFactoryClient(options: {
           const parsed = promotionSubmissionSchema.safeParse(submission ?? {});
           if (!parsed.success) throw new FactoryClientError("invalid_payload");
           return postJson(`${scopedBase}/promotion/prepare`, parsed.data, promotionResultSchema);
+        },
+        async planSpecCoordination(
+          specIssueNumber: number,
+          options?: { baseBranch?: string },
+        ): Promise<SpecCoordinationPlan> {
+          return postJson(
+            `${scopedBase}/coordination/plan`,
+            { specIssueNumber, baseBranch: options?.baseBranch },
+            specCoordinationPlanSchema,
+          );
+        },
+        async getSpecCoordinationPlan(specIssueNumber: number): Promise<SpecCoordinationPlan> {
+          return getJson(
+            `${scopedBase}/coordination/plan/${encodeURIComponent(specIssueNumber)}`,
+            specCoordinationPlanSchema,
+          );
+        },
+        async dispatchSubticket(
+          specIssueNumber: number,
+          childIssueNumber: number,
+          options?: { actor?: string },
+        ): Promise<TargetedImplementResult> {
+          return postJson(
+            `${scopedBase}/coordination/dispatch`,
+            { specIssueNumber, childIssueNumber, actor: options?.actor },
+            targetedImplementResultSchema,
+          );
+        },
+        async createFinalPullRequest(
+          submission: CoordinationFinalPrSubmission,
+        ): Promise<CoordinationFinalPrResult> {
+          const parsed = coordinationFinalPrSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/coordination/final-pr`,
+            parsed.data,
+            coordinationFinalPrResultSchema,
+          );
         },
       };
     },

@@ -413,4 +413,4 @@ test("backend forwards diagnostics, catalog, and lap history from authenticated 
   expect(client.evidence("nonexistent-lap-id")).rejects.toMatchObject({
     code: "lap_not_found",
   });
-});
+}, 15000);

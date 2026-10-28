@@ -15,6 +15,13 @@ The builder/implementer cannot act as an independent reviewer of their own workâ
 - **Separate session requirement:** If invoked within an active implementation session (or after implementing changes in the same thread), do **not** run the review inline. Handoff to an independent review session or instruct the caller to invoke `/factory-review` in a separate review thread.
 - **Coordinator role:** When executing `/factory-review`, the current session acts exclusively as the **review coordinator**. The coordinator does **not** conduct the code review directly. Instead, it pins the scope, identifies sources and standards, dispatches **two dedicated axis subagents** in parallel, and aggregates their results.
 
+## Critical Invariant: Strict Read-Only Review Boundary
+
+- **Reviewers DO NOT edit code:** Reviewers (both the coordinating agent and any delegated review subagents) are strictly forbidden from editing, writing, patching, formatting, refactoring, deleting, or committing any files in the workspace.
+- **No auto-fixing or silent remediation:** When a defect, smell, or contract gap is discovered, report it honestly as a finding with file:line, impact, and severity. Do NOT attempt to fix it during the review stage. Remediation belongs exclusively to `/factory-implement` or subsequent operator-directed work.
+- **Enforced subagent instructions:** When delegating tasks to subagents under `mcp__t3-code__delegate_task`, you MUST explicitly include the instruction:
+  `"You are strictly a read-only reviewer. You are FORBIDDEN from using edit, write, or modifying any repository files. Only inspect files, execute read-only check/test commands, and report findings."`
+
 ## 1. Pin the scope
 
 Resolve an explicit fixed point (commit, branch, tag, or PR base) and candidate head to immutable SHAs. For a PR, read its actual base/head rather than assuming `main` or `develop`. If no fixed point can be established, ask. Confirm refs resolve before dispatch.
@@ -38,6 +45,8 @@ Reviewing requires two independent perspectives that never share context or cont
 2. **Spec subagent**
 
 **Always spawn both subagents concurrently** using the environment's delegation mechanism (e.g., `delegate_task` with role `review`). Never evaluate both axes inline in the coordinator session, and never let one subagent see the other's findings.
+
+Enforce the **Strict Read-Only Review Boundary** on all delegated subagents: reviewers evaluate the candidate as-is and must never touch the filesystem or fix bugs. Include the mandatory read-only instruction in every subagent task brief.
 
 If delegation is unavailable or unsupported by the runtime environment, do not perform an inline self-review in the implementer's session; fail closed and inform the caller that independent subagent delegation is required. (In dry-run fixture tests where an explicit mock prompt tests review protocol behavior without subagent tooling, format the two distinct subagent input payloads and isolated reports).
 
