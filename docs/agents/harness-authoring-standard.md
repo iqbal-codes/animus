@@ -46,7 +46,7 @@ Verified CLI recipes must exit with code 0 before recording:
 
 If a command fails during an execution lap due to environment changes, its status must be invalidated or flagged as deprecated.
 
-## 4. Repository Skills Schema (`.claude/skills/<name>/SKILL.md`)
+## 4. Repository Skills Schema (`.agents/skills/<name>/SKILL.md`)
 
 Procedural playbooks must follow this layout:
 1. Standard YAML frontmatter with `name`, `description`, and `disable-model-invocation: true` if human/orchestrator invoked.

@@ -8,7 +8,7 @@ Each stage hands off an artifact, not permission to run the next stage. Read `is
 
 ## Authority and current truth
 
-Repository-local skills under `.claude/skills/` use the `factory-` prefix to distinguish this workflow from the global Matt skills. Keep factory-specific rules here; the global skills remain unchanged. Use the factory-prefixed commands for this lifecycle.
+Repository-local skills under `.agents/skills/` (also symlinked to `.claude/skills/`) use the `factory-` prefix to distinguish this workflow from the global Matt skills. Keep factory-specific rules here; the global skills remain unchanged. Use the factory-prefixed commands for this lifecycle.
 
 Before acting, read current code, configuration, the source issue and comments, applicable glossary/ADRs, and any existing PR. Design documents describe intent until executable behavior establishes it. Read `.factory/consumer.json` to locate the pinned engine; inspect that source's loop/triage commands when their contract matters. Do not use an ambient engine or hard-code a cache path/revision.
 
@@ -73,7 +73,7 @@ For native delivery retain the pinned loop's ownership:
 
 `pick → claim → build/ship → subject → check-app → evidence → review → land → release`
 
-The installed graph may include an optional deployment node. The builder supplies per-criterion checks and a PR Evidence section, then independent runtime/peer review evaluates the exact candidate. The builder does not approve or land their own work. Preserve holdout secrecy and protected paths; ordinary harness checks and independent runtime evidence are distinct results. A local `/factory-review` report cannot fabricate native evidence records or mark native approval complete.
+The installed graph may include an optional deployment node. The builder supplies per-criterion checks and a PR Evidence section, then independent runtime/peer review evaluates the exact candidate. The builder does not approve or land their own work, nor review it in the same session: `/factory-review` is conducted in a clean session that always dispatches two independent axis subagents (Standards and Spec). Preserve holdout secrecy and protected paths; ordinary harness checks and independent runtime evidence are distinct results. A local `/factory-review` report cannot fabricate native evidence records or mark native approval complete.
 
 Record source ticket/spec, AC identifier, observed result, command/scenario, artifact path, and tested candidate/head. Distinguish PASS, FAIL, BLOCKED, and NOT RUN. After code or base changes, rerun affected checks and refresh head-bound evidence. Publish or close work only under the authorized tracker/merge policy; close a parent only after every required outcome is verified.
 

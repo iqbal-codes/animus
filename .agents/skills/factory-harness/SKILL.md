@@ -14,7 +14,7 @@ Use `/factory-harness` when:
 - A delivery lap has completed, and you need to capture discovered quirks, CLI recipes, or gotchas.
 - The repository requires updating `.factory/tool-guidance.json` with verified zero-exit commands.
 - You need to evaluate candidate lessons through TypeSafe Jev System 1 curation before persisting them to `.factory/lessons.jsonl`.
-- You are authoring or updating multi-step procedural skills in `.claude/skills/` or `.agents/skills/`.
+- You are authoring or updating multi-step procedural skills in `.agents/skills/` or `.claude/skills/`.
 
 ## Steps
 
@@ -31,7 +31,7 @@ Use `/factory-harness` when:
    *Completion Criterion*: Only Jev-approved lessons (confidence >= 0.70) are appended to `.factory/lessons.jsonl`.
 
 4. **Author or Update Reusable Repository Skills**
-   When procedural knowledge spans multiple steps, author or update a skill in `.claude/skills/<name>/SKILL.md`. Ensure every step contains an observable completion criterion and valid YAML frontmatter.
+   When procedural knowledge spans multiple steps, author or update a skill in `.agents/skills/<name>/SKILL.md`. Ensure every step contains an observable completion criterion and valid YAML frontmatter.
    *Completion Criterion*: New or updated skills pass YAML parsing and every step concludes with an explicit `*Completion Criterion*`.
 
 5. **Verify Integrity and Commit to Repository Memory**

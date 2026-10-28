@@ -27,7 +27,7 @@ Read existing patterns before editing. Use `/tdd` when available; prove each cri
 
 Maintain a criterion evidence matrix: source issue/AC, scenario or command, observed result, artifact path, and tested head/candidate. Record BLOCKED or NOT RUN when a prerequisite is unavailable; do not substitute mocks for required live proof. New code/base changes invalidate affected evidence.
 
-For a native lap, let independent check-app/evidence/review/land/release nodes run under their actual policy. A builder's own test result is not peer approval. For direct implementation, request `/factory-review` with explicit base, head, worktree scope, and source spec/tickets. That user-invoked review is a separate handoff; do not pretend it automatically advanced native state.
+For a native lap, let independent check-app/evidence/review/land/release nodes run under their actual policy. A builder's own test result is not peer approval. For direct implementation, request `/factory-review` with explicit base, head, worktree scope, and source spec/tickets. That user-invoked review is a separate handoff; do not pretend it automatically advanced native state. Never perform this review in the same session as the implementer—the implementer cannot review their own work; review requires a separate session that dispatches two independent axis subagents.
 
 ## 4. Advance and hand back
 
