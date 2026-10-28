@@ -53,6 +53,8 @@ import {
   landingGuardResultSchema,
   landingSubmissionSchema,
   landingExecutionResultSchema,
+  consequentialActionTypeSchema,
+  type ConsequentialActionType,
   tieredActionSubmissionSchema,
   tieredActionResultSchema,
   runCancellationSubmissionSchema,
@@ -61,6 +63,12 @@ import {
   gateApprovalRecordSchema,
   releaseReadinessResultSchema,
   sanitizedReportSchema,
+  wsSubscriptionMessageSchema,
+  wsEventTypeSchema,
+  wsEventSchema,
+  type WsSubscriptionMessage,
+  type WsEventType,
+  type WsEvent,
   type CandidateVerificationRecord,
   type CandidateVerificationSubmission,
   type LandingGuardResult,
@@ -186,7 +194,28 @@ export {
   type TargetBindingResult,
   type BranchIntegrationSubmission,
   type BranchIntegrationResult,
+  consequentialActionTypeSchema,
+  type ConsequentialActionType,
+  type EvaluatedIssue,
+  type SpecCoordinationPlan,
+  type TieredActionSubmission,
+  type TieredActionResult,
+  wsSubscriptionMessageSchema,
+  wsEventTypeSchema,
+  wsEventSchema,
+  type WsSubscriptionMessage,
+  type WsEventType,
+  type WsEvent,
 };
+
+export {
+  BoundedRingBuffer,
+  WebSocketConnectionManager,
+  createWebSocketManager,
+  type ConnectionStatus,
+  type WebSocketLike,
+  type WebSocketManagerOptions,
+} from "./ws";
 
 export type FactoryErrorCode =
   | OperatorErrorCode

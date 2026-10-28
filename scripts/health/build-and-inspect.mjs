@@ -42,16 +42,20 @@ async function inspect(directory) {
     if (entry.isDirectory()) await inspect(path);
     else {
       const text = await readFile(path, "utf8");
-      for (const value of [
-        ...forbidden,
-        ...[
+      const envValues = /** @type {string[]} */ (
+        [
           process.env.FACTORY_HOST_TOKEN,
           process.env.OPENROUTER_API_KEY,
           process.env.JEV_API_KEY,
-        ].filter((value) => value !== undefined && value !== ""),
-      ]) {
-        if (value && text.includes(value))
-          throw new Error("Private configuration entered browser artifact");
+        ].filter(Boolean)
+      );
+      for (const value of [...forbidden, ...envValues]) {
+        if (!value) continue;
+        const isForbidden =
+          value === "node:" || value === "bun:"
+            ? /(["'`])(node|bun):[a-z]/.test(text)
+            : text.includes(value);
+        if (isForbidden) throw new Error("Private configuration entered browser artifact");
       }
     }
   }

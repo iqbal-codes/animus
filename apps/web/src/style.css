@@ -1,34 +1,64 @@
 :root {
-  font-family: system-ui, sans-serif;
-  color: #e2e8f0;
-  background: #0f172a;
+  --background: #0a0a0a;
+  --container: #1a1a1a;
+  --card: #1a1a1a;
+  --border: #1f2228;
+  --accent: #ff6308;
+  --accent-foreground: #0a0a0a;
+  --foreground: #ededed;
+  --muted: #a1a1aa;
+  --muted-bg: #141414;
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+  --success: #16a34a;
+  --success-foreground: #ffffff;
+  --warning: #d97706;
+  --warning-foreground: #ffffff;
+  --font-sans:
+    "GeistSans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "GeistMono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  font-family: var(--font-sans);
+  color: var(--foreground);
+  background-color: var(--background);
+  color-scheme: dark;
 }
-main {
-  max-width: 55rem;
-  margin: 4rem auto;
-  padding: 1.5rem;
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
 }
-h1 {
-  font-size: 1.8rem;
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  min-height: 100vh;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }
-p {
-  line-height: 1.6;
+
+/* Accessibility: Visible Focus Rings */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
-dd {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font-family: monospace;
-  margin: 0.5rem 0 1rem;
+
+/* Custom Scrollbar for x.ai Theme */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
 }
-button {
-  background: #2563eb;
-  color: white;
-  border: 0;
-  border-radius: 0.35rem;
-  padding: 0.7rem 1rem;
-  cursor: pointer;
+::-webkit-scrollbar-track {
+  background: var(--background);
 }
-button:disabled {
-  opacity: 0.6;
-  cursor: wait;
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
 }

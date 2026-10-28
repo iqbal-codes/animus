@@ -85,7 +85,9 @@ export default defineConfig(({ command, isPreview }) => {
     response.end(path === "/health" ? JSON.stringify({ status: "healthy" }) : buildId);
   };
   const proxy: Record<string, ProxyOptions> =
-    command === "serve" || isPreview ? { "^/api/v1(?:/|$)": { target: backendOrigin() } } : {};
+    command === "serve" || isPreview
+      ? { "^/api/v1(?:/|$)": { target: backendOrigin(), ws: true } }
+      : {};
   return {
     plugins: [health],
     server: { host: "127.0.0.1", strictPort: true, proxy },

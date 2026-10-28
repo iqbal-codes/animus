@@ -3,48 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Factory health</title>
+    <title>LabQ Software Factory Console</title>
   </head>
   <body>
-    <main>
-      <h1>Factory health</h1>
-      <p>
-        Migration verification: service connectivity and candidate identity, not native workflow
-        health.
-      </p>
-      <p id="status" role="status">Loading…</p>
-      <dl id="identities" hidden>
-        <dt>Backend candidate</dt>
-        <dd id="backend-id"></dd>
-        <dt>Host candidate</dt>
-        <dd id="host-id"></dd>
-      </dl>
-      <button id="refresh" type="button">Refresh</button>
-
-      <h2>Launch Controls</h2>
-      <p id="control-status">Loading controls…</p>
-      <div id="control-buttons">
-        <button id="btn-halt" type="button">Halt</button>
-        <button id="btn-unhalt" type="button">Unhalt</button>
-        <button id="btn-pause" type="button">Pause</button>
-        <button id="btn-unpause" type="button">Unpause</button>
-      </div>
-
-      <h2>Backlog Intake</h2>
-      <p id="intake-status">Loading intake…</p>
-      <button id="intake-refresh" type="button">Reload Intake</button>
-      <ul id="intake-list"></ul>
-
-      <h2>Evidence & Reports</h2>
-      <p id="evidence-status">Select a lap to view candidate evidence</p>
-      <div id="evidence-details"></div>
-      <pre id="report-content" hidden></pre>
-
-      <h2>Release Promotion</h2>
-      <p id="promotion-status">Loading promotion status…</p>
-      <div id="promotion-details"></div>
-      <button id="btn-promote" type="button">Prepare Promotion</button>
-    </main>
+    <div id="root"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
