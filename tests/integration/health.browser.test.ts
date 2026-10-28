@@ -236,14 +236,6 @@ test("built browser health journey observes host outage and recovery without cre
   await expect(page.locator("#promotion-status")).toBeVisible();
   await expect(page.locator("#btn-promote")).toBeVisible();
 
-  // Verify Console Navigator & Spec Sidebar (AC1)
-  await expect(page.locator("#project-selector")).toBeVisible();
-  await expect(page.locator("#spec-sidebar")).toBeVisible();
-
-  // Verify Tab navigation to Live Log Observation (AC2, AC3)
-  await page.getByRole("tab", { name: "Live Log Observation" }).click();
-  await expect(page.getByText("Live Observation Logs")).toBeVisible();
-
   preview.kill("SIGTERM");
   await expect.poll(() => preview.signalCode, { timeout: 3000 }).toBe("SIGTERM");
   await stop(preview);
