@@ -33,6 +33,17 @@ import {
   projectBrakeSubmissionSchema,
   backupSubmissionSchema,
   backupResultSchema,
+  labelEffectsSchema,
+  admissionPreviewSchema,
+  intakePreviewSubmissionSchema,
+  intakePreviewResultSchema,
+  intakePublishSubmissionSchema,
+  intakePublishResultSchema,
+  intakeUpdateSubmissionSchema,
+  targetBindingSubmissionSchema,
+  targetBindingResultSchema,
+  branchIntegrationSubmissionSchema,
+  branchIntegrationResultSchema,
   type Health,
   type Diagnostics,
   type WorkflowCatalog,
@@ -68,6 +79,17 @@ import {
   type ProjectBrakeSubmission,
   type BackupSubmission,
   type BackupResult,
+  type LabelEffects,
+  type AdmissionPreview,
+  type IntakePreviewSubmission,
+  type IntakePreviewResult,
+  type IntakePublishSubmission,
+  type IntakePublishResult,
+  type IntakeUpdateSubmission,
+  type TargetBindingSubmission,
+  type TargetBindingResult,
+  type BranchIntegrationSubmission,
+  type BranchIntegrationResult,
 } from "@labq/contracts/operator";
 
 export {
@@ -89,6 +111,17 @@ export {
   projectBrakeSubmissionSchema,
   backupSubmissionSchema,
   backupResultSchema,
+  labelEffectsSchema,
+  admissionPreviewSchema,
+  intakePreviewSubmissionSchema,
+  intakePreviewResultSchema,
+  intakePublishSubmissionSchema,
+  intakePublishResultSchema,
+  intakeUpdateSubmissionSchema,
+  targetBindingSubmissionSchema,
+  targetBindingResultSchema,
+  branchIntegrationSubmissionSchema,
+  branchIntegrationResultSchema,
   type Project,
   type ProjectList,
   type ProjectRegistration,
@@ -108,6 +141,17 @@ export {
   type ProjectBrakeSubmission,
   type BackupSubmission,
   type BackupResult,
+  type LabelEffects,
+  type AdmissionPreview,
+  type IntakePreviewSubmission,
+  type IntakePreviewResult,
+  type IntakePublishSubmission,
+  type IntakePublishResult,
+  type IntakeUpdateSubmission,
+  type TargetBindingSubmission,
+  type TargetBindingResult,
+  type BranchIntegrationSubmission,
+  type BranchIntegrationResult,
 };
 
 export type FactoryErrorCode =
@@ -415,6 +459,58 @@ export function createFactoryClient(options: {
           return getJson(
             `${scopedBase}/intake/${encodeURIComponent(number)}`,
             evaluatedIssueSchema,
+          );
+        },
+        async previewIntake(submission: IntakePreviewSubmission): Promise<IntakePreviewResult> {
+          const parsed = intakePreviewSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(`${scopedBase}/intake/preview`, parsed.data, intakePreviewResultSchema);
+        },
+        async publishTicket(submission: IntakePublishSubmission): Promise<IntakePublishResult> {
+          const parsed = intakePublishSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(`${scopedBase}/intake/publish`, parsed.data, intakePublishResultSchema);
+        },
+        async updateTicket(
+          number: number,
+          submission: IntakeUpdateSubmission,
+        ): Promise<EvaluatedIssue> {
+          const parsed = intakeUpdateSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/intake/${encodeURIComponent(number)}/update`,
+            parsed.data,
+            evaluatedIssueSchema,
+          );
+        },
+        async bindTarget(
+          number: number,
+          submission: TargetBindingSubmission,
+        ): Promise<TargetBindingResult> {
+          const parsed = targetBindingSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/intake/${encodeURIComponent(number)}/bind`,
+            parsed.data,
+            targetBindingResultSchema,
+          );
+        },
+        async recordBranchIntegration(
+          number: number,
+          submission: BranchIntegrationSubmission,
+        ): Promise<BranchIntegrationResult> {
+          const parsed = branchIntegrationSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/intake/${encodeURIComponent(number)}/integrate`,
+            parsed.data,
+            branchIntegrationResultSchema,
+          );
+        },
+        async getBranchIntegration(number: number): Promise<BranchIntegrationResult> {
+          return getJson(
+            `${scopedBase}/intake/${encodeURIComponent(number)}/integration`,
+            branchIntegrationResultSchema,
           );
         },
         async laps(): Promise<LapList> {

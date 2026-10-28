@@ -1,8 +1,14 @@
-import type { EvaluatedIssue, IntakeResult } from "@labq/contracts/operator";
+import type { EvaluatedIssue } from "@labq/contracts/operator";
+import { parseDependencies, isActiveClaim } from "./parser";
 
-export const DEPENDS_ON_PATTERN = /depends\s+on\s*:\s*([^\n\r]+)/gi;
-export const ISSUE_NUM_PATTERN = /#?(\d+)/g;
-export const CLAIM_PATTERN = /Loop claim: run ([a-zA-Z0-9_-]+)/;
+export interface RawIssue {
+  number: number;
+  title: string;
+  state: string;
+  labels?: Array<{ name: string } | string>;
+  body?: string | null;
+  comments?: Array<{ body?: string | null }>;
+}
 
 export const JEV_TRIAGE_QUESTIONS = {
   is_actionable: {
@@ -29,43 +35,6 @@ export const JEV_TRIAGE_QUESTIONS = {
     ],
   },
 };
-
-export interface RawIssue {
-  number: number;
-  title: string;
-  state: string;
-  labels?: Array<{ name: string } | string>;
-  body?: string | null;
-  comments?: Array<{ body?: string | null }>;
-}
-
-export function parseDependencies(text: string): number[] {
-  if (!text) return [];
-  const deps: number[] = [];
-  const clauseMatches = text.matchAll(/(?:depends\s+on)\s*:\s*([^\n\r]+)/gi);
-  for (const match of clauseMatches) {
-    const clause = match[1] || "";
-    const numMatches = clause.matchAll(/#?(\d+)/g);
-    for (const numMatch of numMatches) {
-      const n = parseInt(numMatch[1], 10);
-      if (!Number.isNaN(n) && !deps.includes(n)) {
-        deps.push(n);
-      }
-    }
-  }
-  return deps;
-}
-
-export function isActiveClaim(comments?: Array<{ body?: string | null }>): boolean {
-  if (!comments || !Array.isArray(comments)) return false;
-  for (const comment of comments) {
-    const body = comment?.body || "";
-    if (CLAIM_PATTERN.test(body)) {
-      return true;
-    }
-  }
-  return false;
-}
 
 export interface JevSystemOneResponse {
   id?: string;
@@ -100,7 +69,6 @@ export async function runJevAdvisory(
 }> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey && !fetcher) {
-    // Unconfigured
     return {
       rec_label: null,
       conf: null,
@@ -203,11 +171,23 @@ export async function runJevAdvisory(
   }
 }
 
+export interface AdmissionOptions {
+  integratedBranchIssues?: Set<number> | Map<number, string>;
+  jevFetcher?: (payload: unknown) => Promise<JevSystemOneResponse>;
+}
+
 export async function evaluateIssueAdmission(
   issue: RawIssue,
   allIssuesByNumber: Map<number, RawIssue>,
-  jevFetcher?: (payload: unknown) => Promise<JevSystemOneResponse>,
+  optionsOrJevFetcher?: AdmissionOptions | ((payload: unknown) => Promise<JevSystemOneResponse>),
 ): Promise<EvaluatedIssue> {
+  let options: AdmissionOptions = {};
+  if (typeof optionsOrJevFetcher === "function") {
+    options = { jevFetcher: optionsOrJevFetcher };
+  } else if (optionsOrJevFetcher) {
+    options = optionsOrJevFetcher;
+  }
+
   const number = Number(issue.number) || 0;
   const title = String(issue.title || "");
   const state = String(issue.state || "OPEN").toUpperCase();
@@ -224,7 +204,9 @@ export async function evaluateIssueAdmission(
     }
   }
 
-  const lowerLabels = new Set(labelNames.map((l) => l.toLowerCase()));
+  // Canonical labels: legacy factory:* labels convey zero authority
+  const canonicalLabels = labelNames.filter((l) => !l.toLowerCase().startsWith("factory:"));
+  const lowerCanonicalLabels = new Set(canonicalLabels.map((l) => l.toLowerCase()));
 
   const body = String(issue.body || "");
   const deps = parseDependencies(body);
@@ -240,8 +222,29 @@ export async function evaluateIssueAdmission(
     }
   }
 
+  // Check branch integration status
+  let integratedBranch: string | null = null;
+  if (options.integratedBranchIssues) {
+    if (options.integratedBranchIssues instanceof Map) {
+      integratedBranch = options.integratedBranchIssues.get(number) ?? null;
+    } else if (options.integratedBranchIssues.has(number)) {
+      integratedBranch = "integrated";
+    }
+  }
+
+  // Check dependencies: satisfied if closed on GitHub OR has verified integrated_to_branch status
   const unsatisfied: number[] = [];
   for (const depNum of deps) {
+    let depIntegrated = false;
+    if (options.integratedBranchIssues) {
+      depIntegrated = options.integratedBranchIssues.has(depNum);
+    }
+
+    if (depIntegrated) {
+      // Satisfied via local verified branch integration
+      continue;
+    }
+
     const depIssue = allIssuesByNumber.get(depNum);
     if (!depIssue) {
       unsatisfied.push(depNum);
@@ -264,12 +267,14 @@ export async function evaluateIssueAdmission(
       labels: labelNames,
       dependencies: deps,
       unsatisfied_dependencies: unsatisfied,
+      body,
+      integrated_to_branch: integratedBranch,
     };
   }
 
-  // 2. Unlabeled check: strictly canonical (no factory-prefixed authority)
-  if (lowerLabels.size === 0) {
-    const jev = await runJevAdvisory(title, body, labelNames, jevFetcher);
+  // 2. Unlabeled check
+  if (labelNames.length === 0) {
+    const jev = await runJevAdvisory(title, body, labelNames, options.jevFetcher);
     if (jev.error) {
       return {
         number,
@@ -280,6 +285,8 @@ export async function evaluateIssueAdmission(
         labels: labelNames,
         dependencies: deps,
         unsatisfied_dependencies: unsatisfied,
+        body,
+        integrated_to_branch: integratedBranch,
       };
     }
     return {
@@ -291,6 +298,8 @@ export async function evaluateIssueAdmission(
       labels: labelNames,
       dependencies: deps,
       unsatisfied_dependencies: unsatisfied,
+      body,
+      integrated_to_branch: integratedBranch,
       recommended_label: jev.rec_label,
       confidence: jev.conf,
       complexity: jev.comp,
@@ -300,7 +309,7 @@ export async function evaluateIssueAdmission(
   }
 
   // 3. Exclude check: wontfix overrides everything. Legacy factory:exclude has no authority in canonical mode.
-  if (lowerLabels.has("wontfix")) {
+  if (lowerCanonicalLabels.has("wontfix")) {
     return {
       number,
       title,
@@ -310,12 +319,14 @@ export async function evaluateIssueAdmission(
       labels: labelNames,
       dependencies: deps,
       unsatisfied_dependencies: unsatisfied,
+      body,
+      integrated_to_branch: integratedBranch,
     };
   }
 
   // 4. Hold check: canonical needs-info, ready-for-human, needs-triage block admission
   const blockingLabels = ["needs-info", "ready-for-human", "needs-triage"];
-  if (blockingLabels.some((lbl) => lowerLabels.has(lbl))) {
+  if (blockingLabels.some((lbl) => lowerCanonicalLabels.has(lbl))) {
     let jev: Awaited<ReturnType<typeof runJevAdvisory>> = {
       rec_label: null,
       conf: null,
@@ -324,8 +335,8 @@ export async function evaluateIssueAdmission(
       rec_reason: "",
       jev_meta: null,
     };
-    if (lowerLabels.has("needs-triage")) {
-      jev = await runJevAdvisory(title, body, labelNames, jevFetcher);
+    if (lowerCanonicalLabels.has("needs-triage")) {
+      jev = await runJevAdvisory(title, body, labelNames, options.jevFetcher);
       if (jev.error) {
         return {
           number,
@@ -336,6 +347,8 @@ export async function evaluateIssueAdmission(
           labels: labelNames,
           dependencies: deps,
           unsatisfied_dependencies: unsatisfied,
+          body,
+          integrated_to_branch: integratedBranch,
         };
       }
     }
@@ -348,6 +361,8 @@ export async function evaluateIssueAdmission(
       labels: labelNames,
       dependencies: deps,
       unsatisfied_dependencies: unsatisfied,
+      body,
+      integrated_to_branch: integratedBranch,
       recommended_label: jev.rec_label,
       confidence: jev.conf,
       complexity: jev.comp,
@@ -357,7 +372,7 @@ export async function evaluateIssueAdmission(
   }
 
   // 5. Ready check: canonical ready-for-agent is strictly required. Legacy factory:ready has no authority.
-  if (!lowerLabels.has("ready-for-agent")) {
+  if (!lowerCanonicalLabels.has("ready-for-agent")) {
     return {
       number,
       title,
@@ -367,6 +382,8 @@ export async function evaluateIssueAdmission(
       labels: labelNames,
       dependencies: deps,
       unsatisfied_dependencies: unsatisfied,
+      body,
+      integrated_to_branch: integratedBranch,
     };
   }
 
@@ -382,11 +399,13 @@ export async function evaluateIssueAdmission(
       labels: labelNames,
       dependencies: deps,
       unsatisfied_dependencies: unsatisfied,
+      body,
+      integrated_to_branch: integratedBranch,
     };
   }
 
   // 7. Active claim check
-  if (isActiveClaim(comments)) {
+  if (isActiveClaim(comments, body)) {
     return {
       number,
       title,
@@ -396,6 +415,8 @@ export async function evaluateIssueAdmission(
       labels: labelNames,
       dependencies: deps,
       unsatisfied_dependencies: unsatisfied,
+      body,
+      integrated_to_branch: integratedBranch,
     };
   }
 
@@ -409,113 +430,7 @@ export async function evaluateIssueAdmission(
     labels: labelNames,
     dependencies: deps,
     unsatisfied_dependencies: [],
+    body,
+    integrated_to_branch: integratedBranch,
   };
-}
-
-export class IntakeService {
-  private cachedResult: IntakeResult | null = null;
-  private cachedAt = 0;
-  private readonly ttlSeconds: number;
-  private readonly repo: string;
-  private readonly runner?: (cmd: string[]) => Promise<string>;
-  private readonly jevFetcher?: (payload: unknown) => Promise<JevSystemOneResponse>;
-
-  constructor(options?: {
-    repo?: string;
-    ttlSeconds?: number;
-    runner?: (cmd: string[]) => Promise<string>;
-    jevFetcher?: (payload: unknown) => Promise<JevSystemOneResponse>;
-  }) {
-    this.repo = options?.repo || "labq-software-factory";
-    this.ttlSeconds = options?.ttlSeconds ?? 60.0;
-    this.runner = options?.runner;
-    this.jevFetcher = options?.jevFetcher;
-  }
-
-  async fetchRawIssues(): Promise<RawIssue[]> {
-    let repoArg = this.repo;
-    if (!repoArg.includes("/")) {
-      repoArg = `iqbal-codes/${repoArg}`;
-    }
-    const cmd = [
-      "gh",
-      "issue",
-      "list",
-      "--repo",
-      repoArg,
-      "--state",
-      "all",
-      "--limit",
-      "100",
-      "--json",
-      "number,title,labels,body,state,comments",
-    ];
-
-    let output: string;
-    if (this.runner) {
-      output = await this.runner(cmd);
-    } else {
-      const proc = Bun.spawn(cmd, {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      const exited = await proc.exited;
-      if (exited !== 0) {
-        const err = await new Response(proc.stderr).text();
-        throw new Error(`gh issue list failed: ${err}`);
-      }
-      output = await new Response(proc.stdout).text();
-    }
-
-    try {
-      const data = JSON.parse(output);
-      if (!Array.isArray(data)) {
-        throw new Error("Expected array of issues from gh CLI");
-      }
-      return data as RawIssue[];
-    } catch (err: any) {
-      throw new Error(`Failed to parse gh output: ${err.message}`);
-    }
-  }
-
-  async evaluateBacklog(forceRefresh = false): Promise<IntakeResult> {
-    const now = Date.now() / 1000;
-    if (!forceRefresh && this.cachedResult && now - this.cachedAt < this.ttlSeconds) {
-      return { ...this.cachedResult, cached: true };
-    }
-
-    const rawIssues = await this.fetchRawIssues();
-    const byNumber = new Map<number, RawIssue>();
-    for (const issue of rawIssues) {
-      if (typeof issue.number === "number") {
-        byNumber.set(issue.number, issue);
-      }
-    }
-
-    const evaluated: EvaluatedIssue[] = [];
-    for (const issue of rawIssues) {
-      evaluated.push(await evaluateIssueAdmission(issue, byNumber, this.jevFetcher));
-    }
-
-    evaluated.sort((a, b) => a.number - b.number);
-
-    const admittedCount = evaluated.filter((x) => x.admission_status === "admitted").length;
-    const heldCount = evaluated.filter((x) => x.admission_status === "held").length;
-    const excludedCount = evaluated.filter((x) => x.admission_status === "excluded").length;
-
-    const result: IntakeResult = {
-      repo: this.repo,
-      as_of: new Date().toISOString(),
-      cached: false,
-      total_count: evaluated.length,
-      admitted_count: admittedCount,
-      held_count: heldCount,
-      excluded_count: excludedCount,
-      issues: evaluated,
-    };
-
-    this.cachedResult = result;
-    this.cachedAt = now;
-    return result;
-  }
 }

@@ -68,6 +68,18 @@ export function initializeDatabase(dbPath?: string): DatabaseSync {
     );
   `);
 
+  // Table to track verified local branch integration status for subtickets/issues
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS project_issue_integrations (
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      issue_number INTEGER NOT NULL,
+      branch TEXT NOT NULL,
+      commit_sha TEXT,
+      integrated_at TEXT NOT NULL,
+      PRIMARY KEY (project_id, issue_number)
+    );
+  `);
+
   applyCommandMigrations(db);
 
   return db;

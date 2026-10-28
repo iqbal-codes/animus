@@ -46,6 +46,9 @@ const messages: Record<FactoryErrorCode, string> = {
   brake_state_unknown: "Refused: brake state could not be verified.",
   storage_failed: "Failed: command ledger storage failure prior to dispatch.",
   backup_failed: "Failed: database backup could not be completed.",
+  target_drift: "Rejected: remote target drifted between admission and dispatch.",
+  admission_rejected: "Rejected: target issue does not satisfy canonical admission criteria.",
+  spec_parse_error: "Invalid: spec or ticket contract could not be parsed.",
 };
 const controlStatus = document.querySelector<HTMLElement>("#control-status");
 const btnHalt = document.querySelector<HTMLButtonElement>("#btn-halt");

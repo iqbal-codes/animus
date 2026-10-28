@@ -40,6 +40,9 @@ export const operatorErrorSchema = z.object({
     "brake_state_unknown",
     "storage_failed",
     "backup_failed",
+    "target_drift",
+    "admission_rejected",
+    "spec_parse_error",
   ]),
 });
 export type OperatorErrorCode = z.infer<typeof operatorErrorSchema>["error"];
@@ -83,6 +86,8 @@ export const evaluatedIssueSchema = z.object({
   labels: z.array(z.string()),
   dependencies: z.array(z.number().int()),
   unsatisfied_dependencies: z.array(z.number().int()),
+  body: z.string().nullable().optional(),
+  integrated_to_branch: z.string().nullable().optional(),
   recommended_label: z.string().nullable().optional(),
   confidence: z.number().nullable().optional(),
   complexity: z.number().nullable().optional(),
@@ -90,6 +95,101 @@ export const evaluatedIssueSchema = z.object({
   jev_evaluation: jevEvaluationSchema.nullable().optional(),
 });
 export type EvaluatedIssue = z.infer<typeof evaluatedIssueSchema>;
+
+export const labelEffectsSchema = z.object({
+  current_labels: z.array(z.string()),
+  proposed_labels: z.array(z.string()),
+  added_labels: z.array(z.string()),
+  removed_labels: z.array(z.string()),
+});
+export type LabelEffects = z.infer<typeof labelEffectsSchema>;
+
+export const admissionPreviewSchema = z.object({
+  status: z.enum(["admitted", "held", "excluded"]),
+  reason: z.string(),
+  dependencies: z.array(z.number().int()),
+  unsatisfied_dependencies: z.array(z.number().int()),
+  blocking_labels: z.array(z.string()),
+  exclusion_labels: z.array(z.string()),
+  active_claim: z.boolean(),
+});
+export type AdmissionPreview = z.infer<typeof admissionPreviewSchema>;
+
+export const intakePreviewSubmissionSchema = z.object({
+  issue_number: z.number().int().positive().optional(),
+  title: z.string().min(1),
+  body: z.string(),
+  labels: z.array(z.string()).optional(),
+});
+export type IntakePreviewSubmission = z.infer<typeof intakePreviewSubmissionSchema>;
+
+export const intakePreviewResultSchema = z.object({
+  target_repo: z.string(),
+  target_issue_number: z.number().int().positive().nullable().optional(),
+  title: z.string(),
+  title_diff: z.string().nullable(),
+  body: z.string(),
+  body_diff: z.string().nullable(),
+  label_effects: labelEffectsSchema,
+  admission_preview: admissionPreviewSchema,
+});
+export type IntakePreviewResult = z.infer<typeof intakePreviewResultSchema>;
+
+export const intakePublishSubmissionSchema = z.object({
+  title: z.string().min(1),
+  body: z.string(),
+  labels: z.array(z.string()).optional(),
+});
+export type IntakePublishSubmission = z.infer<typeof intakePublishSubmissionSchema>;
+
+export const intakePublishResultSchema = z.object({
+  repo: z.string(),
+  issue: evaluatedIssueSchema,
+  created_at: z.string(),
+});
+export type IntakePublishResult = z.infer<typeof intakePublishResultSchema>;
+
+export const intakeUpdateSubmissionSchema = z.object({
+  title: z.string().min(1).optional(),
+  body: z.string().optional(),
+  labels: z.array(z.string()).optional(),
+  state: z.enum(["open", "closed", "OPEN", "CLOSED"]).optional(),
+});
+export type IntakeUpdateSubmission = z.infer<typeof intakeUpdateSubmissionSchema>;
+
+export const targetBindingSubmissionSchema = z.object({
+  expected_state: z.string().default("OPEN"),
+  expected_labels: z.array(z.string()),
+  expected_admission_status: z.enum(["admitted", "held", "excluded"]).default("admitted"),
+});
+export type TargetBindingSubmission = z.infer<typeof targetBindingSubmissionSchema>;
+
+export const targetBindingResultSchema = z.object({
+  bound: z.boolean(),
+  project_id: z.string(),
+  repo_name: z.string(),
+  issue_number: z.number().int().positive(),
+  state: z.string(),
+  labels: z.array(z.string()),
+  admission_status: z.enum(["admitted", "held", "excluded"]),
+  bound_at: z.string(),
+});
+export type TargetBindingResult = z.infer<typeof targetBindingResultSchema>;
+
+export const branchIntegrationSubmissionSchema = z.object({
+  branch: z.string().min(1),
+  commit_sha: z.string().optional(),
+});
+export type BranchIntegrationSubmission = z.infer<typeof branchIntegrationSubmissionSchema>;
+
+export const branchIntegrationResultSchema = z.object({
+  project_id: z.string(),
+  issue_number: z.number().int().positive(),
+  branch: z.string(),
+  commit_sha: z.string().nullable().optional(),
+  integrated_at: z.string(),
+});
+export type BranchIntegrationResult = z.infer<typeof branchIntegrationResultSchema>;
 
 export const intakeResultSchema = z.object({
   repo: z.string(),
