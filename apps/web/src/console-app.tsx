@@ -222,15 +222,10 @@ export const ConsoleView: React.FC = () => {
   const issues: EvaluatedIssue[] = intakeData?.issues ?? [];
 
   // 4. Project-scoped Spec Coordination Plans (AC1)
-  const [coordinationPlans, setCoordinationPlans] = useState<Record<number, SpecCoordinationPlan>>(
-    {},
-  );
-
-  useEffect(() => {
-    if (!projectClient || issues.length === 0) return;
-    let active = true;
-
-    const loadPlans = async () => {
+  const { data: coordinationPlans = {} } = useQuery<Record<number, SpecCoordinationPlan>>({
+    queryKey: [selectedProjectId, "coordination"],
+    queryFn: async () => {
+      if (!projectClient || issues.length === 0) return {};
       const plansMap: Record<number, SpecCoordinationPlan> = {};
       for (const issue of issues) {
         if (
@@ -244,17 +239,10 @@ export const ConsoleView: React.FC = () => {
           } catch {}
         }
       }
-      if (active) {
-        setCoordinationPlans(plansMap);
-      }
-    };
-
-    void loadPlans();
-
-    return () => {
-      active = false;
-    };
-  }, [projectClient, issues]);
+      return plansMap;
+    },
+    enabled: Boolean(projectClient && issues.length > 0),
+  });
 
   // 5. Project-scoped Controls Query
   const { data: controlData, refetch: refetchControls } = useQuery({
@@ -316,6 +304,14 @@ export const ConsoleView: React.FC = () => {
           } else {
             void qc.invalidateQueries({ queryKey: [hint.projectId] });
           }
+        } else {
+          // Global scope invalidations
+          if (hint.scope === "laps" && selectedProjectId) {
+            void qc.invalidateQueries({ queryKey: [selectedProjectId, "laps"] });
+            void qc.invalidateQueries({ queryKey: ["laps"] });
+          } else if (selectedProjectId) {
+            void qc.invalidateQueries({ queryKey: [selectedProjectId] });
+          }
         }
       },
       onGapDetected: () => {
@@ -363,6 +359,23 @@ export const ConsoleView: React.FC = () => {
     setModalIssueNumbers(promotionData?.delivered_tickets ?? []);
     setModalPrereqs(undefined);
     setModalOpen(true);
+  };
+
+  // Consequential Action Live Freshness Check Hook (AC12 / AC4)
+  const handleFreshnessCheck = async () => {
+    if (!projectClient) return { liveBranchSha: modalExpectedSha, prerequisitesOk: true };
+    try {
+      const health = await client.health();
+      const liveBranchSha = health.buildId || modalExpectedSha;
+      let prerequisitesOk = true;
+      if (modalAction === "promotion_pr") {
+        const promoStatus = await projectClient.promotionStatus();
+        prerequisitesOk = promoStatus.unpromoted_count > 0 || !promoStatus.candidate_freeze;
+      }
+      return { liveBranchSha, prerequisitesOk };
+    } catch (err: any) {
+      throw new Error(`Live freshness check failed: ${err?.message || String(err)}`);
+    }
   };
 
   // Consequential Action Execution Handler
@@ -575,25 +588,6 @@ export const ConsoleView: React.FC = () => {
         </div>
       </section>
 
-      {/* Backwards-compatible intake and evidence elements for existing suites */}
-      <div style={{ display: "none" }} aria-hidden="true">
-        <p id="intake-status">Intake: {intakeData?.total_count ?? 0} total.</p>
-        <button id="intake-refresh" type="button" onClick={() => void refetchIntake()}>
-          Reload Intake
-        </button>
-        <ul id="intake-list">
-          {issues.map((i) => (
-            <li key={i.number} data-issue-number={i.number} data-status={i.admission_status}>
-              #{i.number} {i.title}
-            </li>
-          ))}
-        </ul>
-
-        <p id="evidence-status">Select a lap to view candidate evidence</p>
-        <div id="evidence-details"></div>
-        <pre id="report-content" hidden></pre>
-      </div>
-
       {/* Main Workspace Layout (AC1) */}
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
         {/* Flat Spec Sidebar (AC1) */}
@@ -762,6 +756,7 @@ export const ConsoleView: React.FC = () => {
         issueNumbers={modalIssueNumbers}
         prerequisiteStates={modalPrereqs}
         projectId={selectedProjectId}
+        onFreshnessCheck={handleFreshnessCheck}
         onConfirm={executeConsequentialAction}
       />
     </div>

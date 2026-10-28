@@ -216,7 +216,7 @@ describe("AC2 / P4: WebSocketConnectionManager", () => {
 
     expect(gapSignals).toHaveLength(1);
     expect(gapSignals[0]).toEqual({
-      channel: "proj-1:",
+      channel: JSON.stringify({ p: "proj-1", l: "" }),
       expectedSeq: 2,
       receivedSeq: 5,
       projectId: "proj-1",

@@ -88,8 +88,7 @@ export class WebSocketConnectionManager {
   private status: ConnectionStatus = "disconnected";
   private ws: WebSocketLike | null = null;
   private ringBuffer: BoundedRingBuffer<WsEvent>;
-  private seenIds = new Set<string>();
-  private seenIdsList: string[] = [];
+  private seenIds = new Map<string, boolean>();
   private lastSeqByChannel = new Map<string, number>();
   private activeSubscriptions = new Set<string>();
   private reconnectAttempt = 0;
@@ -130,7 +129,6 @@ export class WebSocketConnectionManager {
   clearBuffer(): void {
     this.ringBuffer.clear();
     this.seenIds.clear();
-    this.seenIdsList = [];
     this.lastSeqByChannel.clear();
   }
 
@@ -206,17 +204,27 @@ export class WebSocketConnectionManager {
 
   private resubscribeAll(): void {
     for (const key of this.activeSubscriptions) {
-      const [projectId, lapId] = key.split(":");
+      let projectId: string | undefined;
+      let lapId: string | undefined;
+      try {
+        const parsed = JSON.parse(key) as { p?: string; l?: string };
+        projectId = parsed.p || undefined;
+        lapId = parsed.l || undefined;
+      } catch {
+        const parts = key.split(":");
+        projectId = parts[0] || undefined;
+        lapId = parts[1] || undefined;
+      }
       this.send({
         action: "subscribe",
-        projectId: projectId || undefined,
-        lapId: lapId || undefined,
+        projectId,
+        lapId,
       });
       // Invalidation hint on reconnect so snapshots are refetched as source of truth
       this.options.onInvalidationHint?.({
         scope: "reconnect",
-        projectId: projectId || undefined,
-        lapId: lapId || undefined,
+        projectId,
+        lapId,
       });
     }
   }
@@ -312,15 +320,14 @@ export class WebSocketConnectionManager {
   }
 
   private channelKey(projectId?: string, lapId?: string): string {
-    return `${projectId ?? ""}:${lapId ?? ""}`;
+    return JSON.stringify({ p: projectId ?? "", l: lapId ?? "" });
   }
 
   private recordSeenId(id: string): void {
-    this.seenIds.add(id);
-    this.seenIdsList.push(id);
-    if (this.seenIdsList.length > 5000) {
-      const oldest = this.seenIdsList.shift();
-      if (oldest) this.seenIds.delete(oldest);
+    this.seenIds.set(id, true);
+    if (this.seenIds.size > 5000) {
+      const oldestKey = this.seenIds.keys().next().value;
+      if (oldestKey !== undefined) this.seenIds.delete(oldestKey);
     }
   }
 
