@@ -38,6 +38,7 @@ import { IntakeService, handleProjectIntakeRoute } from "./intake";
 import { initializeDatabase, ProjectRegistryService, ProjectRegistryError } from "./registry";
 import { CommandService, CommandError } from "./command";
 import { SpecCoordinatorService, handleProjectCoordinationRoute } from "./coordination";
+import { EvidenceService, handleProjectEvidenceRoute } from "./evidence";
 
 try {
   const config = configuration();
@@ -141,6 +142,16 @@ try {
       });
     }
     return coordinationServiceInstance;
+  };
+
+  let evidenceServiceInstance: EvidenceService | null = null;
+  const getEvidenceService = (): EvidenceService => {
+    if (!evidenceServiceInstance) {
+      const reg = getRegistryService();
+      const cmd = getCommandService();
+      evidenceServiceInstance = new EvidenceService(reg.getDb(), reg.getForge(), cmd.ledger);
+    }
+    return evidenceServiceInstance;
   };
   // Bun 1.4.2 still resolves ambient proxies with fetch({ proxy: "" }).
   process.env.NO_PROXY = process.env.no_proxy = new URL(origin).hostname;
@@ -771,6 +782,17 @@ try {
             getCoordinationService(),
           );
           if (coordRes) return coordRes;
+          return Response.json({ error: "not_found" }, { status: 404 });
+        }
+
+        if (scopedAction === "evidence") {
+          const evidenceRes = await handleProjectEvidenceRoute(
+            request,
+            projectId,
+            parts,
+            getEvidenceService(),
+          );
+          if (evidenceRes) return evidenceRes;
           return Response.json({ error: "not_found" }, { status: 404 });
         }
 

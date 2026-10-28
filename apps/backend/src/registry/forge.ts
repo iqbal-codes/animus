@@ -59,6 +59,7 @@ export interface ForgeAdapter {
   createPullRequest?(repo: string, input: CreatePullRequestInput): Promise<ForgePullRequest>;
   listPullRequests?(repo: string): Promise<ForgePullRequest[]>;
   getPullRequest?(repo: string, prNumber: number): Promise<ForgePullRequest | null>;
+  mergePullRequest?(repo: string, prNumber: number): Promise<{ merged: boolean; sha?: string }>;
 }
 
 export interface IssueForgeAdapter extends ForgeAdapter {
@@ -670,5 +671,19 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
     };
     prMap.set(prNumber, pr);
     return { ...pr };
+  }
+
+  async mergePullRequest(
+    repo: string,
+    prNumber: number,
+  ): Promise<{ merged: boolean; sha?: string }> {
+    const key = repo.toLowerCase();
+    const prMap = this.pullRequestsByRepo.get(key);
+    if (!prMap || !prMap.has(prNumber)) {
+      throw new Error(`PR #${prNumber} not found in repository ${repo}`);
+    }
+    const pr = prMap.get(prNumber)!;
+    pr.state = "MERGED";
+    return { merged: true, sha: `merged_sha_${prNumber}` };
   }
 }

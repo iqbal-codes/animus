@@ -48,6 +48,32 @@ import {
   targetedImplementResultSchema,
   coordinationFinalPrResultSchema,
   coordinationFinalPrSubmissionSchema,
+  candidateVerificationRecordSchema,
+  candidateVerificationSubmissionSchema,
+  landingGuardResultSchema,
+  landingSubmissionSchema,
+  landingExecutionResultSchema,
+  tieredActionSubmissionSchema,
+  tieredActionResultSchema,
+  runCancellationSubmissionSchema,
+  runCancellationResultSchema,
+  gateApprovalSubmissionSchema,
+  gateApprovalRecordSchema,
+  releaseReadinessResultSchema,
+  sanitizedReportSchema,
+  type CandidateVerificationRecord,
+  type CandidateVerificationSubmission,
+  type LandingGuardResult,
+  type LandingSubmission,
+  type LandingExecutionResult,
+  type TieredActionSubmission,
+  type TieredActionResult,
+  type RunCancellationSubmission,
+  type RunCancellationResult,
+  type GateApprovalSubmission,
+  type GateApprovalRecord,
+  type ReleaseReadinessResult,
+  type SanitizedReport,
   type SpecCoordinationPlan,
   type TargetedImplementResult,
   type CoordinationFinalPrResult,
@@ -615,6 +641,88 @@ export function createFactoryClient(options: {
             `${scopedBase}/coordination/final-pr`,
             parsed.data,
             coordinationFinalPrResultSchema,
+          );
+        },
+        async recordCandidateVerification(
+          submission: CandidateVerificationSubmission,
+        ): Promise<CandidateVerificationRecord> {
+          const parsed = candidateVerificationSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/evidence/verification`,
+            parsed.data,
+            candidateVerificationRecordSchema,
+          );
+        },
+        async getCandidateVerification(prNumber: number): Promise<CandidateVerificationRecord> {
+          return getJson(
+            `${scopedBase}/evidence/verification/${encodeURIComponent(prNumber)}`,
+            candidateVerificationRecordSchema,
+          );
+        },
+        async listCandidateVerifications(): Promise<CandidateVerificationRecord[]> {
+          return getJson(
+            `${scopedBase}/evidence/verification`,
+            candidateVerificationRecordSchema.array(),
+          );
+        },
+        async evaluateLandingGuard(
+          prNumber: number,
+          opts?: { headSha?: string; baseSha?: string },
+        ): Promise<LandingGuardResult> {
+          const params = new URLSearchParams();
+          if (opts?.headSha) params.set("headSha", opts.headSha);
+          if (opts?.baseSha) params.set("baseSha", opts.baseSha);
+          const qs = params.toString();
+          const path = `${scopedBase}/evidence/landing-guard/${encodeURIComponent(prNumber)}${qs ? `?${qs}` : ""}`;
+          return getJson(path, landingGuardResultSchema);
+        },
+        async executeLanding(submission: LandingSubmission): Promise<LandingExecutionResult> {
+          const parsed = landingSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/evidence/landing`,
+            parsed.data,
+            landingExecutionResultSchema,
+          );
+        },
+        async executeTieredAction(submission: TieredActionSubmission): Promise<TieredActionResult> {
+          const parsed = tieredActionSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/evidence/tiered-action`,
+            parsed.data,
+            tieredActionResultSchema,
+          );
+        },
+        async cancelRun(submission: RunCancellationSubmission): Promise<RunCancellationResult> {
+          const parsed = runCancellationSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/evidence/cancel-run`,
+            parsed.data,
+            runCancellationResultSchema,
+          );
+        },
+        async approveGate(submission: GateApprovalSubmission): Promise<GateApprovalRecord> {
+          const parsed = gateApprovalSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/evidence/gate-approval`,
+            parsed.data,
+            gateApprovalRecordSchema,
+          );
+        },
+        async getReleaseReadiness(candidateSha: string): Promise<ReleaseReadinessResult> {
+          return getJson(
+            `${scopedBase}/evidence/release-readiness/${encodeURIComponent(candidateSha)}`,
+            releaseReadinessResultSchema,
+          );
+        },
+        async getSanitizedReport(prNumber: number): Promise<SanitizedReport> {
+          return getJson(
+            `${scopedBase}/evidence/report/${encodeURIComponent(prNumber)}/sanitized`,
+            sanitizedReportSchema,
           );
         },
       };
