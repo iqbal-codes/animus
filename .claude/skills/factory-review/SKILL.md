@@ -7,6 +7,13 @@ description: Review a factory candidate, branch, PR, or work-in-progress on inde
 
 Read `docs/agents/software-factory-workflow.md`. Review without editing, publishing, approving, or merging unless the user separately requested those actions. This report supplements the native review/evidence gates; it does not replace them.
 
+## Critical Invariant: Strict Read-Only Review Boundary
+
+- **Reviewers DO NOT edit code:** Reviewers (both the coordinating agent and any delegated review subagents) are strictly forbidden from editing, writing, patching, formatting, refactoring, deleting, or committing any files in the workspace.
+- **No auto-fixing or silent remediation:** When a defect, smell, or contract gap is discovered, report it honestly as a finding with file:line, impact, and severity. Do NOT attempt to fix it during the review stage. Remediation belongs exclusively to `/factory-implement` or subsequent operator-directed work.
+- **Enforced subagent instructions:** When delegating tasks to subagents under `mcp__t3-code__delegate_task`, you MUST explicitly include the instruction:
+  `"You are strictly a read-only reviewer. You are FORBIDDEN from using edit, write, or modifying any repository files. Only inspect files, execute read-only check/test commands, and report findings."`
+
 ## 1. Pin the scope
 
 Resolve an explicit fixed point (commit, branch, tag, or PR base) and candidate head to immutable SHAs. For a PR, read its actual base/head rather than assuming `main` or `develop`. If no fixed point can be established, ask. Confirm refs resolve before dispatch.
@@ -26,6 +33,8 @@ Collect available criterion evidence and verify its tested head/base/candidate a
 ## 3. Review the axes independently
 
 Run two independent reviewers concurrently when the environment permits delegation. Supply each the pinned diff/commits, relevant new-file contents, source pointers, and evidence. Follow the environment's delegation tool/authorization rules. If delegation is unavailable, run isolated sequential passes and disclose that deviation rather than inventing reviewers.
+
+Enforce the **Strict Read-Only Review Boundary** on all delegated subagents: reviewers evaluate the candidate as-is and must never touch the filesystem or fix bugs.
 
 **Standards reviewer:** inspect each changed hunk against the documented rules and the full smell baseline. Cite file:line, the rule, concrete scenario/consequence, and evidence. Distinguish hard violations from judgment calls. Smells alone are not blockers. Check authority, protected boundaries, and evidence honesty where repository rules require them.
 

@@ -40,6 +40,12 @@ const messages: Record<FactoryErrorCode, string> = {
   partial_registration_effect:
     "Warning: remote repository created or cloned, but checkout validation failed.",
   retarget_rejected: "Refused: retarget repository ID does not match the active project.",
+  command_not_found: "Not found: requested command does not exist.",
+  brake_active: "Refused: brake is active for this scope.",
+  schedule_paused: "Refused: schedule is currently paused.",
+  brake_state_unknown: "Refused: brake state could not be verified.",
+  storage_failed: "Failed: command ledger storage failure prior to dispatch.",
+  backup_failed: "Failed: database backup could not be completed.",
   target_drift: "Rejected: remote target drifted between admission and dispatch.",
   admission_rejected: "Rejected: target issue does not satisfy canonical admission criteria.",
   spec_parse_error: "Invalid: spec or ticket contract could not be parsed.",

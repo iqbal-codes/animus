@@ -34,6 +34,12 @@ export const operatorErrorSchema = z.object({
     "project_has_active_runs",
     "partial_registration_effect",
     "retarget_rejected",
+    "command_not_found",
+    "brake_active",
+    "schedule_paused",
+    "brake_state_unknown",
+    "storage_failed",
+    "backup_failed",
     "target_drift",
     "admission_rejected",
     "spec_parse_error",
@@ -413,3 +419,111 @@ export const deregisterResultSchema = z.object({
   id: z.string(),
 });
 export type DeregisterResult = z.infer<typeof deregisterResultSchema>;
+
+export const commandStateSchema = z.enum([
+  "rejected",
+  "dispatched",
+  "acknowledged",
+  "running",
+  "succeeded",
+  "failed",
+  "partial",
+  "unknown",
+]);
+export type CommandState = z.infer<typeof commandStateSchema>;
+
+export const commandProvenanceSchema = z.object({
+  source: z.string(),
+  timestamp: z.string(),
+  actor: z.string().optional(),
+  details: z.string().optional(),
+});
+export type CommandProvenance = z.infer<typeof commandProvenanceSchema>;
+
+export const commandOutcomeSchema = z.object({
+  state: commandStateSchema,
+  provenance: commandProvenanceSchema,
+  error: z.string().nullable().optional(),
+  result: z.unknown().optional(),
+});
+export type CommandOutcome = z.infer<typeof commandOutcomeSchema>;
+
+export const commandRecordSchema = z.object({
+  requestId: z.string().min(1),
+  actor: z.string().min(1),
+  projectId: z.string().nullable().optional(),
+  action: z.string().min(1),
+  target: z.record(z.string(), z.unknown()),
+  timestamp: z.string(),
+  state: commandStateSchema,
+  outcome: commandOutcomeSchema.nullable().optional(),
+  evidenceLinks: z.array(z.string()).default([]),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  reconciledAt: z.string().nullable().optional(),
+});
+export type CommandRecord = z.infer<typeof commandRecordSchema>;
+
+export const commandListSchema = z.array(commandRecordSchema);
+export type CommandList = z.infer<typeof commandListSchema>;
+
+export const commandSubmissionSchema = z.object({
+  requestId: z.string().min(1).optional(),
+  actor: z.string().min(1).default("operator"),
+  projectId: z.string().nullable().optional(),
+  action: z.string().min(1),
+  target: z.record(z.string(), z.unknown()),
+});
+export type CommandSubmission = z.infer<typeof commandSubmissionSchema>;
+
+export const commandReconciliationResultSchema = z.object({
+  reconciledCount: z.number().int().nonnegative(),
+  commands: z.array(commandRecordSchema),
+  timestamp: z.string(),
+});
+export type CommandReconciliationResult = z.infer<typeof commandReconciliationResultSchema>;
+
+export const globalBrakeStateSchema = z.object({
+  global_launch_brake: z.boolean(),
+  schedule_pause: z.boolean(),
+  updated_at: z.string(),
+});
+export type GlobalBrakeState = z.infer<typeof globalBrakeStateSchema>;
+
+export const projectBrakeStateSchema = z.object({
+  project_id: z.string(),
+  launch_brake: z.boolean(),
+  schedule_pause: z.boolean(),
+  effective_launch_brake: z.boolean(),
+  effective_schedule_pause: z.boolean(),
+  updated_at: z.string(),
+});
+export type ProjectBrakeState = z.infer<typeof projectBrakeStateSchema>;
+
+export const brakeSubmissionSchema = z.object({
+  brake: z.enum(["global_launch", "project_launch", "schedule_pause"]),
+  active: z.boolean(),
+  reason: z.string().optional(),
+  actor: z.string().optional(),
+});
+export type BrakeSubmission = z.infer<typeof brakeSubmissionSchema>;
+
+export const projectBrakeSubmissionSchema = z.object({
+  brake: z.enum(["launch_brake", "schedule_pause"]),
+  active: z.boolean(),
+  reason: z.string().optional(),
+  actor: z.string().optional(),
+});
+export type ProjectBrakeSubmission = z.infer<typeof projectBrakeSubmissionSchema>;
+
+export const backupSubmissionSchema = z.object({
+  destinationPath: z.string().min(1),
+});
+export type BackupSubmission = z.infer<typeof backupSubmissionSchema>;
+
+export const backupResultSchema = z.object({
+  success: z.boolean(),
+  destinationPath: z.string(),
+  timestamp: z.string(),
+});
+export type BackupResult = z.infer<typeof backupResultSchema>;
