@@ -46,7 +46,7 @@ Reviewing requires two independent perspectives that never share context or cont
 
 **Always spawn both subagents concurrently** using the environment's delegation mechanism (e.g., `delegate_task` with role `review`). Never evaluate both axes inline in the coordinator session, and never let one subagent see the other's findings.
 
-Enforce the **Strict Read-Only Review Boundary** on all delegated subagents: reviewers evaluate the candidate as-is and must never touch the filesystem or fix bugs. Include the mandatory read-only instruction in every subagent task brief.
+Enforce the **Strict Read-Only Review Boundary** on all delegated subagents: reviewers evaluate the candidate as-is and must never touch the filesystem or fix bugs.
 
 If delegation is unavailable or unsupported by the runtime environment, do not perform an inline self-review in the implementer's session; fail closed and inform the caller that independent subagent delegation is required. (In dry-run fixture tests where an explicit mock prompt tests review protocol behavior without subagent tooling, format the two distinct subagent input payloads and isolated reports).
 
@@ -57,14 +57,16 @@ Spawn the Standards reviewer subagent with:
 - The identified repository standards files (`AGENTS.md`, `CODING_STANDARDS.md`, `CONTRIBUTING.md`, relevant ADRs, protected paths).
 - The complete **Smell baseline** below pasted in full.
 - **Brief:** Inspect each changed hunk against documented repo rules and the smell baseline. Cite file:line, the rule or smell, concrete scenario/consequence, and evidence. Distinguish hard violations (repo rules, authority boundaries, protected paths) from judgment calls (smells). Documented repo rules override baseline heuristics; skip formatting enforced by tooling.
+- Explicit instruction: `"You are strictly a read-only reviewer. You are FORBIDDEN from using edit, write, or modifying any repository files. Only inspect files, execute read-only check/test commands, and report findings."`
 
-### Spec subagent dispatch
+### Spec reviewer dispatch
 
 Spawn the Spec reviewer subagent with:
 - The pinned commit list, base SHA, head SHA, merge base, full diff, and WIP files.
 - The exact source spec / ticket contents (problem, outcome, invariants, ACs, boundary, exclusions).
 - Pinned criterion evidence (test commands, logs, candidate SHAs).
 - **Brief:** Map every applicable AC and invariant to implementation and observed verification. Report: (a) missing or partial requirements; (b) unrequested scope / behavioral drift; (c) requirements implemented incorrectly; (d) unverified edge/failure/transition branches. Distinguish confirmed defects from unverified criteria or missing prerequisites. Do not weaken criteria or infer success from build alone.
+- Explicit instruction: `"You are strictly a read-only reviewer. You are FORBIDDEN from using edit, write, or modifying any repository files. Only inspect files, execute read-only check/test commands, and report findings."`
 
 ### Smell baseline
 
