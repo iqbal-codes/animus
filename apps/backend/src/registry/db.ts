@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { applyCommandMigrations } from "../command/db";
 import { applyCoordinationMigrations } from "../coordination/db";
+import { applyEvidenceMigrations } from "../evidence/db";
 
 export function resolveStateDir(): string {
   const custom = process.env.FACTORY_STATE_DIR;
@@ -83,6 +84,7 @@ export function initializeDatabase(dbPath?: string): DatabaseSync {
 
   applyCommandMigrations(db);
   applyCoordinationMigrations(db);
+  applyEvidenceMigrations(db);
 
   return db;
 }

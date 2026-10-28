@@ -73,6 +73,25 @@ export const operatorErrorSchema = z.object({
     "git_ref_error",
     "checkout_failed",
     "rev_parse_failed",
+    "landing_guard_blocked",
+    "candidate_drift",
+    "base_drift",
+    "evidence_missing",
+    "verification_failed",
+    "builder_self_approval_rejected",
+    "freshness_check_failed",
+    "confirmation_required",
+    "action_drift_detected",
+    "prerequisite_drift_detected",
+    "unauthorized_control",
+    "operation_unsupported",
+    "run_not_cancellable",
+    "process_tree_termination_failed",
+    "gate_not_found",
+    "stale_candidate_drift",
+    "unverified_candidate_blocked",
+    "release_policy_incomplete",
+    "verification_not_found",
   ]),
 });
 export type OperatorErrorCode = z.infer<typeof operatorErrorSchema>["error"];
@@ -667,3 +686,222 @@ export const coordinationFinalPrResultSchema = z.object({
   integratedChildren: z.array(z.number().int().positive()),
 });
 export type CoordinationFinalPrResult = z.infer<typeof coordinationFinalPrResultSchema>;
+
+// Evidence, Candidate Verification & Landing Guard Schemas (AC1, AC2)
+export const checkResultSchema = z.enum(["PASS", "FAIL", "BLOCKED", "NOT_RUN"]);
+export type CheckResult = z.infer<typeof checkResultSchema>;
+
+export const verificationCheckItemSchema = z.object({
+  name: z.string(),
+  command: z.string(),
+  result: checkResultSchema,
+  durationMs: z.number().optional(),
+  artifactPath: z.string().optional(),
+  details: z.string().optional(),
+});
+export type VerificationCheckItem = z.infer<typeof verificationCheckItemSchema>;
+
+export const producerRoleSchema = z.enum([
+  "independent_evaluator",
+  "peer_reviewer",
+  "automated_gate",
+  "builder",
+]);
+export type ProducerRole = z.infer<typeof producerRoleSchema>;
+
+export const producerIdentitySchema = z.object({
+  id: z.string(),
+  role: producerRoleSchema,
+  name: z.string().optional(),
+});
+export type ProducerIdentity = z.infer<typeof producerIdentitySchema>;
+
+export const independentReviewSchema = z.object({
+  reviewerId: z.string(),
+  role: z.enum(["peer_reviewer", "independent_evaluator"]),
+  status: z.enum(["passed", "failed"]),
+  summary: z.string(),
+  standardsFindingCount: z.number().int().nonnegative(),
+  specFindingCount: z.number().int().nonnegative(),
+  reviewedAt: z.string(),
+});
+export type IndependentReview = z.infer<typeof independentReviewSchema>;
+
+export const candidateVerificationStatusSchema = z.enum(["passed", "failed", "unverified"]);
+export type CandidateVerificationStatus = z.infer<typeof candidateVerificationStatusSchema>;
+
+export const candidateVerificationRecordSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  specIssueNumber: z.number().int().positive().optional(),
+  prNumber: z.number().int().positive(),
+  candidateHeadSha: z.string(),
+  mergeBaseSha: z.string(),
+  runtimeEnvironment: z.object({
+    runtime: z.string(),
+    os: z.string(),
+    digest: z.string().optional(),
+  }),
+  producerIdentity: producerIdentitySchema,
+  verificationStatus: candidateVerificationStatusSchema,
+  checks: z.array(verificationCheckItemSchema),
+  review: independentReviewSchema.optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type CandidateVerificationRecord = z.infer<typeof candidateVerificationRecordSchema>;
+
+export const candidateVerificationSubmissionSchema = z.object({
+  specIssueNumber: z.number().int().positive().optional(),
+  prNumber: z.number().int().positive(),
+  candidateHeadSha: z.string(),
+  mergeBaseSha: z.string(),
+  runtimeEnvironment: z.object({
+    runtime: z.string(),
+    os: z.string(),
+    digest: z.string().optional(),
+  }),
+  producerIdentity: producerIdentitySchema,
+  verificationStatus: candidateVerificationStatusSchema,
+  checks: z.array(verificationCheckItemSchema),
+  review: independentReviewSchema.optional(),
+});
+export type CandidateVerificationSubmission = z.infer<typeof candidateVerificationSubmissionSchema>;
+
+export const landingGuardDecisionSchema = z.enum(["allowed", "blocked"]);
+export type LandingGuardDecision = z.infer<typeof landingGuardDecisionSchema>;
+
+export const landingGuardResultSchema = z.object({
+  decision: landingGuardDecisionSchema,
+  allowed: z.boolean(),
+  prNumber: z.number().int().positive(),
+  candidateHeadSha: z.string(),
+  mergeBaseSha: z.string(),
+  evidenceId: z.string().optional(),
+  blockReason: z.string().optional(),
+  blockDetails: z.record(z.string(), z.unknown()).optional(),
+});
+export type LandingGuardResult = z.infer<typeof landingGuardResultSchema>;
+
+export const landingSubmissionSchema = z.object({
+  prNumber: z.number().int().positive(),
+  expectedHeadSha: z.string(),
+  expectedBaseSha: z.string(),
+  actor: z.string().optional().default("operator"),
+});
+export type LandingSubmission = z.input<typeof landingSubmissionSchema>;
+
+export const landingExecutionResultSchema = z.object({
+  success: z.boolean(),
+  prNumber: z.number().int().positive(),
+  merged: z.boolean(),
+  mergeSha: z.string().optional(),
+  candidateHeadSha: z.string(),
+  mergeBaseSha: z.string(),
+});
+export type LandingExecutionResult = z.infer<typeof landingExecutionResultSchema>;
+
+// Tiered Action Matrix Schemas (AC3)
+export const actionTierSchema = z.enum(["read_only", "reversible_control", "consequential"]);
+export type ActionTier = z.infer<typeof actionTierSchema>;
+
+export const consequentialActionTypeSchema = z.enum([
+  "launch",
+  "cancel",
+  "gate_approval",
+  "promotion_pr",
+  "merge",
+  "deploy",
+]);
+export type ConsequentialActionType = z.infer<typeof consequentialActionTypeSchema>;
+
+export const tieredActionSubmissionSchema = z.object({
+  action: consequentialActionTypeSchema,
+  targetBranch: z.string(),
+  expectedBranchSha: z.string(),
+  issueNumbers: z.array(z.number().int().positive()),
+  prerequisiteStates: z.record(z.string(), z.string()).optional(),
+  confirmed: z.boolean().default(false),
+  actor: z.string().optional().default("operator"),
+  payload: z.record(z.string(), z.unknown()).optional(),
+});
+export type TieredActionSubmission = z.input<typeof tieredActionSubmissionSchema>;
+
+export const tieredActionResultSchema = z.object({
+  success: z.boolean(),
+  action: consequentialActionTypeSchema,
+  freshnessVerified: z.boolean(),
+  freshnessDurationMs: z.number(),
+  targetBranch: z.string(),
+  branchSha: z.string(),
+  executedAt: z.string(),
+  details: z.record(z.string(), z.unknown()).optional(),
+});
+export type TieredActionResult = z.infer<typeof tieredActionResultSchema>;
+
+// Per-Run Controls Schemas (AC4)
+export const runCancellationSubmissionSchema = z.object({
+  runId: z.string(),
+  actor: z.string().optional().default("operator"),
+  reason: z.string().optional(),
+  signal: z.enum(["SIGTERM", "SIGKILL"]).optional().default("SIGTERM"),
+});
+export type RunCancellationSubmission = z.input<typeof runCancellationSubmissionSchema>;
+
+export const runCancellationResultSchema = z.object({
+  success: z.boolean(),
+  runId: z.string(),
+  status: z.enum(["cancelled", "terminated", "unsupported", "failed"]),
+  cleanupVerified: z.boolean(),
+  killedPids: z.array(z.number().int()),
+  error: z.string().optional(),
+});
+export type RunCancellationResult = z.infer<typeof runCancellationResultSchema>;
+
+// Gate Approval & Policy-Required Stages Schemas (AC5)
+export const gateApprovalSubmissionSchema = z.object({
+  gateId: z.string(),
+  candidateSha: z.string(),
+  decision: z.enum(["approved", "rejected"]),
+  actor: z.string().optional().default("operator"),
+  comment: z.string().optional(),
+});
+export type GateApprovalSubmission = z.input<typeof gateApprovalSubmissionSchema>;
+
+export const gateApprovalRecordSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  gateId: z.string(),
+  candidateSha: z.string(),
+  decision: z.enum(["approved", "rejected"]),
+  actor: z.string(),
+  comment: z.string().optional(),
+  createdAt: z.string(),
+});
+export type GateApprovalRecord = z.infer<typeof gateApprovalRecordSchema>;
+
+export const releasePolicyStageSchema = z.object({
+  stage: z.string(),
+  passed: z.boolean(),
+  status: z.enum(["passed", "failed", "pending"]),
+  details: z.string().optional(),
+});
+export type ReleasePolicyStage = z.infer<typeof releasePolicyStageSchema>;
+
+export const releaseReadinessResultSchema = z.object({
+  projectId: z.string(),
+  candidateSha: z.string(),
+  releaseComplete: z.boolean(),
+  stages: z.array(releasePolicyStageSchema),
+  pendingStages: z.array(z.string()),
+});
+export type ReleaseReadinessResult = z.infer<typeof releaseReadinessResultSchema>;
+
+// Sanitized Report Schemas (AC6)
+export const sanitizedReportSchema = z.object({
+  report: z.string(),
+  sanitized: z.boolean(),
+  redactedTokensCount: z.number().int().nonnegative(),
+  scrubbedHoldoutsCount: z.number().int().nonnegative(),
+});
+export type SanitizedReport = z.infer<typeof sanitizedReportSchema>;

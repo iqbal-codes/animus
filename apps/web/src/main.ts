@@ -81,6 +81,27 @@ const messages: Record<FactoryErrorCode, string> = {
   git_ref_error: "Failed: git ref could not be resolved.",
   checkout_failed: "Failed: git branch checkout failed.",
   rev_parse_failed: "Failed: git revision parse failed.",
+  landing_guard_blocked: "Refused: landing guard blocked merge of unverified or drifted candidate.",
+  candidate_drift: "Refused: candidate head SHA has drifted from verified evidence.",
+  base_drift: "Refused: merge base SHA has drifted from verified evidence.",
+  evidence_missing: "Refused: verified evidence record is missing for this candidate.",
+  verification_failed: "Refused: candidate verification checks or review did not pass.",
+  builder_self_approval_rejected: "Refused: builder self-approval is strictly forbidden.",
+  freshness_check_failed: "Refused: consequential action freshness check exceeded 10s or failed.",
+  confirmation_required: "Refused: explicit confirmation modal approval is required.",
+  action_drift_detected: "Refused: target branch SHA drifted between confirmation and execution.",
+  prerequisite_drift_detected: "Refused: prerequisite state drifted during live freshness check.",
+  unauthorized_control: "Refused: unauthorized or mismatched scope for run control.",
+  operation_unsupported: "Refused: requested run operation is not supported.",
+  run_not_cancellable: "Refused: run is not in a cancellable state.",
+  process_tree_termination_failed: "Failed: process tree termination or cleanup failed.",
+  gate_not_found: "Not found: requested approval gate does not exist.",
+  stale_candidate_drift: "Refused: candidate SHA has drifted from expected gate candidate.",
+  unverified_candidate_blocked:
+    "Refused: unverified candidate blocked from promotion or deployment.",
+  release_policy_incomplete:
+    "Refused: release-complete cannot be declared while policy stages are pending.",
+  verification_not_found: "Not found: requested verification record does not exist.",
 };
 const controlStatus = document.querySelector<HTMLElement>("#control-status");
 const btnHalt = document.querySelector<HTMLButtonElement>("#btn-halt");
