@@ -23,7 +23,7 @@ import {
   type OperatorErrorCode,
 } from "@labq/contracts/operator";
 import { configuration, hostOrigin } from "./config";
-import { IntakeService } from "./intake";
+import { IntakeService, handleProjectIntakeRoute } from "./intake";
 import { initializeDatabase, ProjectRegistryService, ProjectRegistryError } from "./registry";
 
 try {
@@ -37,6 +37,14 @@ try {
       registryServiceInstance = new ProjectRegistryService(db);
     }
     return registryServiceInstance;
+  };
+  let intakeServiceInstance: IntakeService | null = null;
+  const getIntakeService = (): IntakeService => {
+    if (!intakeServiceInstance) {
+      const reg = getRegistryService();
+      intakeServiceInstance = new IntakeService(reg.getDb(), reg.getForge());
+    }
+    return intakeServiceInstance;
   };
   // Bun 1.4.2 still resolves ambient proxies with fetch({ proxy: "" }).
   process.env.NO_PROXY = process.env.no_proxy = new URL(origin).hostname;
@@ -91,10 +99,15 @@ try {
     async fetch(request) {
       const path = new URL(request.url).pathname;
 
-      if (request.method !== "GET" && request.method !== "POST" && request.method !== "DELETE")
+      if (
+        request.method !== "GET" &&
+        request.method !== "POST" &&
+        request.method !== "DELETE" &&
+        request.method !== "PATCH"
+      )
         return Response.json(
           { error: "method_not_allowed" },
-          { status: 405, headers: { Allow: "GET, POST, DELETE" } },
+          { status: 405, headers: { Allow: "GET, POST, DELETE, PATCH" } },
         );
 
       if (path === "/health") {
@@ -445,49 +458,14 @@ try {
         const scopedAction = parts[1];
 
         if (scopedAction === "intake") {
-          if (parts.length === 2) {
-            if (request.method !== "GET")
-              return Response.json(
-                { error: "method_not_allowed" },
-                { status: 405, headers: { Allow: "GET" } },
-              );
-            const url = new URL(request.url);
-            const forceRefresh = url.searchParams.get("refresh") === "true";
-            try {
-              const backlog = await intakeService.evaluateBacklog(forceRefresh);
-              const parsed = intakeResultSchema.safeParse(backlog);
-              if (!parsed.success)
-                return Response.json({ error: "invalid_operator_response" }, { status: 502 });
-              return Response.json(parsed.data);
-            } catch {
-              return Response.json({ error: "intake_unavailable" }, { status: 503 });
-            }
-          }
-          if (parts.length === 3) {
-            if (request.method !== "GET")
-              return Response.json(
-                { error: "method_not_allowed" },
-                { status: 405, headers: { Allow: "GET" } },
-              );
-            const rawNum = parts[2];
-            const issueNum = parseInt(rawNum, 10);
-            if (Number.isNaN(issueNum) || issueNum <= 0) {
-              return Response.json({ error: "issue_not_found" }, { status: 404 });
-            }
-            try {
-              const backlog = await intakeService.evaluateBacklog(false);
-              const found = backlog.issues.find((i) => i.number === issueNum);
-              if (!found) {
-                return Response.json({ error: "issue_not_found" }, { status: 404 });
-              }
-              const parsed = evaluatedIssueSchema.safeParse(found);
-              if (!parsed.success)
-                return Response.json({ error: "invalid_operator_response" }, { status: 502 });
-              return Response.json(parsed.data);
-            } catch {
-              return Response.json({ error: "intake_unavailable" }, { status: 503 });
-            }
-          }
+          const intakeRes = await handleProjectIntakeRoute(
+            request,
+            projectId,
+            parts,
+            getIntakeService(),
+          );
+          if (intakeRes) return intakeRes;
+          return Response.json({ error: "not_found" }, { status: 404 });
         }
 
         if (scopedAction === "laps") {

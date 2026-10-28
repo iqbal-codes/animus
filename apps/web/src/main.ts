@@ -40,6 +40,9 @@ const messages: Record<FactoryErrorCode, string> = {
   partial_registration_effect:
     "Warning: remote repository created or cloned, but checkout validation failed.",
   retarget_rejected: "Refused: retarget repository ID does not match the active project.",
+  target_drift: "Rejected: remote target drifted between admission and dispatch.",
+  admission_rejected: "Rejected: target issue does not satisfy canonical admission criteria.",
+  spec_parse_error: "Invalid: spec or ticket contract could not be parsed.",
 };
 const controlStatus = document.querySelector<HTMLElement>("#control-status");
 const btnHalt = document.querySelector<HTMLButtonElement>("#btn-halt");
