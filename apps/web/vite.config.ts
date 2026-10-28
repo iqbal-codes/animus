@@ -1,4 +1,5 @@
 import { defineConfig, type Plugin, type ProxyOptions } from "vite-plus";
+import tailwindcss from "@tailwindcss/vite";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -63,7 +64,7 @@ export default defineConfig(({ command, isPreview }) => {
     const path = request.url?.split("?")[0];
     if (
       path?.startsWith("/internal/") ||
-      (path?.startsWith("/api/") && path !== "/api/v1/health")
+      (path?.startsWith("/api/") && !path?.startsWith("/api/v1/"))
     ) {
       response.writeHead(404);
       response.end();
@@ -85,9 +86,16 @@ export default defineConfig(({ command, isPreview }) => {
     response.end(path === "/health" ? JSON.stringify({ status: "healthy" }) : buildId);
   };
   const proxy: Record<string, ProxyOptions> =
-    command === "serve" || isPreview ? { "^/api/v1(?:/|$)": { target: backendOrigin() } } : {};
+    command === "serve" || isPreview
+      ? { "^/api/v1(?:/|$)": { target: backendOrigin(), ws: true } }
+      : {};
   return {
-    plugins: [health],
+    plugins: [tailwindcss(), health],
+    resolve: {
+      alias: {
+        "@": fileURLToPath(new URL("./src", import.meta.url)),
+      },
+    },
     server: { host: "127.0.0.1", strictPort: true, proxy },
     preview: { host: "127.0.0.1", strictPort: true, proxy },
   };

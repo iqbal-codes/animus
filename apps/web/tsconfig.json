@@ -1,13 +1,17 @@
 {
   "compilerOptions": {
-    "strict": true,
-    "noEmit": true,
-    "target": "ESNext",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "noEmit": true,
     "skipLibCheck": true,
-    "types": [],
-    "lib": ["ESNext", "DOM"]
+    "strict": true,
+    "target": "ESNext",
+    "jsx": "react-jsx",
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    "types": []
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
 }

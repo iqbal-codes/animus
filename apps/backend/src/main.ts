@@ -1,5 +1,6 @@
 import { hostHealthSchema } from "@labq/contracts/host";
 import type { DatabaseSync } from "node:sqlite";
+import type { ServerWebSocket } from "bun";
 import {
   healthSchema,
   diagnosticsSchema,
@@ -157,6 +158,56 @@ try {
   process.env.NO_PROXY = process.env.no_proxy = new URL(origin).hostname;
   const failure = (error: OperatorErrorCode, status = 503) => Response.json({ error }, { status });
 
+  interface WsClientData {
+    projectId?: string;
+    lapId?: string;
+    subscribedProjects: Set<string>;
+    subscribedLaps: Set<string>;
+  }
+
+  const wsClients = new Set<ServerWebSocket<WsClientData>>();
+  let wsEventSeq = 1;
+
+  function broadcastWsEvent(event: {
+    id?: string;
+    seq?: number;
+    type: "log" | "lifecycle" | "invalidation" | "gap" | "heartbeat";
+    projectId?: string;
+    lapId?: string;
+    timestamp?: string;
+    payload: Record<string, unknown>;
+  }) {
+    const fullEvent = {
+      id: event.id ?? `evt-${Date.now()}-${wsEventSeq}`,
+      seq: event.seq ?? wsEventSeq++,
+      type: event.type,
+      projectId: event.projectId,
+      lapId: event.lapId,
+      timestamp: event.timestamp ?? new Date().toISOString(),
+      payload: event.payload,
+    };
+    const json = JSON.stringify(fullEvent);
+    for (const client of wsClients) {
+      if (
+        fullEvent.projectId &&
+        client.data.subscribedProjects.size > 0 &&
+        !client.data.subscribedProjects.has(fullEvent.projectId)
+      ) {
+        continue;
+      }
+      if (
+        fullEvent.lapId &&
+        client.data.subscribedLaps.size > 0 &&
+        !client.data.subscribedLaps.has(fullEvent.lapId)
+      ) {
+        continue;
+      }
+      try {
+        client.send(json);
+      } catch {}
+    }
+  }
+
   async function forwardToHost(internalPath: string, schema?: any, init?: RequestInit) {
     const deadline = AbortSignal.timeout(3000);
     let response: Response;
@@ -200,11 +251,30 @@ try {
     return Response.json(body);
   }
 
-  const server = Bun.serve({
+  const server = Bun.serve<WsClientData>({
     hostname: config.hostname,
     port: config.port,
-    async fetch(request) {
+    async fetch(request, server) {
       const path = new URL(request.url).pathname;
+
+      if (
+        request.headers.get("upgrade")?.toLowerCase() === "websocket" ||
+        path === "/api/v1/ws" ||
+        path.endsWith("/ws")
+      ) {
+        const url = new URL(request.url);
+        const projParam = url.searchParams.get("projectId") || undefined;
+        const lapParam = url.searchParams.get("lapId") || undefined;
+        const upgraded = server.upgrade(request, {
+          data: {
+            projectId: projParam,
+            lapId: lapParam,
+            subscribedProjects: new Set<string>(projParam ? [projParam] : []),
+            subscribedLaps: new Set<string>(lapParam ? [lapParam] : []),
+          },
+        });
+        if (upgraded) return undefined;
+      }
 
       if (
         request.method !== "GET" &&
@@ -346,6 +416,12 @@ try {
               return Response.json({ error: err.code }, { status });
             }
             return Response.json({ error: "control_failed" }, { status: 400 });
+          } finally {
+            broadcastWsEvent({
+              type: "invalidation",
+              projectId: undefined,
+              payload: { scope: "laps" },
+            });
           }
         }
         return forwardToHost("/internal/v1/laps", lapListSchema);
@@ -1124,6 +1200,45 @@ try {
       }
 
       return Response.json({ error: "not_found" }, { status: 404 });
+    },
+    websocket: {
+      open(ws) {
+        wsClients.add(ws);
+        ws.send(
+          JSON.stringify({
+            id: `evt-${Date.now()}-0`,
+            seq: 0,
+            type: "heartbeat",
+            timestamp: new Date().toISOString(),
+            payload: {},
+          }),
+        );
+      },
+      message(ws, raw) {
+        try {
+          const data = JSON.parse(String(raw));
+          if (data.action === "subscribe") {
+            if (data.projectId) ws.data.subscribedProjects.add(data.projectId);
+            if (data.lapId) ws.data.subscribedLaps.add(data.lapId);
+          } else if (data.action === "unsubscribe") {
+            if (data.projectId) ws.data.subscribedProjects.delete(data.projectId);
+            if (data.lapId) ws.data.subscribedLaps.delete(data.lapId);
+          } else if (data.action === "ping") {
+            ws.send(
+              JSON.stringify({
+                id: `evt-${Date.now()}-pong`,
+                seq: 0,
+                type: "pong",
+                timestamp: new Date().toISOString(),
+                payload: {},
+              }),
+            );
+          }
+        } catch {}
+      },
+      close(ws) {
+        wsClients.delete(ws);
+      },
     },
   });
 

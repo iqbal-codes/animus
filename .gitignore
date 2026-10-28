@@ -21,6 +21,7 @@ secrets.json
 credentials.json
 node_modules/
 apps/web/dist/
+artifacts/
 .vite/
 .vite-plus/
 test-results/

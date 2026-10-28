@@ -17,12 +17,19 @@
     "build:web": "node scripts/health/build-and-inspect.mjs",
     "verify": "vp run verify-all"
   },
+  "dependencies": {
+    "@tanstack/react-query": "^5.105.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
   "devDependencies": {
     "@labq/client": "workspace:*",
     "@labq/contracts": "workspace:*",
     "@playwright/test": "1.64.1",
     "@types/bun": "1.4.2",
     "@types/node": "26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "typescript": "5.9.3",
     "vite-plus": "1.4.0",
     "vitest": "5.0.5"

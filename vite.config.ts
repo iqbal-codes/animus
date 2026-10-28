@@ -18,7 +18,7 @@ export default defineConfig({
     rules: { "no-debugger": "error" },
     overrides: [
       {
-        files: ["apps/**/*.{ts,js}", "packages/**/*.{ts,js}"],
+        files: ["apps/**/*.{ts,tsx,js,jsx}", "packages/**/*.{ts,tsx,js,jsx}"],
         rules: {
           "no-restricted-imports": [
             "error",
@@ -41,7 +41,7 @@ export default defineConfig({
       },
       {
         files: [
-          "apps/web/src/**/*.{ts,js}",
+          "apps/web/src/**/*.{ts,tsx,js,jsx}",
           "packages/client/src/**/*.{ts,js}",
           "packages/contracts/src/operator.ts",
           "packages/contracts/src/health.ts",

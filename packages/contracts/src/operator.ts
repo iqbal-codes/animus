@@ -905,3 +905,33 @@ export const sanitizedReportSchema = z.object({
   scrubbedHoldoutsCount: z.number().int().nonnegative(),
 });
 export type SanitizedReport = z.infer<typeof sanitizedReportSchema>;
+
+// WebSocket Live Observation & Recovery Schemas (AC2 / Issue #64)
+export const wsSubscriptionMessageSchema = z.object({
+  action: z.enum(["subscribe", "unsubscribe", "ping", "request_snapshot"]),
+  projectId: z.string().optional(),
+  lapId: z.string().optional(),
+  scope: z.string().optional(),
+});
+export type WsSubscriptionMessage = z.infer<typeof wsSubscriptionMessageSchema>;
+
+export const wsEventTypeSchema = z.enum([
+  "log",
+  "lifecycle",
+  "invalidation",
+  "gap",
+  "heartbeat",
+  "pong",
+]);
+export type WsEventType = z.infer<typeof wsEventTypeSchema>;
+
+export const wsEventSchema = z.object({
+  id: z.string(),
+  seq: z.number().int().nonnegative(),
+  type: wsEventTypeSchema,
+  projectId: z.string().optional(),
+  lapId: z.string().optional(),
+  timestamp: z.string(),
+  payload: z.record(z.string(), z.unknown()),
+});
+export type WsEvent = z.infer<typeof wsEventSchema>;
