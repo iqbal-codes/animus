@@ -33,6 +33,13 @@ const messages: Record<FactoryErrorCode, string> = {
   promotion_pr_already_open: "Refused: a promotion PR is already open.",
   promotion_failed: "Failed: promotion PR creation failed.",
   partial_promotion_effect: "Warning: PR created, but local freeze brake failed.",
+  project_not_found: "Not found: requested project does not exist.",
+  project_already_exists: "Refused: an active project with this repository ID already exists.",
+  project_checkout_invalid: "Invalid: project checkout path is missing or invalid.",
+  project_has_active_runs: "Refused: project has active runs and cannot be deregistered.",
+  partial_registration_effect:
+    "Warning: remote repository created or cloned, but checkout validation failed.",
+  retarget_rejected: "Refused: retarget repository ID does not match the active project.",
 };
 const controlStatus = document.querySelector<HTMLElement>("#control-status");
 const btnHalt = document.querySelector<HTMLButtonElement>("#btn-halt");
