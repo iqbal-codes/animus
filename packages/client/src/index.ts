@@ -44,6 +44,14 @@ import {
   targetBindingResultSchema,
   branchIntegrationSubmissionSchema,
   branchIntegrationResultSchema,
+  specCoordinationPlanSchema,
+  targetedImplementResultSchema,
+  coordinationFinalPrResultSchema,
+  coordinationFinalPrSubmissionSchema,
+  type SpecCoordinationPlan,
+  type TargetedImplementResult,
+  type CoordinationFinalPrResult,
+  type CoordinationFinalPrSubmission,
   type Health,
   type Diagnostics,
   type WorkflowCatalog,
@@ -570,6 +578,44 @@ export function createFactoryClient(options: {
           const parsed = promotionSubmissionSchema.safeParse(submission ?? {});
           if (!parsed.success) throw new FactoryClientError("invalid_payload");
           return postJson(`${scopedBase}/promotion/prepare`, parsed.data, promotionResultSchema);
+        },
+        async planSpecCoordination(
+          specIssueNumber: number,
+          options?: { baseBranch?: string },
+        ): Promise<SpecCoordinationPlan> {
+          return postJson(
+            `${scopedBase}/coordination/plan`,
+            { specIssueNumber, baseBranch: options?.baseBranch },
+            specCoordinationPlanSchema,
+          );
+        },
+        async getSpecCoordinationPlan(specIssueNumber: number): Promise<SpecCoordinationPlan> {
+          return getJson(
+            `${scopedBase}/coordination/plan/${encodeURIComponent(specIssueNumber)}`,
+            specCoordinationPlanSchema,
+          );
+        },
+        async dispatchSubticket(
+          specIssueNumber: number,
+          childIssueNumber: number,
+          options?: { actor?: string },
+        ): Promise<TargetedImplementResult> {
+          return postJson(
+            `${scopedBase}/coordination/dispatch`,
+            { specIssueNumber, childIssueNumber, actor: options?.actor },
+            targetedImplementResultSchema,
+          );
+        },
+        async createFinalPullRequest(
+          submission: CoordinationFinalPrSubmission,
+        ): Promise<CoordinationFinalPrResult> {
+          const parsed = coordinationFinalPrSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/coordination/final-pr`,
+            parsed.data,
+            coordinationFinalPrResultSchema,
+          );
         },
       };
     },
