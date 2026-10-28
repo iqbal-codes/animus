@@ -1,4 +1,7 @@
 {
-  "test": "python3 -m unittest discover -s tests -p 'test_*.py'",
-  "typecheck": "python3 -m py_compile app.py intake.py laps.py promotion.py factory/harness_evolution.py factory/jev_client.py"
+  "test": "bun harness/ci.ts",
+  "lint": "bun run lint",
+  "format": "bun run format",
+  "typecheck": "bun run typecheck",
+  "build": "bun run build:web"
 }

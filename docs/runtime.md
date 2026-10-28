@@ -89,12 +89,13 @@ schedules.
 `GET /api/intake` evaluates the backlog of target repository issues (default `pabriq-app` or
 `FACTORY_TARGET_REPO`):
 - **Admission rules**:
-  - `admitted`: issue is `OPEN`, carries `ready-for-agent` (or legacy `factory:ready`), carries no blocking
+  - `admitted`: issue is `OPEN`, carries canonical `ready-for-agent`, carries no blocking
     or exclusion labels, all referenced `Depends on: #...` prerequisites are closed, and has no active loop claim.
+    Legacy `factory:*` labels convey zero authority.
   - `held`: unlabeled issues (`unlabeled_awaiting_triage`), missing `ready-for-agent`, has blocking labels
-    (`needs-info`, `ready-for-human`, `needs-triage`, or legacy `factory:hold`), issue is `CLOSED`,
+    (`needs-info`, `ready-for-human`, `needs-triage`), issue is `CLOSED`,
     waiting on open dependency, or actively claimed.
-  - `excluded`: carries `wontfix` or legacy `factory:exclude` (overrides ready status).
+  - `excluded`: carries `wontfix` (overrides ready status).
 - **Caching**: Queries are cached in-memory for 60 seconds to protect GitHub API rate limits.
   Adding `?refresh=true` or `?refresh=1` forces an immediate cache refresh.
 - **Failures**: When the `gh` CLI is unauthenticated or fails, the endpoint returns HTTP 503

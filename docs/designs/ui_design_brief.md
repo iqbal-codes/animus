@@ -31,7 +31,7 @@ Screen dibagi menjadi 2 area utama: **Sidebar Kiri (280–300px)** dan **Main Co
 +---------------------------------------------------------------------------------------------------------+
 | [X] Brand Mark     v1.0.0 |  (●) Engine Active   Window: 20:00-05:00   Slots: 1/2   [Promote to main]  (T) |
 | [+ Add Repository]        +-----------------------------------------------------------------------------+
-| [Q Search repo/issue...]  |  pabriq-app / Issues / #42                   [factory:ready] [gpt-6.1-sol]  |
+| [Q Search repo/issue...]  |  pabriq-app / Issues / #42                   [ready-for-agent] [gpt-6.1-sol]  |
 |                           |  #42 Add webhook signature verification                                     |
 | REPOSITORIES              |  (● Telemetry & Logs)   (Specification)   (PR & Diffs)   (Token Economics)  |
 | v [pabriq-app]            |-----------------------------------------------------------------------------|
@@ -68,7 +68,7 @@ Screen dibagi menjadi 2 area utama: **Sidebar Kiri (280–300px)** dan **Main Co
    - **Submenu Issues**: List issue di dalam repo terpilih:
      - **Issue Aktif Sedang Dikerjakan (e.g. `#42`)**: Ter-highlight dengan background `$xai-action-secondary`, border halus `$xai-accent`, subtitle runtime `lap-XXXXX · in progress`, dan **spinning arc indicator** (lingkaran loading berputar warna oranye `$xai-accent`).
      - **Issue Siap (Admitted / Ready, e.g. `#43`)**: Indikator titik hijau (`$xai-success`) dengan badge/label `Ready`.
-     - **Issue Tertahan (Held / Blocked, e.g. `#44`)**: Indikator titik amber (`$xai-warning`) dengan keterangan `Blocked by #42` atau label `factory:hold`.
+     - **Issue Tertahan (Held / Blocked, e.g. `#44`)**: Indikator titik amber (`$xai-warning`) dengan keterangan `Blocked by #42` atau label `needs-info`.
 5. **Footer Sidebar (Paling Bawah)**:
    - Separator/divider tipis 1px (`$xai-border`).
    - Menu **`Settings` / `Factory Settings`**: Mengatur konfigurasi runtime factory (*Agents, Skills registry, MCP tools, Harness Pi, dan Work window schedule*).
@@ -93,7 +93,7 @@ Tinggi 60–64px, background `$xai-surface`, border bawah tipis.
 ### C. Main Content Pane (Detail Issue yang Diklik)
 1. **Issue Headline Bar**:
    - Breadcrumbs: `pabriq-app > Issues > #42`.
-   - Metadata badges: `factory:ready`, model `gpt-6.1-sol (large)`, git worktree `tree-42`, runtime duration `04m 12s`.
+   - Metadata badges: `ready-for-agent`, model `gpt-6.1-sol (large)`, git worktree `tree-42`, runtime duration `04m 12s`.
    - Judul Issue: Typography besar (`22–26px`, font `$xai-font`, weight 500) kontras tinggi.
 2. **Navigation Tabs**:
    - Tab bergaya pill x.ai:

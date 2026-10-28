@@ -19,8 +19,8 @@ The operator wants a single app to configure, schedule, observe, and control aut
 ## Intake and execution
 
 - GitHub issues/PRs in `pabriq-app` are the work authority.
-- Personal planning harnesses may publish authorized tickets with `factory:ready`. Unlabeled issues are ignored.
-- `factory:hold` and `factory:exclude` override readiness. Existing owner-decision restrictions remain binding. Admission labels do not prove active work stopped.
+- Personal planning harnesses may publish authorized tickets with canonical `ready-for-agent`. Unlabeled issues are held awaiting triage.
+- Blocking labels (`needs-info`, `ready-for-human`, `needs-triage`) and exclusion labels (`wontfix`) override readiness. Existing owner-decision restrictions remain binding. Legacy `factory:` labels convey zero authority.
 - The factory holds missing or contradictory requirements rather than inventing product decisions. It respects dependencies and existing claims and does not create duplicate implementation while a linked PR exists.
 - Work starts from `develop` in separate worktrees. Required tests, runtime verification, and independent review precede automatic merges into `develop`.
 - Dependent tickets may start after their prerequisites are verified and integrated into `develop`; they must not wait for human promotion to `main` or be falsely marked released to bypass a blocker.

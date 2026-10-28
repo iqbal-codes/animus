@@ -84,4 +84,4 @@ Record source ticket/spec, AC identifier, observed result, command/scenario, art
 - A `waiting_approval` projection records native history, not fresh forge approval or a merge.
 - Runtime and peer-review evidence must refer to the candidate being reviewed. An absent spec, unavailable dependency, stale evidence, or missing provider prerequisite is an honest blocked/incomplete state.
 
-Consult `intake.py`, `factory/consumer.py`, `laps.py`, `promotion.py`, their behavior tests, and the configured pinned engine when verifying these boundaries. If they change, update this contract and its skill evaluations together.
+Consult `apps/backend/src/intake.ts`, `apps/engine-host/src/native.ts`, `apps/engine-host/src/promotion.ts`, their behavior tests, and the configured pinned engine when verifying these boundaries. If they change, update this contract and its skill evaluations together.

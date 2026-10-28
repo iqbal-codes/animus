@@ -17,7 +17,7 @@ Using pinned Archon SDLC workflows (triage, planning, delivery rounds, runtime v
 - **Factory Dashboard & Health Observability:** Monitor active runs, review lap histories, inspect verification evidence logs, and halt or pause timers deterministically.
 
 ## 4. Technical Architecture
-- **Runtime Environment:** Python 3.10+, Bun, and UV execution runtime.
+- **Runtime Environment:** Bun (v1.4+) and TypeScript monorepo with Vite+, with Python 3 for holdout fence hooks.
 - **AI Engine:** Pinned Archon SDLC Pack workflows with Pi coding agent provider backed by custom router models:
   - Fast / Small / Medium: `ag/gemini-3.8-flash`
   - Frontier / Large / Planner: `cx/gpt-6.1-sol`

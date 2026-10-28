@@ -9,7 +9,7 @@ before responding to a declared gate.
 Project runtime scenarios: `harness/END-TO-END.md`.
 Holdout scenarios: `.factory/holdout/HOLDOUT.md`, fenced by `.factory/hooks/holdout_fence.py`
 (only the holdout-writer and holdout-verifier subagents may read it).
-Ordinary checks: `python harness/ci.py`.
+Ordinary checks: `bun harness/ci.ts` (or `bun run check && bun test`).
 
 Record this application's tested source SHA, candidate, run IDs, coverage,
 fresh-environment evidence and open integration limits here after testing.

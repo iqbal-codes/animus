@@ -68,7 +68,7 @@ These are not features. They are properties that define what LabQ Software Facto
 
 Every change the factory ships clears all three gates.
 
-**Gate 1 -- static checks and tests pass.** Unit tests, typechecks, and linters pass cleanly (`python3 -m unittest discover` or `bun test`).
+**Gate 1 -- static checks and tests pass.** Unit tests, typechecks, and linters pass cleanly (`bun harness/ci.ts` or `bun run check && bun test`).
 
 **Gate 2 -- product-level quality bar.** The code follows idiomatic repository patterns, introduces no stubs or placeholder mocks, and passes peer diff review with 0 blocking findings.
 

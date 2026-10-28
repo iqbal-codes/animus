@@ -26,7 +26,7 @@ The Operator App solves these challenges by placing a deterministic control and 
 
 ## Goals
 
-*   **G-1 (Strict Intake & Label Admission)**: Ensure the factory picks up only open issues explicitly labeled `factory:ready`, while respecting `factory:hold`, `factory:exclude`, and unresolved dependencies. Unlabeled issues remain untouched.
+*   **G-1 (Strict Intake & Label Admission)**: Ensure the factory picks up only open issues explicitly labeled `ready-for-agent`, while respecting blocking labels (`needs-info`, `ready-for-human`, `needs-triage`), exclusion labels (`wontfix`), and unresolved dependencies. Unlabeled issues remain held awaiting triage. Legacy `factory:` labels convey zero authority.
 *   **G-2 (Autonomous Staging Integration)**: Implement and independently review each admitted ticket in an isolated worktree, automatically merging verified changes into `develop` so dependent tickets can unblock and proceed overnight without human intervention.
 *   **G-3 (Immutable Morning Promotion Boundary)**: Once overnight laps complete or the promotion candidate is formed, freeze further merges into `develop` and open a consolidated promotion pull request targeting `main` for human approval.
 *   **G-4 (Operational Control & Safety)**: Provide operator controls to enable/disable scheduling, enforce active working hours (e.g. 20:00 to 05:00), limit concurrent main-agent laps, pause active execution cleanly without losing workspace state, and monitor live tool/agent execution events.
@@ -51,7 +51,7 @@ The Operator App solves these challenges by placing a deterministic control and 
 
 ### CUJ 1: Overnight Backlog Delivery & Morning Sign-Off
 
-*   **Given**: The operator has published 5 dependent issues to `pabriq-app`, each labeled `factory:ready`, with explicit `Depends on: #...` relationships defined. The factory scheduler is enabled with work hours set to 20:00–05:00 and a concurrency limit of 2 laps.
+*   **Given**: The operator has published 5 dependent issues to `pabriq-app`, each labeled `ready-for-agent`, with explicit `Depends on: #...` relationships defined. The factory scheduler is enabled with work hours set to 20:00–05:00 and a concurrency limit of 2 laps.
 *   **When**: The scheduler ticks at 20:05. The engine verifies workability, claims issue #1, builds it in an isolated worktree rooted at `origin/develop`, verifies tests and runtime health, passes independent review, and automatically merges the PR into `develop`. Issue #2 (which depends on #1) is unblocked and processed next.
 *   **Then**: By 05:00, all 5 issues are merged into `develop`. Further merges into `develop` are halted. The operator opens the app, reviews unpromoted commits and verification evidence in the Promotion Panel, and clicks "Prepare Promotion PR". A consolidated promotion PR from `develop` to `main` is opened on GitHub. At 08:30, the operator reviews the single promotion PR and merges it into `main`.
 
@@ -63,9 +63,9 @@ The Operator App solves these challenges by placing a deterministic control and 
 
 ### CUJ 3: Observability of Quarantined or Blocked Issues
 
-*   **Given**: Three issues are marked `factory:ready`, but one contains a conflicting `factory:hold` label, one depends on an unmerged prerequisite, and one has incomplete acceptance criteria.
+*   **Given**: Three issues are marked `ready-for-agent`, but one contains a conflicting `needs-info` label, one depends on an unmerged prerequisite, and one has incomplete acceptance criteria.
 *   **When**: The operator opens the factory dashboard.
-*   **Then**: Rather than showing an empty screen with "0 agents running", the intake ledger lists each issue and explicitly displays why it was not admitted (`Held by label: factory:hold`, `Waiting on prerequisite: #12`, `Unresolved requirements contract`).
+*   **Then**: Rather than showing an empty screen with "0 agents running", the intake ledger lists each issue and explicitly displays why it was not admitted (`Held by label: needs-info`, `Waiting on prerequisite: #12`, `Unresolved requirements contract`).
 
 --------------------------------------------------------------------------------
 
@@ -142,8 +142,8 @@ The system consists of three architectural layers running on a single host (loca
 #### A. Intake Ledger & Workability Contract (`/api/intake`)
 To prevent the autonomous loop from grabbing unready issues, the engine enforces strict intake admission before any lap is launched:
 *   **Label Invariants**: An issue is admitted **only** if:
-    1. `factory:ready` is present.
-    2. Neither `factory:hold` nor `factory:exclude` is present.
+    1. `ready-for-agent` is present.
+    2. No blocking labels (`needs-info`, `ready-for-human`, `needs-triage`) or exclusion labels (`wontfix`) are present. Legacy `factory:` labels convey zero authority.
     3. The issue is in `OPEN` state on `pabriq-app`.
     4. All referenced `Depends on: #...` items are satisfied (the referenced issue is closed on GitHub with its associated PR merged into `develop`).
     5. No existing factory PR or active lap claim (`Loop claim: run <id>`) already targets this issue.
@@ -233,12 +233,12 @@ The implementation follows 4 sequential phases. Each phase leaves the codebase t
 ### Phase 1: Intake Ledger & Admission Gating (`intake.py`)
 *   **File**: `intake.py` (Create)
     *   Implement `IntakeService` querying GitHub issues for `pabriq-app` via `gh issue list --json number,title,labels,body,comments,state`.
-    *   Evaluate admission rules: requires `factory:ready`, forbids `factory:hold`/`factory:exclude`.
+    *   Evaluate admission rules: requires `ready-for-agent`, forbids blocking/exclusion labels (`needs-info`, `ready-for-human`, `needs-triage`, `wontfix`). Legacy `factory:` labels convey zero authority.
     *   Check dependency status: for each `Depends on: #<num>`, verify referenced issue is closed and PR merged.
     *   Implement 60-second in-memory caching for query results.
     *   Expose `evaluate_backlog() -> list[dict]`.
 *   **Tests**: `tests/test_intake.py` (Create)
-    *   Test admission matrix: unlabeled (`held`), `factory:ready` (`admitted`), `factory:hold` (`held`), `factory:exclude` (`excluded`), unsatisfied dependency (`held`).
+    *   Test admission matrix: unlabeled (`held`), `ready-for-agent` (`admitted`), `needs-info` (`held`), `wontfix` (`excluded`), unsatisfied dependency (`held`).
     *   Mock `subprocess.run` calls to `gh`.
 
 ### Phase 2: Consumer Scheduler Integration & Target Binding
@@ -248,7 +248,7 @@ The implementation follows 4 sequential phases. Each phase leaves the codebase t
     *   Check for Candidate Freeze: if an open promotion PR exists or `.factory/PAUSE` is present, refuse launch.
     *   Enforce work window: evaluate `work_window` from `.factory/schedule.json` against current time in configured timezone. Outside work hours, allow existing runs to finish, but admit no new laps.
 *   **Tests**: `tests/test_consumer_gating.py` (Create)
-    *   Verify `launch_decision()` returns `None` outside work hours, when paused, or when no `factory:ready` issue is admitted.
+    *   Verify `launch_decision()` returns `None` outside work hours, when paused, or when no `ready-for-agent` issue is admitted.
     *   Verify target issue is bound to launch parameters.
 
 ### Phase 3: Telemetry, Control, & Promotion Endpoints (`app.py`, `promotion.py`)
@@ -300,7 +300,7 @@ The implementation follows 4 sequential phases. Each phase leaves the codebase t
             *   Engine master switch: `x.ai / Switch / On` toggle.
             *   Emergency control: `Drain admissions` pill button (`$xai-error`).
         *   **Active Issue Workspace & Telemetry Pane**:
-            *   Breadcrumbs (`pabriq-app / Issues / #42`) + tags (`factory:ready`, `gpt-6.1-sol`, `tree-42`).
+            *   Breadcrumbs (`pabriq-app / Issues / #42`) + tags (`ready-for-agent`, `gpt-6.1-sol`, `tree-42`).
             *   Navigation pill tabs: `● Realtime Telemetry & Logs` (active), `Issue Specification`, `PR & File Diffs`, `Token Economics & Stats`.
             *   Linear SDLC pipeline breadcrumbs: `✓ pick` → `✓ claim` → `● build (loop-work)` → `check-app` → `review` → `land`.
             *   Live Log Stream panel (`r8KMCd`): Mac window dots (red, yellow, green), copy action, monospace log streaming with PID/worktree info.

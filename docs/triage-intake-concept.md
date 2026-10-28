@@ -12,7 +12,7 @@ This supersedes the earlier proposal for an in-app triage conversation and its s
 
 ## Handoff contract
 
-Publishing an issue alone does not authorize execution. The operator or their authorized personal harness applies `factory:ready` when the issue is approved for implementation.
+Publishing an issue alone does not authorize execution. The operator or their authorized planning workflow applies `ready-for-agent` when the issue is approved for implementation.
 
 An executable issue needs:
 
@@ -28,11 +28,11 @@ The factory checks whether the handoff is actionable. It holds unclear or contra
 
 ## Authorization labels
 
-- `factory:ready`: authorized for automatic implementation once other conditions allow it.
-- `factory:hold`: do not start or automatically resume the item.
-- `factory:exclude`: not factory work, including deprecated proposals.
+- `ready-for-agent`: authorized for automatic implementation once other conditions allow it.
+- `needs-info`, `ready-for-human`, `needs-triage`: hold work from execution.
+- `wontfix`: exclude work with absolute precedence.
 
-Blocking labels override `factory:ready`. A missing readiness label means no automatic pickup. Existing owner-decision restrictions also remain binding.
+Blocking labels override `ready-for-agent`. A missing readiness label means no automatic pickup. Legacy `factory:` prefixed labels (`factory:ready`, `factory:hold`, `factory:exclude`) have zero authority. Existing owner-decision restrictions also remain binding.
 
 These labels are proposed policy, not currently enforced by the pinned selector. Both deterministic workability and dispatcher selection, including continuation of linked PRs, must honor the same authorization contract.
 

@@ -172,19 +172,19 @@ class JevClient:
 #### Label Mapping and Rules
 - **Admitted**:
   - Requires `ready-for-agent`.
-  - Zero blocking labels (`needs-info`, `ready-for-human`, `needs-triage`, `wontfix`, `factory:hold`, `factory:exclude`).
+  - Zero blocking labels (`needs-info`, `ready-for-human`, `needs-triage`) or exclusion labels (`wontfix`). Legacy `factory:*` labels convey zero authority.
   - All referenced dependencies (`Depends on: #...`) must be `CLOSED`.
   - No active unreleased lap claim comment.
 - **Held**:
   - Unlabeled issues (`admission_status: held`, `reason: unlabeled_awaiting_triage`).
-  - Issues labeled with `needs-info`, `ready-for-human`, `needs-triage`, or `factory:hold`.
+  - Issues labeled with `needs-info`, `ready-for-human`, or `needs-triage`.
   - Issues with unsatisfied dependencies (`reason: waiting_on_dependency:#...`).
   - Actively claimed issues (`reason: actively_claimed`).
 - **Excluded**:
-  - Issues labeled with `wontfix` or legacy `factory:exclude`.
+  - Issues labeled with `wontfix`. Legacy `factory:*` labels convey zero authority.
 
 #### Backward Compatibility
-- For a transitional period, legacy `factory:ready` is recognized as an alias for `ready-for-agent` if `ready-for-agent` is not present, ensuring existing backlog items are not stranded. Legacy `factory:hold` maps to `needs-info`, and `factory:exclude` maps to `wontfix`.
+- Clean cutover enforced: legacy `factory:*` labels convey zero authority. `ready-for-agent` is strictly required for admission, while `needs-info`, `ready-for-human`, `needs-triage` hold, and `wontfix` excludes.
 
 #### Jev Advisory Evaluation Flow
 When `IntakeService.poll()` fetches issues:
@@ -217,7 +217,7 @@ When `IntakeService.poll()` fetches issues:
    - `test_ready_for_agent_admitted`: Verify canonical `ready-for-agent` issue is admitted.
    - `test_needs_info_and_ready_for_human_held`: Verify blocking labels hold admission.
    - `test_wontfix_excluded`: Verify `wontfix` excludes issue.
-   - `test_legacy_label_compatibility`: Verify legacy `factory:ready` is admitted during transition.
+   - `test_legacy_label_clean_cutover`: Verify legacy `factory:ready` alone conveys zero authority and is held due to `missing_ready_label`.
    - `test_jev_assisted_advisory_evaluation`: Mock `JevClient` transport returning high-confidence `ready_for_agent` vs low-confidence `needs_info` and assert resulting metadata in `EvaluatedIssue`.
 
 ### Prior Art
