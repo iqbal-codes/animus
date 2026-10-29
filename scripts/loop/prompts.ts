@@ -45,7 +45,10 @@ export function renderPrompt(
   artifactsDir: string,
 ): string {
   let result = template;
-  for (const [key, value] of Object.entries(vars)) {
+  // Sort keys descending by length so longer variable names (e.g. $INPUTS.profile)
+  // are replaced before prefixes (e.g. $INPUTS.pr).
+  const sortedEntries = Object.entries(vars).sort(([a], [b]) => b.length - a.length);
+  for (const [key, value] of sortedEntries) {
     result = result.replaceAll(`$INPUTS.${key}`, value);
   }
   result = result.replaceAll("$ARTIFACTS_DIR", artifactsDir);

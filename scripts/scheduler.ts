@@ -1,5 +1,5 @@
 import { parseArgs } from "node:util";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
   loadScheduleConfig,
   runSchedulerTick,
@@ -143,8 +143,10 @@ if (import.meta.main) {
     const repo = (JSON.parse(repoRes.stdout.toString()) as { nameWithOwner: string }).nameWithOwner;
 
     const gitCommonRes = Bun.spawnSync(["git", "rev-parse", "--git-common-dir"], { cwd: root });
-    const sharedRoot =
-      gitCommonRes.exitCode === 0 ? resolve(root, gitCommonRes.stdout.toString().trim(), "..") : root;
+    const gitCommon = gitCommonRes.exitCode === 0 ? gitCommonRes.stdout.toString().trim() : ".git";
+    const common = resolve(root, gitCommon);
+    const sharedRoot = resolve(common, "..");
+    const runsDir = join(common, "factory-local-loop", "runs");
 
     const fetchBacklog = async () => fetchGithubBacklog(root, repo);
 
@@ -164,6 +166,7 @@ if (import.meta.main) {
       const result = await runSchedulerTick({
         root,
         sharedRoot,
+        runsDir,
         config: interval ? { interval_seconds: interval } : undefined,
         fetchBacklog,
         launchLap,
@@ -188,6 +191,7 @@ if (import.meta.main) {
       const loop = startSchedulerLoop({
         root,
         sharedRoot,
+        runsDir,
         config: interval ? { interval_seconds: interval } : undefined,
         intervalMs: interval ? interval * 1000 : undefined,
         fetchBacklog,

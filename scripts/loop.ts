@@ -154,6 +154,9 @@ export function readIssueContract(
     comments: comments.map((c) => c.body),
     dependencies: resolved,
     activeClaim: false,
+    labels: Array.isArray((issue as any).labels)
+      ? (issue as any).labels.map((l: any) => (typeof l === "string" ? l : l.name)).filter(Boolean)
+      : [],
   };
 }
 

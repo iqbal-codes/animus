@@ -3,26 +3,26 @@ assistant: pi
 
 assistants:
   pi:
-    model: router/ag/gemini-3.8-flash
+    model: 9router/ag/gemini-3.8-flash
 
 tiers:
   small:
     provider: pi
-    model: router/ag/gemini-3.8-flash
+    model: 9router/ag/gemini-3.8-flash
     effort: medium
   medium:
     provider: pi
-    model: router/ag/gemini-3.8-flash
+    model: 9router/ag/gemini-3.8-flash
     effort: high
   large:
     provider: pi
-    model: router/cx/gpt-6.1-sol
+    model: 9router/cx/gpt-6.1-sol
     effort: medium
 
 aliases:
   '@reasoning':
     provider: pi
-    model: router/cx/gpt-6.1-sol
+    model: 9router/cx/gpt-6.1-sol
     effort: high
 
 worktree:

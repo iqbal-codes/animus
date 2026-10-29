@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, rename } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -24,6 +24,11 @@ import {
   resolveLoopExtensions,
   buildCuratedAppendPrompts,
 } from "./loop/harness-memory";
+import {
+  resolveVerificationProfile,
+  getProfileInstructions,
+} from "./loop/profiles";
+import { evaluateCodebaseRulesOnEdit } from "../.factory/hooks/loop-guard";
 import {
   recordLapAttempt,
   shouldTriggerReflection,
@@ -92,14 +97,14 @@ If the work item cannot be satisfied without changing what an in-repository chec
 2. **Branch integration:** Keep the branch current strictly via \`git merge --no-edit origin/<default-branch>\`. Preserve commit history without rebasing or force-pushing.
 3. **Smallest discriminating checks:** Iterate on the smallest unit test, frame, tick, or input path that isolates the behavior. Save exhaustive testing for final validation; running full end-to-end suites repeatedly on every edit wastes hours.
 4. **Final validation:** Run the repository's ordinary checks once on your candidate commit (\`engineering.md\` or harness config). Save complete output to \`$ARTIFACTS_DIR/builder-checks.log\` so subsequent QA and review nodes reuse it without duplicate execution. If user-visible behavior changed, launch the app according to \`$INPUTS.runtime\` and verify the observable user path.
-5. **Commit and push:** Commit with an imperative, conventional commit message (\`feat(...)\`, \`fix(...)\`). Push to origin. Open a PR with \`Closes #<n>\` or update the existing PR. Ensure the PR is ready for review (\`gh pr ready <n>\`).
+5. **Commit and push:** Commit with an imperative, conventional commit message (\`feat(...)\`, \`fix(...)\`). The host executor pushes to origin, opens or updates the PR with \`Closes #<n>\`, and ensures the PR is ready for review (\`gh pr ready <n>\`).
 
 ## 3. Pull Request Evidence Contract
 
 Every pull request description must contain an \`## Evidence\` section before this step is complete:
 - Map each contract criterion to its concrete verification evidence (command output line, log path, or test assertion) on your pushed candidate commit.
 - If the change alters what an in-repository check samples or excuses, declare it under an explicit heading: \`### Judge Alterations (Requires Approval)\`.
-- Post one comment on the PR detailing the delivered changes, how criteria were satisfied, and any remaining context.
+- Detail the delivered changes, how criteria were satisfied, and any remaining context.
 
 ## 4. Boundaries & Invariants
 
@@ -136,6 +141,8 @@ The move this run:
 - Route: $INPUTS.route
 - Work item: $INPUTS.target
 - Pull request: $INPUTS.pr
+- Verification profile: $INPUTS.profile
+- Skip app launch: $INPUTS.skip_app_launch
 - Candidate head commit: $INPUTS.head, against default branch \`$INPUTS.base\`
 - Files changed:
 \`\`\`
@@ -155,7 +162,7 @@ Apply the depth selected for this work item's risk profile:
 - **\`normal\`** (default for user-visible features or fixes): Build, run ordinary checks once, and observe each contract criterion through the live app's public user surface. Execute up to three plausible user interaction variations beyond the criteria (\`probes\`). Run holdouts only if they exercise the modified behavior.
 - **\`deep\`** (core architectural changes, security, authentication, data models, or migrations): Probe all states the change introduces; evaluate both public UI/CLI interfaces and automated harnesses; run all holdout scenarios touched by the modified files.
 
-Sample decisive states and edge transitions rather than attempting combinatorial exhaustive input sweeps. Where the builder has already saved complete check logs on the identical commit under \`$ARTIFACTS_DIR\`, reuse those logs instead of repeating identical commands.
+Sample decisive states and edge transitions rather than attempting combinatorial exhaustive input sweeps. Where the builder or host executor has already saved complete check logs on the identical commit under \`$ARTIFACTS_DIR\` (such as \`builder-checks.log\`), reuse those logs instead of repeating identical commands.
 
 ## 3. Verify what would merge (Detached Base Merge)
 
@@ -167,7 +174,7 @@ Because the landed artifact is this pull request merged with the current default
 
 ## 4. Black-Box Execution & Evidence
 
-1. **Launch the application:** Start the app according to \`$INPUTS.runtime\` on its real code path rather than mock stubs.
+1. **Launch the application:** When "$INPUTS.skip_app_launch" is "false", start the app according to "$INPUTS.runtime" on its real code path rather than mock stubs. When "$INPUTS.skip_app_launch" is "true", do not launch background processes, HTTP servers, or browser drivers; evaluate criteria directly against modified files, syntax, and test logs.
 2. **Drive the public surface:** Interact via documented CLI commands, HTTP endpoints, or driver libraries. Avoid using tools or scripts introduced in the PR itself to validate the PR's own claims.
 3. **Record concrete artifacts:** Save every command log, curl output, screenshot, and measurement as an immutable file under \`$ARTIFACTS_DIR\`. Cite each piece of evidence by its absolute path.
 4. **Line classification:**
@@ -232,18 +239,25 @@ The move this run:
 If QA reported \`overall: "NO PR"\`, no pull request was delivered. Leave one comment on the work item:
 \`Loop review: no pull request\` explaining the observed situation. If the item has reached $INPUTS.rejections attempts without progress, label it \`needs-owner\`. Return outcome \`nothing\` or \`needs-owner\`.
 
-## 2. Code Inspection & Verification
+## 2. Code Inspection & Verification (Standards & Spec Axes)
 
-1. **Checkout head:** Check out the candidate commit: \`git checkout -B <branch> origin/<branch> --ignore-other-worktrees\`.
-2. **Review diff:** Compare the branch against \`$INPUTS.base\`. Inspect for:
-   - Real bugs, unhandled errors, or edge cases.
-   - Regressions: any user-observable behavior worse than the default branch blocks merge, even if all criteria passed.
-   - Scope creep: additions unrelated to the acceptance contract.
-   - Weakened tests: skipped, commented-out, or loosened checks.
+In this unattended loop, you conduct the code inspection directly as the independent reviewer across two unified evaluation axes. Do NOT attempt to delegate to external subagents; you are already running in a clean, separate reviewer session isolated from the builder. Evaluate both axes directly:
+
+1. **Standards Axis:**
+   - Inspect diff for code smells: Mysterious Name, Duplicated Code, Feature Envy, Shotgun Surgery, Divergent Change, Speculative Generality.
+   - Verify compliance with documented repo rules in \`AGENTS.md\` and codebase conventions.
    - Protected paths: verify zero modifications to protected paths ($INPUTS.protected_paths). Any alteration mandates \`needs-owner\`.
-3. **Changes to check judgement:** If the diff alters what checks sample, skip, or excuse, verify explicit owner approval. Without approval, label \`needs-owner\`.
-4. **Evidence reuse:** Reuse check outputs saved in \`$ARTIFACTS_DIR\` by the builder or QA. Only re-run checks yourself if resolving a contested line.
-5. **CI status:** Verify CI status (\`gh pr checks <n>\`).
+   - Weakened tests: verify no skipped, commented-out, or loosened checks without owner approval.
+
+2. **Spec Axis:**
+   - Map every acceptance criterion and invariant in the source issue/contract to the implementation and evidence.
+   - Verify that all QA lines in \`app-check.json\` (both criteria and runtime probes) pass or have valid dispositions.
+   - Inspect for scope creep or behavioral regressions against \`$INPUTS.base\`.
+   - Check CI status (\`gh pr checks <n>\`).
+
+3. **Evidence & Preconditions:**
+   - Candidate checkout: \`git checkout -B <branch> origin/<branch> --ignore-other-worktrees\`.
+   - Reuse check outputs saved in \`$ARTIFACTS_DIR\` by builder and QA; re-run checks only if resolving contested lines.
 
 ## 3. Mandatory Line Dispositions
 
@@ -262,16 +276,10 @@ Assign exactly one disposition to every QA line that is not a plain \`PASS\` or 
 
 ## 5. Unified PR Review Comment
 
-Post exactly ONE unified comment on the pull request (or issue) starting with:
+The host loop executor publishes the unified review comment on the pull request (or issue) starting with:
 \`Loop review: <outcome> (route: $INPUTS.route)\`
 
-Include:
-- Candidate commit SHA
-- QA Verification summary table
-- Code review findings
-- Dispositions for non-passing lines
-- Noticed items pre-existing in the base
-- Decision outcome
+Include all findings, dispositions, and your rationale in your final JSON report below so the host executor can post the exact review record.
 
 ## 6. Report Format
 
@@ -419,6 +427,7 @@ export async function runLocalLoop(
   const branch = existingPr
     ? existingPr.headRefName
     : `local-loop/issue-${issue.number}-${runId.slice(0, 8)}`;
+  const initialProfile = issue.verificationProfile ?? resolveVerificationProfile(issue);
   const state: LocalLoopResult = {
     runId,
     issue: issue.url,
@@ -429,6 +438,7 @@ export async function runLocalLoop(
     branch,
     base,
     pr: existingPr?.url,
+    verificationProfile: initialProfile,
     evidence: [],
   };
 
@@ -483,6 +493,23 @@ export async function runLocalLoop(
         .filter(Boolean);
       if (changed.some((p) => protectedPaths.some((pattern) => new Bun.Glob(pattern).match(p))))
         throw new Error("Candidate changed protected paths");
+
+      // Deterministic codebase rules enforcement across all harnesses (Pi, Claude, Codex, OpenCode)
+      for (const relPath of changed) {
+        const fullPath = join(state.worktree, relPath);
+        if (existsSync(fullPath)) {
+          try {
+            const content = readFileSync(fullPath, "utf-8");
+            const ruleCheck = evaluateCodebaseRulesOnEdit(state.worktree, relPath, content);
+            if (ruleCheck.blocked) {
+              throw new Error(`Candidate violated codebase rules: ${ruleCheck.reasons.join("; ")}`);
+            }
+          } catch (err: any) {
+            if (err.message.includes("Candidate violated codebase rules")) throw err;
+          }
+        }
+      }
+
       return head;
     };
 
@@ -499,27 +526,13 @@ export async function runLocalLoop(
     const qaTemplate = getPromptTemplate("loop-check-app", ARCHON_QA_PROMPT);
     const reviewerTemplate = getPromptTemplate("loop-review", ARCHON_REVIEWER_PROMPT);
 
-    const runtimeDocPath = existsSync(join(root, "docs/runtime.md"))
-      ? "docs/runtime.md"
-      : existsSync(join(root, "harness/END-TO-END.md"))
-        ? "harness/END-TO-END.md"
-        : "engineering.md";
-    const runtimeInstructions = `See project runtime guide in ${runtimeDocPath} for launching services and black-box verification.`;
     const holdoutPath = existsSync(join(root, ".factory/holdout/HOLDOUT.md"))
       ? join(root, ".factory/holdout/HOLDOUT.md")
       : "";
 
-    const depth: "light" | "normal" | "deep" =
-      /auth|security|migration|schema|database/i.test(issue.title + issue.body)
-        ? "deep"
-        : /docs|test|refactor/i.test(issue.title)
-          ? "light"
-          : "normal";
-
     const scheduleCfg = loadScheduleConfig(root);
     const maxLaps = scheduleCfg.max_laps ?? 3;
     const maxRejections = Math.max(1, maxLaps - 1);
-
     const invoke = async (role: LoopRole, candidate?: string, extraVars: Record<string, string> = {}) => {
       await inspectLocalLoop(root);
       state.status = role === "builder" ? "building" : role === "qa" ? "qa" : "reviewing";
@@ -528,6 +541,18 @@ export async function runLocalLoop(
       const changedFilesList = candidate
         ? (await git(state.worktree, "diff", "--name-only", "--no-renames", base, candidate)).trim()
         : "";
+
+      const currentFiles = changedFilesList
+        ? changedFilesList.split("\n").map((s) => s.trim()).filter(Boolean)
+        : [];
+      const effectiveProfile = candidate
+        ? resolveVerificationProfile(
+            { ...issue, verificationProfile: issue.verificationProfile },
+            currentFiles,
+          )
+        : initialProfile;
+      state.verificationProfile = effectiveProfile;
+      const profileInstructions = getProfileInstructions(effectiveProfile, root);
 
       const template = role === "builder"
         ? builderTemplate
@@ -539,12 +564,15 @@ export async function runLocalLoop(
         route,
         target: issue.url,
         pr: state.pr ?? "",
-        reason: `Autonomous delivery for issue #${issue.number}: ${issue.title}`,
-        runtime: runtimeInstructions,
+        reason: `Autonomous delivery for issue #${issue.number}: ${issue.title} [profile: ${effectiveProfile}]`,
+        runtime: profileInstructions.runtimeInstructions,
         head: candidate ?? "HEAD",
         base,
         files: changedFilesList || "(all files in commit)",
-        depth,
+        depth: profileInstructions.depth,
+        profile: effectiveProfile,
+        skip_app_launch: profileInstructions.skipAppLaunch ? "true" : "false",
+        checks_status: existsSync(join(artifactsDir, "builder-checks.log")) ? "passed" : "pending",
         holdout: holdoutPath,
         protected_paths: protectedPaths.join(", "),
         handoff: handoffDir,
@@ -614,6 +642,19 @@ export async function runLocalLoop(
     if (options.push !== false) {
       try {
         await git(state.worktree, "push", "-u", "origin", branch);
+        if (!state.pr) {
+          const prView = await processRun(
+            ["gh", "pr", "view", branch, "--json", "url"],
+            state.worktree,
+            15_000,
+          );
+          if (prView.exitCode === 0) {
+            try {
+              const parsed = JSON.parse(prView.stdout);
+              if (parsed.url) state.pr = parsed.url;
+            } catch {}
+          }
+        }
         if (!state.pr) {
           const body = [
             `Closes #${issue.number}`,
@@ -751,21 +792,41 @@ export async function runLocalLoop(
         `### Loop review: ${reviewOutcome} (route: ${route})`,
         "",
         `**Candidate**: \`${state.candidate}\``,
+        `**Blast Radius**: ${changedFilesFinal.length} file(s) modified`,
         "",
+        ...(qaReport.summary
+          ? [
+              "#### 📝 Summary of Observed Behavior:",
+              qaReport.summary,
+              "",
+            ]
+          : []),
         "#### 🧪 Black-box QA Verification:",
-        ...(qaReport.checks?.map(
-          (c: any) => `- [${c.result === "pass" ? "x" : " "}] **${c.criterion}**: ${c.evidence}`,
-        ) || ["- No QA checks reported"]),
+        ...(qaReport.checks?.map((c: any) => {
+          const isPass = c.result === "pass" || c.result === "ok";
+          const label = c.kind === "probe" ? "Runtime Probe" : "Criteria";
+          const desc = c.text ? ` - ${c.text}` : c.evidence ? ` (${c.evidence})` : "";
+          return `- [${isPass ? "x" : " "}] **${c.criterion} (${label})**${desc}`;
+        }) || ["- No QA checks reported"]),
         "",
         "#### 🔍 Code Review Findings:",
         ...(reviewReport.findings?.length
           ? reviewReport.findings.map((f: string) => `- ${f}`)
           : ["- No blocking standards or specification findings."]),
         "",
+        ...(reviewReport.reason
+          ? [
+              "#### 🧐 Reviewer Decision & Rationale:",
+              reviewReport.reason,
+              "",
+            ]
+          : []),
         ...(Array.isArray(reviewReport.dispositions) && reviewReport.dispositions.length > 0
           ? [
               "#### 📋 Dispositions:",
-              ...reviewReport.dispositions.map((d: any) => `- **${d.line}** (${d.action}): ${d.reason || d.issue || d.file}`),
+              ...reviewReport.dispositions.map(
+                (d: any) => `- **${d.line}** (${d.action}): ${d.reason || d.issue || d.file}`,
+              ),
               "",
             ]
           : []),

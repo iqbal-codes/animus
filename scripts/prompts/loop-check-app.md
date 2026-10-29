@@ -9,6 +9,8 @@ The move this run:
 - Route: $INPUTS.route
 - Work item: $INPUTS.target
 - Pull request: $INPUTS.pr
+- Verification profile: $INPUTS.profile
+- Skip app launch: $INPUTS.skip_app_launch
 - Candidate head commit: $INPUTS.head, against default branch `$INPUTS.base`
 - Files changed:
 ```
@@ -28,7 +30,7 @@ Apply the depth selected for this work item's risk profile:
 - **`normal`** (default for user-visible features or fixes): Build, run ordinary checks once, and observe each contract criterion through the live app's public user surface. Execute up to three plausible user interaction variations beyond the criteria (`probes`). Run holdouts only if they exercise the modified behavior.
 - **`deep`** (core architectural changes, security, authentication, data models, or migrations): Probe all states the change introduces; evaluate both public UI/CLI interfaces and automated harnesses; run all holdout scenarios touched by the modified files.
 
-Sample decisive states and edge transitions rather than attempting combinatorial exhaustive input sweeps. Where the builder has already saved complete check logs on the identical commit under `$ARTIFACTS_DIR`, reuse those logs instead of repeating identical commands.
+Sample decisive states and edge transitions rather than attempting combinatorial exhaustive input sweeps. Where the builder or host executor has already saved complete check logs on the identical commit under `$ARTIFACTS_DIR` (such as `builder-checks.log`), reuse those logs instead of repeating identical commands.
 
 ## 3. Verify what would merge (Detached Base Merge)
 
@@ -40,7 +42,7 @@ Because the landed artifact is this pull request merged with the current default
 
 ## 4. Black-Box Execution & Evidence
 
-1. **Launch the application:** Start the app according to `$INPUTS.runtime` on its real code path rather than mock stubs.
+1. **Launch the application:** When `$INPUTS.skip_app_launch` is `false`, start the app according to `$INPUTS.runtime` on its real code path rather than mock stubs. When `$INPUTS.skip_app_launch` is `true`, do not launch background processes, HTTP servers, or browser drivers; evaluate criteria directly against modified files, syntax, and test logs.
 2. **Drive the public surface:** Interact via documented CLI commands, HTTP endpoints, or driver libraries. Avoid using tools or scripts introduced in the PR itself to validate the PR's own claims.
 3. **Record concrete artifacts:** Save every command log, curl output, screenshot, and measurement as an immutable file under `$ARTIFACTS_DIR`. Cite each piece of evidence by its absolute path.
 4. **Line classification:**

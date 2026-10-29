@@ -31,14 +31,14 @@ If the work item cannot be satisfied without changing what an in-repository chec
 2. **Branch integration:** Keep the branch current strictly via `git merge --no-edit origin/<default-branch>`. Preserve commit history without rebasing or force-pushing.
 3. **Smallest discriminating checks:** Iterate on the smallest unit test, frame, tick, or input path that isolates the behavior. Save exhaustive testing for final validation; running full end-to-end suites repeatedly on every edit wastes hours.
 4. **Final validation:** Run the repository's ordinary checks once on your candidate commit (`engineering.md` or harness config). Save complete output to `$ARTIFACTS_DIR/builder-checks.log` so subsequent QA and review nodes reuse it without duplicate execution. If user-visible behavior changed, launch the app according to `$INPUTS.runtime` and verify the observable user path.
-5. **Commit and push:** Commit with an imperative, conventional commit message (`feat(...)`, `fix(...)`). Push to origin. Open a PR with `Closes #<n>` or update the existing PR. Ensure the PR is ready for review (`gh pr ready <n>`).
+5. **Commit and push:** Commit with an imperative, conventional commit message (`feat(...)`, `fix(...)`). The host executor pushes to origin, opens or updates the PR with `Closes #<n>`, and ensures the PR is ready for review (`gh pr ready <n>`).
 
 ## 3. Pull Request Evidence Contract
 
 Every pull request description must contain an `## Evidence` section before this step is complete:
 - Map each contract criterion to its concrete verification evidence (command output line, log path, or test assertion) on your pushed candidate commit.
 - If the change alters what an in-repository check samples or excuses, declare it under an explicit heading: `### Judge Alterations (Requires Approval)`.
-- Post one comment on the PR detailing the delivered changes, how criteria were satisfied, and any remaining context.
+- Detail the delivered changes, how criteria were satisfied, and any remaining context.
 
 ## 4. Boundaries & Invariants
 

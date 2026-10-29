@@ -422,3 +422,58 @@ test("triggers post-issue terminal reflection when Lap 0 is sent_back and Lap 1 
   expect(existsSync(join(resLap1.runDirectory, "artifacts", "reflection.json"))).toBe(true);
   expect(existsSync(join(root, ".factory/lessons.jsonl"))).toBe(true);
 });
+
+test("executes lap with verification profile: docs profile instructs QA to skip app launch", async () => {
+  const root = await fixture();
+  const issue: LocalIssue = {
+    number: 105,
+    url: "https://github.com/owner/repo/issues/105",
+    title: "docs: update API overview and architecture notes",
+    body: "AC1: update README.md and documentation without regressions",
+    comments: [],
+    dependencies: [],
+    activeClaim: false,
+    labels: ["profile:docs"],
+  };
+
+  let capturedQaPrompt = "";
+  const transport: PiTransport = async ({ cwd, role, argv }) => {
+    if (role === "builder") {
+      await Bun.write(join(cwd, "docs.md"), "# Documentation\nUpdated.\n");
+      git(cwd, "add", "docs.md");
+      git(cwd, "commit", "-m", "docs: update documentation");
+    }
+    if (role === "qa") {
+      capturedQaPrompt = argv.at(-1) ?? "";
+    }
+    const head = git(cwd, "rev-parse", "HEAD");
+    return {
+      exitCode: 0,
+      stdout: JSON.stringify({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                candidate: head,
+                verdict: "pass",
+                checks: [{ criterion: "AC1", result: "pass", evidence: "docs verified" }],
+                findings: [],
+              }),
+            },
+          ],
+        },
+      }),
+      stderr: "",
+    };
+  };
+
+  const res = await runLocalLoop(root, issue, { pi: transport, push: false });
+  expect(res.status).toBe("waiting_approval");
+  expect(res.verificationProfile).toBe("docs");
+  expect(capturedQaPrompt).toContain("Skip app launch: true");
+  expect(capturedQaPrompt).toContain("Verification profile: docs");
+  expect(capturedQaPrompt).toContain("Documentation only");
+});
