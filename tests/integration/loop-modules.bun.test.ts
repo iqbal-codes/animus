@@ -91,6 +91,11 @@ test("3. Backlog Slicing: decomposes PRD into dependency-ordered issues with con
   const tickets = slicePrdDeterministic(prd, 5);
   expect(tickets).toHaveLength(2);
   expect(tickets[0]!.key).toBe("core-engine");
+
+  const greenfieldTickets = slicePrdDeterministic(prd, 5, { includeFoundationSlice: true });
+  expect(greenfieldTickets).toHaveLength(3);
+  expect(greenfieldTickets[0]!.key).toBe("architecture-and-shared-primitives");
+  expect(greenfieldTickets[1]!.depends_on).toEqual(["architecture-and-shared-primitives"]);
   expect(tickets[0]!.depends_on).toEqual([]);
   expect(tickets[1]!.key).toBe("web-ui");
   expect(tickets[1]!.depends_on).toEqual(["core-engine"]);
@@ -508,6 +513,42 @@ test("post-loop self-improving harness: curated injection, dossier terminal trig
     const exts = resolveLoopExtensions(dir);
     expect(exts).toHaveLength(1);
 
+    // Verify deterministic codebase-rules.json enforcement in loop-guard.ts
+    const { evaluateCodebaseRulesOnEdit } = await import("../../.factory/hooks/loop-guard");
+    writeFileSync(
+      join(dir, ".factory/codebase-rules.json"),
+      JSON.stringify({
+        rules: [
+          {
+            id: "no-explicit-any-in-features",
+            description: "Avoid explicit any in feature components",
+            file_glob: "src/features/**/*.tsx",
+            forbid_regex: ":\\s*any\\b",
+            replacement_hint: "Import or define explicit domain types in types.ts",
+            mode: "block",
+          },
+          {
+            id: "use-canonical-form-field",
+            description: "Raw <input> inside feature forms is forbidden",
+            file_glob: "src/features/**/*Form*.tsx",
+            forbid_regex: "<input\\b",
+            replacement_hint: "Use <FormField /> with TanStack Form useAppForm() hook",
+            mode: "block",
+          },
+        ],
+      }),
+    );
+
+    const anyCheck = evaluateCodebaseRulesOnEdit(
+      dir,
+      "src/features/users/UserForm.tsx",
+      "export function UserForm(props: any) { return <input />; }",
+    );
+    expect(anyCheck.blocked).toBe(true);
+    expect(anyCheck.reasons).toHaveLength(2);
+    expect(anyCheck.reasons[0]).toContain("no-explicit-any-in-features");
+    expect(anyCheck.reasons[1]).toContain("use-canonical-form-field");
+
     const matched = matchRelevantLessons(dir, ["apps/backend/src/config.ts"]);
     expect(matched).toHaveLength(1);
     expect(matched[0]?.topic).toBe("port-binding");
@@ -585,6 +626,9 @@ test("post-loop self-improving harness: curated injection, dossier terminal trig
           stdout: JSON.stringify({
             attribution: "helped",
             tool_guidance_updates: { verify: "bun harness/ci.ts" },
+            component_registry_updates: {
+              form: "Use useAppForm() and <FormField /> from @/components/ui/form",
+            },
             candidate_lessons: [
               {
                 topic: "port-binding",
@@ -619,6 +663,7 @@ test("post-loop self-improving harness: curated injection, dossier terminal trig
     expect(reflectionOutcome.persistedLessons[0]?.occurrence_count).toBe(3); // Incremented from 2 -> 3
     expect(reflectionOutcome.rejectedLessons).toHaveLength(1); // Rejected negative phrasing rule
     expect(reflectionOutcome.updatedTools).toEqual(["verify"]);
+    expect(reflectionOutcome.updatedComponents).toEqual(["form"]);
     expect(reflectionOutcome.promotedSkill?.skillName).toBe("port-resolution");
     expect(existsSync(join(dir, ".agents/skills/port-resolution/SKILL.md"))).toBe(true);
 

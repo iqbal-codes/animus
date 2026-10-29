@@ -1,12 +1,19 @@
 {
   "name": "labq-software-factory",
   "private": true,
+  "bin": {
+    "factory": "./scripts/cli/cli.ts",
+    "labq": "./scripts/cli/cli.ts",
+    "labq-factory": "./scripts/cli/cli.ts"
+  },
   "workspaces": [
     "apps/*",
     "packages/*"
   ],
   "type": "module",
   "scripts": {
+    "cli": "bun scripts/cli/cli.ts",
+    "build:cli": "bun scripts/release/build-cli.ts",
     "loop": "bun scripts/loop.ts",
     "loop:watch": "bun scripts/loop-watch.ts",
     "scheduler": "bun scripts/scheduler.ts",

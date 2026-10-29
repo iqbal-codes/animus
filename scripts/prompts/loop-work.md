@@ -20,7 +20,8 @@ Read the issue body and comments completely before making changes:
   - Code defects or failed pipeline steps: fix the root cause.
   - Base branch drift: merge the default branch in cleanly.
   - Review or evidence documentation gaps: update the record without touching working code.
-- Read project steering conventions: `engineering.md`, `MISSION.md`, and product specs at the root or under `docs/`.
+- Read project steering conventions: `engineering.md`, `MISSION.md`, `.factory/codebase-rules.json` (`pattern_registry` & `rules`), and product specs at the root or under `docs/`.
+- When creating or updating reusable building blocks across any layer (backend services/repositories, database migrations, CLI utilities, mobile/frontend primitives, or shared contracts), register them in `.factory/codebase-rules.json` under `pattern_registry` so future laps discover and reuse them automatically.
 
 If the work item cannot be satisfied without changing what an in-repository check judges (adding skips, loosening thresholds, or ignoring edge cases) without owner approval, halt immediately: comment on the item, label it `needs-owner`, and report `PR: none`.
 

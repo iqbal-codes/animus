@@ -17,6 +17,7 @@ import {
   resolveProviderForRole,
   resolveEffortForRole,
 } from "./loop/config";
+import { loadScheduleConfig } from "./loop/scheduler";
 import { buildProviderArgv } from "./loop/providers";
 import {
   resolveAllowedSkills,
@@ -515,6 +516,10 @@ export async function runLocalLoop(
           ? "light"
           : "normal";
 
+    const scheduleCfg = loadScheduleConfig(root);
+    const maxLaps = scheduleCfg.max_laps ?? 3;
+    const maxRejections = Math.max(1, maxLaps - 1);
+
     const invoke = async (role: LoopRole, candidate?: string, extraVars: Record<string, string> = {}) => {
       await inspectLocalLoop(root);
       state.status = role === "builder" ? "building" : role === "qa" ? "qa" : "reviewing";
@@ -545,7 +550,7 @@ export async function runLocalLoop(
         handoff: handoffDir,
         evidence_ok: extraVars.evidence_ok ?? "true",
         merge: "approve",
-        rejections: "2",
+        rejections: String(maxRejections),
         ...extraVars,
       };
 
@@ -723,7 +728,7 @@ export async function runLocalLoop(
       },
     );
 
-    if (shouldTriggerReflection(dossier)) {
+    if (shouldTriggerReflection(dossier, { maxRejections })) {
       state.status = "reflecting";
       await save();
       const reflection = await runPostIssueReflection({

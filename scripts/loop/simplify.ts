@@ -44,6 +44,39 @@ export function analyzeDiffComplexity(diffText: string): SimplifyFinding[] {
     });
   }
 
+  // Check for repeated raw SQL / ad-hoc fetch / raw markup duplication across diffs
+  const rawSqlCount = (diffText.match(/^\+.*\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM)\b/gim) ?? []).length;
+  if (rawSqlCount >= 3) {
+    findings.push({
+      source: "simplify",
+      cost: "Scattered inline SQL queries across multiple locations increase maintenance and schema drift risk.",
+      location: "diff (persistence queries)",
+      smallerShape:
+        "Consolidate database queries into a shared repository/store module and register in .factory/codebase-rules.json (pattern_registry).",
+    });
+  }
+
+  const rawTableCount = (diffText.match(/^\+.*<table\b/gm) ?? []).length;
+  if (rawTableCount >= 2) {
+    findings.push({
+      source: "simplify",
+      cost: "Multiple raw <table> elements added across views instead of a shared table primitive.",
+      location: "diff (UI tables)",
+      smallerShape:
+        "Extract or reuse shared table primitives and register in .factory/codebase-rules.json (pattern_registry).",
+    });
+  }
+
+  if (/^\+.*useEffect\s*\(/m.test(diffText) && /^\+.*<(form|input|select)\b/m.test(diffText)) {
+    findings.push({
+      source: "simplify",
+      cost: "Manual form state synchronization via useEffect alongside raw form inputs.",
+      location: "diff (form state)",
+      smallerShape:
+        "Use canonical form state abstraction and reusable field primitives.",
+    });
+  }
+
   return findings;
 }
 

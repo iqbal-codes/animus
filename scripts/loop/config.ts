@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { LoopRole, ModelTier } from "./types";
 import { type EffortRung, isEffortRung } from "./providers";
 
@@ -12,7 +12,7 @@ export interface TierBinding {
 export interface ArchonConfig {
   assistant?: string;
   assistants?: Record<string, { model: string }>;
-  tiers?: Record<ModelTier, TierBinding>;
+  tiers?: Partial<Record<ModelTier, TierBinding>>;
   aliases?: Record<string, TierBinding>;
   worktree?: { baseBranch?: string };
 }
@@ -68,6 +68,59 @@ export function parseYamlSimple(text: string): Record<string, any> {
   return result;
 }
 
+export function serializeArchonConfigYaml(config: ArchonConfig): string {
+  const lines: string[] = ["# Archon Repository Configuration for labq-software-factory"];
+  if (config.assistant) {
+    lines.push(`assistant: ${config.assistant}`, "");
+  }
+
+  if (config.assistants && Object.keys(config.assistants).length > 0) {
+    lines.push("assistants:");
+    for (const [provider, settings] of Object.entries(config.assistants)) {
+      lines.push(`  ${provider}:`);
+      lines.push(`    model: ${settings.model}`);
+    }
+    lines.push("");
+  }
+
+  if (config.tiers && Object.keys(config.tiers).length > 0) {
+    lines.push("tiers:");
+    for (const tier of ["small", "medium", "large"] as const) {
+      const binding = config.tiers[tier];
+      if (!binding) continue;
+      lines.push(`  ${tier}:`);
+      lines.push(`    provider: ${binding.provider}`);
+      lines.push(`    model: ${binding.model}`);
+      if (binding.effort) {
+        lines.push(`    effort: ${binding.effort}`);
+      }
+    }
+    lines.push("");
+  }
+
+  if (config.aliases && Object.keys(config.aliases).length > 0) {
+    lines.push("aliases:");
+    for (const [alias, binding] of Object.entries(config.aliases)) {
+      const keyStr = alias.startsWith("@") ? `'${alias}'` : alias;
+      lines.push(`  ${keyStr}:`);
+      lines.push(`    provider: ${binding.provider}`);
+      lines.push(`    model: ${binding.model}`);
+      if (binding.effort) {
+        lines.push(`    effort: ${binding.effort}`);
+      }
+    }
+    lines.push("");
+  }
+
+  if (config.worktree?.baseBranch) {
+    lines.push("worktree:");
+    lines.push(`  baseBranch: ${config.worktree.baseBranch}`);
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
 export function readArchonConfig(root: string): ArchonConfig {
   const configPath = join(root, ".archon/config.yaml");
   if (!existsSync(configPath)) return {};
@@ -77,6 +130,13 @@ export function readArchonConfig(root: string): ArchonConfig {
   } catch {
     return {};
   }
+}
+
+export function writeArchonConfig(root: string, config: ArchonConfig): string {
+  const configPath = join(root, ".archon/config.yaml");
+  mkdirSync(dirname(configPath), { recursive: true });
+  writeFileSync(configPath, serializeArchonConfigYaml(config), "utf-8");
+  return configPath;
 }
 
 export function resolveModelTier(role: LoopRole): ModelTier {
@@ -107,11 +167,11 @@ export function resolveModelForRole(root: string, role: LoopRole): string | unde
   }
 
   if (config.tiers?.[tier]?.model) {
-    return config.tiers[tier].model;
+    return config.tiers[tier]!.model;
   }
 
   if (config.assistant && config.assistants?.[config.assistant]?.model) {
-    return config.assistants[config.assistant].model;
+    return config.assistants[config.assistant]!.model;
   }
 
   return undefined;
@@ -127,7 +187,7 @@ export function resolveProviderForRole(root: string, role: LoopRole): string {
   }
 
   if (config.tiers?.[tier]?.provider) {
-    return config.tiers[tier].provider;
+    return config.tiers[tier]!.provider;
   }
 
   if (config.assistant) {
@@ -152,8 +212,8 @@ export function resolveEffortForRole(root: string, role: LoopRole): EffortRung |
     return config.aliases["@reasoning"].effort;
   }
 
-  if (config.tiers?.[tier]?.effort && isEffortRung(config.tiers[tier].effort)) {
-    return config.tiers[tier].effort;
+  if (config.tiers?.[tier]?.effort && isEffortRung(config.tiers[tier]!.effort)) {
+    return config.tiers[tier]!.effort;
   }
 
   return undefined;

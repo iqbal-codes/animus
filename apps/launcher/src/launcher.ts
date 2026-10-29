@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { validateBindAddress, ensureSessionSecret } from "./security";
@@ -37,6 +38,26 @@ export interface ShutdownResult {
   stopped: string[];
   failed?: string[];
   error?: string;
+}
+
+async function allocateLoopbackPort(): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    const srv = createServer();
+    srv.once("error", reject);
+    srv.listen(0, "127.0.0.1", () => {
+      const addr = srv.address();
+      if (!addr || typeof addr === "string") {
+        srv.close();
+        reject(new Error("Failed to allocate port"));
+        return;
+      }
+      const { port } = addr;
+      srv.close((err) => {
+        if (err) reject(err);
+        else resolve(port);
+      });
+    });
+  });
 }
 
 export class FactoryLauncher {
@@ -161,6 +182,14 @@ export class FactoryLauncher {
     const succeeded: string[] = [];
     const failed: string[] = [];
 
+    const effectiveEnginePort =
+      this.options.enginePort > 0
+        ? this.options.enginePort
+        : await allocateLoopbackPort().catch(() => 4001);
+
+    const effectiveBackendPort =
+      this.options.port > 0 ? this.options.port : await allocateLoopbackPort().catch(() => 3000);
+
     // 1. Start engine-host on loopback
     try {
       this.engineHostProcess = Bun.spawn(
@@ -168,7 +197,7 @@ export class FactoryLauncher {
           process.execPath,
           engineScript,
           "--port",
-          String(this.options.enginePort),
+          String(effectiveEnginePort),
           "--host",
           "127.0.0.1",
           "--root",
@@ -193,13 +222,13 @@ export class FactoryLauncher {
     // 2. Start backend
     if (succeeded.includes("engine-host")) {
       try {
-        const engineUrl = `http://127.0.0.1:${this.options.enginePort || 0}`;
+        const engineUrl = `http://127.0.0.1:${effectiveEnginePort}`;
         this.backendProcess = Bun.spawn(
           [
             process.execPath,
             backendScript,
             "--port",
-            String(this.options.port),
+            String(effectiveBackendPort),
             "--host",
             this.options.host,
           ],
@@ -238,8 +267,8 @@ export class FactoryLauncher {
 
     this.status = {
       state: "running",
-      backendUrl: `http://${this.options.host}:${this.options.port}`,
-      engineHostUrl: `http://127.0.0.1:${this.options.enginePort}`,
+      backendUrl: `http://${this.options.host}:${effectiveBackendPort}`,
+      engineHostUrl: `http://127.0.0.1:${effectiveEnginePort}`,
       backendPid: this.backendProcess?.pid,
       engineHostPid: this.engineHostProcess?.pid,
     };

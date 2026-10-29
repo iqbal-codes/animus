@@ -109,7 +109,10 @@ export function checkArchitectureRules(repoRoot) {
 
 checkArchitectureRules.scanSnippet = scanSnippet;
 
-const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+const isMain =
+  process.argv[1] &&
+  process.argv[1].endsWith("check-architecture.mjs") &&
+  fileURLToPath(import.meta.url) === process.argv[1];
 if (isMain) {
   const result = checkArchitectureRules(process.cwd());
   if (!result.ok) {
