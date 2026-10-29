@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 *.pyo
 .factory/consumer.json
+.factory/state/
 .factory/backup/
 .factory/STOP
 .factory/PAUSE
@@ -20,6 +21,7 @@ harness/.results/
 secrets.json
 credentials.json
 node_modules/
+dist/
 apps/web/dist/
 artifacts/
 .vite/

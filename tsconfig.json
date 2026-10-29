@@ -11,6 +11,9 @@
       "path": "apps/engine-host"
     },
     {
+      "path": "apps/launcher"
+    },
+    {
       "path": "packages/contracts"
     },
     {

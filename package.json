@@ -8,11 +8,13 @@
   "type": "module",
   "scripts": {
     "toolchain": "node scripts/health/check-toolchain.mjs",
-    "format": "vp fmt --check apps packages scripts/health tests/integration vite.config.ts tsconfig.json tsconfig.tools.json package.json",
-    "format:write": "vp fmt --write apps packages scripts/health tests/integration vite.config.ts tsconfig.json tsconfig.tools.json package.json",
-    "lint": "vp lint --deny-warnings apps packages scripts/health tests/integration vite.config.ts",
+    "format": "vp fmt --check apps packages scripts/health scripts/release tests/integration vite.config.ts tsconfig.json tsconfig.tools.json package.json",
+    "format:write": "vp fmt --write apps packages scripts/health scripts/release tests/integration vite.config.ts tsconfig.json tsconfig.tools.json package.json",
+    "lint": "vp lint --deny-warnings apps packages scripts/health scripts/release tests/integration vite.config.ts",
     "typecheck": "vp check --no-fmt --no-lint",
-    "check": "bun run format && bun run lint && bun run typecheck",
+    "check": "node scripts/health/check-architecture.mjs && bun run format && bun run lint && bun run typecheck",
+    "check:architecture": "node scripts/health/check-architecture.mjs",
+    "package:release": "bun scripts/release/package.ts",
     "test": "vp run test-all",
     "build:web": "node scripts/health/build-and-inspect.mjs",
     "verify": "vp run verify-all"
