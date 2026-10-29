@@ -6,12 +6,18 @@ import type {
   LocalIssue,
   LoopRole,
   ProcessResult,
+  AgentTransport,
   PiTransport,
   LocalLoopOptions,
   LoopEvidence,
   LocalLoopResult,
 } from "./loop/types";
-import { resolveModelForRole } from "./loop/config";
+import {
+  resolveModelForRole,
+  resolveProviderForRole,
+  resolveEffortForRole,
+} from "./loop/config";
+import { buildProviderArgv } from "./loop/providers";
 import {
   loadPrompt,
   renderPrompt,
@@ -28,6 +34,7 @@ export type {
   LocalIssue,
   LoopRole,
   ProcessResult,
+  AgentTransport,
   PiTransport,
   LocalLoopOptions,
   LoopEvidence,
@@ -464,7 +471,8 @@ export async function runLocalLoop(
       return head;
     };
 
-    const pi = options.pi ?? ((req) => processRun(req.argv, req.cwd, req.timeoutMs));
+    const transport =
+      options.transport ?? options.pi ?? ((req) => processRun(req.argv, req.cwd, req.timeoutMs));
 
     // Dynamic prompt loading with modular fallback
     const getPromptTemplate = (name: string, fallback: string) => {
@@ -532,44 +540,43 @@ export async function runLocalLoop(
 
       const prompt = renderPrompt(template, promptVars, artifactsDir);
 
-      // Model Tiering from .archon/config.yaml or option override
+      // Provider, Model, & Effort Tiering from .archon/config.yaml or option override
+      const roleProvider = options.provider ?? resolveProviderForRole(root, role);
       const roleModel = options.model ?? resolveModelForRole(root, role);
+      const roleEffort = options.effort ?? resolveEffortForRole(root, role);
 
       const stepNum = role === "builder" ? 0 : role === "qa" ? 1 : 2;
       const sessionDirectory = join(runDirectory, `${stepNum}-${role}-session`);
       await mkdir(sessionDirectory, { recursive: true });
-      const argv = [
-        "pi",
-        "--print",
-        "--mode",
-        "json",
-        "--no-extensions",
-        "--no-mcp",
-        "--no-skills",
-        "--no-prompt-templates",
-        "--no-context-files",
-        "--no-approve",
-        "--session-dir",
-        sessionDirectory,
-        ...(roleModel ? ["--model", roleModel] : []),
-        "--",
+      const argv = buildProviderArgv(roleProvider, {
+        model: roleModel,
+        effort: roleEffort,
         prompt,
-      ];
+        sessionDir: sessionDirectory,
+      });
 
-      const result = await pi({ argv, cwd: state.worktree, role, timeoutMs: timeout });
+      const result = await transport({
+        argv,
+        cwd: state.worktree,
+        role,
+        provider: roleProvider,
+        timeoutMs: timeout,
+      });
       const artifact = join(runDirectory, `${role}.json`);
       await Bun.write(artifact, JSON.stringify(result));
       const head = await git(state.worktree, "rev-parse", "HEAD");
       state.evidence.push({
-        kind: "pi",
+        kind: roleProvider === "pi" ? "pi" : (roleProvider as any),
         role,
         round: 0,
         candidate: head,
         artifact,
         exitCode: result.exitCode,
+        provider: roleProvider,
+        effort: roleEffort,
       });
       await save();
-      if (result.exitCode !== 0) throw new Error(`Pi ${role} process failed; see ${artifact}`);
+      if (result.exitCode !== 0) throw new Error(`${roleProvider} ${role} process failed; see ${artifact}`);
       return extractReport(result.stdout, head);
     };
 

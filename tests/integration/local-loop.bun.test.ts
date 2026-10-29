@@ -247,3 +247,78 @@ test("executes one clean lap: builder commits, checks run, QA silent, reviewer p
     expect(ev.round).toBe(0);
   }
 });
+
+test("executes autonomous lap with alternative provider harness (e.g. claude)", async () => {
+  const root = await fixture();
+  const issue: LocalIssue = {
+    number: 73,
+    url: "https://github.com/labq/labq-software-factory/issues/73",
+    title: "Support Claude Harness",
+    body: "AC1: claude harness runs cleanly",
+    comments: [],
+    dependencies: [],
+    activeClaim: false,
+  };
+
+  const capturedProviders: string[] = [];
+  const claudeTransport = async ({
+    cwd,
+    role,
+    provider,
+    argv,
+  }: {
+    cwd: string;
+    role: string;
+    provider?: string;
+    argv: string[];
+  }) => {
+    capturedProviders.push(provider ?? "");
+    expect(argv[0]).toBe("claude");
+    expect(argv).toContain("--dangerously-skip-permissions");
+    expect(argv).toContain("--effort");
+    expect(argv).toContain("high");
+
+    if (role === "builder") {
+      await Bun.write(join(cwd, "claude-fix.txt"), "fixed by claude");
+      git(cwd, "add", "claude-fix.txt");
+      git(cwd, "commit", "-m", "fix issue 73 with claude");
+    }
+    const head = git(cwd, "rev-parse", "HEAD");
+    return {
+      exitCode: 0,
+      stdout: JSON.stringify({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                candidate: head,
+                verdict: "pass",
+                checks: [{ criterion: "AC1", result: "pass", evidence: "unit test ok" }],
+                findings: [],
+              }),
+            },
+          ],
+        },
+      }),
+      stderr: "",
+    };
+  };
+
+  const claudeRes = await runLocalLoop(root, issue, {
+    provider: "claude",
+    effort: "high",
+    transport: claudeTransport,
+    push: false,
+  });
+
+  expect(claudeRes.status).toBe("waiting_approval");
+  expect(capturedProviders).toEqual(["claude", "claude", "claude"]);
+  expect(claudeRes.evidence.filter((e) => e.kind === "claude")).toHaveLength(3);
+  for (const ev of claudeRes.evidence.filter((e) => e.kind === "claude")) {
+    expect(ev.provider).toBe("claude");
+    expect(ev.effort).toBe("high");
+  }
+});

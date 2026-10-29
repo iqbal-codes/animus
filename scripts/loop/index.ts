@@ -10,3 +10,5 @@ export * from "./merge-queue";
 export * from "./simplify";
 export * from "./deploy";
 export * from "./discoveries";
+export * from "./scheduler";
+export * from "./providers";
