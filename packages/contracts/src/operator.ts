@@ -648,6 +648,19 @@ export const specCoordinationPlanSchema = z.object({
 });
 export type SpecCoordinationPlan = z.infer<typeof specCoordinationPlanSchema>;
 
+export const planSubmissionSchema = z.object({
+  specIssueNumber: z.number().int().positive(),
+  baseBranch: z.string().optional(),
+});
+export type PlanSubmission = z.infer<typeof planSubmissionSchema>;
+
+export const dispatchSubmissionSchema = z.object({
+  specIssueNumber: z.number().int().positive(),
+  childIssueNumber: z.number().int().positive(),
+  actor: z.string().optional(),
+});
+export type DispatchSubmission = z.infer<typeof dispatchSubmissionSchema>;
+
 export const targetedImplementSubmissionSchema = z.object({
   specIssueNumber: z.number().int().positive(),
   childIssueNumber: z.number().int().positive(),

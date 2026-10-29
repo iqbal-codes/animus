@@ -3,21 +3,11 @@ import {
   targetedImplementResultSchema,
   coordinationFinalPrResultSchema,
   coordinationFinalPrSubmissionSchema,
+  planSubmissionSchema,
+  dispatchSubmissionSchema,
 } from "@labq/contracts/operator";
-import { z } from "zod";
 import { SpecCoordinatorService } from "./service";
 import { CoordinationError } from "./errors";
-
-const planSubmissionSchema = z.object({
-  specIssueNumber: z.number().int().positive(),
-  baseBranch: z.string().optional(),
-});
-
-const dispatchSubmissionSchema = z.object({
-  specIssueNumber: z.number().int().positive(),
-  childIssueNumber: z.number().int().positive(),
-  actor: z.string().optional(),
-});
 
 export async function handleProjectCoordinationRoute(
   request: Request,

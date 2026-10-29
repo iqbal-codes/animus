@@ -10,6 +10,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
 jobs:
   gate-static:
     name: "Gate 1: Static Lint, Format & Architecture Check"
@@ -17,6 +22,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".node-version"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -43,6 +53,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".node-version"
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -57,8 +72,13 @@ jobs:
       - name: Toolchain check
         run: node scripts/health/check-toolchain.mjs
 
+      - name: Install Playwright Browsers
+        run: npx playwright install chromium --with-deps
+
       - name: Offline test suite & browser journeys
         run: bun run test
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   gate-build:
     name: "Gate 3: Frontend Build & Packaging Validation"
@@ -67,6 +87,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".node-version"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
