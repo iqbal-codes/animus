@@ -23,12 +23,7 @@ function createPrimaryCheckout(root: string): string {
   const primary = join(root, "primary");
   mkdirSync(primary, { recursive: true });
   git(["init", "-b", "main"], primary);
-  git(["config", "user.name", "Test Runner"], primary);
-  git(["config", "user.email", "test@example.com"], primary);
-  git(["config", "commit.gpgsign", "false"], primary);
-  writeFileSync(join(primary, "README.md"), "# linked worktree control test\n");
-  git(["add", "README.md"], primary);
-  git(["commit", "-m", "initial commit"], primary);
+  commitAll(primary, "# linked worktree control test");
   return primary;
 }
 
@@ -37,6 +32,16 @@ function createLinkedWorktree(primary: string, root: string): string {
   const linked = join(root, "linked");
   git(["worktree", "add", "-b", "feature/linked", linked, "HEAD"], primary);
   return linked;
+}
+
+/** Writes one file and commits it in an isolated repository. */
+function commitAll(dir: string, contents: string): void {
+  git(["config", "user.name", "Test Runner"], dir);
+  git(["config", "user.email", "test@example.com"], dir);
+  git(["config", "commit.gpgsign", "false"], dir);
+  writeFileSync(join(dir, "README.md"), `${contents}\n`);
+  git(["add", "README.md"], dir);
+  git(["commit", "-m", "initial commit"], dir);
 }
 
 /** Canonicalizes a path so symlinked temp roots compare equal. */
@@ -50,6 +55,79 @@ function withWorktreeFixture(run: (primary: string, linked: string) => void): vo
     const primary = createPrimaryCheckout(root);
     const linked = createLinkedWorktree(primary, root);
     run(primary, linked);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Creates a checkout whose Git directory lives outside the checkout.
+ *
+ * Git records no worktree for such a repository, so the shared root cannot be the checkout
+ * itself; both the checkout and its linked worktree must still name one shared location.
+ */
+function withSeparateGitDirFixture(
+  run: (work: string, linked: string, root: string) => void,
+): void {
+  const root = mkdtempSync(join(tmpdir(), "control-separate-git-dir-test-"));
+  try {
+    const work = join(root, "work");
+    const gitDir = join(root, "gitdir");
+    mkdirSync(work, { recursive: true });
+    git(["init", "-b", "main", `--separate-git-dir=${gitDir}`], work);
+    commitAll(work, "# separate git dir control test");
+    const linked = join(root, "linked");
+    git(["worktree", "add", "-b", "feature/linked", linked, "HEAD"], work);
+    run(work, linked, root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+/** Creates a bare repository with two worktrees; never touches the real operator repository. */
+function withBareRepositoryFixture(
+  run: (first: string, second: string, root: string) => void,
+): void {
+  const root = mkdtempSync(join(tmpdir(), "control-bare-test-"));
+  try {
+    const bare = join(root, "bare.git");
+    mkdirSync(bare, { recursive: true });
+    git(["init", "-b", "main", "--bare"], bare);
+    const first = join(root, "first");
+    const second = join(root, "second");
+    git(["--git-dir", bare, "worktree", "add", "-b", "feature/first", first], root);
+    git(["--git-dir", bare, "worktree", "add", "-b", "feature/second", second], root);
+    run(first, second, root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+/** Creates a superproject with a submodule checkout; never touches real repositories. */
+function withSubmoduleFixture(
+  run: (submodule: string, submoduleLinked: string, superproject: string, root: string) => void,
+): void {
+  const root = mkdtempSync(join(tmpdir(), "control-submodule-test-"));
+  try {
+    const superproject = join(root, "superproject");
+    mkdirSync(superproject, { recursive: true });
+    git(["init", "-b", "main"], superproject);
+    commitAll(superproject, "# superproject");
+
+    const child = join(root, "child");
+    mkdirSync(child, { recursive: true });
+    git(["init", "-b", "main"], child);
+    commitAll(child, "# child");
+
+    git(
+      ["-c", "protocol.file.allow=always", "submodule", "add", "-q", child, "child"],
+      superproject,
+    );
+    const submodule = join(superproject, "child");
+
+    const submoduleLinked = join(root, "submodule-linked");
+    git(["-C", submodule, "worktree", "add", "-b", "feature/linked", submoduleLinked], root);
+    run(submodule, submoduleLinked, superproject, root);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -83,61 +161,114 @@ describe("Shared operator brakes across linked Git worktrees (Issue #72)", () =>
     });
   });
 
-  test("AC1: a checkout whose Git directory lives elsewhere still resolves to its own checkout root", () => {
-    const root = mkdtempSync(join(tmpdir(), "control-separate-git-dir-test-"));
-    try {
-      // A separate Git directory keeps "<checkout>/.git" as a pointer file, so the parent of
-      // the Git directory is not a checkout at all.
-      const work = join(root, "work");
-      const gitDir = join(root, "gitdir");
-      mkdirSync(work, { recursive: true });
-      git(["init", "-b", "main", `--separate-git-dir=${gitDir}`], work);
-      git(["config", "user.name", "Test Runner"], work);
-      git(["config", "user.email", "test@example.com"], work);
-      git(["config", "commit.gpgsign", "false"], work);
-      writeFileSync(join(work, "README.md"), "# separate git dir control test\n");
-      git(["add", "README.md"], work);
-      git(["commit", "-m", "initial commit"], work);
+  test("AC1: a checkout whose Git directory lives elsewhere shares one brake root with its linked worktree", () => {
+    withSeparateGitDirFixture((work, linked, root) => {
+      const sharedFromWork = resolveSharedRoot(work);
+      const sharedFromLinked = resolveSharedRoot(linked);
 
-      expect(canonical(resolveSharedRoot(work))).toBe(canonical(work));
-      expect(resolveSharedRoot(work)).not.toContain(`${root}/gitdir`);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+      // The checkout and its linked worktree must name one shared brake location.
+      expect(canonical(sharedFromWork)).toBe(canonical(sharedFromLinked));
+
+      // The shared root must never be inside the Git directory, and must not be nested
+      // beneath the checkout the way an absolute common directory used to be.
+      expect(sharedFromWork).not.toContain(`${sep}gitdir${sep}`);
+      expect(sharedFromWork.startsWith(work + sep)).toBe(false);
+      expect(sharedFromWork.split(sep)).not.toContain(".git");
+      expect(canonical(sharedFromWork)).not.toBe(canonical(join(root, "gitdir")));
+    });
+  });
+
+  test("AC2: a brake set from either checkout of a separate Git directory is observed from the other", () => {
+    withSeparateGitDirFixture((work, linked) => {
+      const halted = applyControlAction(work, "halt");
+      expect(halted.halted).toBe(true);
+      expect(halted.active_brake).toBe("stop");
+
+      const fromLinked = readControlState(linked);
+      expect(fromLinked.halted).toBe(true);
+      expect(fromLinked.paused).toBe(false);
+      expect(fromLinked.active_brake).toBe("stop");
+
+      applyControlAction(linked, "pause");
+      const paused = readControlState(work);
+      expect(paused.halted).toBe(true);
+      expect(paused.paused).toBe(true);
+      expect(paused.active_brake).toBe("both");
+    });
+  });
+
+  test("AC1: the worktrees of a bare repository share one brake root", () => {
+    withBareRepositoryFixture((first, second) => {
+      const sharedFromFirst = resolveSharedRoot(first);
+      const sharedFromSecond = resolveSharedRoot(second);
+
+      expect(canonical(sharedFromFirst)).toBe(canonical(sharedFromSecond));
+      expect(sharedFromFirst.split(sep)).not.toContain(".git");
+
+      applyControlAction(first, "halt");
+      const fromSecond = readControlState(second);
+      expect(fromSecond.halted).toBe(true);
+      expect(fromSecond.active_brake).toBe("stop");
+    });
   });
 
   test("AC1: a submodule checkout resolves to its own checkout root, never inside a Git directory", () => {
-    const root = mkdtempSync(join(tmpdir(), "control-submodule-test-"));
-    try {
-      const superproject = join(root, "superproject");
-      mkdirSync(superproject, { recursive: true });
-      git(["init", "-b", "main"], superproject);
-      git(["config", "user.name", "Test Runner"], superproject);
-      git(["config", "user.email", "test@example.com"], superproject);
-      git(["config", "commit.gpgsign", "false"], superproject);
-      writeFileSync(join(superproject, "README.md"), "# superproject\n");
-      git(["add", "README.md"], superproject);
-      git(["commit", "-m", "initial commit"], superproject);
-
-      const child = join(root, "child");
-      mkdirSync(child, { recursive: true });
-      git(["init", "-b", "main"], child);
-      git(["config", "user.name", "Test Runner"], child);
-      git(["config", "user.email", "test@example.com"], child);
-      git(["config", "commit.gpgsign", "false"], child);
-      writeFileSync(join(child, "README.md"), "# child\n");
-      git(["add", "README.md"], child);
-      git(["commit", "-m", "initial commit"], child);
-
-      git(
-        ["-c", "protocol.file.allow=always", "submodule", "add", "-q", child, "child"],
-        superproject,
-      );
-      const submodule = join(superproject, "child");
-
+    withSubmoduleFixture((submodule) => {
       const shared = resolveSharedRoot(submodule);
       expect(canonical(shared)).toBe(canonical(submodule));
       expect(shared).not.toContain(`${sep}modules${sep}`);
+    });
+  });
+
+  test("AC1: a submodule checkout and its linked worktree share one brake root", () => {
+    withSubmoduleFixture((submodule, submoduleLinked) => {
+      const sharedFromSubmodule = resolveSharedRoot(submodule);
+      const sharedFromLinked = resolveSharedRoot(submoduleLinked);
+
+      expect(canonical(sharedFromSubmodule)).toBe(canonical(sharedFromLinked));
+      expect(canonical(sharedFromSubmodule)).toBe(canonical(submodule));
+
+      applyControlAction(submodule, "pause");
+      const fromLinked = readControlState(submoduleLinked);
+      expect(fromLinked.paused).toBe(true);
+      expect(fromLinked.halted).toBe(false);
+      expect(fromLinked.active_brake).toBe("pause");
+    });
+  });
+
+  test("invariant: a user-level core.worktree cannot redirect the shared brake root", () => {
+    withSeparateGitDirFixture((work, linked, root) => {
+      // A user-level "core.worktree" must never move the brake location of a repository.
+      const globalConfig = join(root, "global-gitconfig");
+      writeFileSync(globalConfig, `[core]\n\tworktree = ${join(root, "leaked")}\n`);
+      const previous = process.env.GIT_CONFIG_GLOBAL;
+      process.env.GIT_CONFIG_GLOBAL = globalConfig;
+      try {
+        const shared = resolveSharedRoot(work);
+        expect(shared).not.toContain("leaked");
+        expect(canonical(resolveSharedRoot(linked))).toBe(canonical(shared));
+      } finally {
+        if (previous === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+        else process.env.GIT_CONFIG_GLOBAL = previous;
+      }
+    });
+  });
+
+  test("AC1: a linked worktree inside the primary checkout's Git directory resolves to the primary checkout", () => {
+    const root = mkdtempSync(join(tmpdir(), "control-nested-worktree-test-"));
+    try {
+      // The factory keeps its own linked worktrees inside the primary checkout's Git
+      // directory, so the shared root must still be the primary checkout.
+      const primary = createPrimaryCheckout(root);
+      const linked = join(primary, ".git", "factory-local-loop", "worktrees", "linked");
+      mkdirSync(join(primary, ".git", "factory-local-loop", "worktrees"), { recursive: true });
+      git(["worktree", "add", "-b", "feature/linked", linked, "HEAD"], primary);
+
+      expect(canonical(resolveSharedRoot(linked))).toBe(canonical(primary));
+      expect(canonical(resolveSharedRoot(primary))).toBe(canonical(primary));
+
+      applyControlAction(primary, "halt");
+      expect(readControlState(linked).halted).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

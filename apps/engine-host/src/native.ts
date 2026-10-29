@@ -2,12 +2,13 @@ import {
   existsSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   statSync,
   writeFileSync,
   unlinkSync,
   mkdirSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import type {
@@ -359,17 +360,46 @@ function resolveGitCommonDir(repoRoot: string): string | null {
 }
 
 /**
- * Resolves the checkout that a Git directory owns, when the Git directory declares one.
+ * Lists the checkouts that share a Git directory.
  *
- * A submodule checkout keeps its Git directory inside the superproject
- * (".git/modules/<name>") and records the checkout it owns in "core.worktree", relative to
- * that Git directory. Reading it keeps shared brakes out of a Git directory.
+ * Git lists the primary checkout first, then the linked worktrees. Every checkout of a
+ * repository resolves the same Git directory, so this list is identical for all of them and
+ * can name one shared brake location.
  */
-function resolveGitWorkTree(commonDir: string): string | null {
+function listGitWorkTrees(commonDir: string): string[] {
   try {
     const output = execFileSync(
       "git",
-      ["--git-dir", commonDir, "config", "--get", "core.worktree"],
+      ["--git-dir", commonDir, "worktree", "list", "--porcelain"],
+      {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 5_000,
+      },
+    );
+    return output
+      .split("\n")
+      .filter((line) => line.startsWith("worktree "))
+      .map((line) => unquoteGitPath(line.slice("worktree ".length).trim()))
+      .filter((path) => path.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Reads the checkout a Git directory declares in its own configuration.
+ *
+ * A submodule checkout keeps its Git directory inside the superproject
+ * (".git/modules/<name>") and records the checkout it owns in "core.worktree", relative to
+ * that Git directory. Only the repository's own configuration is read: a user-level
+ * "core.worktree" must never redirect the shared brake location.
+ */
+function resolveConfiguredWorkTree(commonDir: string): string | null {
+  try {
+    const output = execFileSync(
+      "git",
+      ["--git-dir", commonDir, "config", "--get", "--local", "core.worktree"],
       {
         encoding: "utf-8",
         stdio: ["ignore", "pipe", "pipe"],
@@ -385,24 +415,123 @@ function resolveGitWorkTree(commonDir: string): string | null {
 }
 
 /**
+ * Reports whether a path is a checkout of the repository that owns a Git directory.
+ *
+ * A checkout holds a ".git" entry (a directory in the primary checkout, a pointer file in a
+ * linked worktree) and never lives inside the Git directory itself.
+ */
+function isCheckoutRoot(candidate: string, commonDir: string): boolean {
+  if (!candidate) return false;
+  if (candidate === commonDir) return false;
+  if (candidate.startsWith(commonDir + sep)) return false;
+  try {
+    if (!statSync(candidate).isDirectory()) return false;
+  } catch {
+    return false;
+  }
+  return existsSync(join(candidate, ".git"));
+}
+
+/**
+ * Reports whether a checkout is the primary checkout of a Git directory.
+ *
+ * The primary checkout is the one whose Git entry refers to the Git directory itself: the
+ * ".git" directory of an ordinary checkout, or a pointer file that names the Git directory.
+ * A linked worktree points into the Git directory instead ("<git-dir>/worktrees/<name>"),
+ * so it is never the primary checkout.
+ */
+function ownsCommonDir(candidate: string, commonDir: string): boolean {
+  if (!isCheckoutRoot(candidate, commonDir)) return false;
+  const pointer = join(candidate, ".git");
+  try {
+    const stats = statSync(pointer);
+    if (stats.isDirectory()) return canonicalPath(pointer) === canonicalPath(commonDir);
+    if (!stats.isFile()) return false;
+    const match = /^gitdir:\s*(.+)$/i.exec(readFileSync(pointer, "utf-8").trim());
+    if (!match) return false;
+    const target = resolve(candidate, match[1].trim());
+    return canonicalPath(target) === canonicalPath(commonDir);
+  } catch {
+    return false;
+  }
+}
+
+/** Reports whether a path lies inside a Git directory (".git"). */
+function isInsideGitDirectory(path: string): boolean {
+  let current = path;
+  for (;;) {
+    if (basename(current) === ".git") return true;
+    const parent = dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+}
+
+/** Canonicalizes a path so every checkout of a repository names one location. */
+function canonicalPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+/** Undoes the quoting Git applies to unusual paths in porcelain output. */
+function unquoteGitPath(value: string): string {
+  if (value.length < 2 || !value.startsWith('"') || !value.endsWith('"')) return value;
+  return value.slice(1, -1).replace(/\\(.)/g, (_match, char: string) => {
+    if (char === "n") return "\n";
+    if (char === "t") return "\t";
+    if (char === "r") return "\r";
+    return char;
+  });
+}
+
+/**
  * Resolves the shared factory root that operator brakes (STOP/PAUSE) live in.
  *
- * The shared root is the primary repository root: the checkout that owns the Git common
- * directory. A linked worktree and the primary checkout therefore agree on one shared root,
- * so a brake set in either place is observed from the other.
+ * The shared root is the primary checkout of the repository that owns the checkout. Every
+ * checkout of a repository resolves the same Git common directory, so the primary checkout
+ * and its linked worktrees agree on one brake location and a brake set in either place is
+ * observed from the other.
  *
- * An ordinary checkout keeps its Git directory inside the primary checkout, so the primary
- * root is the parent of the common directory. A checkout whose Git directory lives elsewhere
- * (a submodule, or a separate Git directory) declares the checkout it owns instead, and a
- * shared brake must never land inside a Git directory. Non-Git directories keep their own
- * path as the shared root.
+ * The primary checkout is found in this order:
+ *   1. the checkout that contains the Git directory ("<checkout>/.git"), the ordinary
+ *      layout of a repository and the one the factory itself uses;
+ *   2. the checkout the Git directory declares in its own configuration, which is how a
+ *      submodule names the checkout it owns;
+ *   3. the checkout Git lists for the Git directory whose Git entry names that Git
+ *      directory, which is the primary checkout of any other layout.
+ *
+ * A Git directory that no checkout owns (a bare repository, or a Git directory that was
+ * detached from its checkout) keeps the shared brakes beside the Git directory, so every
+ * checkout of that repository still names one brake location. A shared brake must never
+ * land inside a Git directory. Non-Git directories keep their own path as the shared root.
  */
 export function resolveSharedRoot(repoRoot: string): string {
   const commonDir = resolveGitCommonDir(repoRoot);
   if (!commonDir) return repoRoot;
-  const primaryRoot = dirname(commonDir);
-  if (existsSync(join(primaryRoot, ".git"))) return primaryRoot;
-  return resolveGitWorkTree(commonDir) ?? repoRoot;
+  const shared = resolveSharedRootFromCommonDir(commonDir);
+  return shared ? canonicalPath(shared) : repoRoot;
+}
+
+function resolveSharedRootFromCommonDir(commonDir: string): string | null {
+  // 1. The checkout that contains the Git directory ("<checkout>/.git").
+  const parent = dirname(commonDir);
+  if (basename(commonDir) === ".git" && existsSync(commonDir)) return parent;
+
+  // 2. The checkout the Git directory declares in its own configuration (a submodule).
+  const configured = resolveConfiguredWorkTree(commonDir);
+  if (configured && ownsCommonDir(configured, commonDir)) return configured;
+
+  // 3. The primary checkout Git lists for the Git directory.
+  for (const workTree of listGitWorkTrees(commonDir)) {
+    if (ownsCommonDir(workTree, commonDir)) return workTree;
+  }
+
+  // 4. No checkout owns this Git directory: keep the shared brakes beside the Git
+  //    directory, never inside it.
+  return isInsideGitDirectory(parent) ? null : parent;
 }
 
 export function readControlState(repoRoot: string): ControlState {
