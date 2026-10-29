@@ -23,7 +23,8 @@ export const helpEntries: readonly HelpEntry[] = [
   {
     command: "setup",
     spec: "setup [--yes] [options]",
-    description: "Interactive onboarding wizard (detects harnesses, configures tiers, laps & checks)",
+    description:
+      "Interactive onboarding wizard (detects harnesses, configures tiers, laps & checks)",
   },
   {
     command: "config",
@@ -87,8 +88,8 @@ export const helpEntries: readonly HelpEntry[] = [
   },
   {
     command: "project",
-    spec: "project <list|get|register|remove>",
-    description: "Manage registered multi-repo projects in console database",
+    spec: "project <list|get|register|remove|monitoring>",
+    description: "Manage projects through the selected factory API",
   },
   {
     command: "command",
@@ -116,6 +117,36 @@ export const orderedFlags: readonly FlagHelp[] = [
     spec: "--yes, -y",
     description: "Accept detected defaults non-interactively during 'setup'",
     commands: ["setup"],
+  },
+  {
+    spec: "--factory-url <url>",
+    description: "Factory API origin (FACTORY_URL; default: http://127.0.0.1:3000)",
+    commands: ["setup", "project"],
+  },
+  {
+    spec: "--factory-token <token>",
+    description: "Operator token (FACTORY_TOKEN or FACTORY_HOST_TOKEN)",
+    commands: ["setup", "project"],
+  },
+  {
+    spec: "--local-only",
+    description: "Save setup locally without enrolling in the factory",
+    commands: ["setup"],
+  },
+  {
+    spec: "--repo <owner/repository>",
+    description: "Register a GitHub clone in factory-managed storage; sends no local path",
+    commands: ["project"],
+  },
+  {
+    spec: "--path <path>",
+    description: "Register a local checkout (default: cwd); requires a loopback factory URL",
+    commands: ["project"],
+  },
+  {
+    spec: "--name <name>",
+    description: "Registered project display name (default: GitHub repository name)",
+    commands: ["project"],
   },
   {
     spec: "--provider <id>",
@@ -200,7 +231,7 @@ export const orderedFlags: readonly FlagHelp[] = [
   {
     spec: "--state-dir <path>",
     description: "Override runtime state directory (default: .factory/state)",
-    commands: ["serve", "backend", "engine", "project", "command"],
+    commands: ["serve", "backend", "engine", "command"],
   },
   {
     spec: "--web-dir <path>",

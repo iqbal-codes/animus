@@ -19,6 +19,7 @@ import {
   promotionResultSchema,
   projectSchema,
   projectListSchema,
+  monitoringStatusSchema,
   projectRegistrationSchema,
   projectRetargetSchema,
   deregisterResultSchema,
@@ -38,6 +39,9 @@ import { configuration, hostOrigin } from "./config";
 import { IntakeService, handleProjectIntakeRoute } from "./intake";
 import { initializeDatabase, ProjectRegistryService, ProjectRegistryError } from "./registry";
 import { CommandService, CommandError } from "./command";
+import { ProjectOnboardingService } from "./registry/onboarding";
+import { RegisteredProjectMonitor } from "./monitor/service";
+import { loadMonitorRuntime } from "./monitor/runtime";
 import { SpecCoordinatorService, handleProjectCoordinationRoute } from "./coordination";
 import { EvidenceService, handleProjectEvidenceRoute } from "./evidence";
 import { HarnessService, handleHarnessRoute } from "./harness";
@@ -63,6 +67,12 @@ try {
     }
     return registryServiceInstance;
   };
+  const onboardingService = new ProjectOnboardingService(getRegistryService());
+  const interval = process.env.FACTORY_MONITOR_INTERVAL_MS;
+  const monitor = new RegisteredProjectMonitor(getRegistryService(), {
+    runtime: await loadMonitorRuntime(),
+    intervalMs: interval === undefined ? undefined : Number(interval),
+  });
   let commandServiceInstance: CommandService | null = null;
   const getCommandService = (): CommandService => {
     if (!commandServiceInstance) {
@@ -716,6 +726,10 @@ try {
         return Response.json(commandRecordSchema.parse(cmd));
       }
 
+      if (path === "/api/v1/monitoring" && request.method === "GET") {
+        return Response.json(monitoringStatusSchema.parse(monitor.status()));
+      }
+
       if (path === "/api/v1/projects") {
         const registryService = getRegistryService();
         if (request.method === "GET") {
@@ -734,13 +748,19 @@ try {
             return Response.json({ error: "invalid_payload" }, { status: 400 });
           }
           try {
-            const project = await registryService.registerProject(parsed.data);
+            const project = await onboardingService.register(parsed.data);
             return Response.json(projectSchema.parse(project), { status: 201 });
           } catch (err) {
             if (err instanceof ProjectRegistryError) {
-              return Response.json({ error: err.code }, { status: 400 });
+              return Response.json({ error: err.code, message: err.message }, { status: 400 });
             }
-            return Response.json({ error: "invalid_payload" }, { status: 400 });
+            return Response.json(
+              {
+                error: "project_checkout_invalid",
+                message: err instanceof Error ? err.message : String(err),
+              },
+              { status: 400 },
+            );
           }
         }
         return Response.json(
@@ -1274,10 +1294,14 @@ try {
     },
   });
 
+  monitor.start();
   console.log(JSON.stringify({ url: server.url.origin, runtime: `Bun ${Bun.version}` }));
   for (const signal of ["SIGTERM", "SIGINT"] as const)
     process.on(signal, () => {
-      void server.stop(true).then(() => process.exit(0));
+      void Promise.all([server.stop(true), monitor.stop()]).then(() => {
+        sharedDb?.close();
+        process.exit(0);
+      });
     });
 } catch {
   console.error(

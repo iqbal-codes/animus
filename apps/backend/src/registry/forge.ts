@@ -1,4 +1,7 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 
@@ -47,7 +50,15 @@ export interface CreatePullRequestInput {
   draft?: boolean;
 }
 
+export interface ForgeLabel {
+  name: string;
+  color: string;
+  description: string;
+}
+
 export interface ForgeAdapter {
+  listLabels?(repo: string): Promise<ForgeLabel[]>;
+  createLabel?(repo: string, label: ForgeLabel): Promise<void>;
   getRepository(repo: string): Promise<ForgeRepoInfo>;
   createRepository(repo: string, isPrivate?: boolean): Promise<ForgeRepoInfo>;
   cloneRepository(repo: string, targetPath: string): Promise<void>;
@@ -129,8 +140,9 @@ export function parseGitRemote(checkoutPath: string): string | null {
   }
   try {
     const config = readFileSync(configPath, "utf-8");
-    const match = config.match(
-      /url\s*=\s*(?:git@github\.com:|https:\/\/github\.com\/)([^\s]+?)(?:\.git)?\s*$/m,
+    const origin = config.match(/^\s*\[remote\s+"origin"\]\s*\r?\n([^[]*)/m)?.[1];
+    const match = origin?.match(
+      /^\s*url\s*=\s*(?:git@github\.com:|https:\/\/github\.com\/)([^\s]+?)(?:\.git)?\s*$/m,
     );
     if (match && match[1]) {
       return match[1].replace(/\.git$/, "");
@@ -142,65 +154,70 @@ export function parseGitRemote(checkoutPath: string): string | null {
 }
 
 export class SystemForgeAdapter implements IssueForgeAdapter {
-  async getRepository(repo: string): Promise<ForgeRepoInfo> {
-    const cleanRepo = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+  async listLabels(repo: string): Promise<ForgeLabel[]> {
+    const { stdout } = await execFileAsync(
+      "gh",
+      ["api", `repos/${repo}/labels`, "--paginate", "--slurp"],
+      {
+        encoding: "utf-8",
+        timeout: 30_000,
+      },
+    );
+    return JSON.parse(stdout).flat();
+  }
+
+  async createLabel(repo: string, label: ForgeLabel): Promise<void> {
     try {
-      const output = execFileSync(
+      await execFileAsync(
         "gh",
-        ["api", `repos/${cleanRepo}`, "--jq", "{id: .id, nameWithOwner: .full_name}"],
+        [
+          "api",
+          `repos/${repo}/labels`,
+          "--method",
+          "POST",
+          "-f",
+          `name=${label.name}`,
+          "-f",
+          `color=${label.color}`,
+          "-f",
+          `description=${label.description}`,
+        ],
         {
-          encoding: "utf-8",
-          stdio: ["ignore", "pipe", "pipe"],
+          timeout: 30_000,
         },
       );
-      const data = JSON.parse(output);
-      if (typeof data.id === "number" && data.id > 0) {
-        return {
-          id: data.id,
-          repoName: data.nameWithOwner || cleanRepo,
-        };
-      }
-    } catch {
-      // Fallback to gh repo view
+    } catch (error) {
+      // Another registration may have created the label between list and create.
+      if (
+        !(await this.listLabels(repo)).some(
+          (existing) => existing.name.toLowerCase() === label.name.toLowerCase(),
+        )
+      )
+        throw error;
     }
+  }
 
-    try {
-      const output = execFileSync("gh", ["repo", "view", cleanRepo, "--json", "id,nameWithOwner"], {
-        encoding: "utf-8",
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      const data = JSON.parse(output);
-      const rawId = data.id;
-      let numId: number;
-      if (typeof rawId === "number") {
-        numId = rawId;
-      } else {
-        const digits = String(rawId).replace(/\D/g, "");
-        if (digits.length > 0) {
-          numId = parseInt(digits.slice(0, 9), 10);
-        } else {
-          let hash = 0;
-          for (let i = 0; i < String(rawId).length; i++) {
-            hash = ((hash << 5) - hash + String(rawId).charCodeAt(i)) | 0;
-          }
-          numId = Math.abs(hash) || 1;
-        }
-      }
-      return {
-        id: numId,
-        repoName: data.nameWithOwner || cleanRepo,
-      };
-    } catch (error: any) {
-      throw new Error(`Failed to query repository ${repo}: ${error?.message || String(error)}`);
-    }
+  async getRepository(repo: string): Promise<ForgeRepoInfo> {
+    const cleanRepo = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+    if (!/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(cleanRepo))
+      throw new Error("Invalid GitHub repository name");
+    const { stdout } = await execFileAsync(
+      "gh",
+      ["api", `repos/${cleanRepo}`, "--jq", "{id: .id, nameWithOwner: .full_name}"],
+      { encoding: "utf-8", timeout: 30_000 },
+    );
+    const data = JSON.parse(stdout);
+    if (!Number.isSafeInteger(data.id) || data.id <= 0 || typeof data.nameWithOwner !== "string")
+      throw new Error("GitHub repository identity unavailable");
+    return { id: data.id, repoName: data.nameWithOwner };
   }
 
   async createRepository(repo: string, isPrivate = true): Promise<ForgeRepoInfo> {
     const visibilityFlag = isPrivate ? "--private" : "--public";
     try {
-      execFileSync("gh", ["repo", "create", repo, visibilityFlag], {
+      await execFileAsync("gh", ["repo", "create", repo, visibilityFlag], {
         encoding: "utf-8",
-        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 30_000,
       });
       return await this.getRepository(repo);
     } catch (error: any) {
@@ -210,9 +227,9 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
 
   async cloneRepository(repo: string, targetPath: string): Promise<void> {
     try {
-      execFileSync("gh", ["repo", "clone", repo, targetPath], {
+      await execFileAsync("gh", ["repo", "clone", repo, targetPath], {
         encoding: "utf-8",
-        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 120_000,
       });
     } catch (error: any) {
       throw new Error(`Failed to clone repository ${repo}: ${error?.message || String(error)}`);
@@ -494,6 +511,30 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
   private repos = new Map<string, ForgeRepoInfo>();
   private issuesByRepo = new Map<string, Map<number, ForgeIssue>>();
   private pullRequestsByRepo = new Map<string, Map<number, ForgePullRequest>>();
+  private labelsByRepo = new Map<string, Map<string, ForgeLabel>>();
+  public failNextLabel = false;
+
+  async listLabels(repo: string): Promise<ForgeLabel[]> {
+    await this.getRepository(repo);
+    return [...(this.labelsByRepo.get(repo.toLowerCase())?.values() ?? [])].map((label) => ({
+      ...label,
+    }));
+  }
+
+  async createLabel(repo: string, label: ForgeLabel): Promise<void> {
+    await this.getRepository(repo);
+    if (this.failNextLabel) {
+      this.failNextLabel = false;
+      throw new Error("Synthetic forge label creation failed");
+    }
+    let labels = this.labelsByRepo.get(repo.toLowerCase());
+    if (!labels) {
+      labels = new Map();
+      this.labelsByRepo.set(repo.toLowerCase(), labels);
+    }
+    if (!labels.has(label.name.toLowerCase())) labels.set(label.name.toLowerCase(), { ...label });
+  }
+
   private nextId = 1000;
   public failNextClone = false;
   public failNextCreate = false;

@@ -2,7 +2,13 @@ import { join, resolve } from "node:path";
 import { applyControlAction, readControlState } from "../../../apps/engine-host/src/native";
 import { PromotionService } from "../../../apps/engine-host/src/promotion";
 import { IntakeService } from "../../../apps/backend/src/intake";
-import { initializeDatabase, ProjectRegistryService } from "../../../apps/backend/src/registry";
+import { initializeDatabase } from "../../../apps/backend/src/registry";
+import {
+  createRegistrationClient,
+  registerRepository,
+  registrationErrorMessage,
+  type FactoryConnectionOptions,
+} from "./onboarding-registration";
 import { CommandService } from "../../../apps/backend/src/command";
 import type { ControlAction } from "@labq/contracts/operator";
 
@@ -72,7 +78,9 @@ export async function runPromotionCommand(opts: {
         console.log(`  Candidate Freeze:   ${status.candidate_freeze}`);
         console.log(`  Ready to Promote:   ${status.ready_to_promote}`);
         if (status.existing_pr) {
-          console.log(`  Existing PR:        #${status.existing_pr.number} (${status.existing_pr.url})`);
+          console.log(
+            `  Existing PR:        #${status.existing_pr.number} (${status.existing_pr.url})`,
+          );
         }
       }
       return 0;
@@ -162,24 +170,40 @@ export async function runIntakeCommand(opts: {
   }
 }
 
-export async function runProjectCommand(opts: {
-  subcommand?: string;
-  positionals: string[];
-  repoRoot: string;
-  stateDir?: string;
-  name?: string;
-  path?: string;
-  json?: boolean;
-}): Promise<number> {
+export async function runProjectCommand(
+  opts: FactoryConnectionOptions & {
+    subcommand?: string;
+    positionals: string[];
+    repoRoot: string;
+    stateDir?: string;
+    name?: string;
+    path?: string;
+    repo?: string;
+    json?: boolean;
+  },
+): Promise<number> {
   const sub = opts.subcommand ?? "list";
-  const stateDir = opts.stateDir ?? join(opts.repoRoot, ".factory/state");
-  const dbPath = join(stateDir, "console.db");
-  const db = initializeDatabase(dbPath);
-  const service = new ProjectRegistryService(db);
 
   try {
+    const service = createRegistrationClient(opts);
+    if (sub === "monitoring") {
+      const status = await service.monitoring();
+      if (opts.json) console.log(JSON.stringify(status, null, 2));
+      else {
+        console.log(
+          `Factory monitoring: ${status.enabled ? "enabled" : "disabled"}${status.stopping ? " (stopping)" : ""}`,
+        );
+        if (status.error) console.log(`  Error: ${status.error}`);
+        for (const project of status.projects) {
+          console.log(`  ${project.project_id} [${project.state}] ${project.reason}`);
+          if (project.error) console.log(`    Error: ${project.error}`);
+          if (project.next_check_at) console.log(`    Next check: ${project.next_check_at}`);
+        }
+      }
+      return 0;
+    }
     if (sub === "list") {
-      const projects = service.listProjects();
+      const projects = await service.projects();
       if (opts.json) {
         console.log(JSON.stringify(projects, null, 2));
       } else if (projects.length === 0) {
@@ -196,7 +220,7 @@ export async function runProjectCommand(opts: {
     if (sub === "get") {
       const id = opts.positionals[2];
       if (!id) throw new Error("Usage: factory project get <project-id>");
-      const proj = service.getProject(id);
+      const proj = await service.project(id);
       if (opts.json) {
         console.log(JSON.stringify(proj, null, 2));
       } else {
@@ -211,18 +235,18 @@ export async function runProjectCommand(opts: {
     }
 
     if (sub === "register") {
-      const checkoutPath = resolve(opts.path ?? opts.positionals[2] ?? opts.repoRoot);
-      const projName = opts.name ?? checkoutPath.split("/").filter(Boolean).pop() ?? "project";
-      const created = await service.registerProject({
-        name: projName,
-        method: "local_checkout",
-        checkout_path: checkoutPath,
+      if (opts.repo && opts.positionals[2]) {
+        throw new Error("Do not combine --repo with a positional local checkout path.");
+      }
+      const { project: created, status } = await registerRepository({
+        ...opts,
+        path: opts.path ?? opts.positionals[2],
       });
       if (opts.json) {
         console.log(JSON.stringify(created, null, 2));
       } else {
         console.log(
-          `Registered project ${created.id} (${created.name}) -> ${created.checkout_path}`,
+          `${status === "existing" ? "Already registered" : "Registered"} project ${created.id} (${created.name}) -> ${created.checkout_path}`,
         );
       }
       return 0;
@@ -241,17 +265,13 @@ export async function runProjectCommand(opts: {
     }
 
     throw new Error(
-      `Unknown project subcommand: ${sub}. Expected list, get, register, or remove.`,
+      `Unknown project subcommand: ${sub}. Expected list, get, register, remove, or monitoring.`,
     );
-  } catch (err: any) {
-    const msg = err?.message ?? String(err);
+  } catch (err: unknown) {
+    const msg = registrationErrorMessage(err);
     if (opts.json) console.log(JSON.stringify({ ok: false, error: msg }));
     else console.error(`Error: ${msg}`);
     return 1;
-  } finally {
-    try {
-      db.close();
-    } catch {}
   }
 }
 

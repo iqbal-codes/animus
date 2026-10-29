@@ -41,7 +41,11 @@ afterEach(async () => {
   );
   for (const adapter of adapters.splice(0)) await adapter.stop(true);
   for (const state of states.splice(0)) {
-    expect(await readdir(state)).toEqual([]);
+    expect(
+      (await readdir(state)).filter(
+        (entry) => !["console.db", "console.db-wal", "console.db-shm"].includes(entry),
+      ),
+    ).toEqual([]);
     await rm(state, { recursive: true });
   }
   for (const outcome of outcomes) if (outcome.status === "rejected") throw outcome.reason;
@@ -61,6 +65,7 @@ async function start(
       env: {
         ...process.env,
         FACTORY_RUNTIME_STATE: state,
+        FACTORY_STATE_DIR: state,
         FACTORY_RUNTIME_CANDIDATE: "  candidate-é\n",
         FACTORY_HOST_TOKEN: token,
         ...env,

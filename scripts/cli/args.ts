@@ -14,6 +14,9 @@ export interface ParsedCliArgs {
     port?: string;
     "engine-port"?: string;
     "remote-access"?: boolean;
+    "factory-url"?: string;
+    "factory-token"?: string;
+    "local-only"?: boolean;
     "state-dir"?: string;
     "web-dir"?: string;
     issue?: string;
@@ -70,6 +73,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       port: { type: "string", short: "p" },
       "engine-port": { type: "string" },
       "remote-access": { type: "boolean", default: false },
+      "factory-url": { type: "string" },
+      "factory-token": { type: "string" },
+      "local-only": { type: "boolean", default: false },
       "state-dir": { type: "string" },
       "web-dir": { type: "string" },
       issue: { type: "string", short: "i" },
