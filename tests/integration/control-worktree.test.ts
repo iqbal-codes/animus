@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import {
   applyControlAction,
   launchNativeLap,
@@ -71,6 +71,76 @@ describe("Shared operator brakes across linked Git worktrees (Issue #72)", () =>
       expect(canonical(resolveSharedRoot(linked))).toBe(canonical(primary));
       expect(canonical(resolveSharedRoot(primary))).toBe(canonical(primary));
     });
+  });
+
+  test("invariant: the shared root is a checkout root and never a path inside a Git directory", () => {
+    withWorktreeFixture((primary, linked) => {
+      for (const root of [primary, linked]) {
+        const shared = resolveSharedRoot(root);
+        expect(canonical(shared)).toBe(canonical(primary));
+        expect(shared.split(sep)).not.toContain(".git");
+      }
+    });
+  });
+
+  test("AC1: a checkout whose Git directory lives elsewhere still resolves to its own checkout root", () => {
+    const root = mkdtempSync(join(tmpdir(), "control-separate-git-dir-test-"));
+    try {
+      // A separate Git directory keeps "<checkout>/.git" as a pointer file, so the parent of
+      // the Git directory is not a checkout at all.
+      const work = join(root, "work");
+      const gitDir = join(root, "gitdir");
+      mkdirSync(work, { recursive: true });
+      git(["init", "-b", "main", `--separate-git-dir=${gitDir}`], work);
+      git(["config", "user.name", "Test Runner"], work);
+      git(["config", "user.email", "test@example.com"], work);
+      git(["config", "commit.gpgsign", "false"], work);
+      writeFileSync(join(work, "README.md"), "# separate git dir control test\n");
+      git(["add", "README.md"], work);
+      git(["commit", "-m", "initial commit"], work);
+
+      expect(canonical(resolveSharedRoot(work))).toBe(canonical(work));
+      expect(resolveSharedRoot(work)).not.toContain(`${root}/gitdir`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("AC1: a submodule checkout resolves to its own checkout root, never inside a Git directory", () => {
+    const root = mkdtempSync(join(tmpdir(), "control-submodule-test-"));
+    try {
+      const superproject = join(root, "superproject");
+      mkdirSync(superproject, { recursive: true });
+      git(["init", "-b", "main"], superproject);
+      git(["config", "user.name", "Test Runner"], superproject);
+      git(["config", "user.email", "test@example.com"], superproject);
+      git(["config", "commit.gpgsign", "false"], superproject);
+      writeFileSync(join(superproject, "README.md"), "# superproject\n");
+      git(["add", "README.md"], superproject);
+      git(["commit", "-m", "initial commit"], superproject);
+
+      const child = join(root, "child");
+      mkdirSync(child, { recursive: true });
+      git(["init", "-b", "main"], child);
+      git(["config", "user.name", "Test Runner"], child);
+      git(["config", "user.email", "test@example.com"], child);
+      git(["config", "commit.gpgsign", "false"], child);
+      writeFileSync(join(child, "README.md"), "# child\n");
+      git(["add", "README.md"], child);
+      git(["commit", "-m", "initial commit"], child);
+
+      git(
+        ["-c", "protocol.file.allow=always", "submodule", "add", "-q", child, "child"],
+        superproject,
+      );
+      const submodule = join(superproject, "child");
+
+      const shared = resolveSharedRoot(submodule);
+      expect(canonical(shared)).toBe(canonical(submodule));
+      expect(shared).not.toContain(`${sep}modules${sep}`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("invariant: a non-Git directory keeps its own path as the shared root", () => {

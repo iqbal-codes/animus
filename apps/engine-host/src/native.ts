@@ -359,17 +359,50 @@ function resolveGitCommonDir(repoRoot: string): string | null {
 }
 
 /**
+ * Resolves the checkout that a Git directory owns, when the Git directory declares one.
+ *
+ * A submodule checkout keeps its Git directory inside the superproject
+ * (".git/modules/<name>") and records the checkout it owns in "core.worktree", relative to
+ * that Git directory. Reading it keeps shared brakes out of a Git directory.
+ */
+function resolveGitWorkTree(commonDir: string): string | null {
+  try {
+    const output = execFileSync(
+      "git",
+      ["--git-dir", commonDir, "config", "--get", "core.worktree"],
+      {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 5_000,
+      },
+    );
+    const workTree = output.trim();
+    if (!workTree) return null;
+    return resolve(commonDir, workTree);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resolves the shared factory root that operator brakes (STOP/PAUSE) live in.
  *
- * The shared root is the primary repository root, which is the parent of the Git common
+ * The shared root is the primary repository root: the checkout that owns the Git common
  * directory. A linked worktree and the primary checkout therefore agree on one shared root,
- * so a brake set in either place is observed from the other. Non-Git directories keep their
- * own path as the shared root.
+ * so a brake set in either place is observed from the other.
+ *
+ * An ordinary checkout keeps its Git directory inside the primary checkout, so the primary
+ * root is the parent of the common directory. A checkout whose Git directory lives elsewhere
+ * (a submodule, or a separate Git directory) declares the checkout it owns instead, and a
+ * shared brake must never land inside a Git directory. Non-Git directories keep their own
+ * path as the shared root.
  */
 export function resolveSharedRoot(repoRoot: string): string {
   const commonDir = resolveGitCommonDir(repoRoot);
   if (!commonDir) return repoRoot;
-  return dirname(commonDir);
+  const primaryRoot = dirname(commonDir);
+  if (existsSync(join(primaryRoot, ".git"))) return primaryRoot;
+  return resolveGitWorkTree(commonDir) ?? repoRoot;
 }
 
 export function readControlState(repoRoot: string): ControlState {

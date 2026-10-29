@@ -225,7 +225,9 @@ verbatim. As with build identity, do not deliberately use secrets as identifiers
 - Shell metacharacters in `specification` remain literal message text; arguments
   are passed directly to the engine without shell interpolation.
 - Before launch, the service verifies the local launch brake (`.factory/STOP` under
-  the shared repository root). If present, submission returns HTTP 409
+  the shared repository root). The shared repository root is the primary checkout that
+  owns the repository's Git common directory, so a checkout and its linked worktrees
+  read and write the same brake file. If present, submission returns HTTP 409
   `{"error": "launch_brake_set"}` and creates zero runs. Application code never
   removes the STOP file.
 - Valid submissions generate an isolated Git worktree branch (`archon/lap-...`)

@@ -48,7 +48,7 @@ describe("Repository-wide Task, Checker, and Cache Correctness", () => {
     // Verify non-cacheable behavior for live execution tasks
     expect(viteConfig).toContain('"neutral-suite": { command: "vp test run", cache: false }');
     expect(viteConfig).toContain(
-      '"bun-suite": { command: "bun test tests/integration/health.bun.test.ts", cache: false }',
+      '"bun-suite": {\n        command:\n          "bun test tests/integration/health.bun.test.ts tests/integration/control-worktree.bun.test.ts",\n        cache: false,\n      }',
     );
     expect(viteConfig).toContain(
       '"browser-suite": {\n        command:\n          "node node_modules/@playwright/test/cli.js test --config tests/integration/playwright.config.ts",\n        dependsOn: ["web-artifacts"],\n        cache: false,\n      }',

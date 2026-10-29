@@ -81,7 +81,11 @@ export default defineConfig({
   run: {
     tasks: {
       "neutral-suite": { command: "vp test run", cache: false },
-      "bun-suite": { command: "bun test tests/integration/health.bun.test.ts", cache: false },
+      "bun-suite": {
+        command:
+          "bun test tests/integration/health.bun.test.ts tests/integration/control-worktree.bun.test.ts",
+        cache: false,
+      },
       "web-artifacts": { command: "node scripts/health/build-and-inspect.mjs", cache: false },
       "browser-suite": {
         command:
