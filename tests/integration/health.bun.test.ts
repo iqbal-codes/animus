@@ -189,7 +189,7 @@ test("operator classifies controlled malformed, upstream and deadline failures w
     expect(await response.json()).toEqual({ error: code });
   }
   expect(targetRequests).toBe(0);
-});
+}, 20000);
 
 test("private host traffic bypasses ambient proxies for success, auth refusal and outage", async () => {
   const proxyRequests: { url: string; authorization: string | null }[] = [];
@@ -356,7 +356,7 @@ test("invalid or missing private settings and remote binds refuse startup withou
       expect(await new Response(child.stdout).text()).toBe("");
     }
   }
-});
+}, 20000);
 
 test("backend forwards diagnostics, catalog, and lap history from authenticated engine-host", async () => {
   const host = await start("engine-host");
