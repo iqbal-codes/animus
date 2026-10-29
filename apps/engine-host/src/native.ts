@@ -7,7 +7,8 @@ import {
   unlinkSync,
   mkdirSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import type {
   Diagnostics,
@@ -334,17 +335,41 @@ export function launchNativeLap(repoRoot: string, specification: string): Launch
   }
 }
 
-export function resolveSharedRoot(repoRoot: string): string {
+/**
+ * Resolves the absolute Git common directory for a checkout.
+ *
+ * Git reports the common directory relative to the current checkout (".git" in a primary
+ * checkout) but absolute in a linked worktree, where it points at the primary checkout's
+ * Git directory. Both forms must resolve to the same location.
+ */
+function resolveGitCommonDir(repoRoot: string): string | null {
   try {
-    const res = Bun.spawnSync(["git", "rev-parse", "--git-common-dir"], { cwd: repoRoot });
-    if (res.exitCode === 0) {
-      const common = res.stdout.toString().trim();
-      if (common) {
-        return join(repoRoot, common, "..");
-      }
-    }
-  } catch {}
-  return repoRoot;
+    const output = execFileSync("git", ["rev-parse", "--git-common-dir"], {
+      cwd: repoRoot,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 5_000,
+    });
+    const common = output.trim();
+    if (!common) return null;
+    return isAbsolute(common) ? resolve(common) : resolve(repoRoot, common);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolves the shared factory root that operator brakes (STOP/PAUSE) live in.
+ *
+ * The shared root is the primary repository root, which is the parent of the Git common
+ * directory. A linked worktree and the primary checkout therefore agree on one shared root,
+ * so a brake set in either place is observed from the other. Non-Git directories keep their
+ * own path as the shared root.
+ */
+export function resolveSharedRoot(repoRoot: string): string {
+  const commonDir = resolveGitCommonDir(repoRoot);
+  if (!commonDir) return repoRoot;
+  return dirname(commonDir);
 }
 
 export function readControlState(repoRoot: string): ControlState {
