@@ -40,6 +40,7 @@ import { initializeDatabase, ProjectRegistryService, ProjectRegistryError } from
 import { CommandService, CommandError } from "./command";
 import { SpecCoordinatorService, handleProjectCoordinationRoute } from "./coordination";
 import { EvidenceService, handleProjectEvidenceRoute } from "./evidence";
+import { HarnessService, handleHarnessRoute } from "./harness";
 import { validateCsrfProtection, authenticateOperatorRequest } from "./security";
 import { handleStaticWebRoute } from "./web-static";
 import { join } from "node:path";
@@ -49,6 +50,7 @@ try {
   const config = configuration();
   const origin = hostOrigin();
   const intakeService = new IntakeService();
+  const harnessService = new HarnessService();
   let sharedDb: DatabaseSync | null = null;
   const getDb = (): DatabaseSync => {
     if (!sharedDb) {
@@ -1218,6 +1220,11 @@ try {
             return Response.json(commandRecordSchema.parse(cmd));
           }
         }
+      }
+
+      if (path.startsWith("/api/v1/harness/") || path.startsWith("/api/harness/")) {
+        const harnessRes = await handleHarnessRoute(request, path, harnessService);
+        if (harnessRes) return harnessRes;
       }
 
       const webDir =

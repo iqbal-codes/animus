@@ -948,3 +948,39 @@ export const wsEventSchema = z.object({
   payload: z.record(z.string(), z.unknown()),
 });
 export type WsEvent = z.infer<typeof wsEventSchema>;
+
+// Post-Loop Self-Improving Harness Schemas
+export const harnessLessonSchema = z.object({
+  id: z.string(),
+  topic: z.string(),
+  trigger_patterns: z.array(z.string()),
+  rule: z.string(),
+  evidence: z.string(),
+  vetoed: z.boolean().default(false),
+  occurrence_count: z.number().int().positive().optional().default(1),
+  created_at: z.string(),
+});
+export type HarnessLesson = z.infer<typeof harnessLessonSchema>;
+
+export const harnessLessonsResponseSchema = z.object({
+  safe_mode: z.boolean(),
+  lessons: z.array(harnessLessonSchema),
+});
+export type HarnessLessonsResponse = z.infer<typeof harnessLessonsResponseSchema>;
+
+export const harnessToolsResponseSchema = z.object({
+  tools: z.record(z.string(), z.string()),
+});
+export type HarnessToolsResponse = z.infer<typeof harnessToolsResponseSchema>;
+
+export const harnessVetoSubmissionSchema = z.object({
+  id: z.string().min(1),
+});
+export type HarnessVetoSubmission = z.infer<typeof harnessVetoSubmissionSchema>;
+
+export const harnessVetoResultSchema = z.object({
+  ok: z.boolean(),
+  id: z.string(),
+  vetoed: z.boolean(),
+});
+export type HarnessVetoResult = z.infer<typeof harnessVetoResultSchema>;

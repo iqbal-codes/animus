@@ -164,6 +164,9 @@ export interface BuildProviderArgvOptions {
   effort?: EffortRung;
   prompt: string;
   sessionDir?: string;
+  skills?: string[];
+  extensions?: string[];
+  appendSystemPrompts?: string[];
 }
 
 /**
@@ -191,6 +194,7 @@ export function buildProviderArgv(
         "--dangerously-skip-permissions",
         ...(options.model ? ["--model", options.model] : []),
         ...(clamped ? ["--effort", clamped] : []),
+        ...(options.appendSystemPrompts?.flatMap((p) => ["--append-system-prompt", p]) ?? []),
         "-p",
         options.prompt,
       ];
@@ -237,10 +241,14 @@ export function buildProviderArgv(
         "--mode",
         "json",
         "--no-session",
+        "--no-extensions",
+        ...(options.extensions?.flatMap((e) => ["-e", e]) ?? []),
         "--no-mcp",
         "--no-skills",
+        ...(options.skills?.flatMap((s) => ["--skill", s]) ?? []),
         "--no-prompt-templates",
         "--no-context-files",
+        ...(options.appendSystemPrompts?.flatMap((p) => ["--append-system-prompt", p]) ?? []),
         "--no-approve",
         ...(options.sessionDir ? ["--session-dir", options.sessionDir] : []),
         ...(options.model ? ["--model", options.model] : []),

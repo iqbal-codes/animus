@@ -322,3 +322,103 @@ test("executes autonomous lap with alternative provider harness (e.g. claude)", 
     expect(ev.effort).toBe("high");
   }
 });
+
+test("triggers post-issue terminal reflection when Lap 0 is sent_back and Lap 1 is approved", async () => {
+  const root = await fixture();
+  const issue: LocalIssue = {
+    number: 88,
+    url: "https://github.com/owner/repo/issues/88",
+    title: "handle dynamic port in launcher",
+    body: "fix launcher port 0 crash",
+    comments: [],
+    dependencies: [],
+    activeClaim: false,
+  };
+
+  let lapRound = 0;
+  const rolesInvoked: string[] = [];
+
+  const transport: PiTransport = async ({ cwd, role }) => {
+    rolesInvoked.push(`${lapRound}:${role}`);
+    if (role === "builder") {
+      await Bun.write(join(cwd, "fix.txt"), `attempt-${lapRound}`);
+      git(cwd, "add", "fix.txt");
+      git(cwd, "commit", "-m", `attempt ${lapRound}`);
+    }
+    const head = git(cwd, "rev-parse", "HEAD");
+
+    if (role === "reflector") {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          attribution: "helped",
+          candidate_lessons: [
+            {
+              topic: "launcher-port-binding",
+              trigger_patterns: ["fix.txt"],
+              rule: "Resolve dynamic port before passing FACTORY_HOST_URL to backend.",
+              evidence: "Lap 0 sent_back by reviewer; Lap 1 approved after resolving port.",
+            },
+          ],
+        }),
+        stderr: "",
+      };
+    }
+
+    // Lap 0: reviewer sends back; Lap 1: reviewer approves
+    const isRejected = lapRound === 0 && role === "reviewer";
+    return {
+      exitCode: 0,
+      stdout:
+        JSON.stringify({ type: "agent_settled", aborted: false }) +
+        "\n" +
+        JSON.stringify({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            stopReason: "stop",
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  candidate: head,
+                  verdict: isRejected ? "fail" : "pass",
+                  checks: [
+                    {
+                      criterion: "AC1",
+                      result: isRejected ? "fail" : "pass",
+                      evidence: isRejected ? "port 0 rejected" : "port resolved",
+                    },
+                  ],
+                  findings: isRejected ? ["Port 0 causes crash"] : [],
+                }),
+              },
+            ],
+          },
+        }),
+      stderr: "",
+    };
+  };
+
+  // Run Lap 0 -> sent_back (NO reflection yet)
+  const resLap0 = await runLocalLoop(root, issue, { pi: transport, push: false });
+  expect(resLap0.status).toBe("sent_back");
+  expect(rolesInvoked).toEqual(["0:builder", "0:qa", "0:reviewer"]);
+  expect(existsSync(join(resLap0.runDirectory, "artifacts", "reflection.json"))).toBe(false);
+
+  // Run Lap 1 -> waiting_approval (Contrastive reflection triggers automatically!)
+  lapRound = 1;
+  const resLap1 = await runLocalLoop(root, issue, { pi: transport, push: false });
+  expect(resLap1.status).toBe("waiting_approval");
+  expect(rolesInvoked).toEqual([
+    "0:builder",
+    "0:qa",
+    "0:reviewer",
+    "1:builder",
+    "1:qa",
+    "1:reviewer",
+    "1:reflector",
+  ]);
+  expect(existsSync(join(resLap1.runDirectory, "artifacts", "reflection.json"))).toBe(true);
+  expect(existsSync(join(root, ".factory/lessons.jsonl"))).toBe(true);
+});

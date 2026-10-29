@@ -12,3 +12,7 @@ export * from "./deploy";
 export * from "./discoveries";
 export * from "./scheduler";
 export * from "./providers";
+export * from "./harness-memory";
+export * from "./dossier";
+export * from "./reflector";
+
