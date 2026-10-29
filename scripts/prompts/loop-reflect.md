@@ -29,6 +29,10 @@ Finish your response with a single JSON object matching this exact schema:
   "tool_guidance_updates": {
     "test": "optional verified zero-exit command"
   },
+  "pattern_registry_updates": {
+    "persistence": "optional canonical shared module/pattern guidance (backend, DB, CLI, mobile, or UI) discovered in this issue"
+  },
+  "codebase_rule_updates": [],
   "candidate_lessons": [
     {
       "topic": "kebab-case-topic",

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "description": "Domain-agnostic codebase conventions & shared pattern registry (Backend, Frontend, Mobile, CLI, Database) enforced by loop-guard.ts",
+  "rules": [],
+  "pattern_registry": {
+    "contracts": "Define shared schemas, DTOs, and domain types in dedicated contract/type modules with zero explicit 'any'.",
+    "persistence": "Execute database and external storage operations through repository/service abstractions and transactional migration helpers.",
+    "error_handling": "Return typed domain errors and structured status codes rather than silent catch blocks or raw exception strings.",
+    "ui_primitives": "Reuse canonical shared UI primitives (e.g. DataTable/SimpleTable, FormField/form hooks) when building frontend or mobile views."
+  }
+}

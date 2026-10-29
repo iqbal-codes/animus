@@ -11,6 +11,7 @@ export interface WorkWindowConfig {
 export interface ScheduleConfig {
   workflow: string;
   parallel: number;
+  max_laps: number;
   interval_seconds: number;
   inputs?: Record<string, unknown>;
   work_window?: WorkWindowConfig;
@@ -59,6 +60,7 @@ export function loadScheduleConfig(root: string): ScheduleConfig {
   const defaults: ScheduleConfig = {
     workflow: "archon-loop",
     parallel: 1,
+    max_laps: 3,
     interval_seconds: 300,
     inputs: { merge: "approve" },
     work_window: {
@@ -76,6 +78,7 @@ export function loadScheduleConfig(root: string): ScheduleConfig {
     return {
       workflow: typeof raw.workflow === "string" ? raw.workflow : defaults.workflow,
       parallel: typeof raw.parallel === "number" && raw.parallel > 0 ? raw.parallel : defaults.parallel,
+      max_laps: typeof raw.max_laps === "number" && raw.max_laps > 0 ? raw.max_laps : defaults.max_laps,
       interval_seconds:
         typeof raw.interval_seconds === "number" && raw.interval_seconds > 0
           ? raw.interval_seconds

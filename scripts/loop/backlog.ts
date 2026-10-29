@@ -40,12 +40,48 @@ export function parsePrdSections(prdContent: string): { title: string; sections:
   return { title: prdTitle, sections };
 }
 
-export function slicePrdDeterministic(prdContent: string, maxIssues = 20): BacklogTicket[] {
+export function slicePrdDeterministic(
+  prdContent: string,
+  maxIssues = 20,
+  options: { includeFoundationSlice?: boolean } = {},
+): BacklogTicket[] {
   const { title, sections } = parsePrdSections(prdContent);
   const tickets: BacklogTicket[] = [];
 
   let prevKey: string | null = null;
   let count = 0;
+
+  if (options.includeFoundationSlice && maxIssues > 0) {
+    const foundationKey = "architecture-and-shared-primitives";
+    tickets.push({
+      key: foundationKey,
+      title: "Establish Modular Architecture, Domain Contracts & Reusable Building Blocks",
+      phase: "Foundation",
+      body: [
+        "## Goal",
+        `Establish the scalable modular architecture, strict type/schema contracts, and reusable building blocks for ${title} before feature slices execute.`,
+        "",
+        "## Specification & Context",
+        "- Set up modular/feature-based directory boundaries appropriate for the stack (e.g. domain modules, contracts/schemas, service/repository layers, CLI commands, or shared UI/mobile primitives).",
+        "- Implement canonical shared building blocks (e.g. API/RPC client & error envelopes, DB repository/migration helpers, CLI argument/output formatters, or shared UI components) and register them in .factory/codebase-rules.json (pattern_registry).",
+        "- Configure strict static analysis, type-checking, and architectural boundary checks.",
+        "",
+        "## Invariants",
+        "- Strict typing and schema validation at public boundaries (zero untyped/any contracts).",
+        "- All subsequent feature tickets consume these shared abstractions rather than re-inventing ad-hoc implementations.",
+        "",
+        "## Acceptance Criteria",
+        "- [ ] Core modular structure and shared building blocks implemented and tested.",
+        "- [ ] .factory/codebase-rules.json updated with pattern_registry entries.",
+        "- [ ] Static and unit checks pass cleanly.",
+      ].join("\n"),
+      depends_on: [],
+      depends_why: "",
+      size: "small_bounded",
+    });
+    prevKey = foundationKey;
+    count++;
+  }
 
   for (const section of sections) {
     if (count >= maxIssues) break;

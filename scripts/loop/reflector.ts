@@ -23,9 +23,22 @@ export interface SkillPromotionDraft {
   skill_markdown: string;
 }
 
+export interface CodebaseRuleDraft {
+  id: string;
+  description: string;
+  file_glob: string;
+  forbid_regex?: string;
+  require_regex?: string;
+  replacement_hint: string;
+  mode?: "warn" | "block";
+}
+
 export interface ReflectionProposal {
   attribution: "helped" | "hurt" | "no_observed_effect" | "confounded";
   tool_guidance_updates?: Record<string, string>;
+  pattern_registry_updates?: Record<string, string>;
+  component_registry_updates?: Record<string, string>;
+  codebase_rule_updates?: CodebaseRuleDraft[];
   candidate_lessons?: CandidateLessonDraft[];
   skill_promotion?: SkillPromotionDraft | null;
 }
@@ -48,6 +61,8 @@ export interface ReflectionOutcome {
   persistedLessons: LessonEntry[];
   rejectedLessons: Array<{ draft: CandidateLessonDraft; reason: string }>;
   updatedTools: string[];
+  updatedComponents?: string[];
+  updatedRules?: string[];
   promotedSkill?: {
     skillName: string;
     skillPath: string;
@@ -214,6 +229,69 @@ export function persistApprovedLesson(
   existing.push(entry);
   writeAllLessonsAtomic(root, existing);
   return { entry, isRecurring: false };
+}
+
+export function persistCodebaseRulesUpdates(
+  root: string,
+  patternUpdates?: Record<string, string>,
+  ruleUpdates?: CodebaseRuleDraft[],
+): { updatedComponents: string[]; updatedRules: string[] } {
+  const filePath = join(root, ".factory/codebase-rules.json");
+  let current: {
+    schema_version?: number;
+    description?: string;
+    rules?: CodebaseRuleDraft[];
+    pattern_registry?: Record<string, string>;
+    component_registry?: Record<string, string>;
+  } = {
+    schema_version: 1,
+    description:
+      "Domain-agnostic codebase conventions & shared pattern registry enforced by loop-guard.ts",
+    rules: [],
+    pattern_registry: {},
+  };
+
+  if (existsSync(filePath)) {
+    try {
+      current = JSON.parse(readFileSync(filePath, "utf-8"));
+    } catch {}
+  }
+
+  current.pattern_registry = current.pattern_registry ?? current.component_registry ?? {};
+  current.rules = Array.isArray(current.rules) ? current.rules : [];
+
+  const updatedComponents: string[] = [];
+  for (const [k, v] of Object.entries(patternUpdates ?? {})) {
+    if (typeof k === "string" && k.trim() && typeof v === "string" && v.trim()) {
+      current.pattern_registry[k.trim()] = v.trim();
+      updatedComponents.push(k.trim());
+    }
+  }
+
+  const updatedRules: string[] = [];
+  for (const rule of ruleUpdates ?? []) {
+    if (!rule?.id || !rule?.file_glob || !rule?.replacement_hint) continue;
+    const normalized: CodebaseRuleDraft = {
+      ...rule,
+      mode: rule.mode ?? "warn",
+    };
+    const existingIdx = current.rules.findIndex((r) => r.id === normalized.id);
+    if (existingIdx >= 0) {
+      current.rules[existingIdx] = normalized;
+    } else {
+      current.rules.push(normalized);
+    }
+    updatedRules.push(normalized.id);
+  }
+
+  if (updatedComponents.length > 0 || updatedRules.length > 0) {
+    mkdirSync(dirname(filePath), { recursive: true });
+    const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+    writeFileSync(tmpPath, JSON.stringify(current, null, 2) + "\n", "utf-8");
+    renameSync(tmpPath, filePath);
+  }
+
+  return { updatedComponents, updatedRules };
 }
 
 export function persistToolGuidanceUpdates(
@@ -444,6 +522,19 @@ export async function runPostIssueReflection(
     persistToolGuidanceUpdates(root, proposal.tool_guidance_updates!);
   }
 
+  const mergedPatternUpdates = {
+    ...(proposal.component_registry_updates ?? {}),
+    ...(proposal.pattern_registry_updates ?? {}),
+  };
+  const { updatedComponents, updatedRules } = persistCodebaseRulesUpdates(
+    worktree,
+    mergedPatternUpdates,
+    proposal.codebase_rule_updates,
+  );
+  if ((updatedComponents.length > 0 || updatedRules.length > 0) && root !== worktree) {
+    persistCodebaseRulesUpdates(root, mergedPatternUpdates, proposal.codebase_rule_updates);
+  }
+
   let promotedSkill: ReflectionOutcome["promotedSkill"];
   if (proposal.skill_promotion && (proposal.skill_promotion.skill_name || recurringTriggered)) {
     const applied = applySkillPromotion(worktree, proposal.skill_promotion);
@@ -463,6 +554,8 @@ export async function runPostIssueReflection(
     persistedLessons,
     rejectedLessons,
     updatedTools,
+    updatedComponents,
+    updatedRules,
     promotedSkill,
   };
 }
