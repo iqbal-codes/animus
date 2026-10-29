@@ -15,6 +15,7 @@
     "apps/web/vite.config.ts",
     "scripts/health/**/*.mjs",
     "scripts/release/**/*.ts",
+    "scripts/**/*.ts",
     "scripts/*.ts"
   ]
 }
