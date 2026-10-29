@@ -2,71 +2,280 @@ import { existsSync } from "node:fs";
 import { mkdir, rename } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import type {
+  LocalIssue,
+  LoopRole,
+  ProcessResult,
+  PiTransport,
+  LocalLoopOptions,
+  LoopEvidence,
+  LocalLoopResult,
+} from "./loop/types";
+import { resolveModelForRole } from "./loop/config";
+import {
+  loadPrompt,
+  renderPrompt,
+  resolveArchonCommandsDir,
+} from "./loop/prompts";
+import {
+  setupArtifactDirectories,
+  parseAgentReport,
+  extractReport,
+  validateEvidenceCitations,
+} from "./loop/artifacts";
 
-export interface LocalIssue {
-  number: number;
-  url: string;
-  title: string;
-  body: string;
-  comments: string[];
-  dependencies: { number: number; state: string }[];
-  activeClaim: boolean;
+export type {
+  LocalIssue,
+  LoopRole,
+  ProcessResult,
+  PiTransport,
+  LocalLoopOptions,
+  LoopEvidence,
+  LocalLoopResult,
+};
+
+export {
+  resolveArchonCommandsDir,
+  renderPrompt,
+  parseAgentReport,
+  extractReport,
+};
+
+export const ARCHON_BUILDER_PROMPT = `# Make the move
+
+You are the builder in an unattended development loop. The dispatcher has already chosen this
+run's move; you do it, then stop. Two reviewers check your work right after you. Nobody is
+watching: when something is in your way, work it out and keep going. Never wait for a human in
+the middle of a run.
+
+The move:
+- Route: $INPUTS.route (\`continue\` addresses review findings on the PR below; \`simple\` implements the issue)
+- Work item: $INPUTS.target
+- Pull request: $INPUTS.pr
+- Why it was chosen: $INPUTS.reason
+
+## 1. Ground the contract
+
+Read the issue body and comments completely before making changes:
+- An issue comment headed \`Contract\` is the authoritative acceptance contract: build to it, criterion by criterion.
+- For \`continue\`: inspect the PR diff, CI checks (\`gh pr checks <n>\`), review comments (\`Loop review:\` comments first), and previous builder reports. Address every identified finding directly with concrete code fixes and verifiable evidence.
+- If a \`Loop review: not merged\` comment exists, inspect the refusal reason:
+  - Code defects or failed pipeline steps: fix the root cause.
+  - Base branch drift: merge the default branch in cleanly.
+  - Review or evidence documentation gaps: update the record without touching working code.
+- Read project steering conventions: \`engineering.md\`, \`MISSION.md\`, and product specs at the root or under \`docs/\`.
+
+If the work item cannot be satisfied without changing what an in-repository check judges (adding skips, loosening thresholds, or ignoring edge cases) without owner approval, halt immediately: comment on the item, label it \`needs-owner\`, and report \`PR: none\`.
+
+## 2. Implement with tight verification loops
+
+1. **Branch workflow:** Work on the PR's branch, or create a delivery branch from the default branch (\`local-loop/issue-<number>-<id>\`). If another worktree holds the branch, use \`git checkout -B <branch> origin/<branch> --ignore-other-worktrees\`.
+2. **Branch integration:** Keep the branch current strictly via \`git merge --no-edit origin/<default-branch>\`. Preserve commit history without rebasing or force-pushing.
+3. **Smallest discriminating checks:** Iterate on the smallest unit test, frame, tick, or input path that isolates the behavior. Save exhaustive testing for final validation; running full end-to-end suites repeatedly on every edit wastes hours.
+4. **Final validation:** Run the repository's ordinary checks once on your candidate commit (\`engineering.md\` or harness config). Save complete output to \`$ARTIFACTS_DIR/builder-checks.log\` so subsequent QA and review nodes reuse it without duplicate execution. If user-visible behavior changed, launch the app according to \`$INPUTS.runtime\` and verify the observable user path.
+5. **Commit and push:** Commit with an imperative, conventional commit message (\`feat(...)\`, \`fix(...)\`). Push to origin. Open a PR with \`Closes #<n>\` or update the existing PR. Ensure the PR is ready for review (\`gh pr ready <n>\`).
+
+## 3. Pull Request Evidence Contract
+
+Every pull request description must contain an \`## Evidence\` section before this step is complete:
+- Map each contract criterion to its concrete verification evidence (command output line, log path, or test assertion) on your pushed candidate commit.
+- If the change alters what an in-repository check samples or excuses, declare it under an explicit heading: \`### Judge Alterations (Requires Approval)\`.
+- Post one comment on the PR detailing the delivered changes, how criteria were satisfied, and any remaining context.
+
+## 4. Boundaries & Invariants
+
+- **Protected governance paths:** Keep all protected paths strictly untouched ($INPUTS.protected_paths). If a change is genuinely required, label \`needs-owner\` and explain.
+- **Concurrency isolation:** Keep \`Loop claim\` comments untouched.
+- **Process isolation:** Record process IDs (PIDs) for any spawned services or background tasks, and terminate every process you started before ending your turn. Apply an explicit timeout to every wait.
+- **Filesystem scope:** Restrict all file operations to this checkout and \`$ARTIFACTS_DIR\`.
+
+## 5. Completion & Report
+
+Your turn is complete when all code changes are committed, pushed, project checks pass, the PR carries verified evidence, and you report your result.
+
+Return your final report in JSON (plain or within a single \`\`\`json code fence):
+\`\`\`json
+{
+  "candidate": "<full committed HEAD sha>",
+  "verdict": "pass",
+  "checks": [
+    { "criterion": "<criterion id or check name>", "result": "pass", "evidence": "<concrete command output or test result>" }
+  ],
+  "findings": []
 }
+\`\`\`
+Or finish with: \`PR: <full pull request URL>\` or \`PR: none\` followed by the reason.`;
 
-export type LoopRole = "builder" | "qa" | "reviewer";
+export const ARCHON_QA_PROMPT = `# Check the app as a user would
 
-export interface ProcessResult {
-  exitCode: number;
-  stdout: string;
-  stderr: string;
+You are the black-box tester in an unattended development loop. You did not write this change, and
+you evaluate what the product does by running it—without reading its diff, its pull request description,
+or its builder's report beforehand. A second reviewer inspects the diff after you, and a deterministic
+merge gate lands only commits your evidence supports.
+
+The move this run:
+- Route: $INPUTS.route
+- Work item: $INPUTS.target
+- Pull request: $INPUTS.pr
+- Candidate head commit: $INPUTS.head, against default branch \`$INPUTS.base\`
+- Files changed:
+\`\`\`
+$INPUTS.files
+\`\`\`
+
+If no pull request URL is provided above, report \`overall: "NO PR"\` with an empty \`pr\` and no lines, state what is observable in \`summary\`, and stop.
+
+## 1. What to test
+
+Read the work item and its \`Contract\` comment (or acceptance criteria). Test whether the change satisfies the contract without breaking existing capabilities. Broad product exploration belongs to the manager on the default branch; focus your inspection on the behavior this change creates or affects.
+
+## 2. Test Depth: $INPUTS.depth
+
+Apply the depth selected for this work item's risk profile:
+- **\`light\`** (internal refactors, tests, tools, documentation where user-observable behavior is unchanged): Build the app, run declared ordinary checks once, confirm the service starts cleanly, and verify contract criteria. Skip exploratory probes and holdouts.
+- **\`normal\`** (default for user-visible features or fixes): Build, run ordinary checks once, and observe each contract criterion through the live app's public user surface. Execute up to three plausible user interaction variations beyond the criteria (\`probes\`). Run holdouts only if they exercise the modified behavior.
+- **\`deep\`** (core architectural changes, security, authentication, data models, or migrations): Probe all states the change introduces; evaluate both public UI/CLI interfaces and automated harnesses; run all holdout scenarios touched by the modified files.
+
+Sample decisive states and edge transitions rather than attempting combinatorial exhaustive input sweeps. Where the builder has already saved complete check logs on the identical commit under \`$ARTIFACTS_DIR\`, reuse those logs instead of repeating identical commands.
+
+## 3. Verify what would merge (Detached Base Merge)
+
+Because the landed artifact is this pull request merged with the current default branch, evaluate that exact integration state:
+1. Check out the candidate head: \`gh pr checkout <n>\` (or \`git checkout -B <branch> origin/<branch> --ignore-other-worktrees\`). Verify HEAD matches $INPUTS.head.
+2. Form a detached integration commit: \`git checkout --detach && git fetch origin $INPUTS.base && git merge --no-edit origin/$INPUTS.base\`.
+3. If merge conflicts arise, record criterion \`C0: FAIL (Merge conflict with base branch)\` with \`overall: FAIL\`, and stop.
+4. Record the resulting detached commit SHA as \`merged_with\`.
+
+## 4. Black-Box Execution & Evidence
+
+1. **Launch the application:** Start the app according to \`$INPUTS.runtime\` on its real code path rather than mock stubs.
+2. **Drive the public surface:** Interact via documented CLI commands, HTTP endpoints, or driver libraries. Avoid using tools or scripts introduced in the PR itself to validate the PR's own claims.
+3. **Record concrete artifacts:** Save every command log, curl output, screenshot, and measurement as an immutable file under \`$ARTIFACTS_DIR\`. Cite each piece of evidence by its absolute path.
+4. **Line classification:**
+   - Contract criteria (\`C1\`, \`C2\`...): \`PASS\`, \`FAIL\`, or \`INCOMPLETE\`.
+   - Fenced holdouts (\`H1\`...): Scenarios evaluated via \`holdout-verifier\` subagent.
+   - Probes (\`P1\`...): User variations (\`OK\` or \`SURPRISE\` pointing to a defect).
+   - Defects (\`D1\`...): \`DEFECT\` for regressions introduced by this change, or \`QUESTION\` when unclear whether behavior is defective.
+   - Noticed observations: Document pre-existing base flaws under \`noticed\` (narrative strings; not scored as PR defects).
+5. **Clean process teardown:** Record PIDs of all background processes you start, and terminate them completely before finishing your turn.
+
+## 5. Boundaries & Invariants
+
+- **Read-only governance:** Do not push git commits, edit code, post GitHub comments, or mutate labels. The local detached merge above is temporary and never pushed.
+- **Diff blindfold:** Do not inspect git diffs, PR descriptions, or builder comments prior to running tests. Only inspect diffs if an observed failure requires tracing a root cause for the summary.
+- **Process hygiene:** Stop only processes you started, by PID. Do not terminate external browser sessions or system processes.
+
+## 6. Report Format
+
+Return your structured report in JSON (plain or within a single \`\`\`json code fence):
+\`\`\`json
+{
+  "pr": "$INPUTS.pr",
+  "head": "$INPUTS.head",
+  "merged_with": "<commit of merge with default branch>",
+  "lines": [
+    {
+      "id": "C1",
+      "kind": "criterion",
+      "verdict": "PASS",
+      "text": "<observable user behavior or command result>",
+      "evidence": ["<absolute file paths in $ARTIFACTS_DIR>"],
+      "pre_existing": "",
+      "defect": "",
+      "carried_from": ""
+    }
+  ],
+  "noticed": ["<pre-existing base observations not caused by this change>"],
+  "overall": "PASS",
+  "summary": "<concise summary of tested behaviors and depth>"
 }
+\`\`\`
+\`overall\` must be \`PASS\` only when every criterion passed and zero defect lines remain. Any caveat or unverified criterion mandates \`FAIL\`.`;
 
-export type PiTransport = (request: {
-  argv: string[];
-  cwd: string;
-  role: LoopRole;
-  timeoutMs: number;
-}) => Promise<ProcessResult>;
+export const ARCHON_REVIEWER_PROMPT = `# Review, then merge, send back, or return to the owner
 
-export interface LocalLoopOptions {
-  pi?: PiTransport;
-  model?: string;
-  timeoutMs?: number;
-  push?: boolean;
+You are the reviewer in an unattended development loop. You did not write this change, and you judge
+it strictly on what it does, not on what anyone claims it does. Black-box QA has already tested the
+running app; your job is to inspect the code diff, verify evidence integrity, and decide the outcome.
+A deterministic merge gate runs after you, landing the candidate only if your record and evidence hold.
+
+The move this run:
+- Route: $INPUTS.route
+- Work item: $INPUTS.target
+- Pull request: $INPUTS.pr
+- Builder's report: \`$INPUTS.handoff/builder.md\`
+- QA report: \`$INPUTS.handoff/app-check.json\` (read this first)
+- Evidence check: ok = $INPUTS.evidence_ok
+- Evidence problems, if any: \`$INPUTS.handoff/evidence-problems.txt\`
+
+## 1. When nothing was delivered
+
+If QA reported \`overall: "NO PR"\`, no pull request was delivered. Leave one comment on the work item:
+\`Loop review: no pull request\` explaining the observed situation. If the item has reached $INPUTS.rejections attempts without progress, label it \`needs-owner\`. Return outcome \`nothing\` or \`needs-owner\`.
+
+## 2. Code Inspection & Verification
+
+1. **Checkout head:** Check out the candidate commit: \`git checkout -B <branch> origin/<branch> --ignore-other-worktrees\`.
+2. **Review diff:** Compare the branch against \`$INPUTS.base\`. Inspect for:
+   - Real bugs, unhandled errors, or edge cases.
+   - Regressions: any user-observable behavior worse than the default branch blocks merge, even if all criteria passed.
+   - Scope creep: additions unrelated to the acceptance contract.
+   - Weakened tests: skipped, commented-out, or loosened checks.
+   - Protected paths: verify zero modifications to protected paths ($INPUTS.protected_paths). Any alteration mandates \`needs-owner\`.
+3. **Changes to check judgement:** If the diff alters what checks sample, skip, or excuse, verify explicit owner approval. Without approval, label \`needs-owner\`.
+4. **Evidence reuse:** Reuse check outputs saved in \`$ARTIFACTS_DIR\` by the builder or QA. Only re-run checks yourself if resolving a contested line.
+5. **CI status:** Verify CI status (\`gh pr checks <n>\`).
+
+## 3. Mandatory Line Dispositions
+
+Assign exactly one disposition to every QA line that is not a plain \`PASS\` or \`OK\`:
+- \`blocks\`: Regressions or failures caused by this change that must be fixed. Triggers \`sent-back\`.
+- \`rechecked\`: You independently verified the app check was mistaken, citing your own fresh evidence file in \`$ARTIFACTS_DIR\`.
+- \`pre-existing\`: The failure reproduces identically on the default branch. Cite your base run file and the open tracking issue.
+- \`issue\`: A non-blocking question or defect to be tracked in a future issue.
+- \`accepted\`: A question confirmed not to be a defect and invisible to end-users.
+
+## 4. Decide Outcome
+
+- **\`merge\` / \`approved\`:** Every criterion passed or was rechecked; holdouts passed or are tracked pre-existing; all defects resolved; zero regressions; zero protected paths touched; project checks clean. (Return \`merge\` when merge mode is auto; return \`approved\` when merge is human-gated).
+- **\`sent-back\`:** The change has fixable defects. Detail exact required corrections with reproducible evidence. If the item has accumulated $INPUTS.rejections send-backs, return it to the owner instead.
+- **\`needs-owner\`:** The work item requires human product direction, scope clarification, changes protected files, alters judge constants without approval, or hit the send-back limit.
+
+## 5. Unified PR Review Comment
+
+Post exactly ONE unified comment on the pull request (or issue) starting with:
+\`Loop review: <outcome> (route: $INPUTS.route)\`
+
+Include:
+- Candidate commit SHA
+- QA Verification summary table
+- Code review findings
+- Dispositions for non-passing lines
+- Noticed items pre-existing in the base
+- Decision outcome
+
+## 6. Report Format
+
+Return your final decision in JSON (plain or within a single \`\`\`json code fence):
+\`\`\`json
+{
+  "outcome": "merge | sent-back | needs-owner | approved | nothing",
+  "pr": "$INPUTS.pr",
+  "sha": "$INPUTS.head",
+  "delivers": "all | part | none",
+  "dispositions": [
+    {
+      "line": "D1",
+      "action": "blocks | rechecked | pre-existing | issue | accepted",
+      "file": "",
+      "issue": "",
+      "reason": ""
+    }
+  ],
+  "judge_changes": [],
+  "reason": "<concise decision rationale>"
 }
-
-export interface LoopEvidence {
-  kind: "pi" | "check";
-  role?: LoopRole;
-  candidate: string;
-  artifact: string;
-  exitCode: number;
-}
-
-export interface LocalLoopResult {
-  runId: string;
-  issue: string;
-  route: "simple" | "continue";
-  status:
-    | "preparing"
-    | "building"
-    | "checking"
-    | "qa"
-    | "reviewing"
-    | "waiting_approval"
-    | "sent_back"
-    | "needs_owner"
-    | "failed";
-  runDirectory: string;
-  worktree: string;
-  branch: string;
-  base: string;
-  candidate?: string;
-  pr?: string;
-  reviewCommentUrl?: string;
-  evidence: LoopEvidence[];
-  error?: string;
-}
+\`\`\``;
 
 async function processRun(argv: string[], cwd: string, timeoutMs: number): Promise<ProcessResult> {
   const child = Bun.spawn(argv, {
@@ -122,66 +331,9 @@ export async function inspectLocalLoop(root: string) {
   return { common, primary };
 }
 
-export function parseAgentReport(text: string): any {
-  try {
-    return JSON.parse(text);
-  } catch {
-    const blocks = [...text.matchAll(/```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```/g)];
-    if (blocks.length !== 1) {
-      throw new Error(
-        "Agent report must contain one JSON object, either plain or in one code fence",
-      );
-    }
-    try {
-      return JSON.parse(blocks[0]![1]!);
-    } catch {
-      throw new Error("Agent report contains invalid JSON in its code fence");
-    }
-  }
-}
-
-function extractReport(stdout: string, candidate: string) {
-  let message:
-    | { role?: string; stopReason?: string; content?: { type: string; text?: string }[] }
-    | undefined;
-  let settled = false;
-  for (const line of stdout.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const event = JSON.parse(line);
-      if (event.type === "message_end" && event.message?.role === "assistant")
-        message = event.message;
-      if (event.type === "agent_start") settled = false;
-      if (event.type === "agent_settled") settled = event.aborted === false;
-    } catch {}
-  }
-  if (!settled || !message || message.stopReason !== "stop" || !Array.isArray(message.content))
-    throw new Error("Pi did not settle with a final assistant response");
-  const textContent = message.content
-    .filter((c) => c.type === "text")
-    .map((c) => c.text ?? "")
-    .join("");
-  const value = parseAgentReport(textContent);
-  if (
-    !value ||
-    typeof value !== "object" ||
-    value.candidate !== candidate ||
-    !["pass", "fail", "blocked"].includes(value.verdict) ||
-    !Array.isArray(value.findings) ||
-    !Array.isArray(value.checks)
-  )
-    throw new Error("Missing, malformed or stale candidate-bound checks/review verdict");
-  return {
-    ...value,
-    passed:
-      value.verdict === "pass" &&
-      value.checks.every((c: { result: string }) => c.result === "pass"),
-  };
-}
-
 /**
  * Executes exactly ONE autonomous lap following the original Archon SDLC lifecycle:
- * pick/route -> claim -> build -> check-app (silent QA) -> review (posts 1 unified PR comment) -> land gate.
+ * pick/route -> claim -> build (loop-work) -> check-app (silent QA) -> handoff/evidence -> review (loop-review) -> land gate.
  */
 export async function runLocalLoop(
   root: string,
@@ -235,6 +387,7 @@ export async function runLocalLoop(
   const runId = randomUUID();
   const stateRoot = join(common, "factory-local-loop");
   const runDirectory = join(stateRoot, "runs", runId);
+  const { artifactsDir, handoffDir } = await setupArtifactDirectories(runDirectory);
   const lock = join(stateRoot, "locks", `issue-${issue.number}`);
 
   await mkdir(dirname(lock), { recursive: true });
@@ -266,7 +419,6 @@ export async function runLocalLoop(
   };
 
   try {
-    await mkdir(runDirectory, { recursive: true });
     await Bun.write(
       join(lock, "owner.json"),
       JSON.stringify({
@@ -285,13 +437,11 @@ export async function runLocalLoop(
     // 2. ISOLATED WORKTREE ALLOCATION
     await mkdir(dirname(state.worktree), { recursive: true });
     if (route === "continue") {
-      // Checkout existing PR branch
       await git(root, "fetch", "origin", branch);
       await git(root, "worktree", "add", "--no-checkout", state.worktree, `origin/${branch}`);
       await git(state.worktree, "sparse-checkout", "set", "--no-cone", "/*", "!/.factory/holdout/");
       await git(state.worktree, "checkout", branch);
     } else {
-      // New delivery branch from base
       await git(root, "worktree", "add", "--no-checkout", "-b", branch, state.worktree, base);
       await git(state.worktree, "sparse-checkout", "set", "--no-cone", "/*", "!/.factory/holdout/");
       await git(state.worktree, "checkout", branch);
@@ -314,57 +464,80 @@ export async function runLocalLoop(
       return head;
     };
 
-    const model = options.model ?? process.env.FACTORY_LOOP_MODEL;
     const pi = options.pi ?? ((req) => processRun(req.argv, req.cwd, req.timeoutMs));
 
-    const invoke = async (role: LoopRole, candidate?: string) => {
+    // Dynamic prompt loading with modular fallback
+    const getPromptTemplate = (name: string, fallback: string) => {
+      try {
+        return loadPrompt(name, root);
+      } catch {
+        return fallback;
+      }
+    };
+
+    const builderTemplate = getPromptTemplate("loop-work", ARCHON_BUILDER_PROMPT);
+    const qaTemplate = getPromptTemplate("loop-check-app", ARCHON_QA_PROMPT);
+    const reviewerTemplate = getPromptTemplate("loop-review", ARCHON_REVIEWER_PROMPT);
+
+    const runtimeDocPath = existsSync(join(root, "docs/runtime.md"))
+      ? "docs/runtime.md"
+      : existsSync(join(root, "harness/END-TO-END.md"))
+        ? "harness/END-TO-END.md"
+        : "engineering.md";
+    const runtimeInstructions = `See project runtime guide in ${runtimeDocPath} for launching services and black-box verification.`;
+    const holdoutPath = existsSync(join(root, ".factory/holdout/HOLDOUT.md"))
+      ? join(root, ".factory/holdout/HOLDOUT.md")
+      : "";
+
+    const depth: "light" | "normal" | "deep" =
+      /auth|security|migration|schema|database/i.test(issue.title + issue.body)
+        ? "deep"
+        : /docs|test|refactor/i.test(issue.title)
+          ? "light"
+          : "normal";
+
+    const invoke = async (role: LoopRole, candidate?: string, extraVars: Record<string, string> = {}) => {
       await inspectLocalLoop(root);
       state.status = role === "builder" ? "building" : role === "qa" ? "qa" : "reviewing";
       await save();
 
-      let roleSpecificInstructions = "";
-      if (role === "builder") {
-        roleSpecificInstructions = [
-          "You are the BUILDER.",
-          "Implement the issue, run relevant checks locally, and commit all delivery changes.",
-          "Write a comprehensive commit message following project standards.",
-          route === "continue"
-            ? `Read the latest review feedback on PR ${state.pr} and fix all noted findings.`
-            : "Implement the specification cleanly.",
-        ].join("\n");
-      } else if (role === "qa") {
-        roleSpecificInstructions = [
-          "You are the BLACK-BOX APP CHECKER (QA).",
-          "You DO NOT inspect source code diffs or commit implementations.",
-          "Your job is to test the product as a user/caller through real HTTP/API/CLI entrypoints.",
-          "Execute real scenarios in isolated test environments to verify each acceptance criterion.",
-          "You do NOT post any comments to GitHub. Only return your structured test report.",
-        ].join("\n");
-      } else {
-        roleSpecificInstructions = [
-          "You are the INDEPENDENT CODE REVIEWER.",
-          "Inspect the diff, adherence to documented coding standards, and the QA test results.",
-          "Verify that acceptance criteria are truthfully met without scope creep or weakened checks.",
-          "You are the ONLY agent that decides the outcome: merge, sent-back, or needs-owner.",
-        ].join("\n");
-      }
+      const changedFilesList = candidate
+        ? (await git(state.worktree, "diff", "--name-only", "--no-renames", base, candidate)).trim()
+        : "";
 
-      const prompt = [
-        `Role: ${role}. Work item: ${issue.url}. Route: ${route}. Fresh independent session.`,
-        roleSpecificInstructions,
-        "Never push directly or merge into base. Merging is strictly reserved for human approval.",
-        "Read AGENTS.md and ordinary docs. Do NOT modify protected paths: " +
-          protectedPaths.join(", "),
-        JSON.stringify({
-          issue,
-          route,
-          pr: state.pr,
-          candidate: candidate ?? "Use your final committed HEAD",
-        }),
-        'Final response must be ONLY JSON: {"candidate":"full HEAD sha","verdict":"pass|fail|blocked","checks":[{"criterion":"AC identifier or scenario","result":"pass|fail|blocked|not_run","evidence":"concrete command/scenario and observed result"}],"findings":["concrete problem"]}. Never assert unexecuted checks passed.',
-      ].join("\n");
+      const template = role === "builder"
+        ? builderTemplate
+        : role === "qa"
+          ? qaTemplate
+          : reviewerTemplate;
 
-      const sessionDirectory = join(runDirectory, `${role}-session`);
+      const promptVars: Record<string, string> = {
+        route,
+        target: issue.url,
+        pr: state.pr ?? "",
+        reason: `Autonomous delivery for issue #${issue.number}: ${issue.title}`,
+        runtime: runtimeInstructions,
+        head: candidate ?? "HEAD",
+        base,
+        files: changedFilesList || "(all files in commit)",
+        depth,
+        holdout: holdoutPath,
+        protected_paths: protectedPaths.join(", "),
+        handoff: handoffDir,
+        evidence_ok: extraVars.evidence_ok ?? "true",
+        merge: "approve",
+        rejections: "2",
+        ...extraVars,
+      };
+
+      const prompt = renderPrompt(template, promptVars, artifactsDir);
+
+      // Model Tiering from .archon/config.yaml or option override
+      const roleModel = options.model ?? resolveModelForRole(root, role);
+
+      const stepNum = role === "builder" ? 0 : role === "qa" ? 1 : 2;
+      const sessionDirectory = join(runDirectory, `${stepNum}-${role}-session`);
+      await mkdir(sessionDirectory, { recursive: true });
       const argv = [
         "pi",
         "--print",
@@ -378,7 +551,7 @@ export async function runLocalLoop(
         "--no-approve",
         "--session-dir",
         sessionDirectory,
-        ...(model ? ["--model", model] : []),
+        ...(roleModel ? ["--model", roleModel] : []),
         "--",
         prompt,
       ];
@@ -390,6 +563,7 @@ export async function runLocalLoop(
       state.evidence.push({
         kind: "pi",
         role,
+        round: 0,
         candidate: head,
         artifact,
         exitCode: result.exitCode,
@@ -400,12 +574,17 @@ export async function runLocalLoop(
     };
 
     // -------------------------------------------------------------
-    // STAGE 1: BUILDER
+    // STAGE 1: BUILDER (loop-work)
     // -------------------------------------------------------------
     const builderReport = await invoke("builder");
     state.candidate = await assertCandidate();
 
-    // In Archon SDLC: Builder pushes branch and opens / updates PR immediately
+    await Bun.write(
+      join(handoffDir, "builder.md"),
+      `# Builder Report\n\nCandidate: ${state.candidate}\nVerdict: ${builderReport.verdict}\n\n` +
+        (builderReport.checks?.map((c: any) => `- ${c.criterion}: ${c.result} (${c.evidence})`).join("\n") || "No explicit checks"),
+    );
+
     if (options.push !== false) {
       try {
         await git(state.worktree, "push", "-u", "origin", branch);
@@ -416,7 +595,7 @@ export async function runLocalLoop(
             "## Summary",
             `Autonomous delivery for issue #${issue.number}: ${issue.title}`,
             "",
-            "## PR Evidence",
+            "## Evidence",
             `- **Candidate Head**: \`${state.candidate}\``,
             `- **Route**: ${route}`,
             "",
@@ -447,13 +626,16 @@ export async function runLocalLoop(
     // -------------------------------------------------------------
     state.status = "checking";
     await save();
+    const checkOutputs: string[] = [];
     for (let i = 0; i < checks.length; i++) {
       await inspectLocalLoop(root);
       const result = await processRun(["sh", "-c", checks[i]!], state.worktree, timeout);
       const artifact = join(runDirectory, `check-${i}.json`);
       await Bun.write(artifact, JSON.stringify({ command: checks[i], ...result }));
+      checkOutputs.push(`Check [${checks[i]}]: exit ${result.exitCode}\n${result.stdout}\n${result.stderr}`);
       state.evidence.push({
         kind: "check",
+        round: 0,
         candidate: state.candidate,
         artifact,
         exitCode: result.exitCode,
@@ -462,21 +644,29 @@ export async function runLocalLoop(
         throw new Error(`Ordinary project check failed: ${checks[i]}`);
       }
     }
+    await Bun.write(join(artifactsDir, "builder-checks.log"), checkOutputs.join("\n\n"));
     await assertCandidate(state.candidate);
 
     // -------------------------------------------------------------
-    // STAGE 3: BLACK-BOX QA (check-app) - NO GITHUB COMMENTS!
+    // STAGE 3: BLACK-BOX QA (loop-check-app)
     // -------------------------------------------------------------
     const qaReport = await invoke("qa", state.candidate);
     await assertCandidate(state.candidate);
 
-    // -------------------------------------------------------------
-    // STAGE 4: CODE REVIEW (review) - POSTS EXACTLY ONE PR COMMENT
-    // -------------------------------------------------------------
-    const reviewReport = await invoke("reviewer", state.candidate);
-    await assertCandidate(state.candidate);
+    await Bun.write(join(handoffDir, "app-check.json"), JSON.stringify(qaReport, null, 2));
+    await Bun.write(join(artifactsDir, "app-check.json"), JSON.stringify(qaReport, null, 2));
 
-    // Format single unified Archon review comment
+    const { ok: evidenceOkBool, problems: evidenceProblems } = validateEvidenceCitations(qaReport, artifactsDir);
+    await Bun.write(join(handoffDir, "evidence-problems.txt"), evidenceProblems.join("\n"));
+    const evidenceOk = evidenceOkBool ? "true" : "false";
+
+    // -------------------------------------------------------------
+    // STAGE 4: CODE REVIEW (loop-review)
+    // -------------------------------------------------------------
+    const reviewReport = await invoke("reviewer", state.candidate, { evidence_ok: evidenceOk });
+    await assertCandidate(state.candidate);
+    await Bun.write(join(artifactsDir, "review.json"), JSON.stringify(reviewReport, null, 2));
+
     const isApproved = qaReport.passed && reviewReport.passed;
     const reviewOutcome = isApproved ? "approved" : "sent back";
     state.status = isApproved ? "waiting_approval" : "sent_back";
@@ -497,6 +687,20 @@ export async function runLocalLoop(
           ? reviewReport.findings.map((f: string) => `- ${f}`)
           : ["- No blocking standards or specification findings."]),
         "",
+        ...(Array.isArray(reviewReport.dispositions) && reviewReport.dispositions.length > 0
+          ? [
+              "#### 📋 Dispositions:",
+              ...reviewReport.dispositions.map((d: any) => `- **${d.line}** (${d.action}): ${d.reason || d.issue || d.file}`),
+              "",
+            ]
+          : []),
+        ...(Array.isArray(qaReport.noticed) && qaReport.noticed.length > 0
+          ? [
+              "#### ℹ️ Noticed (not this change's):",
+              ...qaReport.noticed.map((n: string) => `- ${n}`),
+              "",
+            ]
+          : []),
         isApproved
           ? "✅ **Candidate verified and approved.** Awaiting human merge approval (`merge=approve`)."
           : "⚠️ **Work item sent back.** Review feedback has been recorded for the next lap.",
@@ -520,7 +724,6 @@ export async function runLocalLoop(
     await save();
     return state;
   } finally {
-    // Release per-issue lock at lap termination so next lap can proceed
     try {
       await Bun.spawn(["rm", "-rf", lock]).exited;
     } catch {}
