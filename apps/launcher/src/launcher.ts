@@ -62,10 +62,11 @@ async function allocateLoopbackPort(): Promise<number> {
 
 export class FactoryLauncher {
   private readonly options: Required<
-    Omit<LauncherOptions, "sessionSecretPath" | "operatorToken">
+    Omit<LauncherOptions, "sessionSecretPath" | "operatorToken" | "webDir">
   > & {
     sessionSecretPath?: string;
     operatorToken?: string;
+    webDir?: string;
   };
   private status: LauncherStatus = { state: "stopped" };
   private backendProcess: any = null;
@@ -79,7 +80,7 @@ export class FactoryLauncher {
       port: opts.port ?? 3000,
       enginePort: opts.enginePort ?? 0,
       stateDir: opts.stateDir ?? join(defaultRoot, ".factory/state"),
-      webDir: opts.webDir ?? join(defaultRoot, "apps/web/dist"),
+      webDir: opts.webDir,
       remoteAccess: opts.remoteAccess ?? false,
       repoRoot: opts.repoRoot ?? defaultRoot,
       sessionSecretPath: opts.sessionSecretPath,
@@ -239,7 +240,7 @@ export class FactoryLauncher {
               FACTORY_HOST_URL: engineUrl,
               FACTORY_HOST_TOKEN: hostToken,
               FACTORY_STATE_DIR: this.options.stateDir,
-              FACTORY_WEB_DIR: this.options.webDir,
+              ...(this.options.webDir ? { FACTORY_WEB_DIR: this.options.webDir } : {}),
               FACTORY_REMOTE_ACCESS: String(this.options.remoteAccess),
               ...(this.options.operatorToken
                 ? { FACTORY_OPERATOR_TOKEN: this.options.operatorToken }

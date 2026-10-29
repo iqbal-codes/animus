@@ -8,7 +8,6 @@ export default defineConfig({
     ignorePatterns: [
       "**/node_modules/**",
       "**/dist/**",
-      "web/**",
       "assets/**",
       ".archon/**",
       ".factory/**",
@@ -28,8 +27,6 @@ export default defineConfig({
                 "@labq/backend/*",
                 "@labq/engine-host",
                 "@labq/engine-host/*",
-                "@labq/web",
-                "@labq/web/*",
                 "**/apps/**",
                 "**/packages/**",
                 "../../*",
@@ -41,7 +38,6 @@ export default defineConfig({
       },
       {
         files: [
-          "apps/web/src/**/*.{ts,tsx,js,jsx}",
           "packages/client/src/**/*.{ts,js}",
           "packages/contracts/src/operator.ts",
           "packages/contracts/src/health.ts",
@@ -57,7 +53,6 @@ export default defineConfig({
                 "bun:*",
                 "@labq/backend*",
                 "@labq/engine-host*",
-                "@labq/web*",
                 "**/apps/**",
                 "**/packages/**",
                 "**/config",
@@ -76,19 +71,12 @@ export default defineConfig({
   fmt: { ignorePatterns: ["**/node_modules/**", "**/dist/**"] },
   test: {
     include: ["tests/integration/*.test.ts"],
-    exclude: ["**/*.bun.test.ts", "**/*.browser.test.ts"],
+    exclude: ["**/*.bun.test.ts"],
   },
   run: {
     tasks: {
       "neutral-suite": { command: "vp test run", cache: false },
       "bun-suite": { command: "bun test tests/integration/health.bun.test.ts", cache: false },
-      "web-artifacts": { command: "node scripts/health/build-and-inspect.mjs", cache: false },
-      "browser-suite": {
-        command:
-          "node node_modules/@playwright/test/cli.js test --config tests/integration/playwright.config.ts",
-        dependsOn: ["web-artifacts"],
-        cache: false,
-      },
       "toolchain-check": { command: "node scripts/health/check-toolchain.mjs", cache: false },
       "static-check": { command: "bun run check", cache: false },
       "verify-all": {
@@ -98,7 +86,7 @@ export default defineConfig({
       },
       "test-all": {
         command: "node -e \"console.log('All suites passed')\"",
-        dependsOn: ["neutral-suite", "bun-suite", "browser-suite"],
+        dependsOn: ["neutral-suite", "bun-suite"],
         cache: false,
       },
     },

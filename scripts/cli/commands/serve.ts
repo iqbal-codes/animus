@@ -142,13 +142,13 @@ export async function runServeCommand(
     port,
     enginePort: opts.enginePort ?? 0,
     stateDir,
-    webDir: opts.webDir ?? join(opts.repoRoot, "apps/web/dist"),
+    webDir: opts.webDir,
     remoteAccess: opts.remoteAccess ?? false,
     repoRoot: opts.repoRoot,
   });
 
   if (!opts.json) {
-    console.log(`Starting Software Factory Console (Backend + Engine-Host) on ${host}:${port}...`);
+    console.log(`Starting Software Factory Services (Backend + Engine-Host) on ${host}:${port}...`);
   }
 
   const result = await launcher.start();
@@ -187,7 +187,7 @@ export async function runServeCommand(
       ),
     );
   } else {
-    console.log(`Backend + Web Console running at ${result.backendUrl}`);
+    console.log(`Backend API running at ${result.backendUrl}`);
     console.log(`Engine-Host running on loopback at ${result.engineHostUrl}`);
     console.log("Press Ctrl+C to stop both services gracefully.");
   }
@@ -198,7 +198,7 @@ export async function runServeCommand(
 
   return await new Promise<number>((resolveExit) => {
     const shutdown = async () => {
-      if (!opts.json) console.log("\nStopping Software Factory Console...");
+      if (!opts.json) console.log("\nStopping Software Factory Services...");
       clearRuntimeMetadata(stateDir);
       const stopResult = await launcher.stop();
       if (stopResult.status === "partial_shutdown_failure") {
@@ -288,7 +288,7 @@ export async function runStandaloneBackend(opts: {
     env: {
       ...process.env,
       FACTORY_STATE_DIR: opts.stateDir ?? join(opts.repoRoot, ".factory/state"),
-      FACTORY_WEB_DIR: opts.webDir ?? join(opts.repoRoot, "apps/web/dist"),
+      ...(opts.webDir ? { FACTORY_WEB_DIR: opts.webDir } : {}),
       FACTORY_REMOTE_ACCESS: String(opts.remoteAccess ?? false),
       FACTORY_HOST_URL: process.env.FACTORY_HOST_URL ?? "http://127.0.0.1:4001",
       FACTORY_HOST_TOKEN:

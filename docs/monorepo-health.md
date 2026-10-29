@@ -32,7 +32,6 @@ workflow/recovery qualification (#29 and later slices own that evidence).
 | `@labq/client` | Operator-only Fetch client and classified errors; imports only `/operator` |
 | `@labq/backend` | Bun public health HTTP and authenticated host request; imports contracts, no other app |
 | `@labq/engine-host` | Bun authenticated private process health HTTP; imports private contract, no other app |
-| `@labq/web` | Vanilla browser health view via client; Node-backed Vite+ dev/preview proxy |
 
 ## Start three independent processes
 
@@ -54,14 +53,12 @@ Exact start-command argv, from the checkout root:
 ```text
 ["bun", "apps/engine-host/src/main.ts", "--port", "{host_port}"]
 ["bun", "apps/backend/src/main.ts", "--port", "{backend_port}"]
-["bun", "run", "--cwd", "apps/web", "dev", "--host", "127.0.0.1", "--port", "{web_port}", "--strictPort"]
 ```
 
 | Process | Required environment |
 | --- | --- |
 | Host | `FACTORY_HOST_TOKEN` |
 | Backend | `FACTORY_HOST_TOKEN`, `FACTORY_HOST_URL=http://127.0.0.1:{host_port}` |
-| Web dev/preview | `FACTORY_BACKEND_URL=http://127.0.0.1:{backend_port}` |
 
 Set `FACTORY_RUNTIME_STATE` to a fresh directory per attempt. It is reserved for
 future writable migration behavior: this slice never creates files, directories,
@@ -71,22 +68,10 @@ availability. Missing/invalid settings abort without printing values.
 
 Bun listeners require `--port` (0 is allowed for isolated process tests and actual
 bound URL is reported). Optional `--host` accepts only `127.0.0.1` or `::1`, default
-`127.0.0.1`. Vite dev/preview require an explicit nonzero `--port`, loopback host,
-and strict port binding. Backend target URLs must be literal loopback HTTP origins
-with explicit nonzero ports: no DNS, userinfo, paths, queries or fragments. The web
-proxy forwards only the `/api/v1` namespace, never private host paths. It does not
-provide remote authentication or permissive CORS.
+`127.0.0.1`. Backend target URLs must be literal loopback HTTP origins
+with explicit nonzero ports: no DNS, userinfo, paths, queries or fragments.
 
-For built assets and preview:
-
-```sh
-bun run build:web
-# FACTORY_BACKEND_URL must be present in this server process only:
-bun run --cwd apps/web preview --host 127.0.0.1 --port 8082 --strictPort
-```
-
-Build requires no backend or host configuration. Open the web URL, observe both
-candidate identities, and use Refresh. Stopping the host must produce unavailable,
+Stopping the host must produce unavailable,
 not stale healthy; restarting the same candidate restores healthy. Host health
 means **the host process answered**, not that Archon or a provider is healthy.
 SIGTERM/SIGINT stop Bun services and release listeners; backend lifetime does not
@@ -140,9 +125,8 @@ bun run format       # non-mutating; format:write explicitly mutates
 bun run lint         # warnings fail
 bun run typecheck    # integrated static diagnostics, not execution
 bun run check        # format + lint + typecheck
-bun run build:web    # production build + module/asset authority inspection
-bun run test         # Vite Task: neutral Vitest, Bun processes, browser, unchanged Python
-bun run verify       # Vite Task: exact toolchain + static + test (including browser build)
+bun run test         # Vite Task: neutral Vitest and Bun process suites
+bun run verify       # Vite Task: exact toolchain + static + test
 ```
 
 Every introduced config task has `cache:false`; package scripts are uncached by
@@ -154,7 +138,6 @@ For focused development use `vp` via `node_modules/.bin/vp`, never a global CLI 
 ```sh
 node_modules/.bin/vp test run tests/integration/client.test.ts
 bun test tests/integration/health.bun.test.ts
-bun run build:web && node node_modules/@playwright/test/cli.js test --config tests/integration/playwright.config.ts
 ```
 
 Build the web assets (`bun run build:web`) and provision Chromium **before** offline testing:

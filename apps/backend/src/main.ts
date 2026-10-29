@@ -43,8 +43,6 @@ import { EvidenceService, handleProjectEvidenceRoute } from "./evidence";
 import { HarnessService, handleHarnessRoute } from "./harness";
 import { validateCsrfProtection, authenticateOperatorRequest } from "./security";
 import { handleStaticWebRoute } from "./web-static";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 try {
   const config = configuration();
@@ -1227,11 +1225,11 @@ try {
         if (harnessRes) return harnessRes;
       }
 
-      const webDir =
-        process.env.FACTORY_WEB_DIR ||
-        join(fileURLToPath(new URL("../../../apps/web/dist", import.meta.url)));
-      const staticRes = await handleStaticWebRoute(request, webDir);
-      if (staticRes) return staticRes;
+      const webDir = process.env.FACTORY_WEB_DIR;
+      if (webDir) {
+        const staticRes = await handleStaticWebRoute(request, webDir);
+        if (staticRes) return staticRes;
+      }
 
       return Response.json({ error: "not_found" }, { status: 404 });
     },

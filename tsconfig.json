@@ -1,29 +1,12 @@
 {
   "files": [],
   "references": [
-    {
-      "path": "apps/web"
-    },
-    {
-      "path": "apps/backend"
-    },
-    {
-      "path": "apps/engine-host"
-    },
-    {
-      "path": "apps/launcher"
-    },
-    {
-      "path": "packages/contracts"
-    },
-    {
-      "path": "packages/client"
-    },
-    {
-      "path": "tsconfig.tools.json"
-    },
-    {
-      "path": "tests/integration"
-    }
+    { "path": "apps/backend" },
+    { "path": "apps/engine-host" },
+    { "path": "apps/launcher" },
+    { "path": "packages/contracts" },
+    { "path": "packages/client" },
+    { "path": "tsconfig.tools.json" },
+    { "path": "tests/integration" }
   ]
 }

@@ -54,7 +54,7 @@ export async function packageReleaseBundle(
   const bundleContent = Buffer.from(
     JSON.stringify({
       manifest,
-      components: ["backend", "engine-host", "launcher", "web-dist"],
+      components: ["backend", "engine-host", "launcher", "cli"],
       bundled_at: new Date().toISOString(),
     }),
   );

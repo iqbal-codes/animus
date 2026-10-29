@@ -33,7 +33,7 @@ export const helpEntries: readonly HelpEntry[] = [
   {
     command: "serve",
     spec: "serve [start|status|stop]",
-    description: "Start/manage coordinated Backend + Engine-Host + Web Console",
+    description: "Start/manage coordinated Backend + Engine-Host headless runtime",
   },
   {
     command: "backend",
@@ -204,7 +204,7 @@ export const orderedFlags: readonly FlagHelp[] = [
   },
   {
     spec: "--web-dir <path>",
-    description: "Override built web console dist directory (default: apps/web/dist)",
+    description: "Optional static web directory to serve (headless by default)",
     commands: ["serve", "backend"],
   },
   {

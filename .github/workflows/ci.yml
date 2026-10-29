@@ -72,16 +72,13 @@ jobs:
       - name: Toolchain check
         run: node scripts/health/check-toolchain.mjs
 
-      - name: Install Playwright Browsers
-        run: npx playwright install chromium --with-deps
-
-      - name: Offline test suite & browser journeys
+      - name: Offline test suite
         run: bun run test
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   gate-build:
-    name: "Gate 3: Frontend Build & Packaging Validation"
+    name: "Gate 3: Release Packaging Validation"
     needs: [gate-verify]
     runs-on: ubuntu-latest
     steps:
@@ -100,9 +97,6 @@ jobs:
 
       - name: Frozen dependency install
         run: bun install --frozen-lockfile
-
-      - name: Build web frontend
-        run: bun run build:web
 
       - name: Verify release packaging
         run: bun run package:release

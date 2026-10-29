@@ -1,18 +1,17 @@
 {
   "compilerOptions": {
-    "strict": true,
-    "noEmit": true,
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "types": ["node", "bun"],
-    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
     "allowJs": true,
-    "checkJs": true
+    "checkJs": true,
+    "skipLibCheck": true,
+    "types": ["node", "bun"]
   },
   "include": [
     "vite.config.ts",
-    "apps/web/vite.config.ts",
     "scripts/health/**/*.mjs",
     "scripts/release/**/*.ts",
     "scripts/**/*.ts",

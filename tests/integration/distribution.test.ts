@@ -37,7 +37,6 @@ describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollba
         port: 0,
         enginePort: 0,
         stateDir: tempDir,
-        webDir: join(process.cwd(), "apps/web/dist"),
       });
 
       // Verify launcher status before start
@@ -107,8 +106,19 @@ describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollba
       expect(stopResult.failed).toContain("engine-host");
     });
 
-    test("backend serves static web console on localhost origin with SPA fallback", async () => {
+    test("backend serves static web console on localhost origin with SPA fallback if webDir configured", async () => {
       const { handleStaticWebRoute } = await import("../../apps/backend/src/web-static");
+
+      // Returns null when webDir is undefined or does not exist (headless mode)
+      expect(
+        await handleStaticWebRoute(new Request("http://127.0.0.1:3000/"), undefined),
+      ).toBeNull();
+      expect(
+        await handleStaticWebRoute(
+          new Request("http://127.0.0.1:3000/"),
+          join(tempDir, "nonexistent"),
+        ),
+      ).toBeNull();
 
       // Create mock web dist
       const mockWebDist = join(tempDir, "web-dist");
@@ -361,11 +371,14 @@ describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollba
       expect(result.ok).toBe(true);
       expect(result.violations.length).toBe(0);
 
-      // Deliberate forbidden import in web must fail closed
+      // Deliberate forbidden import in contracts must fail closed
       const illegalCode = 'import { initializeDatabase } from "@labq/backend";';
-      const webViolations = checkArchitectureRules.scanSnippet("apps/web/src/fake.ts", illegalCode);
-      expect(webViolations.length).toBeGreaterThan(0);
-      expect(webViolations[0]).toContain("apps/web cannot import server internals");
+      const contractViolations = checkArchitectureRules.scanSnippet(
+        "packages/contracts/src/fake.ts",
+        illegalCode,
+      );
+      expect(contractViolations.length).toBeGreaterThan(0);
+      expect(contractViolations[0]).toContain("packages/contracts cannot import applications");
 
       // Deliberate Node builtin in client must fail closed
       const clientIllegalCode = 'import fs from "node:fs";';
@@ -424,6 +437,9 @@ describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollba
         expect(bundle.manifest.gitSha).toBe("a7338e65fa30a37748d0acde86a6fc6c0fc3ba49");
         expect(bundle.manifest.platform).toBe(target.platform);
         expect(bundle.manifest.arch).toBe(target.arch);
+
+        const bundleContent = JSON.parse(readFileSync(bundle.bundlePath, "utf-8"));
+        expect(bundleContent.components).toEqual(["backend", "engine-host", "launcher", "cli"]);
       }
     });
 

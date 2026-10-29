@@ -22,7 +22,7 @@ const MIME_TYPES: Record<string, string> = {
 
 export async function handleStaticWebRoute(
   request: Request,
-  webDir: string,
+  webDir?: string,
 ): Promise<Response | null> {
   if (request.method !== "GET" && request.method !== "HEAD") {
     return null;
@@ -42,7 +42,7 @@ export async function handleStaticWebRoute(
     return null;
   }
 
-  if (!existsSync(webDir)) {
+  if (!webDir || !existsSync(webDir)) {
     return null;
   }
 
