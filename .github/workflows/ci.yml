@@ -72,6 +72,9 @@ jobs:
       - name: Toolchain check
         run: node scripts/health/check-toolchain.mjs
 
+      - name: Install Playwright Browsers
+        run: npx playwright install chromium --with-deps
+
       - name: Offline test suite & browser journeys
         run: bun run test
         env:
