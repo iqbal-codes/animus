@@ -43,6 +43,8 @@ function normalizeExtractedReport(value: any, candidate: string) {
       verdict: isPass ? "pass" : "fail",
       checks: value.lines.map((l: any) => ({
         criterion: l.id || "criterion",
+        text: l.text || "",
+        kind: l.kind || "criterion",
         result: String(l.verdict).toLowerCase(),
         evidence: Array.isArray(l.evidence) ? l.evidence.join(", ") : String(l.text || ""),
       })),

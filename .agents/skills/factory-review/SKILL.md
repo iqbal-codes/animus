@@ -13,7 +13,7 @@ Read `docs/agents/software-factory-workflow.md`. Review without editing, publish
 The builder/implementer cannot act as an independent reviewer of their own work—confirmation bias, cached assumptions, and builder context blind the author to subtle defects, edge cases, and omitted invariants.
 
 - **Separate session requirement:** If invoked within an active implementation session (or after implementing changes in the same thread), do **not** run the review inline. Handoff to an independent review session or instruct the caller to invoke `/factory-review` in a separate review thread.
-- **Coordinator role:** When executing `/factory-review`, the current session acts exclusively as the **review coordinator**. The coordinator does **not** conduct the code review directly. Instead, it pins the scope, identifies sources and standards, dispatches **two dedicated axis subagents** in parallel, and aggregates their results.
+- **Coordinator role:** When executing `/factory-review` in an environment that supports subagents, the current session acts exclusively as the **review coordinator**. The coordinator does **not** conduct the code review directly; instead, it pins the scope, identifies sources and standards, dispatches **two dedicated axis subagents** in parallel, and aggregates their results. When running in a standalone review session where subagent delegation is unsupported, the reviewer conducts the evaluation of both axes directly within the session under separate headings.
 
 ## Critical Invariant: Strict Read-Only Review Boundary
 
@@ -48,7 +48,10 @@ Reviewing requires two independent perspectives that never share context or cont
 
 Enforce the **Strict Read-Only Review Boundary** on all delegated subagents: reviewers evaluate the candidate as-is and must never touch the filesystem or fix bugs.
 
-If delegation is unavailable or unsupported by the runtime environment, do not perform an inline self-review in the implementer's session; fail closed and inform the caller that independent subagent delegation is required. (In dry-run fixture tests where an explicit mock prompt tests review protocol behavior without subagent tooling, format the two distinct subagent input payloads and isolated reports).
+If delegation is unavailable or unsupported by the runtime environment:
+- If running in an active implementation session, do **not** perform an inline self-review in the implementer's session; fail closed and inform the caller that an independent review session is required.
+- If already running in a dedicated, independent review session separate from the implementer (such as the autonomous loop reviewer node or a standalone CLI review session), evaluate both the Standards and Spec axes directly within this session under separate `## Standards` and `## Spec` headings while strictly adhering to the read-only review boundary.
+(In dry-run fixture tests where an explicit mock prompt tests review protocol behavior without subagent tooling, format the two distinct subagent input payloads and isolated reports).
 
 ### Standards subagent dispatch
 

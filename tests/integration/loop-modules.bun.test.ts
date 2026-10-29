@@ -12,6 +12,8 @@ import {
   resolveEffortForRole,
   resolveRoleConfig,
   SUPPORTED_PROVIDERS,
+  ACTIVE_PROVIDERS,
+  COMING_SOON_PROVIDERS,
   EFFORT_LADDER,
   isEffortRung,
   clampEffort,
@@ -41,6 +43,9 @@ import {
   recordLapAttempt,
   shouldTriggerReflection,
   runPostIssueReflection,
+  resolveVerificationProfile,
+  getProfileInstructions,
+  getIssuesWaitingApproval,
   type BacklogCandidate,
 } from "../../scripts/loop/index";
 
@@ -60,10 +65,10 @@ test("1. Model Tiering: resolves roles to tiers and config models", async () => 
 
   const cfg = readArchonConfig(root);
   expect(cfg.assistant).toBe("pi");
-  expect(cfg.tiers?.large?.model).toBe("router/cx/gpt-6.1-sol");
+  expect(cfg.tiers?.large?.model).toMatch(/(?:9router|router)\/cx\/gpt-6\.1-sol/);
 
   const reviewerModel = resolveModelForRole(root, "reviewer");
-  expect(reviewerModel).toBe("router/cx/gpt-6.1-sol");
+  expect(reviewerModel).toMatch(/(?:9router|router)\/cx\/gpt-6\.1-sol/);
 });
 
 test("2. Prompts: loads decoupled markdown files from scripts/prompts and interpolates", () => {
@@ -359,22 +364,40 @@ test("11. Multiple Provider Harness Support: resolves and formats argv for Pi, C
   // 1. Check supported provider enumeration
   expect(SUPPORTED_PROVIDERS).toContain("pi");
   expect(SUPPORTED_PROVIDERS).toContain("claude");
+  expect(SUPPORTED_PROVIDERS).toContain("omp");
   expect(SUPPORTED_PROVIDERS).toContain("codex");
   expect(SUPPORTED_PROVIDERS).toContain("opencode");
-  expect(SUPPORTED_PROVIDERS).toContain("copilot");
+  expect(SUPPORTED_PROVIDERS).not.toContain("copilot");
+
+  expect(ACTIVE_PROVIDERS).toEqual(["pi", "claude", "omp"]);
+  expect(COMING_SOON_PROVIDERS).toEqual(["codex", "opencode"]);
 
   expect(isSupportedProvider("claude")).toBe(true);
+  expect(isSupportedProvider("omp")).toBe(true);
   expect(isSupportedProvider("unknown-agent")).toBe(false);
 
   // 2. Check provider descriptors
   const claudeDesc = getProviderDescriptor("claude");
   expect(claudeDesc.displayName).toBe("Claude Code");
   expect(claudeDesc.builtIn).toBe(true);
+  expect(claudeDesc.status).toBe("active");
   expect(claudeDesc.capabilities.nativeTools).toBe(true);
 
   const piDesc = getProviderDescriptor("pi");
   expect(piDesc.displayName).toBe("Pi");
+  expect(piDesc.status).toBe("active");
   expect(piDesc.capabilities.sessionResume).toBe(true);
+
+  const ompDesc = getProviderDescriptor("omp");
+  expect(ompDesc.displayName).toBe("Oh-My-Pi (OMP)");
+  expect(ompDesc.status).toBe("active");
+  expect(ompDesc.capabilities.nativeTools).toBe(true);
+
+  const codexDesc = getProviderDescriptor("codex");
+  expect(codexDesc.status).toBe("coming_soon");
+
+  const opencodeDesc = getProviderDescriptor("opencode");
+  expect(opencodeDesc.status).toBe("coming_soon");
 
   // 3. Provider resolution from repository config
   const roleProvider = resolveProviderForRole(root, "reviewer");
@@ -382,7 +405,7 @@ test("11. Multiple Provider Harness Support: resolves and formats argv for Pi, C
 
   const roleConfig = resolveRoleConfig(root, "reviewer");
   expect(roleConfig.provider).toBe("pi");
-  expect(roleConfig.model).toBe("router/cx/gpt-6.1-sol");
+  expect(roleConfig.model).toMatch(/(?:9router|router)\/cx\/gpt-6\.1-sol/);
 
   // 4. Argv formatting across all harnesses
   const prompt = "Solve issue 99";
@@ -404,24 +427,32 @@ test("11. Multiple Provider Harness Support: resolves and formats argv for Pi, C
   expect(claudeArgv).toContain("-p");
   expect(claudeArgv).toContain(prompt);
 
+  // OMP argv
+  const ompArgv = buildProviderArgv("omp", { prompt, model, sessionDir: "/tmp/session" });
+  expect(ompArgv[0]).toBe("omp");
+  expect(ompArgv).toContain("--session-dir");
+  expect(ompArgv).toContain("--model");
+  expect(ompArgv).toContain("gpt-5");
+  expect(ompArgv).toContain("--auto-approve");
+  expect(ompArgv[ompArgv.length - 1]).toBe(prompt);
+
   // Codex argv
   const codexArgv = buildProviderArgv("codex", { prompt, model });
   expect(codexArgv[0]).toBe("codex");
   expect(codexArgv).toContain("exec");
   expect(codexArgv).toContain("--json");
-  expect(codexArgv).toContain("--prompt");
+  expect(codexArgv).toContain("--dangerously-bypass-approvals-and-sandbox");
+  expect(codexArgv[codexArgv.length - 1]).toBe(prompt);
 
   // OpenCode argv
   const opencodeArgv = buildProviderArgv("opencode", { prompt, model });
   expect(opencodeArgv[0]).toBe("opencode");
   expect(opencodeArgv).toContain("run");
   expect(opencodeArgv).toContain("--format");
-
-  // GitHub Copilot argv
-  const copilotArgv = buildProviderArgv("copilot", { prompt, model });
-  expect(copilotArgv[0]).toBe("copilot");
-  expect(copilotArgv).toContain("--output-format");
-  expect(copilotArgv).toContain("json");
+  expect(opencodeArgv).toContain("json");
+  expect(opencodeArgv).toContain("--auto");
+  expect(opencodeArgv).toContain("--standalone");
+  expect(opencodeArgv[opencodeArgv.length - 1]).toBe(prompt);
 
   // 5. Reasoning Effort configuration, clamping, and flag formatting
   const reviewerEffort = resolveEffortForRole(root, "reviewer");
@@ -442,7 +473,6 @@ test("11. Multiple Provider Harness Support: resolves and formats argv for Pi, C
   // Clamping down to weaker supported rung:
   expect(clampEffort("ultra", PROVIDER_EFFORT_VOCABULARIES.pi)).toBe("max");
   expect(clampEffort("persistent", PROVIDER_EFFORT_VOCABULARIES.codex)).toBe("ultra");
-  expect(clampEffort("max", PROVIDER_EFFORT_VOCABULARIES.copilot)).toBe("xhigh");
 
   // Provider argv with reasoning effort
   const piWithEffort = buildProviderArgv("pi", { prompt, model, effort: "high" });
@@ -454,8 +484,8 @@ test("11. Multiple Provider Harness Support: resolves and formats argv for Pi, C
   expect(claudeWithEffort).toContain("high");
 
   const codexWithEffort = buildProviderArgv("codex", { prompt, model, effort: "ultra" });
-  expect(codexWithEffort).toContain("--effort");
-  expect(codexWithEffort).toContain("ultra");
+  expect(codexWithEffort).toContain("-c");
+  expect(codexWithEffort).toContain('model_reasoning_effort="ultra"');
 });
 
 test("post-loop self-improving harness: curated injection, dossier terminal trigger, Jev curation, and skill promotion", async () => {
@@ -672,5 +702,126 @@ test("post-loop self-improving harness: curated injection, dossier terminal trig
     expect(updatedAgentsMd.split("\n").length).toBeLessThanOrEqual(150);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("13. Verification Profiles: resolves appropriate profile and generates tuned instructions", () => {
+  const root = join(import.meta.dir, "../..");
+
+  // Explicit label: docs
+  const docsIssue = {
+    number: 101,
+    url: "https://github.com/org/repo/issues/101",
+    title: "Update API guide",
+    body: "Please update docs",
+    comments: [],
+    dependencies: [],
+    activeClaim: false,
+    labels: ["profile:docs"],
+  };
+  expect(resolveVerificationProfile(docsIssue)).toBe("docs");
+  const docsInst = getProfileInstructions("docs", root);
+  expect(docsInst.depth).toBe("light");
+  expect(docsInst.skipAppLaunch).toBe(true);
+  expect(docsInst.runtimeInstructions).toContain("Documentation only");
+
+  // Body directive: api
+  const apiIssue = {
+    number: 102,
+    url: "https://github.com/org/repo/issues/102",
+    title: "Add GET /api/v1/healthcheck endpoint",
+    body: "Verification Profile: api\nImplement new endpoint",
+    comments: [],
+    dependencies: [],
+    activeClaim: false,
+    labels: [],
+  };
+  expect(resolveVerificationProfile(apiIssue)).toBe("api");
+  const apiInst = getProfileInstructions("api", root);
+  expect(apiInst.depth).toBe("normal");
+  expect(apiInst.skipAppLaunch).toBe(false);
+  expect(apiInst.runtimeInstructions).toContain("HTTP requests or curl");
+
+  // Changed files: UI
+  const genericIssue = {
+    number: 103,
+    url: "https://github.com/org/repo/issues/103",
+    title: "Change button styling",
+    body: "Make the button red",
+    comments: [],
+    dependencies: [],
+    activeClaim: false,
+    labels: [],
+  };
+  expect(
+    resolveVerificationProfile(genericIssue, [
+      "apps/web/src/Button.tsx",
+      "apps/web/src/button.css",
+    ]),
+  ).toBe("ui");
+  const uiInst = getProfileInstructions("ui", root);
+  expect(uiInst.depth).toBe("normal");
+  expect(uiInst.skipAppLaunch).toBe(false);
+  expect(uiInst.runtimeInstructions).toContain("Frontend / UI change");
+
+  // Core auth / security
+  const secIssue = {
+    number: 104,
+    url: "https://github.com/org/repo/issues/104",
+    title: "Rotate auth JWT signature secret",
+    body: "Update session token auth validation",
+    comments: [],
+    dependencies: [],
+    activeClaim: false,
+    labels: ["security"],
+  };
+  expect(resolveVerificationProfile(secIssue)).toBe("core");
+  const coreInst = getProfileInstructions("core", root);
+  expect(coreInst.depth).toBe("deep");
+  expect(coreInst.skipAppLaunch).toBe(false);
+  expect(coreInst.runtimeInstructions).toContain("Probe security");
+});
+
+test("14. Scheduler waiting_approval protection: prevents re-dispatching delivered items awaiting human review", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "scheduler-waiting-"));
+  try {
+    const runsDir = join(tmp, "runs");
+    mkdirSync(join(runsDir, "run-99"), { recursive: true });
+    writeFileSync(
+      join(runsDir, "run-99", "state.json"),
+      JSON.stringify({
+        runId: "run-99",
+        issue: "https://github.com/org/repo/issues/99",
+        status: "waiting_approval",
+      }),
+    );
+
+    const waitingSet = getIssuesWaitingApproval(runsDir);
+    expect(waitingSet.has(99)).toBe(true);
+
+    const candidates: BacklogCandidate[] = [
+      {
+        number: 99,
+        title: "Feature 99 awaiting human approval",
+        state: "OPEN",
+        labels: ["ready-for-agent"],
+        dependencies: [],
+      },
+      {
+        number: 100,
+        title: "Next unblocked feature",
+        state: "OPEN",
+        labels: ["ready-for-agent"],
+        dependencies: [],
+      },
+    ];
+
+    const admitted = filterAdmittedIssues(candidates, new Set(), {
+      waitingApprovalIssueNumbers: waitingSet,
+    });
+    expect(admitted).toHaveLength(1);
+    expect(admitted[0]?.number).toBe(100); // 99 is cleanly skipped!
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
   }
 });

@@ -28,7 +28,7 @@ export function resolveAllowedSkills(root: string, role: LoopRole): string[] {
       candidateNames.push("tdd", "diagnosing-bugs", "factory-implement");
       break;
     case "reviewer":
-      candidateNames.push("factory-review");
+      // Unattended loop reviewer is governed directly by loop-review.md with unified Standards & Spec axes
       break;
     case "reflector":
       candidateNames.push("factory-harness", "writing-for-agents", "skill-creator");

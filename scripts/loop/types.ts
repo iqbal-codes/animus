@@ -1,5 +1,7 @@
 import type { EffortRung } from "./providers";
 
+export type VerificationProfile = "docs" | "ui" | "logic" | "api" | "core";
+
 export interface LocalIssue {
   number: number;
   url: string;
@@ -8,6 +10,8 @@ export interface LocalIssue {
   comments: string[];
   dependencies: { number: number; state: string }[];
   activeClaim: boolean;
+  labels?: string[];
+  verificationProfile?: VerificationProfile;
 }
 
 export type LoopRole =
@@ -48,7 +52,7 @@ export interface LocalLoopOptions {
 }
 
 export interface LoopEvidence {
-  kind: "pi" | "claude" | "codex" | "opencode" | "copilot" | "agent" | "check";
+  kind: "pi" | "claude" | "omp" | "codex" | "opencode" | "agent" | "check";
   role?: LoopRole;
   round?: number;
   candidate: string;
@@ -79,6 +83,7 @@ export interface LocalLoopResult {
   base: string;
   candidate?: string;
   pr?: string;
+  verificationProfile?: VerificationProfile;
   reviewCommentUrl?: string;
   evidence: LoopEvidence[];
   error?: string;

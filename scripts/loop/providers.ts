@@ -1,12 +1,16 @@
 export const SUPPORTED_PROVIDERS = [
   "pi",
   "claude",
+  "omp",
   "codex",
   "opencode",
-  "copilot",
 ] as const;
 
+export const ACTIVE_PROVIDERS = ["pi", "claude", "omp"] as const;
+export const COMING_SOON_PROVIDERS = ["codex", "opencode"] as const;
+
 export type SupportedProvider = (typeof SUPPORTED_PROVIDERS)[number];
+export type ActiveProvider = (typeof ACTIVE_PROVIDERS)[number];
 
 export const EFFORT_LADDER = [
   "minimal",
@@ -28,8 +32,8 @@ export function isEffortRung(value: unknown): value is EffortRung {
 export const PROVIDER_EFFORT_VOCABULARIES: Record<SupportedProvider, readonly EffortRung[]> = {
   pi: ["minimal", "low", "medium", "high", "xhigh", "max"],
   claude: ["low", "medium", "high", "xhigh", "max"],
+  omp: ["minimal", "low", "medium", "high", "xhigh", "max"],
   codex: ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
-  copilot: ["low", "medium", "high", "xhigh"],
   opencode: ["low", "medium", "high"],
 };
 
@@ -74,6 +78,7 @@ export interface ProviderDescriptor {
   displayName: string;
   builtIn: boolean;
   binaryName: string;
+  status: "active" | "coming_soon";
   capabilities: ProviderCapabilities;
   supportedEfforts: readonly EffortRung[];
 }
@@ -84,6 +89,7 @@ export const PROVIDER_DESCRIPTORS: Record<SupportedProvider, ProviderDescriptor>
     displayName: "Pi",
     builtIn: false,
     binaryName: "pi",
+    status: "active",
     capabilities: {
       sessionResume: true,
       sessionFork: true,
@@ -97,6 +103,7 @@ export const PROVIDER_DESCRIPTORS: Record<SupportedProvider, ProviderDescriptor>
     displayName: "Claude Code",
     builtIn: true,
     binaryName: "claude",
+    status: "active",
     capabilities: {
       sessionResume: true,
       sessionFork: true,
@@ -105,11 +112,26 @@ export const PROVIDER_DESCRIPTORS: Record<SupportedProvider, ProviderDescriptor>
     },
     supportedEfforts: PROVIDER_EFFORT_VOCABULARIES.claude,
   },
+  omp: {
+    id: "omp",
+    displayName: "Oh-My-Pi (OMP)",
+    builtIn: false,
+    binaryName: "omp",
+    status: "active",
+    capabilities: {
+      sessionResume: true,
+      sessionFork: true,
+      nativeTools: true,
+      effortControl: true,
+    },
+    supportedEfforts: PROVIDER_EFFORT_VOCABULARIES.omp,
+  },
   codex: {
     id: "codex",
-    displayName: "Codex",
+    displayName: "Codex (Coming Soon)",
     builtIn: true,
     binaryName: "codex",
+    status: "coming_soon",
     capabilities: {
       sessionResume: true,
       sessionFork: false,
@@ -120,9 +142,10 @@ export const PROVIDER_DESCRIPTORS: Record<SupportedProvider, ProviderDescriptor>
   },
   opencode: {
     id: "opencode",
-    displayName: "OpenCode",
+    displayName: "OpenCode (Coming Soon)",
     builtIn: false,
     binaryName: "opencode",
+    status: "coming_soon",
     capabilities: {
       sessionResume: true,
       sessionFork: false,
@@ -130,19 +153,6 @@ export const PROVIDER_DESCRIPTORS: Record<SupportedProvider, ProviderDescriptor>
       effortControl: true,
     },
     supportedEfforts: PROVIDER_EFFORT_VOCABULARIES.opencode,
-  },
-  copilot: {
-    id: "copilot",
-    displayName: "GitHub Copilot",
-    builtIn: false,
-    binaryName: "copilot",
-    capabilities: {
-      sessionResume: false,
-      sessionFork: false,
-      nativeTools: true,
-      effortControl: true,
-    },
-    supportedEfforts: PROVIDER_EFFORT_VOCABULARIES.copilot,
   },
 };
 
@@ -199,39 +209,56 @@ export function buildProviderArgv(
         options.prompt,
       ];
 
-    case "codex":
+    case "omp":
+      return [
+        "omp",
+        "--print",
+        "--mode",
+        "json",
+        ...(options.sessionDir ? ["--session-dir", options.sessionDir] : ["--no-session"]),
+        "--no-extensions",
+        ...(options.extensions?.flatMap((e) => ["-e", e]) ?? []),
+        "--no-skills",
+        ...(options.skills?.flatMap((s) => ["--skills", s]) ?? []),
+        "--no-context-files",
+        ...(options.appendSystemPrompts?.flatMap((p) => ["--append-system-prompt", p]) ?? []),
+        "--auto-approve",
+        ...(options.model ? ["--model", options.model] : []),
+        ...(clamped ? ["--thinking", clamped] : []),
+        options.prompt,
+      ];
+
+    case "codex": {
+      const finalPrompt = options.appendSystemPrompts?.length
+        ? `${options.appendSystemPrompts.join("\n\n")}\n\n---\n\n${options.prompt}`
+        : options.prompt;
       return [
         "codex",
         "exec",
         "--json",
+        "--dangerously-bypass-approvals-and-sandbox",
         ...(options.model ? ["--model", options.model] : []),
-        ...(clamped ? ["--effort", clamped] : []),
-        "--prompt",
-        options.prompt,
+        ...(clamped ? ["-c", `model_reasoning_effort="${clamped}"`] : []),
+        finalPrompt,
       ];
+    }
 
-    case "opencode":
+    case "opencode": {
+      const finalPrompt = options.appendSystemPrompts?.length
+        ? `${options.appendSystemPrompts.join("\n\n")}\n\n---\n\n${options.prompt}`
+        : options.prompt;
       return [
         "opencode",
         "run",
         "--format",
         "json",
+        "--auto",
+        "--standalone",
         ...(options.model ? ["--model", options.model] : []),
-        ...(clamped ? ["--effort", clamped] : []),
-        "--",
-        options.prompt,
+        ...(clamped && ["medium", "high", "xhigh", "max"].includes(clamped) ? ["--thinking"] : []),
+        finalPrompt,
       ];
-
-    case "copilot":
-      return [
-        "copilot",
-        "--output-format",
-        "json",
-        ...(options.model ? ["--model", options.model] : []),
-        ...(clamped ? ["--effort", clamped] : []),
-        "--prompt",
-        options.prompt,
-      ];
+    }
 
     case "pi":
     default:
@@ -240,7 +267,7 @@ export function buildProviderArgv(
         "--print",
         "--mode",
         "json",
-        "--no-session",
+        ...(options.sessionDir ? ["--session-dir", options.sessionDir] : ["--no-session"]),
         "--no-extensions",
         ...(options.extensions?.flatMap((e) => ["-e", e]) ?? []),
         "--no-mcp",
@@ -250,7 +277,6 @@ export function buildProviderArgv(
         "--no-context-files",
         ...(options.appendSystemPrompts?.flatMap((p) => ["--append-system-prompt", p]) ?? []),
         "--no-approve",
-        ...(options.sessionDir ? ["--session-dir", options.sessionDir] : []),
         ...(options.model ? ["--model", options.model] : []),
         ...(clamped ? ["--thinking", clamped] : []),
         "--",

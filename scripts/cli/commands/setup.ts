@@ -33,6 +33,7 @@ export interface DetectedHarnessProvider {
   installed: boolean;
   binaryPath: string | null;
   version: string | null;
+  status: "active" | "coming_soon";
   supportedEfforts: readonly EffortRung[];
 }
 
@@ -88,6 +89,11 @@ export const DEFAULT_PROVIDER_MODELS: Record<
     medium: "claude-sonnet-4-5",
     large: "claude-opus-4-5",
   },
+  omp: {
+    small: "9router/ag/gemini-3.8-flash",
+    medium: "9router/ag/gemini-3.8-flash",
+    large: "9router/cx/gpt-6.1-sol",
+  },
   codex: {
     small: "gpt-5.1-codex-mini",
     medium: "gpt-5.2-codex",
@@ -97,11 +103,6 @@ export const DEFAULT_PROVIDER_MODELS: Record<
     small: "anthropic/claude-haiku-4-5",
     medium: "anthropic/claude-sonnet-4-5",
     large: "anthropic/claude-opus-4-5",
-  },
-  copilot: {
-    small: "gpt-4.1",
-    medium: "claude-sonnet-4",
-    large: "gpt-5",
   },
 };
 
@@ -136,6 +137,7 @@ export function detectAvailableHarnesses(): DetectedHarnessProvider[] {
       installed,
       binaryPath,
       version,
+      status: desc.status,
       supportedEfforts: desc.supportedEfforts,
     });
   }

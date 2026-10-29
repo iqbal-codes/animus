@@ -74,7 +74,10 @@ describe("LabQ Factory Unified CLI & Repository Setup Onboarding", () => {
   test("detects available agent harnesses and repository verification commands", () => {
     const harnesses = detectAvailableHarnesses();
     expect(harnesses.length).toBe(5);
-    expect(harnesses.map((h) => h.id)).toEqual(["pi", "claude", "codex", "opencode", "copilot"]);
+    expect(harnesses.map((h) => h.id)).toEqual(["pi", "claude", "omp", "codex", "opencode"]);
+    expect(harnesses.find((h) => h.id === "omp")?.status).toBe("active");
+    expect(harnesses.find((h) => h.id === "codex")?.status).toBe("coming_soon");
+    expect(harnesses.find((h) => h.id === "opencode")?.status).toBe("coming_soon");
 
     // Simulate a Node/TypeScript repository in tempDir
     writeFileSync(

@@ -181,9 +181,35 @@ export function countActiveLaps(runsDir: string): number {
   return active;
 }
 
+export function getIssuesWaitingApproval(runsDir: string): Set<number> {
+  const waiting = new Set<number>();
+  if (!existsSync(runsDir)) return waiting;
+  try {
+    for (const entry of readdirSync(runsDir)) {
+      const statePath = join(runsDir, entry, "state.json");
+      if (!existsSync(statePath)) continue;
+      try {
+        const state = JSON.parse(readFileSync(statePath, "utf-8"));
+        if (state.status === "waiting_approval") {
+          const match = /\/issues\/(\d+)$/.exec(state.issue ?? "");
+          if (match && match[1]) {
+            waiting.add(Number(match[1]));
+          }
+        }
+      } catch {}
+    }
+  } catch {}
+  return waiting;
+}
+
+export interface FilterAdmittedIssuesOptions {
+  waitingApprovalIssueNumbers?: Set<number>;
+}
+
 export function filterAdmittedIssues(
   issues: BacklogCandidate[],
   closedIssueNumbers: Set<number>,
+  options: FilterAdmittedIssuesOptions = {},
 ): BacklogCandidate[] {
   const admitted: BacklogCandidate[] = [];
 
@@ -198,6 +224,9 @@ export function filterAdmittedIssues(
     if (hasBlocker) continue;
 
     if (issue.activeClaim) continue;
+
+    // Skip issues already delivered and waiting for human approval
+    if (options.waitingApprovalIssueNumbers?.has(issue.number)) continue;
 
     // Verify all dependencies are in closedIssueNumbers
     const allDepsSatisfied = issue.dependencies.every((dep) => closedIssueNumbers.has(dep));
@@ -254,9 +283,10 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
     };
   }
 
-  // 3. Count capacity
+  // 3. Count capacity & check waiting-approval items
   const runsDir = options.runsDir ?? join(root, ".factory-local-loop", "runs");
   const activeCount = countActiveLaps(runsDir);
+  const waitingApprovalNumbers = getIssuesWaitingApproval(runsDir);
   if (activeCount >= mergedConfig.parallel) {
     return {
       action: "skipped",
@@ -279,7 +309,9 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
     };
   }
 
-  const admitted = filterAdmittedIssues(backlog.issues, backlog.closedNumbers);
+  const admitted = filterAdmittedIssues(backlog.issues, backlog.closedNumbers, {
+    waitingApprovalIssueNumbers: waitingApprovalNumbers,
+  });
   if (admitted.length === 0) {
     return {
       action: "skipped",

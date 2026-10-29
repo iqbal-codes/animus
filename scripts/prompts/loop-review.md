@@ -19,18 +19,25 @@ The move this run:
 If QA reported `overall: "NO PR"`, no pull request was delivered. Leave one comment on the work item:
 `Loop review: no pull request` explaining the observed situation. If the item has reached $INPUTS.rejections attempts without progress, label it `needs-owner`. Return outcome `nothing` or `needs-owner`.
 
-## 2. Code Inspection & Verification
+## 2. Code Inspection & Verification (Standards & Spec Axes)
 
-1. **Checkout head:** Check out the candidate commit: `git checkout -B <branch> origin/<branch> --ignore-other-worktrees`.
-2. **Review diff:** Compare the branch against `$INPUTS.base`. Inspect for:
-   - Real bugs, unhandled errors, or edge cases.
-   - Regressions: any user-observable behavior worse than the default branch blocks merge, even if all criteria passed.
-   - Scope creep: additions unrelated to the acceptance contract.
-   - Weakened tests: skipped, commented-out, or loosened checks.
+In this unattended loop, you conduct the code inspection directly as the independent reviewer across two unified evaluation axes. Do NOT attempt to delegate to external subagents; you are already running in a clean, separate reviewer session isolated from the builder. Evaluate both axes directly:
+
+1. **Standards Axis:**
+   - Inspect diff for code smells: Mysterious Name, Duplicated Code, Feature Envy, Shotgun Surgery, Divergent Change, Speculative Generality.
+   - Verify compliance with documented repo rules in `AGENTS.md` and codebase conventions.
    - Protected paths: verify zero modifications to protected paths ($INPUTS.protected_paths). Any alteration mandates `needs-owner`.
-3. **Changes to check judgement:** If the diff alters what checks sample, skip, or excuse, verify explicit owner approval. Without approval, label `needs-owner`.
-4. **Evidence reuse:** Reuse check outputs saved in `$ARTIFACTS_DIR` by the builder or QA. Only re-run checks yourself if resolving a contested line.
-5. **CI status:** Verify CI status (`gh pr checks <n>`).
+   - Weakened tests: verify no skipped, commented-out, or loosened checks without owner approval.
+
+2. **Spec Axis:**
+   - Map every acceptance criterion and invariant in the source issue/contract to the implementation and evidence.
+   - Verify that all QA lines in `app-check.json` (both criteria and runtime probes) pass or have valid dispositions.
+   - Inspect for scope creep or behavioral regressions against `$INPUTS.base`.
+   - Check CI status (`gh pr checks <n>`).
+
+3. **Evidence & Preconditions:**
+   - Candidate checkout: `git checkout -B <branch> origin/<branch> --ignore-other-worktrees`.
+   - Reuse check outputs saved in `$ARTIFACTS_DIR` by builder and QA; re-run checks only if resolving contested lines.
 
 ## 3. Mandatory Line Dispositions
 
@@ -49,16 +56,10 @@ Assign exactly one disposition to every QA line that is not a plain `PASS` or `O
 
 ## 5. Unified PR Review Comment
 
-Post exactly ONE unified comment on the pull request (or issue) starting with:
+The host loop executor publishes the unified review comment on the pull request (or issue) starting with:
 `Loop review: <outcome> (route: $INPUTS.route)`
 
-Include:
-- Candidate commit SHA
-- QA Verification summary table
-- Code review findings
-- Dispositions for non-passing lines
-- Noticed items pre-existing in the base
-- Decision outcome
+Include all findings, dispositions, and your rationale in your final JSON report below so the host executor can post the exact review record.
 
 ## 6. Report Format
 
