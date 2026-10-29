@@ -1,10 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { LoopRole, ModelTier } from "./types";
+import { type EffortRung, isEffortRung } from "./providers";
 
 export interface TierBinding {
   provider: string;
   model: string;
+  effort?: EffortRung;
 }
 
 export interface ArchonConfig {
@@ -25,11 +27,12 @@ export function parseYamlSimple(text: string): Record<string, any> {
     if (!line || line.trim().startsWith("#")) continue;
 
     // Top-level key: value or section:
-    const topMatch = /^([a-zA-Z0-9_@-]+):(?:\s*(.*))?$/.exec(line);
+    const topMatch = /^['"]?([a-zA-Z0-9_@-]+)['"]?:(?:\s*(.*))?$/.exec(line);
     if (topMatch && !line.startsWith(" ")) {
       const [, key, val] = topMatch;
-      if (val !== undefined && val.trim() !== "") {
-        result[key!] = val.trim();
+      const cleanVal = val !== undefined ? val.trim().replace(/^['"]|['"]$/g, "") : undefined;
+      if (cleanVal !== undefined && cleanVal !== "") {
+        result[key!] = cleanVal;
         currentSection = null;
       } else {
         result[key!] = {};
@@ -40,11 +43,12 @@ export function parseYamlSimple(text: string): Record<string, any> {
     }
 
     // 2-space indented key
-    const subMatch = /^ {2}([a-zA-Z0-9_@-]+):(?:\s*(.*))?$/.exec(line);
+    const subMatch = /^ {2}['"]?([a-zA-Z0-9_@-]+)['"]?:(?:\s*(.*))?$/.exec(line);
     if (subMatch && currentSection) {
       const [, key, val] = subMatch;
-      if (val !== undefined && val.trim() !== "") {
-        result[currentSection][key!] = val.trim();
+      const cleanVal = val !== undefined ? val.trim().replace(/^['"]|['"]$/g, "") : undefined;
+      if (cleanVal !== undefined && cleanVal !== "") {
+        result[currentSection][key!] = cleanVal;
         currentSubSection = null;
       } else {
         result[currentSection][key!] = {};
@@ -54,10 +58,10 @@ export function parseYamlSimple(text: string): Record<string, any> {
     }
 
     // 4-space indented key
-    const subSubMatch = /^ {4}([a-zA-Z0-9_@-]+):\s*(.*)$/.exec(line);
+    const subSubMatch = /^ {4}['"]?([a-zA-Z0-9_@-]+)['"]?:\s*(.*)$/.exec(line);
     if (subSubMatch && currentSection && currentSubSection) {
       const [, key, val] = subSubMatch;
-      result[currentSection][currentSubSection][key!] = val!.trim();
+      result[currentSection][currentSubSection][key!] = val!.trim().replace(/^['"]|['"]$/g, "");
     }
   }
 
@@ -110,4 +114,57 @@ export function resolveModelForRole(root: string, role: LoopRole): string | unde
   }
 
   return undefined;
+}
+
+export function resolveProviderForRole(root: string, role: LoopRole): string {
+  if (process.env.FACTORY_LOOP_PROVIDER) return process.env.FACTORY_LOOP_PROVIDER;
+  const config = readArchonConfig(root);
+  const tier = resolveModelTier(role);
+
+  if (role === "reviewer" && config.aliases?.["@reasoning"]?.provider) {
+    return config.aliases["@reasoning"].provider;
+  }
+
+  if (config.tiers?.[tier]?.provider) {
+    return config.tiers[tier].provider;
+  }
+
+  if (config.assistant) {
+    return config.assistant;
+  }
+
+  return "pi";
+}
+
+export function resolveEffortForRole(root: string, role: LoopRole): EffortRung | undefined {
+  if (process.env.FACTORY_LOOP_EFFORT && isEffortRung(process.env.FACTORY_LOOP_EFFORT)) {
+    return process.env.FACTORY_LOOP_EFFORT;
+  }
+  const config = readArchonConfig(root);
+  const tier = resolveModelTier(role);
+
+  if (
+    role === "reviewer" &&
+    config.aliases?.["@reasoning"]?.effort &&
+    isEffortRung(config.aliases["@reasoning"].effort)
+  ) {
+    return config.aliases["@reasoning"].effort;
+  }
+
+  if (config.tiers?.[tier]?.effort && isEffortRung(config.tiers[tier].effort)) {
+    return config.tiers[tier].effort;
+  }
+
+  return undefined;
+}
+
+export function resolveRoleConfig(
+  root: string,
+  role: LoopRole,
+): { provider: string; model?: string; effort?: EffortRung } {
+  return {
+    provider: resolveProviderForRole(root, role),
+    model: resolveModelForRole(root, role),
+    effort: resolveEffortForRole(root, role),
+  };
 }

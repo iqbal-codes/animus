@@ -1,3 +1,5 @@
+import type { EffortRung } from "./providers";
+
 export interface LocalIssue {
   number: number;
   url: string;
@@ -24,27 +26,35 @@ export interface ProcessResult {
   stderr: string;
 }
 
-export type PiTransport = (request: {
+export type AgentTransport = (request: {
   argv: string[];
   cwd: string;
   role: LoopRole;
+  provider?: string;
   timeoutMs: number;
 }) => Promise<ProcessResult>;
 
+export type PiTransport = AgentTransport;
+
 export interface LocalLoopOptions {
-  pi?: PiTransport;
+  pi?: AgentTransport;
+  transport?: AgentTransport;
+  provider?: string;
   model?: string;
+  effort?: EffortRung;
   timeoutMs?: number;
   push?: boolean;
 }
 
 export interface LoopEvidence {
-  kind: "pi" | "check";
+  kind: "pi" | "claude" | "codex" | "opencode" | "copilot" | "agent" | "check";
   role?: LoopRole;
   round?: number;
   candidate: string;
   artifact: string;
   exitCode: number;
+  provider?: string;
+  effort?: EffortRung;
 }
 
 export interface LocalLoopResult {

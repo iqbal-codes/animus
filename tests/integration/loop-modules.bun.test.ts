@@ -8,6 +8,17 @@ import {
   readArchonConfig,
   resolveModelTier,
   resolveModelForRole,
+  resolveProviderForRole,
+  resolveEffortForRole,
+  resolveRoleConfig,
+  SUPPORTED_PROVIDERS,
+  EFFORT_LADDER,
+  isEffortRung,
+  clampEffort,
+  PROVIDER_EFFORT_VOCABULARIES,
+  getProviderDescriptor,
+  isSupportedProvider,
+  buildProviderArgv,
   loadPrompt,
   renderPrompt,
   parsePrdSections,
@@ -19,6 +30,11 @@ import {
   analyzeDiffComplexity,
   verifyDeployment,
   auditDiscoveries,
+  runSchedulerTick,
+  startSchedulerLoop,
+  filterAdmittedIssues,
+  isWithinWorkWindow,
+  type BacklogCandidate,
 } from "../../scripts/loop/index";
 
 const tempDirs: string[] = [];
@@ -182,4 +198,250 @@ test("9. Discoveries: audits repository and prepares discovery records", async (
   const root = join(import.meta.dir, "../..");
   const res = await auditDiscoveries(root);
   expect(res.prompt).toContain("Classify discovery proposals");
+});
+
+test("10. Scheduler: evaluates brakes, work window, capacity slots, dependency admission, and autonomous dispatch", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "scheduler-"));
+  tempDirs.push(tmp);
+
+  // 1. Test Work Window logic
+  const overnightWindow = {
+    enabled: true,
+    start_time: "20:00",
+    end_time: "05:00",
+    timezone: "UTC",
+  };
+  const atNight = new Date("2026-10-29T22:30:00Z");
+  const inMorning = new Date("2026-10-29T10:00:00Z");
+  expect(isWithinWorkWindow(overnightWindow, atNight)).toBe(true);
+  expect(isWithinWorkWindow(overnightWindow, inMorning)).toBe(false);
+
+  // 2. Test Issue Admission & Dependency Gating
+  const candidates: BacklogCandidate[] = [
+    {
+      number: 1,
+      title: "Closed ticket",
+      state: "CLOSED",
+      labels: ["ready-for-agent"],
+      dependencies: [],
+    },
+    {
+      number: 2,
+      title: "No ready label",
+      state: "OPEN",
+      labels: ["bug"],
+      dependencies: [],
+    },
+    {
+      number: 3,
+      title: "Has blocker",
+      state: "OPEN",
+      labels: ["ready-for-agent", "needs-info"],
+      dependencies: [],
+    },
+    {
+      number: 4,
+      title: "Blocked by open #5",
+      state: "OPEN",
+      labels: ["ready-for-agent"],
+      dependencies: [5],
+    },
+    {
+      number: 5,
+      title: "Unblocked issue",
+      state: "OPEN",
+      labels: ["ready-for-agent"],
+      dependencies: [1], // Dep #1 is closed!
+    },
+    {
+      number: 6,
+      title: "Has active claim",
+      state: "OPEN",
+      labels: ["ready-for-agent"],
+      dependencies: [],
+      activeClaim: true,
+    },
+  ];
+
+  const closedSet = new Set([1]);
+  const admitted = filterAdmittedIssues(candidates, closedSet);
+  expect(admitted).toHaveLength(1);
+  expect(admitted[0]!.number).toBe(5);
+
+  // 3. Test Brakes
+  await mkdir(join(tmp, ".factory"), { recursive: true });
+  await Bun.write(join(tmp, ".factory", "PAUSE"), "drain");
+
+  let launched = false;
+  const dummyLaunch = async (issue: BacklogCandidate) => {
+    launched = true;
+    return { runId: `run-${issue.number}` };
+  };
+
+  const pausedRes = await runSchedulerTick({
+    root: tmp,
+    fetchBacklog: async () => ({ issues: candidates, closedNumbers: closedSet }),
+    launchLap: dummyLaunch,
+  });
+  expect(pausedRes.action).toBe("skipped");
+  expect(pausedRes.reason).toBe("pause_brake_set");
+  expect(launched).toBe(false);
+
+  // Remove PAUSE brake
+  await rm(join(tmp, ".factory", "PAUSE"));
+
+  // 4. Test Capacity full
+  const runsDir = join(tmp, "runs");
+  await mkdir(join(runsDir, "run-1"), { recursive: true });
+  await Bun.write(join(runsDir, "run-1", "state.json"), JSON.stringify({ status: "building" }));
+
+  const capRes = await runSchedulerTick({
+    root: tmp,
+    runsDir,
+    config: { parallel: 1 },
+    fetchBacklog: async () => ({ issues: candidates, closedNumbers: closedSet }),
+    launchLap: dummyLaunch,
+  });
+  expect(capRes.action).toBe("skipped");
+  expect(capRes.reason).toBe("capacity_full");
+  expect(capRes.activeLapsCount).toBe(1);
+  expect(launched).toBe(false);
+
+  // 5. Test Successful Autonomous Launch
+  const successRes = await runSchedulerTick({
+    root: tmp,
+    runsDir,
+    config: { parallel: 2 }, // Allow up to 2 parallel laps
+    fetchBacklog: async () => ({ issues: candidates, closedNumbers: closedSet }),
+    launchLap: dummyLaunch,
+  });
+  expect(successRes.action).toBe("launched");
+  expect(successRes.reason).toBe("launch_successful");
+  expect(successRes.targetIssueNumber).toBe(5);
+  expect(successRes.runId).toBe("run-5");
+  expect(launched).toBe(true);
+
+  // 6. Test startSchedulerLoop lifecycle
+  let loopTickCount = 0;
+  const loop = startSchedulerLoop({
+    root: tmp,
+    runsDir,
+    config: { parallel: 2 },
+    intervalMs: 10,
+    fetchBacklog: async () => ({ issues: candidates, closedNumbers: closedSet }),
+    launchLap: dummyLaunch,
+    onTick: () => {
+      loopTickCount++;
+    },
+  });
+
+  await Bun.sleep(35);
+  loop.stop();
+  await loop.done;
+  expect(loopTickCount).toBeGreaterThanOrEqual(1);
+});
+
+test("11. Multiple Provider Harness Support: resolves and formats argv for Pi, Claude Code, Codex, OpenCode, and Copilot", () => {
+  const root = join(import.meta.dir, "../..");
+
+  // 1. Check supported provider enumeration
+  expect(SUPPORTED_PROVIDERS).toContain("pi");
+  expect(SUPPORTED_PROVIDERS).toContain("claude");
+  expect(SUPPORTED_PROVIDERS).toContain("codex");
+  expect(SUPPORTED_PROVIDERS).toContain("opencode");
+  expect(SUPPORTED_PROVIDERS).toContain("copilot");
+
+  expect(isSupportedProvider("claude")).toBe(true);
+  expect(isSupportedProvider("unknown-agent")).toBe(false);
+
+  // 2. Check provider descriptors
+  const claudeDesc = getProviderDescriptor("claude");
+  expect(claudeDesc.displayName).toBe("Claude Code");
+  expect(claudeDesc.builtIn).toBe(true);
+  expect(claudeDesc.capabilities.nativeTools).toBe(true);
+
+  const piDesc = getProviderDescriptor("pi");
+  expect(piDesc.displayName).toBe("Pi");
+  expect(piDesc.capabilities.sessionResume).toBe(true);
+
+  // 3. Provider resolution from repository config
+  const roleProvider = resolveProviderForRole(root, "reviewer");
+  expect(roleProvider).toBe("pi");
+
+  const roleConfig = resolveRoleConfig(root, "reviewer");
+  expect(roleConfig.provider).toBe("pi");
+  expect(roleConfig.model).toBe("router/cx/gpt-6.1-sol");
+
+  // 4. Argv formatting across all harnesses
+  const prompt = "Solve issue 99";
+  const model = "gpt-5";
+
+  // Pi argv
+  const piArgv = buildProviderArgv("pi", { prompt, model, sessionDir: "/tmp/session" });
+  expect(piArgv[0]).toBe("pi");
+  expect(piArgv).toContain("--session-dir");
+  expect(piArgv).toContain("--model");
+  expect(piArgv).toContain("gpt-5");
+  expect(piArgv[piArgv.length - 1]).toBe(prompt);
+
+  // Claude Code argv
+  const claudeArgv = buildProviderArgv("claude", { prompt, model });
+  expect(claudeArgv[0]).toBe("claude");
+  expect(claudeArgv).toContain("--output-format");
+  expect(claudeArgv).toContain("json");
+  expect(claudeArgv).toContain("-p");
+  expect(claudeArgv).toContain(prompt);
+
+  // Codex argv
+  const codexArgv = buildProviderArgv("codex", { prompt, model });
+  expect(codexArgv[0]).toBe("codex");
+  expect(codexArgv).toContain("exec");
+  expect(codexArgv).toContain("--json");
+  expect(codexArgv).toContain("--prompt");
+
+  // OpenCode argv
+  const opencodeArgv = buildProviderArgv("opencode", { prompt, model });
+  expect(opencodeArgv[0]).toBe("opencode");
+  expect(opencodeArgv).toContain("run");
+  expect(opencodeArgv).toContain("--format");
+
+  // GitHub Copilot argv
+  const copilotArgv = buildProviderArgv("copilot", { prompt, model });
+  expect(copilotArgv[0]).toBe("copilot");
+  expect(copilotArgv).toContain("--output-format");
+  expect(copilotArgv).toContain("json");
+
+  // 5. Reasoning Effort configuration, clamping, and flag formatting
+  const reviewerEffort = resolveEffortForRole(root, "reviewer");
+  expect(reviewerEffort).toBe("high");
+
+  const qaEffort = resolveEffortForRole(root, "qa");
+  expect(qaEffort).toBe("medium");
+
+  const builderEffort = resolveEffortForRole(root, "builder");
+  expect(builderEffort).toBe("high");
+
+  expect(EFFORT_LADDER).toContain("minimal");
+  expect(EFFORT_LADDER).toContain("max");
+  expect(EFFORT_LADDER).toContain("ultra");
+  expect(isEffortRung("high")).toBe(true);
+  expect(isEffortRung("invalid-rung")).toBe(false);
+
+  // Clamping down to weaker supported rung:
+  expect(clampEffort("ultra", PROVIDER_EFFORT_VOCABULARIES.pi)).toBe("max");
+  expect(clampEffort("persistent", PROVIDER_EFFORT_VOCABULARIES.codex)).toBe("ultra");
+  expect(clampEffort("max", PROVIDER_EFFORT_VOCABULARIES.copilot)).toBe("xhigh");
+
+  // Provider argv with reasoning effort
+  const piWithEffort = buildProviderArgv("pi", { prompt, model, effort: "high" });
+  expect(piWithEffort).toContain("--thinking");
+  expect(piWithEffort).toContain("high");
+
+  const claudeWithEffort = buildProviderArgv("claude", { prompt, model, effort: "high" });
+  expect(claudeWithEffort).toContain("--effort");
+  expect(claudeWithEffort).toContain("high");
+
+  const codexWithEffort = buildProviderArgv("codex", { prompt, model, effort: "ultra" });
+  expect(codexWithEffort).toContain("--effort");
+  expect(codexWithEffort).toContain("ultra");
 });

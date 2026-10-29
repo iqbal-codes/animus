@@ -28,28 +28,7 @@ export function parseAgentReport(text: string): any {
   }
 }
 
-export function extractReport(stdout: string, candidate: string) {
-  let message:
-    | { role?: string; stopReason?: string; content?: { type: string; text?: string }[] }
-    | undefined;
-  let settled = false;
-  for (const line of stdout.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const event = JSON.parse(line);
-      if (event.type === "message_end" && event.message?.role === "assistant")
-        message = event.message;
-      if (event.type === "agent_start") settled = false;
-      if (event.type === "agent_settled") settled = event.aborted === false;
-    } catch {}
-  }
-  if (!settled || !message || message.stopReason !== "stop" || !Array.isArray(message.content))
-    throw new Error("Pi did not settle with a final assistant response");
-  const textContent = message.content
-    .filter((c) => c.type === "text")
-    .map((c) => c.text ?? "")
-    .join("");
-  const value = parseAgentReport(textContent);
+function normalizeExtractedReport(value: any, candidate: string) {
   if (!value || typeof value !== "object") {
     throw new Error("Missing, malformed or stale candidate-bound checks/review verdict");
   }
@@ -114,6 +93,55 @@ export function extractReport(stdout: string, candidate: string) {
       value.verdict === "pass" &&
       value.checks.every((c: { result: string }) => c.result === "pass"),
   };
+}
+
+export function extractReport(stdout: string, candidate: string) {
+  let message:
+    | { role?: string; stopReason?: string; content?: { type: string; text?: string }[] }
+    | undefined;
+  let settled = false;
+  let textDirect: string | null = null;
+
+  for (const line of stdout.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const event = JSON.parse(line);
+      if (event.type === "message_end" && event.message?.role === "assistant") {
+        message = event.message;
+        if (Array.isArray(event.message?.content)) {
+          textDirect = event.message.content
+            .filter((c: any) => c.type === "text")
+            .map((c: any) => c.text ?? "")
+            .join("");
+        }
+      }
+      if (event.type === "agent_start") settled = false;
+      if (event.type === "agent_settled") settled = event.aborted === false;
+      if (event.result && typeof event.result === "string") textDirect = event.result;
+      if (event.content && typeof event.content === "string") textDirect = event.content;
+    } catch {}
+  }
+
+  if (settled && message && message.stopReason === "stop" && Array.isArray(message.content)) {
+    const textContent = message.content
+      .filter((c) => c.type === "text")
+      .map((c) => c.text ?? "")
+      .join("");
+    return normalizeExtractedReport(parseAgentReport(textContent), candidate);
+  }
+
+  // If output was from Claude Code, Codex, OpenCode, or plain JSON/fenced markdown:
+  try {
+    const directValue = parseAgentReport(textDirect ?? stdout);
+    if (directValue && typeof directValue === "object") {
+      return normalizeExtractedReport(directValue, candidate);
+    }
+  } catch {}
+
+  if (!settled || !message || message.stopReason !== "stop" || !Array.isArray(message.content))
+    throw new Error("Pi did not settle with a final assistant response");
+
+  return normalizeExtractedReport(parseAgentReport(stdout), candidate);
 }
 
 export function validateEvidenceCitations(
