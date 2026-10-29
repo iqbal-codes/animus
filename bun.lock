@@ -34,6 +34,13 @@
         "@labq/contracts": "workspace:*",
       },
     },
+    "apps/launcher": {
+      "name": "@labq/launcher",
+      "version": "0.2.0",
+      "dependencies": {
+        "@labq/contracts": "workspace:*",
+      },
+    },
     "apps/web": {
       "name": "@labq/web",
       "dependencies": {
@@ -165,6 +172,8 @@
     "@labq/contracts": ["@labq/contracts@workspace:packages/contracts"],
 
     "@labq/engine-host": ["@labq/engine-host@workspace:apps/engine-host"],
+
+    "@labq/launcher": ["@labq/launcher@workspace:apps/launcher"],
 
     "@labq/web": ["@labq/web@workspace:apps/web"],
 

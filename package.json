@@ -7,6 +7,8 @@
   ],
   "type": "module",
   "scripts": {
+    "loop": "bun scripts/loop.ts",
+    "loop:watch": "bun scripts/loop-watch.ts",
     "toolchain": "node scripts/health/check-toolchain.mjs",
     "format": "vp fmt --check apps packages scripts/health scripts/release tests/integration vite.config.ts tsconfig.json tsconfig.tools.json package.json",
     "format:write": "vp fmt --write apps packages scripts/health scripts/release tests/integration vite.config.ts tsconfig.json tsconfig.tools.json package.json",
