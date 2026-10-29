@@ -19,6 +19,17 @@ import {
 } from "./loop/config";
 import { buildProviderArgv } from "./loop/providers";
 import {
+  resolveAllowedSkills,
+  resolveLoopExtensions,
+  buildCuratedAppendPrompts,
+} from "./loop/harness-memory";
+import {
+  recordLapAttempt,
+  shouldTriggerReflection,
+  saveIssueDossier,
+} from "./loop/dossier";
+import { runPostIssueReflection } from "./loop/reflector";
+import {
   loadPrompt,
   renderPrompt,
   resolveArchonCommandsDir,
@@ -425,6 +436,9 @@ export async function runLocalLoop(
     await rename(join(runDirectory, "state.tmp"), join(runDirectory, "state.json"));
   };
 
+  const transport =
+    options.transport ?? options.pi ?? ((req) => processRun(req.argv, req.cwd, req.timeoutMs));
+
   try {
     await Bun.write(
       join(lock, "owner.json"),
@@ -470,9 +484,6 @@ export async function runLocalLoop(
         throw new Error("Candidate changed protected paths");
       return head;
     };
-
-    const transport =
-      options.transport ?? options.pi ?? ((req) => processRun(req.argv, req.cwd, req.timeoutMs));
 
     // Dynamic prompt loading with modular fallback
     const getPromptTemplate = (name: string, fallback: string) => {
@@ -553,6 +564,9 @@ export async function runLocalLoop(
         effort: roleEffort,
         prompt,
         sessionDir: sessionDirectory,
+        skills: resolveAllowedSkills(root, role),
+        extensions: resolveLoopExtensions(root),
+        appendSystemPrompts: buildCuratedAppendPrompts(root, issue, changedFilesList),
       });
 
       const result = await transport({
@@ -676,7 +690,56 @@ export async function runLocalLoop(
 
     const isApproved = qaReport.passed && reviewReport.passed;
     const reviewOutcome = isApproved ? "approved" : "sent back";
-    state.status = isApproved ? "waiting_approval" : "sent_back";
+    const finalStatus = isApproved ? "waiting_approval" : "sent_back";
+
+    const changedFilesFinal = (
+      await git(state.worktree, "diff", "--name-only", "--no-renames", base, state.candidate)
+    )
+      .split("\n")
+      .filter(Boolean);
+
+    const dossier = recordLapAttempt(
+      stateRoot,
+      {
+        issueNumber: issue.number,
+        issueTitle: issue.title,
+        issueUrl: issue.url,
+        branch,
+        prUrl: state.pr,
+      },
+      {
+        runId,
+        timestamp: new Date().toISOString(),
+        status: finalStatus,
+        candidateHead: state.candidate,
+        changedFiles: changedFilesFinal,
+        failedStage: isApproved ? undefined : !qaReport.passed ? "qa" : "reviewer",
+        reviewFindings: Array.isArray(reviewReport.findings) ? reviewReport.findings : [],
+        qaFailures: Array.isArray(qaReport.checks)
+          ? qaReport.checks
+              .filter((c: any) => c.result !== "pass")
+              .map((c: any) => `${c.criterion}: ${c.evidence}`)
+          : [],
+      },
+    );
+
+    if (shouldTriggerReflection(dossier)) {
+      state.status = "reflecting";
+      await save();
+      const reflection = await runPostIssueReflection({
+        root,
+        worktree: state.worktree,
+        dossier,
+        artifactsDir,
+        transport,
+        timeoutMs: timeout,
+      });
+      await Bun.write(join(artifactsDir, "reflection.json"), JSON.stringify(reflection, null, 2));
+      dossier.reflectedAt = new Date().toISOString();
+      saveIssueDossier(stateRoot, dossier);
+    }
+
+    state.status = finalStatus;
 
     if (state.pr) {
       const commentLines = [
@@ -728,6 +791,44 @@ export async function runLocalLoop(
   } catch (error) {
     state.status = "failed";
     state.error = error instanceof Error ? error.message : String(error);
+    try {
+      const dossier = recordLapAttempt(
+        stateRoot,
+        {
+          issueNumber: issue.number,
+          issueTitle: issue.title,
+          issueUrl: issue.url,
+          branch,
+          prUrl: state.pr,
+        },
+        {
+          runId,
+          timestamp: new Date().toISOString(),
+          status: "failed",
+          candidateHead: state.candidate,
+          changedFiles: [],
+          failedStage: state.evidence.some((e) => e.kind === "check" && e.exitCode !== 0)
+            ? "ordinary_checks"
+            : "builder",
+          errorExcerpt: state.error,
+          reviewFindings: [],
+          qaFailures: [],
+        },
+      );
+      if (shouldTriggerReflection(dossier)) {
+        const reflection = await runPostIssueReflection({
+          root,
+          worktree: existsSync(state.worktree) ? state.worktree : root,
+          dossier,
+          artifactsDir,
+          transport,
+          timeoutMs: timeout,
+        });
+        await Bun.write(join(artifactsDir, "reflection.json"), JSON.stringify(reflection, null, 2));
+        dossier.reflectedAt = new Date().toISOString();
+        saveIssueDossier(stateRoot, dossier);
+      }
+    } catch {}
     await save();
     return state;
   } finally {

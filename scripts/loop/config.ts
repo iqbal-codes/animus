@@ -82,6 +82,7 @@ export function readArchonConfig(root: string): ArchonConfig {
 export function resolveModelTier(role: LoopRole): ModelTier {
   switch (role) {
     case "reviewer":
+    case "reflector":
     case "planner":
     case "manager":
       return "large";
@@ -101,7 +102,7 @@ export function resolveModelForRole(root: string, role: LoopRole): string | unde
   const config = readArchonConfig(root);
   const tier = resolveModelTier(role);
 
-  if (role === "reviewer" && config.aliases?.["@reasoning"]?.model) {
+  if ((role === "reviewer" || role === "reflector") && config.aliases?.["@reasoning"]?.model) {
     return config.aliases["@reasoning"].model;
   }
 
@@ -121,7 +122,7 @@ export function resolveProviderForRole(root: string, role: LoopRole): string {
   const config = readArchonConfig(root);
   const tier = resolveModelTier(role);
 
-  if (role === "reviewer" && config.aliases?.["@reasoning"]?.provider) {
+  if ((role === "reviewer" || role === "reflector") && config.aliases?.["@reasoning"]?.provider) {
     return config.aliases["@reasoning"].provider;
   }
 
@@ -144,7 +145,7 @@ export function resolveEffortForRole(root: string, role: LoopRole): EffortRung |
   const tier = resolveModelTier(role);
 
   if (
-    role === "reviewer" &&
+    (role === "reviewer" || role === "reflector") &&
     config.aliases?.["@reasoning"]?.effort &&
     isEffortRung(config.aliases["@reasoning"].effort)
   ) {

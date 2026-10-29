@@ -165,7 +165,10 @@ export function countActiveLaps(runsDir: string): number {
         if (
           state.status === "preparing" ||
           state.status === "building" ||
-          state.status === "checking"
+          state.status === "checking" ||
+          state.status === "qa" ||
+          state.status === "reviewing" ||
+          state.status === "reflecting"
         ) {
           active++;
         }

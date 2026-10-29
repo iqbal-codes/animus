@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 
 import {
   readArchonConfig,
@@ -34,6 +34,13 @@ import {
   startSchedulerLoop,
   filterAdmittedIssues,
   isWithinWorkWindow,
+  resolveAllowedSkills,
+  resolveLoopExtensions,
+  matchRelevantLessons,
+  buildCuratedAppendPrompts,
+  recordLapAttempt,
+  shouldTriggerReflection,
+  runPostIssueReflection,
   type BacklogCandidate,
 } from "../../scripts/loop/index";
 
@@ -444,4 +451,181 @@ test("11. Multiple Provider Harness Support: resolves and formats argv for Pi, C
   const codexWithEffort = buildProviderArgv("codex", { prompt, model, effort: "ultra" });
   expect(codexWithEffort).toContain("--effort");
   expect(codexWithEffort).toContain("ultra");
+});
+
+test("post-loop self-improving harness: curated injection, dossier terminal trigger, Jev curation, and skill promotion", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "harness-evolution-"));
+  try {
+    mkdirSync(join(dir, ".factory/hooks"), { recursive: true });
+    mkdirSync(join(dir, ".agents/skills/tdd"), { recursive: true });
+    mkdirSync(join(dir, ".agents/skills/factory-harness"), { recursive: true });
+    mkdirSync(join(dir, ".agents/skills/writing-for-agents"), { recursive: true });
+    mkdirSync(join(dir, ".agents/skills/skill-creator"), { recursive: true });
+    writeFileSync(
+      join(dir, ".agents/skills/tdd/SKILL.md"),
+      "---\nname: tdd\ndescription: test\n---\n",
+    );
+    writeFileSync(
+      join(dir, ".agents/skills/factory-harness/SKILL.md"),
+      "---\nname: factory-harness\ndescription: harness\n---\n",
+    );
+    writeFileSync(
+      join(dir, ".agents/skills/writing-for-agents/SKILL.md"),
+      "---\nname: writing-for-agents\ndescription: writing\n---\n",
+    );
+    writeFileSync(
+      join(dir, ".agents/skills/skill-creator/SKILL.md"),
+      "---\nname: skill-creator\ndescription: creator\n---\n",
+    );
+    writeFileSync(join(dir, ".factory/hooks/loop-guard.ts"), "export default function() {}");
+    writeFileSync(
+      join(dir, "AGENTS.md"),
+      "# Instructions\n- Post-lap memory & lesson synthesis: `/factory-harness`\n",
+    );
+    writeFileSync(
+      join(dir, ".factory/lessons.jsonl"),
+      JSON.stringify({
+        id: "lsn-20261028-01",
+        topic: "port-binding",
+        trigger_patterns: ["apps/backend/*"],
+        rule: "Assign an explicit non-zero port before passing FACTORY_HOST_URL.",
+        evidence: "Lap #1 failed on port 0.",
+        vetoed: false,
+        occurrence_count: 2,
+        created_at: "2026-10-28T00:00:00Z",
+      }) + "\n",
+    );
+
+    // 1. Curated hermetic injection
+    const builderSkills = resolveAllowedSkills(dir, "builder");
+    expect(builderSkills.some((s) => s.endsWith(".agents/skills/tdd"))).toBe(true);
+
+    const reflectorSkills = resolveAllowedSkills(dir, "reflector");
+    expect(reflectorSkills.some((s) => s.endsWith("factory-harness"))).toBe(true);
+    expect(reflectorSkills.some((s) => s.endsWith("writing-for-agents"))).toBe(true);
+    expect(reflectorSkills.some((s) => s.endsWith("skill-creator"))).toBe(true);
+
+    const exts = resolveLoopExtensions(dir);
+    expect(exts).toHaveLength(1);
+
+    const matched = matchRelevantLessons(dir, ["apps/backend/src/config.ts"]);
+    expect(matched).toHaveLength(1);
+    expect(matched[0]?.topic).toBe("port-binding");
+
+    const appendPrompts = buildCuratedAppendPrompts(
+      dir,
+      {
+        number: 42,
+        url: "https://github.com/org/repo/issues/42",
+        title: "Fix backend config",
+        body: "Touches apps/backend/src/config.ts",
+        comments: [],
+        dependencies: [],
+        activeClaim: false,
+      },
+      "apps/backend/src/config.ts",
+    );
+    expect(appendPrompts.length).toBeGreaterThanOrEqual(2);
+
+    const argv = buildProviderArgv("pi", {
+      prompt: "do work",
+      skills: builderSkills,
+      extensions: exts,
+      appendSystemPrompts: appendPrompts,
+    });
+    expect(argv).toContain("--no-skills");
+    expect(argv).toContain("--skill");
+    expect(argv).toContain("--no-extensions");
+    expect(argv).toContain("-e");
+    expect(argv).toContain("--no-context-files");
+    expect(argv).toContain("--append-system-prompt");
+
+    // 2. Dossier & Contrastive Terminal Trigger
+    const stateRoot = join(dir, ".factory-local-loop");
+    const meta = {
+      issueNumber: 42,
+      issueTitle: "Fix backend config",
+      issueUrl: "https://github.com/org/repo/issues/42",
+      branch: "local-loop/issue-42",
+    };
+
+    // Lap 0: Sent back -> should NOT trigger reflection yet (waiting for resolution or exhaustion)
+    const dossierAfterLap0 = recordLapAttempt(stateRoot, meta, {
+      runId: "run-0",
+      timestamp: "2026-10-29T01:00:00Z",
+      status: "sent_back",
+      changedFiles: ["apps/backend/src/config.ts"],
+      failedStage: "reviewer",
+      reviewFindings: ["Port 0 causes crash"],
+      qaFailures: [],
+    });
+    expect(shouldTriggerReflection(dossierAfterLap0, { maxRejections: 2 })).toBe(false);
+
+    // Lap 1: Approved after prior failure -> SHOULD trigger contrastive reflection!
+    const dossierAfterLap1 = recordLapAttempt(stateRoot, meta, {
+      runId: "run-1",
+      timestamp: "2026-10-29T01:10:00Z",
+      status: "waiting_approval",
+      changedFiles: ["apps/backend/src/config.ts"],
+      reviewFindings: [],
+      qaFailures: [],
+    });
+    expect(shouldTriggerReflection(dossierAfterLap1, { maxRejections: 2 })).toBe(true);
+
+    // 3. Run Post-Issue Reflection with mock transport & Jev curation
+    const reflectionOutcome = await runPostIssueReflection({
+      root: dir,
+      worktree: dir,
+      dossier: dossierAfterLap1,
+      artifactsDir: join(dir, "artifacts"),
+      transport: async ({ role }) => {
+        expect(role).toBe("reflector");
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            attribution: "helped",
+            tool_guidance_updates: { verify: "bun harness/ci.ts" },
+            candidate_lessons: [
+              {
+                topic: "port-binding",
+                trigger_patterns: ["apps/launcher/*"],
+                rule: "Resolve dynamic port before passing FACTORY_HOST_URL to backend.",
+                evidence: "Lap 0 failed with port 0; Lap 1 succeeded with resolved port.",
+              },
+              {
+                topic: "bad-negative-rule",
+                trigger_patterns: ["*"],
+                rule: "Do not ever write bad code in this repo.",
+                evidence: "Guess",
+              },
+            ],
+            skill_promotion: {
+              skill_name: "port-resolution",
+              description:
+                "Use when configuring dynamic ports across launcher and backend services.",
+              agents_md_pointer:
+                "- When configuring dynamic ports across launcher and backend, read `.agents/skills/port-resolution/SKILL.md`.",
+              skill_markdown:
+                "---\nname: port-resolution\ndescription: Use when configuring dynamic ports.\n---\n\n# Port Resolution\n\n## Steps\n1. Bind port.\n   *Completion Criterion*: Port is > 0.\n",
+            },
+          }),
+          stderr: "",
+        };
+      },
+    });
+
+    expect(reflectionOutcome.triggered).toBe(true);
+    expect(reflectionOutcome.persistedLessons).toHaveLength(1);
+    expect(reflectionOutcome.persistedLessons[0]?.occurrence_count).toBe(3); // Incremented from 2 -> 3
+    expect(reflectionOutcome.rejectedLessons).toHaveLength(1); // Rejected negative phrasing rule
+    expect(reflectionOutcome.updatedTools).toEqual(["verify"]);
+    expect(reflectionOutcome.promotedSkill?.skillName).toBe("port-resolution");
+    expect(existsSync(join(dir, ".agents/skills/port-resolution/SKILL.md"))).toBe(true);
+
+    const updatedAgentsMd = readFileSync(join(dir, "AGENTS.md"), "utf-8");
+    expect(updatedAgentsMd).toContain("port-resolution");
+    expect(updatedAgentsMd.split("\n").length).toBeLessThanOrEqual(150);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
