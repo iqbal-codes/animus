@@ -46,7 +46,7 @@ export async function collectDoctorReport(repoRoot: string): Promise<DoctorRepor
       name: "architecture_boundaries",
       ok: archRes.ok,
       detail: archRes.ok
-        ? "apps/web, packages/contracts, packages/client boundaries clean"
+        ? "packages/contracts, packages/client, apps/backend, apps/engine-host boundaries clean"
         : `${archRes.violations.length} violation(s) found`,
     });
   } catch (err: any) {

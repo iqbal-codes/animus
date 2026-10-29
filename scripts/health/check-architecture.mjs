@@ -11,22 +11,7 @@ export function scanSnippet(filePath, content) {
   const violations = [];
   const normalizedPath = filePath.replace(/\\/g, "/");
 
-  // Rule 1: apps/web cannot import backend, engine-host, or node builtins
-  if (normalizedPath.startsWith("apps/web/") || normalizedPath.includes("/apps/web/")) {
-    if (/@labq\/backend/i.test(content) || /@labq\/engine-host/i.test(content)) {
-      violations.push(
-        `${filePath}: apps/web cannot import server internals (@labq/backend or @labq/engine-host)`,
-      );
-    }
-    if (
-      /from\s+["']node:[^"']+["']/i.test(content) ||
-      /require\(["']node:[^"']+["']\)/i.test(content)
-    ) {
-      violations.push(`${filePath}: apps/web cannot import Node built-ins (node:*)`);
-    }
-  }
-
-  // Rule 2: packages/contracts cannot import apps
+  // Rule 1: packages/contracts cannot import apps
   if (
     normalizedPath.startsWith("packages/contracts/") ||
     normalizedPath.includes("/packages/contracts/")
@@ -34,22 +19,18 @@ export function scanSnippet(filePath, content) {
     if (
       /@labq\/backend/i.test(content) ||
       /@labq\/engine-host/i.test(content) ||
-      /@labq\/web/i.test(content)
+      /@labq\/launcher/i.test(content)
     ) {
       violations.push(`${filePath}: packages/contracts cannot import applications`);
     }
   }
 
-  // Rule 3: packages/client cannot import server internals or Node builtins
+  // Rule 2: packages/client cannot import server internals or Node builtins
   if (
     normalizedPath.startsWith("packages/client/") ||
     normalizedPath.includes("/packages/client/")
   ) {
-    if (
-      /@labq\/backend/i.test(content) ||
-      /@labq\/engine-host/i.test(content) ||
-      /@labq\/web/i.test(content)
-    ) {
+    if (/@labq\/backend/i.test(content) || /@labq\/engine-host/i.test(content)) {
       violations.push(`${filePath}: packages/client cannot import server internals`);
     }
     if (
@@ -57,6 +38,23 @@ export function scanSnippet(filePath, content) {
       /require\(["']node:[^"']+["']\)/i.test(content)
     ) {
       violations.push(`${filePath}: packages/client cannot import Node built-ins (node:*)`);
+    }
+  }
+
+  // Rule 3: apps/backend cannot import engine-host internals
+  if (normalizedPath.startsWith("apps/backend/") || normalizedPath.includes("/apps/backend/")) {
+    if (/@labq\/engine-host/i.test(content)) {
+      violations.push(`${filePath}: apps/backend cannot import engine-host internals`);
+    }
+  }
+
+  // Rule 4: apps/engine-host cannot import backend internals
+  if (
+    normalizedPath.startsWith("apps/engine-host/") ||
+    normalizedPath.includes("/apps/engine-host/")
+  ) {
+    if (/@labq\/backend/i.test(content)) {
+      violations.push(`${filePath}: apps/engine-host cannot import backend internals`);
     }
   }
 
@@ -71,9 +69,10 @@ export function checkArchitectureRules(repoRoot) {
   /** @type {string[]} */
   const violations = [];
   const targetDirs = [
-    join(repoRoot, "apps/web/src"),
     join(repoRoot, "packages/contracts/src"),
     join(repoRoot, "packages/client/src"),
+    join(repoRoot, "apps/backend/src"),
+    join(repoRoot, "apps/engine-host/src"),
   ];
 
   /**
@@ -123,6 +122,6 @@ if (isMain) {
     process.exit(1);
   }
   console.log(
-    "Architecture boundary rules passed cleanly (apps/web, packages/contracts, packages/client).",
+    "Architecture boundary rules passed cleanly (packages/contracts, packages/client, apps/backend, apps/engine-host).",
   );
 }

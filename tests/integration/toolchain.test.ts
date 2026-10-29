@@ -28,8 +28,8 @@ describe("Repository-wide Task, Checker, and Cache Correctness", () => {
     const hostPkg = JSON.parse(readFileSync(join(root, "apps/engine-host/package.json"), "utf-8"));
     expect(hostPkg.dependencies["@labq/contracts"]).toBe("workspace:*");
 
-    const webPkg = JSON.parse(readFileSync(join(root, "apps/web/package.json"), "utf-8"));
-    expect(webPkg.dependencies["@labq/client"]).toBe("workspace:*");
+    const launcherPkg = JSON.parse(readFileSync(join(root, "apps/launcher/package.json"), "utf-8"));
+    expect(launcherPkg.name).toBe("@labq/launcher");
   });
 
   test("AC2: Toolchain check enforces Node 26.8.1, Bun 1.4.2, and local Vite+ 1.4.0", () => {
@@ -50,16 +50,5 @@ describe("Repository-wide Task, Checker, and Cache Correctness", () => {
     expect(viteConfig).toContain(
       '"bun-suite": { command: "bun test tests/integration/health.bun.test.ts", cache: false }',
     );
-    expect(viteConfig).toContain(
-      '"browser-suite": {\n        command:\n          "node node_modules/@playwright/test/cli.js test --config tests/integration/playwright.config.ts",\n        dependsOn: ["web-artifacts"],\n        cache: false,\n      }',
-    );
-  });
-
-  test("AC7: Web build inspects artifact graph and rejects private server authority", () => {
-    const inspectScript = readFileSync(join(root, "scripts/health/build-and-inspect.mjs"), "utf-8");
-    expect(inspectScript).toContain("Private server module entered browser graph");
-    expect(inspectScript).toContain("Private configuration entered browser artifact");
-    expect(inspectScript).toContain("FACTORY_HOST_TOKEN");
-    expect(inspectScript).toContain("OPENROUTER_API_KEY");
   });
 });

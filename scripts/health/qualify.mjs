@@ -53,14 +53,10 @@ try {
   const scopes = [
     "apps/backend/src/main.ts",
     "apps/engine-host/src/main.ts",
-    "apps/web/src/main.ts",
     "packages/contracts/src/operator.ts",
     "packages/client/src/index.ts",
     "tests/integration/health.bun.test.ts",
     "tests/integration/client.test.ts",
-    "tests/integration/health.browser.test.ts",
-    "tests/integration/playwright.config.ts",
-    "apps/web/vite.config.ts",
     "vite.config.ts",
     "scripts/health/check-toolchain.mjs",
   ];
@@ -76,7 +72,6 @@ try {
     mutation(path, `${original}${typeError}`, () => run(["bun", "run", "typecheck"], "TS2322"));
   }
   for (const [path, statement] of [
-    ["apps/web/src/main.ts", 'import "@labq/contracts/host";'],
     ["packages/client/src/index.ts", 'import "node:fs";'],
     ["packages/contracts/src/operator.ts", 'import "./host";'],
     ["packages/contracts/src/health.ts", 'import "./host";'],
@@ -86,12 +81,6 @@ try {
       run(["bun", "run", "lint"], "no-restricted-imports"),
     );
   }
-  const browser = "apps/web/src/main.ts";
-  mutation(
-    browser,
-    `${readFileSync(`${checkout}/${browser}`, "utf8")}\nexport const invalidBunGlobal = Bun.version;\n`,
-    () => run(["bun", "run", "typecheck"], "Bun"),
-  );
   const contract = "packages/contracts/src/health.ts";
   mutation(
     contract,
@@ -99,7 +88,7 @@ try {
       "buildId: z.string()",
       "buildId: z.number()",
     ),
-    () => run(["bun", "run", "typecheck"], "apps/web/src/main.ts"),
+    () => run(["bun", "run", "typecheck"], "packages/client/src/index.ts"),
   );
 
   const privateContract = "packages/contracts/src/host.ts";
@@ -127,35 +116,16 @@ try {
       'test("qualification deliberate failure", () => { expect(1).toBe(2); });',
       "qualification deliberate failure",
     ],
-    [
-      "browser-suite",
-      "tests/integration/health.browser.test.ts",
-      'test("qualification deliberate failure", () => { expect(1).toBe(2); });',
-      "qualification deliberate failure",
-    ],
-    [
-      "python-suite",
-      "tests/test_health_qualification.py",
-      "import unittest\nclass Qualification(unittest.TestCase):\n def test_deliberate_failure(self): self.assertEqual(1, 2)\n",
-      "AssertionError",
-    ],
   ]) {
     const full = `${checkout}/${path}`;
     const original = existsSync(full) ? readFileSync(full, "utf8") : "";
     writeFileSync(full, `${original}\n${assertion}\n`);
     // Isolate the failing runner, preserving the aggregate dependency edges without rerunning unrelated suites.
     const isolated = config
-      .replace(
-        'dependsOn: ["neutral-suite", "bun-suite", "browser-suite", "python-suite"]',
-        `dependsOn: ["${suite}"]`,
-      )
+      .replace('dependsOn: ["neutral-suite", "bun-suite"]', `dependsOn: ["${suite}"]`)
       .replace(
         'dependsOn: ["toolchain-check", "static-check", "test-all"]',
         'dependsOn: ["test-all"]',
-      )
-      .replace(
-        "python3 -m unittest discover -s tests -p 'test_*.py'",
-        "python3 -m unittest discover -s tests -p 'test_health_qualification.py'",
       )
       .replace(
         'command: "vp test run"',
@@ -164,10 +134,6 @@ try {
       .replace(
         'command: "bun test tests/integration/health.bun.test.ts"',
         'command: "bun test tests/integration/health.bun.test.ts -t \\\"qualification deliberate failure\\\""',
-      )
-      .replace(
-        'test --config tests/integration/playwright.config.ts"',
-        'test --config tests/integration/playwright.config.ts -g \\\"qualification deliberate failure\\\""',
       );
     if (isolated === config) throw new Error("Qualification could not isolate aggregate");
     try {

@@ -301,7 +301,7 @@ The repository's declared ordinary gates are `bun run check` and `vp run verify-
 
 ## Unified TypeScript/Bun distribution and runtime
 
-The unified factory operates `apps/backend`, `apps/engine-host`, and `apps/web`
+The unified factory operates `apps/backend` and `apps/engine-host`
 via `apps/launcher/src/main.ts`. See [monorepo health instructions](monorepo-health.md)
 for pinned Bun 1.4.2 / Node 26.8.1 / Vite+ 1.4.0, exact start argv, private credential provisioning and checks.
-Web console and backend share a single origin, while engine-host remains strictly loopback private.
+Backend API serves on loopback or configured host, while engine-host remains strictly loopback private.
