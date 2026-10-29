@@ -10,6 +10,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
 jobs:
   gate-static:
     name: "Gate 1: Static Lint, Format & Architecture Check"
