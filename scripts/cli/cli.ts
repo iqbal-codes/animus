@@ -71,7 +71,17 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     return 0;
   }
 
-  const repoRoot = resolveRepoRoot(values.cwd);
+  const managedRepositoryCommand = [
+    "setup",
+    "init",
+    "onboard",
+    "config",
+    "project",
+    "projects",
+  ].includes(command);
+  const repoRoot = managedRepositoryCommand
+    ? resolve(values.cwd ?? process.cwd())
+    : resolveRepoRoot(values.cwd);
   const port = values.port !== undefined ? Number(values.port) : undefined;
   const enginePort =
     values["engine-port"] !== undefined ? Number(values["engine-port"]) : undefined;
@@ -99,6 +109,10 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       return await runSetupCommand({
         repoRoot,
         nonInteractive: Boolean(values.yes),
+        factoryUrl: values["factory-url"],
+        factoryToken: values["factory-token"],
+        localOnly: values["local-only"],
+        name: values.name,
         provider: values.provider,
         smallTier: values["small-tier"],
         mediumTier: values["medium-tier"],
@@ -257,6 +271,9 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         stateDir: values["state-dir"],
         name: values.name,
         path: values.path,
+        repo: values.repo,
+        factoryUrl: values["factory-url"],
+        factoryToken: values["factory-token"],
         json: values.json,
       });
 

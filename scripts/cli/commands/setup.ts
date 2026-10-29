@@ -1,7 +1,12 @@
 import { spawnSync } from "node:child_process";
+import {
+  completeRepositoryOnboarding,
+  type FactoryConnectionOptions,
+} from "./onboarding-registration";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { createInterface } from "node:readline/promises";
+import { TerminalWizardPrompts, type WizardPrompts } from "./onboarding-prompts";
+import { createModelCatalogLoader, type ModelCatalogLoader } from "./onboarding-model-catalog";
 import {
   readArchonConfig,
   writeArchonConfig,
@@ -294,20 +299,22 @@ export function detectBaseBranch(repoRoot: string): string {
 }
 
 export function parseTierSpec(spec: string, fallbackProvider: SupportedProvider): TierBinding {
-  const parts = spec.split(":");
+  if (!spec.trim()) throw new Error("Model ID must not be empty.");
+  const parts = spec.trim().split(":");
   if (parts.length >= 3 && isSupportedProvider(parts[0]!)) {
     const provider = parts[0]!;
     const effortCandidate = parts[parts.length - 1]!;
     if (isEffortRung(effortCandidate)) {
       const model = parts.slice(1, -1).join(":");
-      return { provider, model, effort: effortCandidate };
+      const binding = { provider, model, effort: effortCandidate };
+      validateTierBinding(binding);
+      return binding;
     }
   }
   if (parts.length >= 2 && isSupportedProvider(parts[0]!)) {
-    return {
-      provider: parts[0]!,
-      model: parts.slice(1).join(":"),
-    };
+    const binding = { provider: parts[0]!, model: parts.slice(1).join(":") };
+    validateTierBinding(binding);
+    return binding;
   }
   return {
     provider: fallbackProvider,
@@ -315,7 +322,30 @@ export function parseTierSpec(spec: string, fallbackProvider: SupportedProvider)
   };
 }
 
-export interface SetupCommandOptions {
+function validateTierBinding(binding: TierBinding): void {
+  if (!isSupportedProvider(binding.provider))
+    throw new Error(`Unsupported provider '${binding.provider}'.`);
+  if (!binding.model.trim() || /[\r\n]/.test(binding.model))
+    throw new Error("Model ID must be nonempty and single-line.");
+  if (
+    binding.effort &&
+    !PROVIDER_DESCRIPTORS[binding.provider].supportedEfforts.includes(binding.effort)
+  ) {
+    throw new Error(
+      `Effort '${binding.effort}' is not supported by ${binding.provider}. Supported: ${PROVIDER_DESCRIPTORS[binding.provider].supportedEfforts.join(", ")}`,
+    );
+  }
+}
+
+function positiveInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0)
+    throw new Error(`${name} must be a positive safe integer.`);
+  return value;
+}
+
+export interface SetupCommandOptions extends FactoryConnectionOptions {
+  localOnly?: boolean;
+  name?: string;
   repoRoot: string;
   nonInteractive?: boolean;
   provider?: string;
@@ -334,9 +364,28 @@ export interface SetupCommandOptions {
   json?: boolean;
 }
 
-export async function applyRepositorySetup(opts: SetupCommandOptions): Promise<SetupConfigSummary> {
+export interface SetupInteraction {
+  prompts?: WizardPrompts;
+  catalog?: ModelCatalogLoader;
+  detectHarnesses?: () => DetectedHarnessProvider[];
+  registrationFetch?: FactoryConnectionOptions["fetch"];
+}
+
+export async function applyRepositorySetup(
+  opts: SetupCommandOptions,
+  interaction: SetupInteraction = {},
+): Promise<SetupConfigSummary> {
+  if (opts.provider !== undefined && !isSupportedProvider(opts.provider))
+    throw new Error(`Unsupported provider '${opts.provider}'.`);
+  for (const [name, value] of Object.entries({
+    maxLaps: opts.maxLaps,
+    parallel: opts.parallel,
+    intervalSeconds: opts.intervalSeconds,
+  })) {
+    if (value !== undefined) positiveInteger(value, name);
+  }
   const repoRoot = resolve(opts.repoRoot);
-  const detectedHarnesses = detectAvailableHarnesses();
+  const detectedHarnesses = (interaction.detectHarnesses ?? detectAvailableHarnesses)();
   const detectedCommands = detectRepoCheckCommands(repoRoot);
   const existingArchon = readArchonConfig(repoRoot);
   const existingSchedule = loadScheduleConfig(repoRoot);
@@ -352,7 +401,23 @@ export async function applyRepositorySetup(opts: SetupCommandOptions): Promise<S
 
   const providerDefaults = DEFAULT_PROVIDER_MODELS[defaultProvider];
 
-  let selectedProvider = defaultProvider;
+  let selectedProviders: SupportedProvider[] = opts.provider
+    ? [defaultProvider]
+    : Object.keys(existingArchon.assistants ?? {}).filter(isSupportedProvider);
+  if (!selectedProviders.length)
+    selectedProviders = opts.provider
+      ? [defaultProvider]
+      : [
+          ...new Set([
+            defaultProvider,
+            ...Object.values(existingArchon.tiers ?? {})
+              .map((binding) => binding.provider)
+              .filter(isSupportedProvider),
+          ]),
+        ];
+  let selectedProvider = selectedProviders.includes(defaultProvider)
+    ? defaultProvider
+    : selectedProviders[0]!;
   let smallBinding: TierBinding = existingArchon.tiers?.small ?? {
     provider: defaultProvider,
     model: providerDefaults.small,
@@ -406,127 +471,191 @@ export async function applyRepositorySetup(opts: SetupCommandOptions): Promise<S
     }
   }
 
-  if (opts.smallTier) smallBinding = parseTierSpec(opts.smallTier, selectedProvider);
-  if (opts.mediumTier) mediumBinding = parseTierSpec(opts.mediumTier, selectedProvider);
-  if (opts.largeTier) largeBinding = parseTierSpec(opts.largeTier, selectedProvider);
+  if (opts.smallTier !== undefined) smallBinding = parseTierSpec(opts.smallTier, selectedProvider);
+  if (opts.mediumTier !== undefined)
+    mediumBinding = parseTierSpec(opts.mediumTier, selectedProvider);
+  if (opts.largeTier !== undefined) largeBinding = parseTierSpec(opts.largeTier, selectedProvider);
+  for (const binding of [smallBinding, mediumBinding, largeBinding]) validateTierBinding(binding);
+  for (const [spec, binding] of [
+    [opts.smallTier, smallBinding],
+    [opts.mediumTier, mediumBinding],
+    [opts.largeTier, largeBinding],
+  ] as const) {
+    if (spec !== undefined && !selectedProviders.includes(binding.provider as SupportedProvider))
+      selectedProviders.push(binding.provider as SupportedProvider);
+  }
 
-  if (opts.workWindow) {
+  if (opts.workWindow !== undefined) {
     if (opts.workWindow === "off" || opts.workWindow === "false" || opts.workWindow === "none") {
       workWindowEnabled = false;
     } else {
       const match = /^(\d{2}:\d{2})-(\d{2}:\d{2})$/.exec(opts.workWindow.trim());
-      if (match) {
-        workWindowEnabled = true;
-        workWindowStart = match[1]!;
-        workWindowEnd = match[2]!;
-      }
+      if (!match || !match.slice(1).every((time) => /^([01]\d|2[0-3]):[0-5]\d$/.test(time!)))
+        throw new Error("Work window must be HH:MM-HH:MM with valid 24-hour times, or off.");
+      workWindowEnabled = true;
+      workWindowStart = match[1]!;
+      workWindowEnd = match[2]!;
     }
   }
 
-  const isInteractive = !opts.nonInteractive && !opts.json && Boolean(process.stdin.isTTY);
-  if (isInteractive) {
-    console.log("\n╭──────────────────────────────────────────────────────────╮");
-    console.log("│  LabQ Software Factory — Repository Onboarding & Setup   │");
-    console.log("╰──────────────────────────────────────────────────────────╯\n");
-    console.log(`Target Repository: ${repoRoot} (mode: ${harnessAudit.projectMode.toUpperCase()})\n`);
-    console.log("1. Detected Agent Harnesses on this Host:");
-    for (const h of detectedHarnesses) {
-      const badge = h.installed ? "✓ INSTALLED" : "✗ missing  ";
-      const detail = h.installed
-        ? `${h.binaryPath}${h.version ? ` (${h.version})` : ""}`
-        : `(${h.binaryName} not found in PATH)`;
-      console.log(`   [${badge}] ${h.id.padEnd(10)} ${h.displayName.padEnd(16)} ${detail}`);
-    }
-
-    console.log("\n2. Repository Harness & AGENTS.md Audit:");
-    console.log(
-      `   AGENTS.md status: ${harnessAudit.agentsMd.status.toUpperCase()} (score: ${harnessAudit.agentsMd.score}/100, lines: ${harnessAudit.agentsMd.lineCount})`,
-    );
-    for (const issue of harnessAudit.agentsMd.issues) {
-      console.log(`     - ${issue}`);
-    }
-    console.log(
-      `   Installed skills: ${harnessAudit.skillsInstalled.length}/10 (${harnessAudit.skillsInstalled.join(", ") || "none"})`,
-    );
-    console.log("");
-
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const ask = async (promptText: string, defaultVal: string): Promise<string> => {
-      const ans = (await rl.question(`? ${promptText} [${defaultVal}]: `)).trim();
-      return ans || defaultVal;
+  const normalizeBinding = (binding: TierBinding, tier: ModelTier): TierBinding => {
+    if (selectedProviders.includes(binding.provider as SupportedProvider)) return binding;
+    return {
+      provider: selectedProvider,
+      model:
+        existingArchon.assistants?.[selectedProvider]?.model ??
+        DEFAULT_PROVIDER_MODELS[selectedProvider][tier],
+      effort: tier === "small" ? "medium" : "high",
     };
-
+  };
+  const isInteractive =
+    !opts.nonInteractive && !opts.json && Boolean(interaction.prompts || process.stdin.isTTY);
+  if (isInteractive) {
+    const prompts = interaction.prompts ?? new TerminalWizardPrompts();
+    const ask = (message: string, initial: string) => prompts.text(message, initial);
     try {
-      const provInput = await ask(
-        `Default agent harness (${SUPPORTED_PROVIDERS.join("/")})`,
-        selectedProvider,
+      prompts.note(`LabQ Software Factory — Repository Setup
+Target: ${repoRoot}`);
+      const choices = SUPPORTED_PROVIDERS.map((id) => {
+        const detected = detectedHarnesses.find((h) => h.id === id);
+        return {
+          value: id,
+          label: `${PROVIDER_DESCRIPTORS[id].displayName} (${id}) — ${detected?.installed ? "installed" : "missing"}`,
+        };
+      });
+      let checked: string[];
+      do {
+        checked = await prompts.checkbox("Select agent harnesses", choices, selectedProviders);
+        if (!checked.length) prompts.note("Select at least one harness.");
+      } while (!checked.length);
+      if (!checked.every(isSupportedProvider)) throw new Error("Unsupported harness selection.");
+      selectedProviders = [...new Set(checked)] as SupportedProvider[];
+      if (!selectedProviders.includes(selectedProvider)) selectedProvider = selectedProviders[0]!;
+      smallBinding = normalizeBinding(smallBinding, "small");
+      mediumBinding = normalizeBinding(mediumBinding, "medium");
+      largeBinding = normalizeBinding(largeBinding, "large");
+
+      prompts.note(
+        `AGENTS.md: ${harnessAudit.agentsMd.status} (${harnessAudit.agentsMd.score}/100)`,
       );
-      if (isSupportedProvider(provInput)) {
-        if (provInput !== selectedProvider) {
-          selectedProvider = provInput;
-          const pDef = DEFAULT_PROVIDER_MODELS[selectedProvider];
-          smallBinding = { provider: selectedProvider, model: pDef.small, effort: "medium" };
-          mediumBinding = { provider: selectedProvider, model: pDef.medium, effort: "high" };
-          largeBinding = { provider: selectedProvider, model: pDef.large, effort: "high" };
-        }
+      if (harnessAudit.agentsMd.exists) {
+        agentsMdAction = (await prompts.select(
+          "AGENTS.md action",
+          ["keep", "upgrade", "overwrite"].map((value) => ({ value, label: value })),
+          agentsMdAction,
+        )) as typeof agentsMdAction;
       }
-
-      if (!harnessAudit.agentsMd.exists) {
-        console.log("\n   [Greenfield] AGENTS.md will be created with canonical Factory pointers.");
-        agentsMdAction = "overwrite";
-      } else if (harnessAudit.agentsMd.status === "poor") {
-        const actIn = await ask(
-          "Existing AGENTS.md is incomplete. Action (upgrade/overwrite/keep)",
-          "upgrade",
-        );
-        if (actIn === "upgrade" || actIn === "overwrite" || actIn === "keep") {
-          agentsMdAction = actIn;
+      prompts.note(
+        "Configured model IDs are not a verified catalog. Model capabilities unknown until reported by a catalog.",
+      );
+      const bindings = { small: smallBinding, medium: mediumBinding, large: largeBinding };
+      for (;;) {
+        const tier = await prompts.select("Model tier overview — select a tier to edit", [
+          ...(["small", "medium", "large"] as const).map((value) => ({
+            value,
+            label: `${value}: ${bindings[value].provider} / ${bindings[value].model} / ${bindings[value].effort ?? "default effort"}`,
+          })),
+          { value: "continue", label: "Continue with these tiers" },
+        ]);
+        if (tier === "continue") break;
+        if (tier !== "small" && tier !== "medium" && tier !== "large")
+          throw new Error("Unknown tier.");
+        const provider = (await prompts.select(
+          "Harness (type to search)",
+          choices.filter((c) => selectedProviders.includes(c.value as SupportedProvider)),
+          bindings[tier].provider,
+          true,
+        )) as SupportedProvider;
+        const initialModel =
+          bindings[tier].provider === provider
+            ? bindings[tier].model
+            : (existingArchon.assistants?.[provider]?.model ??
+              DEFAULT_PROVIDER_MODELS[provider][tier]);
+        const catalog = await (interaction.catalog ?? createModelCatalogLoader())(provider);
+        let model: string;
+        if (catalog.models.length) {
+          prompts.note(
+            `Models from ${catalog.source ?? "harness catalog"}. Availability may depend on credentials.`,
+          );
+          const choice = await prompts.select(
+            "Model (type to search)",
+            [
+              ...catalog.models.map((m) => ({
+                value: m.id,
+                label: `${m.id}${m.name ? ` — ${m.name}` : ""}`,
+              })),
+              { value: "__manual__", label: "Enter a model ID manually" },
+            ],
+            initialModel,
+            true,
+          );
+          model = choice === "__manual__" ? await ask("Model ID", initialModel) : choice;
+        } else {
+          prompts.note(
+            catalog.unavailableReason ?? "Model catalog unavailable. Enter a model ID manually.",
+          );
+          model = await ask("Model ID", initialModel);
         }
-      } else {
-        const actIn = await ask("AGENTS.md is already healthy. Action (keep/upgrade/overwrite)", "keep");
-        if (actIn === "upgrade" || actIn === "overwrite" || actIn === "keep") {
-          agentsMdAction = actIn;
+        const metadata = catalog.models.find((m) => m.id === model);
+        prompts.note(metadata?.capabilities ?? "Model capabilities unknown.");
+        let effort = "default";
+        if (metadata?.reasoning === false) {
+          prompts.note(
+            "This catalog model does not support reasoning; no effort override will be set.",
+          );
+        } else {
+          prompts.note(
+            "Reasoning choices reflect harness support only; model-specific effort levels are unverified.",
+          );
+          const efforts = PROVIDER_DESCRIPTORS[provider].supportedEfforts;
+          effort = await prompts.select(
+            "Reasoning effort",
+            [
+              { value: "default", label: "Harness default" },
+              ...efforts.map((value) => ({ value, label: value })),
+            ],
+            bindings[tier].effort ?? "default",
+          );
         }
+        bindings[tier] = {
+          provider,
+          model,
+          ...(effort !== "default" ? { effort: effort as EffortRung } : {}),
+        };
       }
-
-      console.log("\n3. Model Tiers (format: provider:model:effort or model):");
-      const smallIn = await ask(
-        "Small tier (QA / Auditor)",
-        `${smallBinding.provider}:${smallBinding.model}:${smallBinding.effort ?? "medium"}`,
-      );
-      smallBinding = parseTierSpec(smallIn, selectedProvider);
-
-      const medIn = await ask(
-        "Medium tier (Builder / Simplifier)",
-        `${mediumBinding.provider}:${mediumBinding.model}:${mediumBinding.effort ?? "high"}`,
-      );
-      mediumBinding = parseTierSpec(medIn, selectedProvider);
-
-      const largeIn = await ask(
-        "Large tier (Reviewer / Planner / Manager)",
-        `${largeBinding.provider}:${largeBinding.model}:${largeBinding.effort ?? "high"}`,
-      );
-      largeBinding = parseTierSpec(largeIn, selectedProvider);
-
-      console.log("\n4. Loop & Laps Capacity:");
-      const lapsIn = await ask("Max laps per issue before escalating to owner", String(maxLaps));
-      if (/^[1-9]\d*$/.test(lapsIn)) maxLaps = Number(lapsIn);
-
-      const parIn = await ask("Max parallel autonomous laps", String(parallel));
-      if (/^[1-9]\d*$/.test(parIn)) parallel = Number(parIn);
-
-      const intIn = await ask("Scheduler polling interval (seconds)", String(intervalSeconds));
-      if (/^[1-9]\d*$/.test(intIn)) intervalSeconds = Number(intIn);
-
-      const baseIn = await ask("Default base branch for worktrees & PRs", baseBranch);
-      if (baseIn) baseBranch = baseIn;
-
-      console.log("\n5. Repository Verification Harness Commands:");
-      staticCheck = await ask("Static check command (lint + typecheck)", staticCheck);
+      smallBinding = bindings.small;
+      mediumBinding = bindings.medium;
+      largeBinding = bindings.large;
+      const askInteger = async (message: string, initial: number): Promise<number> => {
+        for (;;) {
+          const answer = await ask(message, String(initial));
+          const value = Number(answer);
+          if (/^\d+$/.test(answer) && Number.isSafeInteger(value) && value > 0) return value;
+          prompts.note(`${message} must be a positive safe integer. Try again.`);
+        }
+      };
+      maxLaps = await askInteger("Max laps per issue", maxLaps);
+      parallel = await askInteger("Max parallel autonomous laps", parallel);
+      intervalSeconds = await askInteger("Scheduler polling interval (seconds)", intervalSeconds);
+      baseBranch = await ask("Default base branch", baseBranch);
+      staticCheck = await ask("Static check command", staticCheck);
       unitTest = await ask("Unit test command", unitTest);
     } finally {
-      rl.close();
+      prompts.close();
     }
+  } else {
+    smallBinding = normalizeBinding(smallBinding, "small");
+    mediumBinding = normalizeBinding(mediumBinding, "medium");
+    largeBinding = normalizeBinding(largeBinding, "large");
+  }
+
+  positiveInteger(maxLaps, "maxLaps");
+  positiveInteger(parallel, "parallel");
+  positiveInteger(intervalSeconds, "intervalSeconds");
+  for (const binding of [smallBinding, mediumBinding, largeBinding]) {
+    validateTierBinding(binding);
+    if (!selectedProviders.includes(binding.provider as SupportedProvider))
+      throw new Error("Tier harness must be selected.");
   }
 
   // Scaffold Harness Structure (AGENTS.md, CLAUDE.md, .agents/skills, .factory/hooks, HOLDOUT.md, etc.)
@@ -543,21 +672,35 @@ export async function applyRepositorySetup(opts: SetupCommandOptions): Promise<S
   // Persist 1: .archon/config.yaml
   const archonConfig: ArchonConfig = {
     assistant: selectedProvider,
-    assistants: {
-      ...(existingArchon.assistants ?? {}),
-      [selectedProvider]: { model: mediumBinding.model },
-    },
+    assistants: Object.fromEntries(
+      selectedProviders.map((provider) => {
+        const binding = [mediumBinding, smallBinding, largeBinding].find(
+          (b) => b.provider === provider,
+        );
+        return [
+          provider,
+          {
+            model:
+              binding?.model ??
+              existingArchon.assistants?.[provider]?.model ??
+              DEFAULT_PROVIDER_MODELS[provider].medium,
+          },
+        ];
+      }),
+    ),
     tiers: {
       small: smallBinding,
       medium: mediumBinding,
       large: largeBinding,
     },
     aliases: {
-      ...(existingArchon.aliases ?? {}),
+      ...Object.fromEntries(
+        Object.entries(existingArchon.aliases ?? {}).filter(([, binding]) =>
+          selectedProviders.includes(binding.provider as SupportedProvider),
+        ),
+      ),
       "@reasoning": {
-        provider: largeBinding.provider,
-        model: largeBinding.model,
-        effort: largeBinding.effort ?? "high",
+        ...largeBinding,
       },
     },
     worktree: {
@@ -640,13 +783,22 @@ export async function applyRepositorySetup(opts: SetupCommandOptions): Promise<S
   };
 }
 
-export async function runSetupCommand(opts: SetupCommandOptions): Promise<number> {
+export async function runSetupCommand(
+  opts: SetupCommandOptions,
+  interaction: SetupInteraction = {},
+): Promise<number> {
   try {
-    const summary = await applyRepositorySetup(opts);
-    if (opts.json) {
-      console.log(JSON.stringify(summary, null, 2));
-      return 0;
-    }
+    const summary = await applyRepositorySetup(opts, interaction);
+    const finish = () =>
+      completeRepositoryOnboarding(summary, {
+        factoryUrl: opts.factoryUrl,
+        factoryToken: opts.factoryToken,
+        fetch: interaction.registrationFetch ?? opts.fetch,
+        localOnly: opts.localOnly,
+        name: opts.name,
+        json: opts.json,
+      });
+    if (opts.json) return await finish();
 
     if (opts.nonInteractive || !process.stdin.isTTY) {
       console.log("LabQ Software Factory — Repository Setup Complete\n");
@@ -701,7 +853,7 @@ export async function runSetupCommand(opts: SetupCommandOptions): Promise<number
     for (const p of summary.scaffoldResult.createdOrUpdatedPaths) {
       console.log(`  - ${p}`);
     }
-    return 0;
+    return await finish();
   } catch (err: any) {
     const msg = err?.message ?? String(err);
     if (opts.json) console.log(JSON.stringify({ ok: false, error: msg }));
@@ -856,7 +1008,12 @@ export async function runConfigCliCommand(opts: {
       const providerArg = opts.positionals[3];
       const modelArg = opts.positionals[4];
 
-      if (!tierArg || !["small", "medium", "large"].includes(tierArg) || !providerArg || !modelArg) {
+      if (
+        !tierArg ||
+        !["small", "medium", "large"].includes(tierArg) ||
+        !providerArg ||
+        !modelArg
+      ) {
         throw new Error(
           "Usage: labq-factory config tier <small|medium|large> <provider> <model> [--effort <minimal|low|medium|high|xhigh|max|ultra>]",
         );
@@ -868,17 +1025,21 @@ export async function runConfigCliCommand(opts: {
       }
       const effortVal = opts.effort;
       if (effortVal !== undefined && !isEffortRung(effortVal)) {
-        throw new Error(
-          `Invalid effort '${effortVal}'. Supported: ${EFFORT_LADDER.join(", ")}`,
-        );
+        throw new Error(`Invalid effort '${effortVal}'. Supported: ${EFFORT_LADDER.join(", ")}`);
       }
 
+      validateTierBinding({
+        provider: providerArg,
+        model: modelArg,
+        ...(effortVal ? { effort: effortVal as EffortRung } : {}),
+      });
       const cfg = readArchonConfig(repoRoot);
       const updated: ArchonConfig = {
         ...cfg,
+        assistants: { ...cfg.assistants, [providerArg]: { model: modelArg } },
         assistant: cfg.assistant ?? providerArg,
         tiers: {
-          ...(cfg.tiers ?? {}),
+          ...cfg.tiers,
           [tierArg]: {
             provider: providerArg,
             model: modelArg,
@@ -888,11 +1049,11 @@ export async function runConfigCliCommand(opts: {
       };
       if (tierArg === "large") {
         updated.aliases = {
-          ...(cfg.aliases ?? {}),
+          ...cfg.aliases,
           "@reasoning": {
             provider: providerArg,
             model: modelArg,
-            effort: effortVal ?? cfg.aliases?.["@reasoning"]?.effort ?? "high",
+            ...(effortVal ? { effort: effortVal } : {}),
           },
         };
       }
@@ -966,12 +1127,7 @@ export async function runConfigCliCommand(opts: {
       return 0;
     }
 
-    if (
-      sub === "pattern" ||
-      sub === "patterns" ||
-      sub === "component" ||
-      sub === "components"
-    ) {
+    if (sub === "pattern" || sub === "patterns" || sub === "component" || sub === "components") {
       // Usage: labq-factory config pattern <domain> "<guidance>"
       const domainKey = opts.positionals[2];
       const guidanceText = opts.positionals.slice(3).join(" ").trim();
@@ -982,7 +1138,7 @@ export async function runConfigCliCommand(opts: {
         const current = existsSync(rulesPath)
           ? JSON.parse(readFileSync(rulesPath, "utf-8"))
           : { pattern_registry: {}, rules: [] };
-        const reg = { ...(current.component_registry ?? {}), ...(current.pattern_registry ?? {}) };
+        const reg = { ...current.component_registry, ...current.pattern_registry };
         if (opts.json) {
           console.log(JSON.stringify(reg, null, 2));
         } else {
@@ -1022,7 +1178,9 @@ export async function runConfigCliCommand(opts: {
         } else {
           console.log(`Codebase Rules (${(current.rules ?? []).length}):`);
           for (const r of current.rules ?? []) {
-            console.log(`  - [${r.id}] (${r.mode ?? "warn"}) glob=${r.file_glob} -> ${r.replacement_hint}`);
+            console.log(
+              `  - [${r.id}] (${r.mode ?? "warn"}) glob=${r.file_glob} -> ${r.replacement_hint}`,
+            );
           }
         }
         return 0;
@@ -1050,7 +1208,9 @@ export async function runConfigCliCommand(opts: {
       if (opts.json) {
         console.log(JSON.stringify({ ok: true, updatedRules: res.updatedRules }, null, 2));
       } else {
-        console.log(`Configured codebase rule '${ruleId}' (mode=${modeVal}, glob=${opts.fileGlob})`);
+        console.log(
+          `Configured codebase rule '${ruleId}' (mode=${modeVal}, glob=${opts.fileGlob})`,
+        );
       }
       return 0;
     }

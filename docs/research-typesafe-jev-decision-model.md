@@ -1,135 +1,135 @@
-# Research: TypeSafe Jev Decision Model & Penerapannya pada Software Factory
+# Research: TypeSafe Jev Decision Model & Its Application to the Software Factory
 
-* **Tanggal:** 2026-10-27
-* **Topik:** Evaluasi arsitektur TypeSafe Jev (System 1 Typed Decision Engine) untuk otomasi dan *self-improvement* pada Software Factory.
+* **Date:** 2026-10-27
+* **Topic:** Evaluation of the TypeSafe Jev architecture (System 1 Typed Decision Engine) for automation and *self-improvement* in the Software Factory.
 * **Status:** Final Research Report
 
 ---
 
-## 1. Executive Summary: Apa itu TypeSafe Jev?
+## 1. Executive Summary: What Is TypeSafe Jev?
 
-**TypeSafe Jev** adalah *non-autoregressive typed decision engine* (sering dikategorikan sebagai mesin **System 1** untuk agen AI). Berbeda dari model bahasa generatif (*autoregressive* LLM seperti Claude, GPT, atau Pi) yang memprediksi token kata per kata untuk menghasilkan teks bebas, Jev dirancang murni untuk mengevaluasi *state* dan menghasilkan keputusan terstruktur bertipe data (*typed decisions*) dengan probabilitas terkalibrasi (*calibrated confidence*) dalam **satu forward pass** sub-detik (~200–300 ms).
+**TypeSafe Jev** is a *non-autoregressive typed decision engine* (often categorized as a **System 1** engine for AI agents). Unlike generative language models (*autoregressive* LLMs such as Claude, GPT, or Pi) that predict tokens word by word to produce free-form text, Jev is designed solely to evaluate *state* and produce structured, typed decisions with *calibrated confidence* in **a single forward pass** in under a second (~200–300 ms).
 
-Riset dan reproduksi terbuka Jev (misalnya [open-jev-typed-decision-engine](https://github.com/intikhab49/open-jev-typed-decision-engine), [Verdict-open-jev](https://github.com/Heman10x-NGU/Verdict-open-jev), dan [jev-pilot](https://github.com/h0j5bz0adh0-stack/jev-pilot)) menunjukkan arsitektur berbasis *bidirectional encoder* (~150M parameter, seperti ModernBERT) yang menerima *context state* bersama marker pertanyaan `<<q>>` dan label `<<l>>`, lalu memproyeksikannya melalui linear classification head dengan normalisasi *softmax* dan *Brier penalty*.
+Open Jev research and reproductions (such as [open-jev-typed-decision-engine](https://github.com/intikhab49/open-jev-typed-decision-engine), [Verdict-open-jev](https://github.com/Heman10x-NGU/Verdict-open-jev), and [jev-pilot](https://github.com/h0j5bz0adh0-stack/jev-pilot)) show a *bidirectional encoder*-based architecture (~150M parameters, such as ModernBERT) that receives *context state* together with question markers `<<q>>` and label markers `<<l>>`, then projects them through a linear classification head with *softmax* normalization and a *Brier penalty*.
 
-### Tiga Primitif Keputusan (*Decision Primitives*)
+### Three Decision Primitives
 1. **`noul` (Boolean / Binary Gate)**:
-   Keputusan biner ya/tidak (`true`/`false`) berdasarkan evaluasi kriteria ketat terhadap context. Disertai confidence score (0.00 – 1.00).
+   A binary yes/no decision (`true`/`false`) based on evaluating strict criteria against the context. Includes a confidence score (0.00 – 1.00).
 2. **`choice` (Categorical / Discrete Enum)**:
-   Pemilihan satu opsi dari kamus label diskrit (`label -> criteria description`). Menghasilkan distribusi probabilitas penuh di seluruh opsi (misal: menentukan rute alur kerja atau pemenang strategi).
+   Selection of one option from a dictionary of discrete labels (`label -> criteria description`). Produces a full probability distribution across all options (e.g. determining a workflow route or winning strategy).
 3. **`score` (Ordinal / Scaled Evaluation)**:
-   Penilaian bertingkat pada skala berurutan (misal: tingkat risiko 1–5, tingkat keparahan defect minor/major/blocker).
+   Graded evaluation on an ordered scale (e.g. risk level 1–5, defect severity minor/major/blocker).
 
-### Karakteristik Kunci
-* **Zero Prose / No Hallucination**: Jev tidak menghasilkan teks penjelasan bebas; outputnya murni typed struct/JSON.
-* **Calibrated Confidence**: Confidence score mencerminkan ketepatan matematis (bukan sekadar keyakinan palsu LLM generatif).
-* **Latency & Cost Ekstrem Rendah**: Berjalan dalam ~25–300ms dengan konsumsi VRAM/token yang sangat kecil dibandingkan memanggil model penalaran besar untuk sekadar mengambil keputusan klasifikasi.
+### Key Characteristics
+* **Zero Prose / No Hallucination**: Jev does not generate free-form explanatory text; its output is purely typed structs/JSON.
+* **Calibrated Confidence**: Confidence scores reflect mathematical accuracy (rather than merely the false confidence of generative LLMs).
+* **Extremely Low Latency & Cost**: Runs in ~25–300ms with very small VRAM/token consumption compared with calling a large reasoning model just to make a classification decision.
 
 ---
 
-## 2. Kesenjangan (*Gaps*) di Software Factory Saat Ini
+## 2. Gaps in the Current Software Factory
 
-Berdasarkan analisis arsitektur factory kita (`labq-software-factory`, `factory/consumer.py`, dan `app.py`):
-1. **Intake Triage Terlalu Lambat atau Terlalu Permisif**:
-   * Saat ini, *workability gate* bersifat aturan string sederhana (regex `Depends on`), atau membutuhkan pemanggilan model LLM penalaran penuh hanya untuk mengecek apakah tiket memiliki acceptance criteria yang jelas.
-2. **Penentuan Pemenang Probing (Harness² Task-Level)**:
-   * Saat mengimplementasikan siklus *Propose-Probe-Compose* dari Harness², mengevaluasi kandidat strategi menggunakan LLM generatif rentan terhadap *bias posisi* (*positional bias*) dan memakan banyak token.
+Based on an analysis of our factory architecture (`labq-software-factory`, `factory/consumer.py`, and `app.py`):
+1. **Intake Triage Is Too Slow or Too Permissive**:
+   * Currently, the *workability gate* uses simple string rules (the `Depends on` regex), or requires calling a full reasoning LLM just to check whether a ticket has clear acceptance criteria.
+2. **Selecting Probing Winners (Harness² Task-Level)**:
+   * When implementing the Harness² *Propose-Probe-Compose* cycle, evaluating strategy candidates with generative LLMs is susceptible to *positional bias* and consumes many tokens.
 3. **Safety Brake & Stale-Loop Detection**:
-   * Membedakan agen yang "sedang berpikir keras menyelesaikan masalah kompleks" vs "agen yang terjebak dalam infinite retry loop" memerlukan klasifikasi trace eksekusi yang cepat tanpa menambah overhead latensi.
-4. **Otorisasi Auto-Merge `develop`**:
-   * Keputusan apakah PR aman untuk di-merge otomatis membutuhkan evaluasi biner yang deterministik terhadap diff dan hasil test, tanpa interpretasi bebas yang melenceng.
+   * Distinguishing an agent that is "thinking hard to solve a complex problem" from "an agent stuck in an infinite retry loop" requires fast classification of execution traces without adding latency overhead.
+4. **`develop` Auto-Merge Authorization**:
+   * Deciding whether a PR is safe to merge automatically requires a deterministic binary evaluation of the diff and test results, without divergent free-form interpretation.
 
 ---
 
-## 3. Case yang Sangat Cocok untuk Software Factory Kita
+## 3. Use Cases Well Suited to Our Software Factory
 
-Berikut adalah 5 *use case* dengan nilai ROI tertinggi untuk mengadopsi TypeSafe Jev ke dalam ekosistem Software Factory:
+The following 5 use cases offer the highest ROI for adopting TypeSafe Jev into the Software Factory ecosystem:
 
 ### Case 1: Issue Readiness & Scope Gatekeeper (Intake Triage)
-* **Primitif Jev:** `noul` + `score`
-* **Cara Kerja:**
-  Saat issue baru dibuat atau sebelum dimasukkan ke antrean lap, Jev mengevaluasi deskripsi issue terhadap kriteria kesiapan pabrik:
+* **Jev Primitives:** `noul` + `score`
+* **How It Works:**
+  When a new issue is created or before it enters the lap queue, Jev evaluates its description against the factory's readiness criteria:
   ```json
   Question: noul(
     target="is_ready_for_agent",
-    criteria="Issue memiliki acceptance criteria yang dapat diverifikasi secara objektif dan ruang lingkup kode jelas tanpa ambiguitas."
+    criteria="The issue has objectively verifiable acceptance criteria and a clear, unambiguous code scope."
   )
   Question: score(
     target="scope_complexity",
     levels=["trivial", "single_file", "multi_file_feature", "architectural_refactor", "epic_needs_breakdown"]
   )
   ```
-* **Manfaat:** Tiket yang belum siap langsung diberi label `needs-info` dalam hitungan milidetik sebelum membuang kuota eksekusi lap Archon/Pi.
+* **Benefit:** Unready tickets are immediately labeled `needs-info` in milliseconds before wasting Archon/Pi lap execution quota.
 
-### Case 2: Candidate Arbitration pada Harness² Probing (Task-Level Recursion)
-* **Primitif Jev:** `choice`
-* **Cara Kerja:**
-  Saat lap mengalami kegagalan pada tahap verifikasi dan menjalankan *targeted probes* (misal membandingkan 2 alternatif perbaikan diff/patch):
+### Case 2: Candidate Arbitration in Harness² Probing (Task-Level Recursion)
+* **Jev Primitive:** `choice`
+* **How It Works:**
+  When a lap fails verification and runs *targeted probes* (e.g. comparing 2 alternative diff/patch fixes):
   ```json
   Question: choice(
     target="best_remediation_candidate",
     options={
-      "patch_a": "Memperbaiki bug tanpa menambah dependensi baru dan lolos seluruh suite regression.",
-      "patch_b": "Menambahkan wrapper layer yang mengubah signature publik modul.",
-      "reject_both": "Kedua patch memperkenalkan side-effect berbahaya."
+      "patch_a": "Fixes the bug without adding new dependencies and passes the entire regression suite.",
+      "patch_b": "Adds a wrapper layer that changes the module's public signature.",
+      "reject_both": "Both patches introduce harmful side effects."
     }
   )
   ```
-* **Manfaat:** Arbitrasi objektif yang tidak terpengaruh urutan teks (*option-order invariant*) dan sub-detik untuk memilih patch terbaik sebelum melangkah ke tahap *Compose*.
+* **Benefit:** Objective, sub-second arbitration unaffected by text order (*option-order invariant*) selects the best patch before proceeding to *Compose*.
 
 ### Case 3: Loop Detection & Circuit Breaker (Runtime Safety)
-* **Primitif Jev:** `noul` + `choice`
-* **Cara Kerja:**
-  Di `factory/consumer.py`, pantau 5 perintah shell terakhir dan riwayat error lap.
+* **Jev Primitives:** `noul` + `choice`
+* **How It Works:**
+  In `factory/consumer.py`, monitor the last 5 shell commands and the lap's error history.
   ```json
   Question: noul(
     target="is_execution_stuck",
-    criteria="Log menunjukkan agen mengulang perintah command yang sama dengan parameter identik dan mendapatkan error yang sama berulang kali."
+    criteria="The log shows the agent repeating the same command with identical parameters and receiving the same error repeatedly."
   )
   Question: choice(
     target="brake_action",
     options={
-      "continue": "Agen membuat progres konkrit (mengedit file baru atau error berkurang).",
-      "intervene_hint": "Berikan inject instruksi koreksi error.",
-      "pause_lap": "Hentikan lap dan tandai status needs-owner."
+      "continue": "The agent is making concrete progress (editing new files or reducing errors).",
+      "intervene_hint": "Inject an error-correction instruction.",
+      "pause_lap": "Stop the lap and mark its status needs-owner."
     }
   )
   ```
-* **Manfaat:** Menghentikan *token burning* secara otomatis jika agen loopback mengalami degradasi logika, sebelum melanggar batas timeout besar.
+* **Benefit:** Automatically stops *token burning* when the looping agent's logic degrades, before exceeding the large timeout limit.
 
 ### Case 4: Dynamic Merge Authority Gate (`develop` Auto-Merge)
-* **Primitif Jev:** `noul`
-* **Cara Kerja:**
-  Sebagai syarat mutlak sebelum mengeksekusi merge otomatis ke branch `develop`:
+* **Jev Primitive:** `noul`
+* **How It Works:**
+  As an absolute prerequisite before executing an automatic merge into the `develop` branch:
   ```json
   Question: noul(
     target="authorized_for_auto_merge",
-    criteria="Diff PR hanya menyentuh file dalam cakupan tiket, seluruh test suite hijau, tidak ada bypass security/linter, dan target branch adalah develop."
+    criteria="The PR diff touches only files within the ticket's scope, the entire test suite is green, there are no security/linter bypasses, and the target branch is develop."
   )
   ```
-* **Manfaat:** Memberikan lapisan verifikasi *zero-trust* deterministik sebelum kode masuk ke branch integrasi bersama.
+* **Benefit:** Provides a deterministic *zero-trust* verification layer before code enters the shared integration branch.
 
 ### Case 5: Curation & Pruning of Learned Lessons (Harnessing-Level)
-* **Primitif Jev:** `score` + `noul`
-* **Cara Kerja:**
-  Saat *Post-Lap Reflexion* merumuskan draf pelajaran baru untuk dimasukkan ke `.factory/lessons.jsonl`:
+* **Jev Primitives:** `score` + `noul`
+* **How It Works:**
+  When *Post-Lap Reflexion* drafts a new lesson for inclusion in `.factory/lessons.jsonl`:
   ```json
   Question: noul(
     target="is_lesson_valid_and_non_trivial",
-    criteria="Pelajaran mencatat fakta teknis spesifik repositori yang dapat diulang, bukan sekadar rangkuman umum atau halusinasi."
+    criteria="The lesson records a repeatable repository-specific technical fact, not merely a general summary or hallucination."
   )
   Question: score(
     target="hallucination_risk",
     levels=["grounded_in_logs", "plausible_inference", "unsupported_claim"]
   )
   ```
-* **Manfaat:** Menyaring aturan-aturan "sampah" atau "prompt bloat" agar memory `.factory/` tetap bersih dan berkualitas tinggi.
+* **Benefit:** Filters out "junk" rules or "prompt bloat" to keep `.factory/` memory clean and high-quality.
 
 ---
 
-## 4. Pola Arsitektur: Dual-System (System 1 + System 2)
+## 4. Architectural Pattern: Dual-System (System 1 + System 2)
 
-Kombinasi paling kokoh untuk Software Factory adalah membagi peran secara tegas:
+The most robust combination for the Software Factory is to separate the roles explicitly:
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -150,7 +150,7 @@ Kombinasi paling kokoh untuk Software Factory adalah membagi peran secara tegas:
 
 ---
 
-## 5. Sumber & Referensi Primer
+## 5. Primary Sources & References
 
 1. **Jev Architecture & Specifications:**
    * [intikhab49/open-jev-typed-decision-engine](https://github.com/intikhab49/open-jev-typed-decision-engine) — Open reproduction of TypeSafe Jev, encoder design, `<<q>>`/`<<l>>` token serialization, Brier penalty loss.
@@ -159,5 +159,5 @@ Kombinasi paling kokoh untuk Software Factory adalah membagi peran secara tegas:
    * [h0j5bz0adh0-stack/jev-pilot](https://github.com/h0j5bz0adh0-stack/jev-pilot) — Fast System-1 Decision, Arbitration & Safety Engine for Autonomous AI Agents.
    * [sergio-lim/ai-decision-engine](https://github.com/sergio-lim/ai-decision-engine) — Typed AI decisions, confidence-gated routing.
    * [zhangcy122/OpenJev](https://github.com/zhangcy122/OpenJev) — Deliberative decision flywheel (System 2 ➔ System 1).
-3. **Repository Konteks Lokal:**
+3. **Local Repository Context:**
    * `docs/current-factory-analysis.md` & `factory/consumer.py` — Delivery loop lifecycle, claim logic, and merge gating.

@@ -420,6 +420,39 @@ export const projectSchema = z.object({
 });
 export type Project = z.infer<typeof projectSchema>;
 
+export const projectMonitorStatusSchema = z.object({
+  project_id: z.string().min(1),
+  state: z.enum(["idle", "running", "held", "skipped", "completed", "error"]),
+  reason: z.string(),
+  checked_at: z.string().nullable(),
+  next_check_at: z.string().nullable(),
+  run_id: z.string().optional(),
+  run_status: z.string().optional(),
+  error: z.string().optional(),
+  tick: z
+    .object({
+      action: z.enum(["launched", "skipped"]),
+      reason: z.string(),
+      targetIssueNumber: z.number().int().positive().optional(),
+      runId: z.string().optional(),
+      activeLapsCount: z.number().int().nonnegative(),
+      admittedIssuesCount: z.number().int().nonnegative().optional(),
+      detail: z.string().optional(),
+      error: z.string().optional(),
+    })
+    .optional(),
+});
+export type ProjectMonitorStatus = z.infer<typeof projectMonitorStatusSchema>;
+
+export const monitoringStatusSchema = z.object({
+  enabled: z.boolean(),
+  stopping: z.boolean(),
+  interval_ms: z.number().int().positive(),
+  error: z.string().nullable(),
+  projects: z.array(projectMonitorStatusSchema),
+});
+export type MonitoringStatus = z.infer<typeof monitoringStatusSchema>;
+
 export const projectListSchema = z.array(projectSchema);
 export type ProjectList = z.infer<typeof projectListSchema>;
 
@@ -436,7 +469,7 @@ export const projectRegistrationGithubCloneSchema = z.object({
   method: z.literal("github_clone"),
   name: z.string().min(1),
   repo: z.string().min(1),
-  target_path: z.string().min(1),
+  target_path: z.string().min(1).optional(),
 });
 export type ProjectRegistrationGithubClone = z.infer<typeof projectRegistrationGithubCloneSchema>;
 
@@ -444,7 +477,7 @@ export const projectRegistrationGithubCreateSchema = z.object({
   method: z.literal("github_create"),
   name: z.string().min(1),
   repo: z.string().min(1),
-  target_path: z.string().min(1),
+  target_path: z.string().min(1).optional(),
   private: z.boolean().optional(),
 });
 export type ProjectRegistrationGithubCreate = z.infer<typeof projectRegistrationGithubCreateSchema>;

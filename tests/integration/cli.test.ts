@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from "vitest";
+import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -110,6 +110,7 @@ describe("LabQ Factory Unified CLI & Repository Setup Onboarding", () => {
 
     const setupCode = await runCli([
       "setup",
+      "--local-only",
       "--cwd",
       tempDir,
       "--yes",
@@ -245,7 +246,7 @@ describe("LabQ Factory Unified CLI & Repository Setup Onboarding", () => {
     const poorAgentsContent = "# Old Repo Guide\nAlways use snake_case for database columns.\n";
     writeFileSync(join(tempDir, "AGENTS.md"), poorAgentsContent, "utf-8");
 
-    const setupCode = await runCli(["setup", "--cwd", tempDir, "--yes", "--json"]);
+    const setupCode = await runCli(["setup", "--cwd", tempDir, "--yes", "--local-only", "--json"]);
     expect(setupCode).toBe(0);
 
     // Backup of original AGENTS.md must exist
@@ -274,8 +275,28 @@ describe("LabQ Factory Unified CLI & Repository Setup Onboarding", () => {
   });
 
   test("manages project registry and command ledger via CLI", async () => {
-    const codeProjList = await runCli(["project", "list", "--state-dir", tempDir, "--json"]);
-    expect(codeProjList).toBe(0);
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(url).toBe("http://127.0.0.1:3000/api/v1/projects");
+      expect(init?.method).toBe("GET");
+      return Response.json([]);
+    });
+    vi.stubGlobal("fetch", fetch);
+    try {
+      const codeProjList = await runCli([
+        "project",
+        "list",
+        "--factory-url",
+        "http://127.0.0.1:3000",
+        "--state-dir",
+        tempDir,
+        "--json",
+      ]);
+      expect(codeProjList).toBe(0);
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(existsSync(join(tempDir, "console.db"))).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
 
     const codeCmdList = await runCli(["command", "list", "--state-dir", tempDir, "--json"]);
     expect(codeCmdList).toBe(0);

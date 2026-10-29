@@ -178,6 +178,11 @@ export class ProjectRegistryService {
     }
 
     if (registration.method === "github_clone") {
+      if (!registration.target_path)
+        throw new ProjectRegistryError(
+          "invalid_payload",
+          "Direct registry cloning requires target_path; use backend onboarding for managed checkout preparation",
+        );
       let repoInfo;
       try {
         repoInfo = await this.forge.getRepository(registration.repo);
@@ -224,6 +229,11 @@ export class ProjectRegistryService {
     }
 
     if (registration.method === "github_create") {
+      if (!registration.target_path)
+        throw new ProjectRegistryError(
+          "invalid_payload",
+          "Direct registry creation requires target_path; use backend onboarding for managed checkout preparation",
+        );
       let createdRepo;
       try {
         createdRepo = await this.forge.createRepository(
@@ -377,6 +387,12 @@ export class ProjectRegistryService {
         "INSERT INTO project_runs (id, project_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
       )
       .run(runId, projectId, status, now, now);
+  }
+
+  completeTrackedRun(trackingId: string, runId: string, status: string): void {
+    this.db
+      .prepare("UPDATE project_runs SET id = ?, status = ?, updated_at = ? WHERE id = ?")
+      .run(runId, status, new Date().toISOString(), trackingId);
   }
 
   updateRunStatus(runId: string, status: string): void {
