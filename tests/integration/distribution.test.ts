@@ -589,4 +589,398 @@ describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollba
       expect(readmeDoc).not.toContain("python3 app.py");
     });
   });
+
+  describe("AC7 (Issue #85): Workspace Package-Edge Validation & Open-Source Governance", () => {
+    function setupMockWorkspace(rootDir: string, customPackages: Record<string, any> = {}) {
+      const defaultPackages: Record<string, any> = {
+        "packages/contracts": {
+          name: "@labq/contracts",
+          dependencies: { zod: "4.1.12" },
+        },
+        "packages/client": {
+          name: "@labq/client",
+          dependencies: { "@labq/contracts": "workspace:*" },
+        },
+        "apps/backend": {
+          name: "@labq/backend",
+          dependencies: { "@labq/contracts": "workspace:*" },
+        },
+        "apps/engine-host": {
+          name: "@labq/engine-host",
+          dependencies: { "@labq/contracts": "workspace:*" },
+        },
+        "apps/launcher": {
+          name: "@labq/launcher",
+          dependencies: { "@labq/contracts": "workspace:*" },
+        },
+      };
+
+      const merged = { ...defaultPackages, ...customPackages };
+      for (const [pkgRelPath, content] of Object.entries(merged)) {
+        const fullDir = join(rootDir, pkgRelPath);
+        mkdirSync(fullDir, { recursive: true });
+        if (content !== null) {
+          writeFileSync(
+            join(fullDir, "package.json"),
+            typeof content === "string" ? content : JSON.stringify(content, null, 2),
+          );
+        }
+      }
+    }
+
+    function setupMockGovernance(rootDir: string, overrides: Record<string, string | null> = {}) {
+      const defaultFiles: Record<string, string> = {
+        LICENSE: "MIT License\n\nCopyright (c) 2026 LabQ\nPermission is hereby granted...",
+        "CONTRIBUTING.md":
+          "# Contributing\nNode 26.8.1\nBun 1.4.2\nlabq-factory setup --local-only\nbun run check\nbun run test\nbun run verify\narchitecture boundaries",
+        "SECURITY.md": "# Security\nReport vulnerabilities privately.",
+        "CHANGELOG.md": "# Changelog\nAll notable changes.",
+        ".gitattributes": "* text=auto eol=lf\n",
+        "renovate.json": JSON.stringify(
+          {
+            $schema: "https://docs.renovatebot.com/renovate-schema.json",
+            osvVulnerabilityAlerts: true,
+            lockFileMaintenance: { enabled: true },
+            packageRules: [
+              {
+                matchDepTypes: ["overrides"],
+                major: { enabled: false },
+              },
+            ],
+          },
+          null,
+          2,
+        ),
+        ".github/pull_request_template.md": "## Problem\n## Invariants\n## Evidence\n",
+        ".github/ISSUE_TEMPLATE/bug_report.md": `---
+name: Bug Report
+labels:
+  - needs-triage
+---
+## Source and problem
+## Outcome
+## Invariants
+## Acceptance criteria
+## Boundary
+Depends on: None
+`,
+        ".github/ISSUE_TEMPLATE/feature_request.md": `---
+name: Feature Request
+labels:
+  - needs-triage
+---
+## Source and problem
+## Outcome
+## Invariants
+## Acceptance criteria
+## Boundary
+Depends on: None
+`,
+      };
+
+      const files = { ...defaultFiles, ...overrides };
+      for (const [relPath, content] of Object.entries(files)) {
+        const fullPath = join(rootDir, relPath);
+        const parentDir = join(rootDir, relPath.split("/").slice(0, -1).join("/"));
+        mkdirSync(parentDir, { recursive: true });
+        if (content !== null) {
+          writeFileSync(fullPath, content);
+        }
+      }
+    }
+
+    test("AC1: checkWorkspacePackageEdges validates clean repository without violations", async () => {
+      const { checkWorkspacePackageEdges } = (await import(
+        // @ts-expect-error dynamic mjs import
+        "../../scripts/health/check-architecture.mjs"
+      )) as any;
+      const result = checkWorkspacePackageEdges(process.cwd());
+      expect(result.ok).toBe(true);
+      expect(result.violations).toEqual([]);
+    });
+
+    test("AC1: checkWorkspacePackageEdges fails closed on forbidden package.json edges", async () => {
+      const { checkWorkspacePackageEdges } = (await import(
+        // @ts-expect-error dynamic mjs import
+        "../../scripts/health/check-architecture.mjs"
+      )) as any;
+
+      // Fault case 1: contracts depending on client
+      const mockDir1 = join(tempDir, "pkg-edge-fault-1");
+      setupMockWorkspace(mockDir1, {
+        "packages/contracts": {
+          name: "@labq/contracts",
+          dependencies: { "@labq/client": "workspace:*" },
+        },
+      });
+      const res1 = checkWorkspacePackageEdges(mockDir1);
+      expect(res1.ok).toBe(false);
+      expect(
+        res1.violations.some((v: string) => v.includes('forbidden dependency "@labq/client"')),
+      ).toBe(true);
+
+      // Fault case 2: contracts depending on backend in devDependencies
+      const mockDir2 = join(tempDir, "pkg-edge-fault-2");
+      setupMockWorkspace(mockDir2, {
+        "packages/contracts": {
+          name: "@labq/contracts",
+          devDependencies: { "@labq/backend": "workspace:*" },
+        },
+      });
+      const res2 = checkWorkspacePackageEdges(mockDir2);
+      expect(res2.ok).toBe(false);
+      expect(
+        res2.violations.some((v: string) => v.includes('forbidden dependency "@labq/backend"')),
+      ).toBe(true);
+
+      // Fault case 3: client depending on engine-host in peerDependencies
+      const mockDir3 = join(tempDir, "pkg-edge-fault-3");
+      setupMockWorkspace(mockDir3, {
+        "packages/client": {
+          name: "@labq/client",
+          peerDependencies: { "@labq/engine-host": "workspace:*" },
+        },
+      });
+      const res3 = checkWorkspacePackageEdges(mockDir3);
+      expect(res3.ok).toBe(false);
+      expect(
+        res3.violations.some((v: string) => v.includes('forbidden dependency "@labq/engine-host"')),
+      ).toBe(true);
+
+      // Fault case 4: backend depending on engine-host
+      const mockDir4 = join(tempDir, "pkg-edge-fault-4");
+      setupMockWorkspace(mockDir4, {
+        "apps/backend": {
+          name: "@labq/backend",
+          dependencies: { "@labq/engine-host": "workspace:*" },
+        },
+      });
+      const res4 = checkWorkspacePackageEdges(mockDir4);
+      expect(res4.ok).toBe(false);
+      expect(
+        res4.violations.some((v: string) => v.includes('forbidden dependency "@labq/engine-host"')),
+      ).toBe(true);
+
+      // Fault case 5: engine-host depending on backend
+      const mockDir5 = join(tempDir, "pkg-edge-fault-5");
+      setupMockWorkspace(mockDir5, {
+        "apps/engine-host": {
+          name: "@labq/engine-host",
+          dependencies: { "@labq/backend": "workspace:*" },
+        },
+      });
+      const res5 = checkWorkspacePackageEdges(mockDir5);
+      expect(res5.ok).toBe(false);
+      expect(
+        res5.violations.some((v: string) => v.includes('forbidden dependency "@labq/backend"')),
+      ).toBe(true);
+
+      // Fault case 6: launcher depending on engine-host
+      const mockDir6 = join(tempDir, "pkg-edge-fault-6");
+      setupMockWorkspace(mockDir6, {
+        "apps/launcher": {
+          name: "@labq/launcher",
+          dependencies: { "@labq/engine-host": "workspace:*" },
+        },
+      });
+      const res6 = checkWorkspacePackageEdges(mockDir6);
+      expect(res6.ok).toBe(false);
+      expect(
+        res6.violations.some((v: string) => v.includes('forbidden dependency "@labq/engine-host"')),
+      ).toBe(true);
+
+      // Fault case 7: missing package.json fails closed
+      const mockDir7 = join(tempDir, "pkg-edge-fault-7");
+      setupMockWorkspace(mockDir7, {
+        "apps/backend": null,
+      });
+      const res7 = checkWorkspacePackageEdges(mockDir7);
+      expect(res7.ok).toBe(false);
+      expect(
+        res7.violations.some((v: string) => v.includes("apps/backend/package.json: file missing")),
+      ).toBe(true);
+    });
+
+    test("AC2 & AC3: checkOpenSourceGovernanceFiles validates clean repository and governance artifacts", async () => {
+      const { checkOpenSourceGovernanceFiles } = (await import(
+        // @ts-expect-error dynamic mjs import
+        "../../scripts/health/check-architecture.mjs"
+      )) as any;
+      const result = checkOpenSourceGovernanceFiles(process.cwd());
+      expect(result.ok).toBe(true);
+      expect(result.violations).toEqual([]);
+
+      // Verify individual governance file contents on disk
+      const license = readFileSync(join(process.cwd(), "LICENSE"), "utf-8");
+      expect(license).toContain("MIT License");
+
+      const contributing = readFileSync(join(process.cwd(), "CONTRIBUTING.md"), "utf-8");
+      expect(contributing).toContain("26.8.1");
+      expect(contributing).toContain("1.4.2");
+      expect(contributing).toContain("labq-factory setup --local-only");
+      expect(contributing).toContain("bun run check");
+      expect(contributing).toContain("bun run test");
+      expect(contributing).toContain("bun run verify");
+      expect(contributing).toMatch(/architecture boundar/i);
+
+      const security = readFileSync(join(process.cwd(), "SECURITY.md"), "utf-8");
+      expect(security.length).toBeGreaterThan(0);
+      expect(security).toMatch(/vulnerabilit/i);
+
+      const changelog = readFileSync(join(process.cwd(), "CHANGELOG.md"), "utf-8");
+      expect(changelog.length).toBeGreaterThan(0);
+      expect(changelog).toContain("# Changelog");
+
+      const gitattributes = readFileSync(join(process.cwd(), ".gitattributes"), "utf-8");
+      expect(gitattributes).toContain("eol=lf");
+
+      const renovate = JSON.parse(readFileSync(join(process.cwd(), "renovate.json"), "utf-8"));
+      expect(renovate.lockFileMaintenance.enabled).toBe(true);
+      expect(renovate.osvVulnerabilityAlerts).toBe(true);
+      const hasOverridesMajorDisabled = renovate.packageRules.some((rule: any) => {
+        const matchesOverrides =
+          (Array.isArray(rule.matchDepTypes) && rule.matchDepTypes.includes("overrides")) ||
+          rule.matchDepTypes === "overrides";
+        return matchesOverrides && rule.major?.enabled === false;
+      });
+      expect(hasOverridesMajorDisabled).toBe(true);
+
+      const prTemplate = readFileSync(
+        join(process.cwd(), ".github/pull_request_template.md"),
+        "utf-8",
+      );
+      expect(prTemplate.length).toBeGreaterThan(0);
+      expect(prTemplate).toContain("Evidence");
+
+      for (const templateName of ["bug_report.md", "feature_request.md"]) {
+        const templateContent = readFileSync(
+          join(process.cwd(), `.github/ISSUE_TEMPLATE/${templateName}`),
+          "utf-8",
+        );
+        expect(templateContent).toContain("needs-triage");
+        expect(templateContent).not.toContain("ready-for-agent");
+        expect(templateContent).toContain("Source and problem");
+        expect(templateContent).toContain("Outcome");
+        expect(templateContent).toContain("Invariants");
+        expect(templateContent).toContain("Acceptance criteria");
+        expect(templateContent).toContain("Boundary");
+        expect(templateContent).toContain("Depends on:");
+      }
+    });
+
+    test("AC2 & AC4: checkOpenSourceGovernanceFiles fails closed on missing or invalid governance files", async () => {
+      const { checkOpenSourceGovernanceFiles } = (await import(
+        // @ts-expect-error dynamic mjs import
+        "../../scripts/health/check-architecture.mjs"
+      )) as any;
+
+      // Fault case 1: missing LICENSE
+      const mockDir1 = join(tempDir, "gov-fault-1");
+      setupMockGovernance(mockDir1, { LICENSE: null });
+      const res1 = checkOpenSourceGovernanceFiles(mockDir1);
+      expect(res1.ok).toBe(false);
+      expect(res1.violations.some((v: string) => v.includes("LICENSE: file missing"))).toBe(true);
+
+      // Fault case 2: non-MIT LICENSE
+      const mockDir2 = join(tempDir, "gov-fault-2");
+      setupMockGovernance(mockDir2, { LICENSE: "GPLv3 License text without permission clause" });
+      const res2 = checkOpenSourceGovernanceFiles(mockDir2);
+      expect(res2.ok).toBe(false);
+      expect(
+        res2.violations.some((v: string) => v.includes("LICENSE: must specify MIT license")),
+      ).toBe(true);
+
+      // Fault case 3: CONTRIBUTING.md missing toolchain or check commands
+      const mockDir3 = join(tempDir, "gov-fault-3");
+      setupMockGovernance(mockDir3, { "CONTRIBUTING.md": "# Incomplete contributing guide" });
+      const res3 = checkOpenSourceGovernanceFiles(mockDir3);
+      expect(res3.ok).toBe(false);
+      expect(
+        res3.violations.some((v: string) =>
+          v.includes("CONTRIBUTING.md: must document pinned Node 26.8.1"),
+        ),
+      ).toBe(true);
+      expect(
+        res3.violations.some((v: string) =>
+          v.includes("CONTRIBUTING.md: must document pinned Bun 1.4.2"),
+        ),
+      ).toBe(true);
+
+      // Fault case 4: .gitattributes missing eol=lf
+      const mockDir4 = join(tempDir, "gov-fault-4");
+      setupMockGovernance(mockDir4, { ".gitattributes": "* text=auto eol=crlf" });
+      const res4 = checkOpenSourceGovernanceFiles(mockDir4);
+      expect(res4.ok).toBe(false);
+      expect(
+        res4.violations.some((v: string) => v.includes('.gitattributes: must enforce "eol=lf"')),
+      ).toBe(true);
+
+      // Fault case 5: renovate.json with lockFileMaintenance disabled
+      const mockDir5 = join(tempDir, "gov-fault-5");
+      setupMockGovernance(mockDir5, {
+        "renovate.json": JSON.stringify({
+          lockFileMaintenance: { enabled: false },
+          osvVulnerabilityAlerts: true,
+          packageRules: [],
+        }),
+      });
+      const res5 = checkOpenSourceGovernanceFiles(mockDir5);
+      expect(res5.ok).toBe(false);
+      expect(
+        res5.violations.some((v: string) => v.includes("lockFileMaintenance.enabled must be true")),
+      ).toBe(true);
+
+      // Fault case 6: issue template defaulting to ready-for-agent
+      const mockDir6 = join(tempDir, "gov-fault-6");
+      setupMockGovernance(mockDir6, {
+        ".github/ISSUE_TEMPLATE/bug_report.md": `---
+name: Bug Report
+labels:
+  - ready-for-agent
+---
+## Source and problem
+## Outcome
+## Invariants
+## Acceptance criteria
+## Boundary
+Depends on: None
+`,
+      });
+      const res6 = checkOpenSourceGovernanceFiles(mockDir6);
+      expect(res6.ok).toBe(false);
+      expect(
+        res6.violations.some((v: string) => v.includes('must never default to "ready-for-agent"')),
+      ).toBe(true);
+
+      // Fault case 7: issue template missing canonical sections
+      const mockDir7 = join(tempDir, "gov-fault-7");
+      setupMockGovernance(mockDir7, {
+        ".github/ISSUE_TEMPLATE/feature_request.md": `---
+name: Feature Request
+labels:
+  - needs-triage
+---
+## Problem Description
+No canonical sections here.
+`,
+      });
+      const res7 = checkOpenSourceGovernanceFiles(mockDir7);
+      expect(res7.ok).toBe(false);
+      expect(
+        res7.violations.some((v: string) =>
+          v.includes('missing canonical section "Acceptance criteria"'),
+        ),
+      ).toBe(true);
+    });
+
+    test("AC1-AC4: unified checkArchitectureRules aggregates clean repo status", async () => {
+      const { checkArchitectureRules } = (await import(
+        // @ts-expect-error dynamic mjs import
+        "../../scripts/health/check-architecture.mjs"
+      )) as any;
+      const result = checkArchitectureRules(process.cwd());
+      expect(result.ok).toBe(true);
+      expect(result.violations).toEqual([]);
+    });
+  });
 });
