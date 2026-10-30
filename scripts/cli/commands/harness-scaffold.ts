@@ -33,6 +33,8 @@ export interface HarnessAuditReport {
     loopGuard: boolean;
     holdoutFence: boolean;
     claudeSettings: boolean;
+    piSettings: boolean;
+    ompSettings: boolean;
   };
   governanceFiles: {
     lessonsJsonl: boolean;
@@ -189,6 +191,8 @@ export function auditRepositoryHarness(repoRoot: string): HarnessAuditReport {
       loopGuard: existsSync(join(root, ".factory/hooks/loop-guard.ts")),
       holdoutFence: existsSync(join(root, ".factory/hooks/holdout_fence.py")),
       claudeSettings: existsSync(join(root, ".claude/settings.json")),
+      piSettings: existsSync(join(root, ".pi/settings.json")),
+      ompSettings: existsSync(join(root, ".omp/settings.json")),
     },
     governanceFiles: {
       lessonsJsonl: existsSync(join(root, ".factory/lessons.jsonl")),
@@ -604,6 +608,41 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
       "utf-8",
     );
     createdOrUpdatedPaths.push(claudeSettingsPath);
+  }
+
+  // 4b. Ensure .pi/settings.json and .omp/settings.json for repository-level extension hooks
+  const piSettingsPath = join(targetRoot, ".pi/settings.json");
+  if (!existsSync(piSettingsPath)) {
+    mkdirSync(dirname(piSettingsPath), { recursive: true });
+    writeFileSync(
+      piSettingsPath,
+      JSON.stringify(
+        {
+          extensions: ["./.factory/hooks/loop-guard.ts"],
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf-8",
+    );
+    createdOrUpdatedPaths.push(piSettingsPath);
+  }
+
+  const ompSettingsPath = join(targetRoot, ".omp/settings.json");
+  if (!existsSync(ompSettingsPath)) {
+    mkdirSync(dirname(ompSettingsPath), { recursive: true });
+    writeFileSync(
+      ompSettingsPath,
+      JSON.stringify(
+        {
+          extensions: ["./.factory/hooks/loop-guard.ts"],
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf-8",
+    );
+    createdOrUpdatedPaths.push(ompSettingsPath);
   }
 
   // 5. Ensure .factory/hooks/loop-guard.ts & holdout_fence.py

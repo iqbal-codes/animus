@@ -154,6 +154,14 @@ describe("LabQ Factory Unified CLI & Repository Setup Onboarding", () => {
     expect(harnessCfg.static).toBe("bun run check");
     expect(harnessCfg.unit).toBe("bun run test");
 
+    // Verify .pi/settings.json and .omp/settings.json were created
+    expect(existsSync(join(tempDir, ".pi/settings.json"))).toBe(true);
+    expect(existsSync(join(tempDir, ".omp/settings.json"))).toBe(true);
+    const piSettings = JSON.parse(readFileSync(join(tempDir, ".pi/settings.json"), "utf-8"));
+    expect(piSettings.extensions).toContain("./.factory/hooks/loop-guard.ts");
+    const ompSettings = JSON.parse(readFileSync(join(tempDir, ".omp/settings.json"), "utf-8"));
+    expect(ompSettings.extensions).toContain("./.factory/hooks/loop-guard.ts");
+
     // 2. Reconfigure a specific model tier via 'config tier'
     const tierCode = await runCli([
       "config",
