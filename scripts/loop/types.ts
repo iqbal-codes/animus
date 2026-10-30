@@ -76,6 +76,8 @@ export interface LoopEvidence {
 
 export interface LocalLoopResult {
   runId: string;
+  pid?: number;
+  lap?: number;
   issue: string;
   route: "simple" | "continue" | "complex";
   status:

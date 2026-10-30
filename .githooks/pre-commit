@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -e
+
+# Clear Git's internal hook environment variables so tests spawning temporary git repos don't inherit them
+while IFS= read -r var; do
+  [ -n "$var" ] && unset "$var"
+done < <(git rev-parse --local-env-vars)
+
+echo "==> Running local pre-commit CI gates..."
+echo "==> [Gate 1] Architecture boundary check..."
+node scripts/health/check-architecture.mjs
+
+echo "==> [Gate 2] Format & lint check..."
+bun run format
+bun run lint
+
+echo "==> [Gate 3] Typecheck..."
+bun run typecheck
+
+echo "==> [Gate 4] Test verification..."
+bun run test
+
+echo "==> All local CI checks passed cleanly."

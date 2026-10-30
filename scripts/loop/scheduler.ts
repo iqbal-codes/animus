@@ -155,6 +155,14 @@ export function isWithinWorkWindow(window?: WorkWindowConfig, now = new Date()):
     return true;
   }
 }
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export function countActiveLaps(runsDir: string): number {
   if (!existsSync(runsDir)) return 0;
@@ -173,6 +181,9 @@ export function countActiveLaps(runsDir: string): number {
           state.status === "reviewing" ||
           state.status === "reflecting"
         ) {
+          if (typeof state.pid === "number" && !isProcessAlive(state.pid)) {
+            continue;
+          }
           active++;
         }
       } catch {}
@@ -284,7 +295,19 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
   }
 
   // 3. Count capacity & check waiting-approval items
-  const runsDir = options.runsDir ?? join(root, ".factory-local-loop", "runs");
+  const runsDir =
+    options.runsDir ??
+    (() => {
+      try {
+        const gitRes = Bun.spawnSync(["git", "rev-parse", "--git-common-dir"], { cwd: root });
+        if (gitRes.exitCode === 0) {
+          const common = resolve(root, gitRes.stdout.toString().trim());
+          const commonRuns = join(common, "factory-local-loop", "runs");
+          if (existsSync(commonRuns)) return commonRuns;
+        }
+      } catch {}
+      return join(root, ".factory-local-loop", "runs");
+    })();
   const activeCount = countActiveLaps(runsDir);
   const waitingApprovalNumbers = getIssuesWaitingApproval(runsDir);
   if (activeCount >= mergedConfig.parallel) {

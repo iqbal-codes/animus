@@ -8,6 +8,7 @@ import {
   summarize,
   terminalSummary,
   watchRun,
+  resolveRunLap,
 } from "../../scripts/loop-watch";
 
 test("prints concise responses, actual commands and result summaries without prompts or thinking", () => {
@@ -152,5 +153,46 @@ test("follows appended JSONL without duplicate events or dropping partial UTF-8 
     expect(await cursor.read(path)).toEqual([{}]);
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("resolves lap number and shows lap count in terminal summary", async () => {
+  const summaryWithLap = terminalSummary({
+    status: "failed",
+    lap: 3,
+    error: "Test failure",
+    worktree: "/work",
+    runDirectory: "/evidence",
+  }).join("\n");
+  expect(summaryWithLap).toContain("RUN ENDED: FAILED (Lap 3)");
+  expect(summaryWithLap).toContain("Lap: 3");
+
+  // Directly from state
+  expect(await resolveRunLap("/fake/dir", { lap: 4 })).toBe(4);
+
+  // From dossier fallback
+  const tmp = await mkdtemp(join(tmpdir(), "loop-watch-dossier-"));
+  try {
+    const runsDir = join(tmp, "factory-local-loop", "runs", "test-run");
+    const dossiersDir = join(tmp, "factory-local-loop", "dossiers");
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(runsDir, { recursive: true });
+    await mkdir(dossiersDir, { recursive: true });
+    await Bun.write(
+      join(dossiersDir, "issue-42.json"),
+      JSON.stringify({
+        attempts: [
+          { runId: "other-run", lapIndex: 0 },
+          { runId: "test-run", lapIndex: 1 },
+        ],
+      }),
+    );
+    const resolved = await resolveRunLap(runsDir, {
+      runId: "test-run",
+      issue: "https://github.com/org/repo/issues/42",
+    });
+    expect(resolved).toBe(2);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
   }
 });
