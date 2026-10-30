@@ -221,43 +221,12 @@ export function checkWorkspacePackageEdges(repoRoot) {
     violations,
   };
 }
-
 /**
- * Verifies the presence and non-empty validity of open-source community,
- * security, supply-chain, and contributor governance files.
- *
  * @param {string} repoRoot
- * @returns {{ ok: boolean, violations: string[] }}
+ * @param {(relPath: string, label: string) => string | null} readRequiredFile
+ * @param {string[]} violations
  */
-export function checkOpenSourceGovernanceFiles(repoRoot) {
-  /** @type {string[]} */
-  const violations = [];
-
-  /**
-   * @param {string} relPath
-   * @param {string} label
-   * @returns {string | null}
-   */
-  function readRequiredFile(relPath, label) {
-    const fullPath = join(repoRoot, relPath);
-    if (!existsSync(fullPath)) {
-      violations.push(`${label || relPath} is missing: ${relPath}`);
-      return null;
-    }
-    try {
-      const content = readFileSync(fullPath, "utf-8");
-      if (!content.trim()) {
-        violations.push(`${label || relPath} is empty: ${relPath}`);
-        return null;
-      }
-      return content;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      violations.push(`Failed to read ${label || relPath} (${relPath}): ${message}`);
-      return null;
-    }
-  }
-
+function validateBasicGovernance(repoRoot, readRequiredFile, violations) {
   // 1. LICENSE (MIT)
   const licenseContent = readRequiredFile("LICENSE", "License file");
   if (licenseContent !== null) {
@@ -313,7 +282,13 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
       violations.push("CHANGELOG.md must contain '# Changelog' header");
     }
   }
-
+}
+/**
+ * @param {string} repoRoot
+ * @param {(relPath: string, label: string) => string | null} readRequiredFile
+ * @param {string[]} violations
+ */
+function validateGitAttributes(repoRoot, readRequiredFile, violations) {
   // 5. .gitattributes
   const gitattrContent = readRequiredFile(".gitattributes", "Git attributes");
   if (gitattrContent !== null) {
@@ -756,7 +731,13 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
       );
     }
   }
-
+}
+/**
+ * @param {string} repoRoot
+ * @param {(relPath: string, label: string) => string | null} readRequiredFile
+ * @param {string[]} violations
+ */
+function validateRenovate(repoRoot, readRequiredFile, violations) {
   // 6. renovate.json
   const renovateContent = readRequiredFile("renovate.json", "Renovate configuration");
   if (renovateContent !== null) {
@@ -1259,7 +1240,13 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
       violations.push(`renovate.json is not valid JSON: ${message}`);
     }
   }
-
+}
+/**
+ * @param {string} repoRoot
+ * @param {(relPath: string, label: string) => string | null} readRequiredFile
+ * @param {string[]} violations
+ */
+function validateIssueTemplates(repoRoot, readRequiredFile, violations) {
   // 7. .github/pull_request_template.md
   readRequiredFile(".github/pull_request_template.md", "Pull request template");
 
@@ -1791,6 +1778,48 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
       }
     }
   }
+}
+
+/**
+ * Verifies the presence and non-empty validity of open-source community,
+ * security, supply-chain, and contributor governance files.
+ *
+ * @param {string} repoRoot
+ * @returns {{ ok: boolean, violations: string[] }}
+ */
+export function checkOpenSourceGovernanceFiles(repoRoot) {
+  /** @type {string[]} */
+  const violations = [];
+
+  /**
+   * @param {string} relPath
+   * @param {string} label
+   * @returns {string | null}
+   */
+  function readRequiredFile(relPath, label) {
+    const fullPath = join(repoRoot, relPath);
+    if (!existsSync(fullPath)) {
+      violations.push(`${label || relPath} is missing: ${relPath}`);
+      return null;
+    }
+    try {
+      const content = readFileSync(fullPath, "utf-8");
+      if (!content.trim()) {
+        violations.push(`${label || relPath} is empty: ${relPath}`);
+        return null;
+      }
+      return content;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      violations.push(`Failed to read ${label || relPath} (${relPath}): ${message}`);
+      return null;
+    }
+  }
+
+  validateBasicGovernance(repoRoot, readRequiredFile, violations);
+  validateGitAttributes(repoRoot, readRequiredFile, violations);
+  validateRenovate(repoRoot, readRequiredFile, violations);
+  validateIssueTemplates(repoRoot, readRequiredFile, violations);
 
   return {
     ok: violations.length === 0,
