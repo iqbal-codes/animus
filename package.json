@@ -34,9 +34,12 @@
     "@labq/contracts": "workspace:*",
     "@types/bun": "1.4.2",
     "@types/node": "26.6.5",
+    "@types/picomatch": "^4.0.3",
+    "picomatch": "^4.0.7",
     "typescript": "5.9.3",
     "vite-plus": "1.4.0",
-    "vitest": "5.0.5"
+    "vitest": "5.0.5",
+    "yaml": "^2.9.1"
   },
   "overrides": {
     "vite": "npm:@voidzero-dev/vite-plus-core@1.4.0",

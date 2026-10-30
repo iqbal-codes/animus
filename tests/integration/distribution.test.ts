@@ -8,6 +8,7 @@ import {
   statSync,
   rmSync,
   cpSync,
+  symlinkSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -2455,6 +2456,7 @@ Depends on: None
 
       const isolatedCheckerPath = join(isolatedDir, "check-architecture.mjs");
       cpSync(join(process.cwd(), "scripts/health"), isolatedDir, { recursive: true });
+      symlinkSync(join(process.cwd(), "node_modules"), join(isolatedDir, "node_modules"), "dir");
 
       const isolatedModule = await import(pathToFileURL(isolatedCheckerPath).href);
       const isolatedChecker = isolatedModule.checkOpenSourceGovernanceFiles;
