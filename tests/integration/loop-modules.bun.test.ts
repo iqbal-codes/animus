@@ -46,8 +46,10 @@ import {
   resolveVerificationProfile,
   getProfileInstructions,
   getIssuesWaitingApproval,
+  countActiveLaps,
   type BacklogCandidate,
 } from "../../scripts/loop/index";
+import { findExistingWorktreeForBranch } from "../../scripts/local-loop";
 
 const tempDirs: string[] = [];
 afterEach(async () => {
@@ -834,6 +836,65 @@ test("14. Scheduler waiting_approval protection: prevents re-dispatching deliver
     });
     expect(admitted).toHaveLength(1);
     expect(admitted[0]?.number).toBe(100); // 99 is cleanly skipped!
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("15. Scheduler capacity liveness: ignores abandoned runs with dead PIDs", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "scheduler-liveness-"));
+  try {
+    const runsDir = join(tmp, "runs");
+    await mkdir(join(runsDir, "run-alive"), { recursive: true });
+    await mkdir(join(runsDir, "run-dead"), { recursive: true });
+    await mkdir(join(runsDir, "run-no-pid"), { recursive: true });
+
+    // Current process is alive
+    await Bun.write(
+      join(runsDir, "run-alive", "state.json"),
+      JSON.stringify({ status: "building", pid: process.pid }),
+    );
+    // PID 9999999 is definitely dead
+    await Bun.write(
+      join(runsDir, "run-dead", "state.json"),
+      JSON.stringify({ status: "building", pid: 9999999 }),
+    );
+    // Backward compatibility for runs without pid
+    await Bun.write(
+      join(runsDir, "run-no-pid", "state.json"),
+      JSON.stringify({ status: "building" }),
+    );
+
+    const active = countActiveLaps(runsDir);
+    expect(active).toBe(2); // run-alive and run-no-pid, dead run is omitted
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("16. Worktree reuse: finds existing worktree holding branch ref", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "worktree-reuse-test-"));
+  try {
+    const repo = join(tmp, "repo");
+    const extraWorktree = join(tmp, "extra-tree");
+    await mkdir(repo, { recursive: true });
+
+    await Bun.spawn(["git", "init", "-b", "main"], { cwd: repo }).exited;
+    await Bun.spawn(["git", "config", "user.name", "Test"], { cwd: repo }).exited;
+    await Bun.spawn(["git", "config", "user.email", "test@test.local"], { cwd: repo }).exited;
+    await Bun.write(join(repo, "README.md"), "test");
+    await Bun.spawn(["git", "add", "README.md"], { cwd: repo }).exited;
+    await Bun.spawn(["git", "commit", "-m", "init"], { cwd: repo }).exited;
+
+    await Bun.spawn(["git", "branch", "feature-x"], { cwd: repo }).exited;
+    await Bun.spawn(["git", "worktree", "add", extraWorktree, "feature-x"], { cwd: repo }).exited;
+
+    const found = await findExistingWorktreeForBranch(repo, "feature-x");
+    expect(found).not.toBeNull();
+    expect(existsSync(found!)).toBe(true);
+
+    const nonExistent = await findExistingWorktreeForBranch(repo, "non-existent-branch-123456");
+    expect(nonExistent).toBeNull();
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

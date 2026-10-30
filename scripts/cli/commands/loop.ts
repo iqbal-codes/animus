@@ -127,10 +127,11 @@ export async function runSchedulerCliCommand(opts: {
     const gitCommonRes = Bun.spawnSync(["git", "rev-parse", "--git-common-dir"], {
       cwd: opts.repoRoot,
     });
-    const sharedRoot =
-      gitCommonRes.exitCode === 0
-        ? resolve(opts.repoRoot, gitCommonRes.stdout.toString().trim(), "..")
-        : opts.repoRoot;
+    const gitCommon =
+      gitCommonRes.exitCode === 0 ? gitCommonRes.stdout.toString().trim() : ".git";
+    const common = resolve(opts.repoRoot, gitCommon);
+    const sharedRoot = resolve(common, "..");
+    const runsDir = join(common, "factory-local-loop", "runs");
 
     const fetchBacklog = async () => fetchGithubBacklog(opts.repoRoot, repo);
 
@@ -151,6 +152,7 @@ export async function runSchedulerCliCommand(opts: {
       const result = await runSchedulerTick({
         root: opts.repoRoot,
         sharedRoot,
+        runsDir,
         config: interval ? { interval_seconds: interval } : undefined,
         fetchBacklog,
         launchLap,
@@ -170,6 +172,7 @@ export async function runSchedulerCliCommand(opts: {
     const loop = startSchedulerLoop({
       root: opts.repoRoot,
       sharedRoot,
+      runsDir,
       config: interval ? { interval_seconds: interval } : undefined,
       intervalMs: interval ? interval * 1000 : undefined,
       fetchBacklog,

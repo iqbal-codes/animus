@@ -22,6 +22,7 @@
     "loop": "bun scripts/loop.ts",
     "loop:watch": "bun scripts/loop-watch.ts",
     "package:release": "bun scripts/release/package.ts",
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
     "scheduler": "bun scripts/scheduler.ts",
     "test": "vp run test-all",
     "toolchain": "node scripts/health/check-toolchain.mjs",
