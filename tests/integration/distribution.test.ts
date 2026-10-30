@@ -881,5 +881,103 @@ describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollba
         ),
       ).toBe(true);
     });
+
+    test("AC4 / Review Dispositions (D1-D4): checkOpenSourceGovernanceFiles enforces substantive validity against probes R1-R4", async () => {
+      const { checkOpenSourceGovernanceFiles } = await import(
+        // @ts-expect-error dynamic mjs import
+        "../../scripts/health/check-architecture.mjs"
+      );
+
+      // Helper to initialize a fully valid governance directory
+      function createValidGovDir(dirPath: string) {
+        mkdirSync(join(dirPath, ".github/ISSUE_TEMPLATE"), { recursive: true });
+        writeFileSync(
+          join(dirPath, "LICENSE"),
+          readFileSync(join(process.cwd(), "LICENSE"), "utf-8"),
+        );
+        writeFileSync(
+          join(dirPath, "CONTRIBUTING.md"),
+          readFileSync(join(process.cwd(), "CONTRIBUTING.md"), "utf-8"),
+        );
+        writeFileSync(
+          join(dirPath, "SECURITY.md"),
+          readFileSync(join(process.cwd(), "SECURITY.md"), "utf-8"),
+        );
+        writeFileSync(
+          join(dirPath, "CHANGELOG.md"),
+          readFileSync(join(process.cwd(), "CHANGELOG.md"), "utf-8"),
+        );
+        writeFileSync(
+          join(dirPath, ".gitattributes"),
+          readFileSync(join(process.cwd(), ".gitattributes"), "utf-8"),
+        );
+        writeFileSync(
+          join(dirPath, "renovate.json"),
+          readFileSync(join(process.cwd(), "renovate.json"), "utf-8"),
+        );
+        writeFileSync(
+          join(dirPath, ".github/pull_request_template.md"),
+          readFileSync(join(process.cwd(), ".github/pull_request_template.md"), "utf-8"),
+        );
+        writeFileSync(
+          join(dirPath, ".github/ISSUE_TEMPLATE/bug_report.md"),
+          readFileSync(join(process.cwd(), ".github/ISSUE_TEMPLATE/bug_report.md"), "utf-8"),
+        );
+        writeFileSync(
+          join(dirPath, ".github/ISSUE_TEMPLATE/feature_request.md"),
+          readFileSync(join(process.cwd(), ".github/ISSUE_TEMPLATE/feature_request.md"), "utf-8"),
+        );
+      }
+
+      // D1 (Probe R2): LICENSE replaced with only 'MIT License\n' (missing substantive grant and terms)
+      const d1Dir = join(tempDir, "probe-r2-license");
+      createValidGovDir(d1Dir);
+      writeFileSync(join(d1Dir, "LICENSE"), "MIT License\n");
+      const d1Res = checkOpenSourceGovernanceFiles(d1Dir);
+      expect(d1Res.ok).toBe(false);
+      expect(d1Res.violations).toContain("LICENSE does not specify a valid MIT license");
+
+      // D2 (Probe R1): .gitattributes replaced with comment-only '# eol=lf\n'
+      const d2Dir = join(tempDir, "probe-r1-gitattributes");
+      createValidGovDir(d2Dir);
+      writeFileSync(join(d2Dir, ".gitattributes"), "# eol=lf\n");
+      const d2Res = checkOpenSourceGovernanceFiles(d2Dir);
+      expect(d2Res.ok).toBe(false);
+      expect(d2Res.violations).toContain(".gitattributes must enforce LF line endings (eol=lf)");
+
+      // D3 (Probe R3): issue template removes labels from front matter and moves to markdown body comment
+      const d3Dir = join(tempDir, "probe-r3-template");
+      createValidGovDir(d3Dir);
+      writeFileSync(
+        join(d3Dir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        `---\nname: Bug Report\nabout: Create a report\ntitle: "fix: "\n---\n<!-- labels: needs-triage -->\n## Source and problem\n## Outcome\n## Invariants\n## Acceptance criteria\n## Boundary\nDepends on:\n`,
+      );
+      const d3Res = checkOpenSourceGovernanceFiles(d3Dir);
+      expect(d3Res.ok).toBe(false);
+      expect(
+        d3Res.violations.some((v: string) =>
+          v.includes(".github/ISSUE_TEMPLATE/bug_report.md must default labels to 'needs-triage'"),
+        ),
+      ).toBe(true);
+
+      // D4 (Probe R4): renovate.json appends a matching overrides rule with major.enabled=true
+      const d4Dir = join(tempDir, "probe-r4-renovate");
+      createValidGovDir(d4Dir);
+      const renovateConfig = JSON.parse(
+        readFileSync(join(process.cwd(), "renovate.json"), "utf-8"),
+      );
+      renovateConfig.packageRules.push({
+        matchDepTypes: ["overrides"],
+        major: { enabled: true },
+      });
+      writeFileSync(join(d4Dir, "renovate.json"), JSON.stringify(renovateConfig, null, 2));
+      const d4Res = checkOpenSourceGovernanceFiles(d4Dir);
+      expect(d4Res.ok).toBe(false);
+      expect(
+        d4Res.violations.some((v: string) =>
+          v.includes("disable major updates for overrides in packageRules"),
+        ),
+      ).toBe(true);
+    });
   });
 });

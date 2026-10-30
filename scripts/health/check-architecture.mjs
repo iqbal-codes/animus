@@ -182,10 +182,11 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
   // 1. LICENSE (MIT)
   const licenseContent = readRequiredFile("LICENSE", "License file");
   if (licenseContent !== null) {
-    if (
-      !/MIT License/i.test(licenseContent) &&
-      !/Permission is hereby granted/i.test(licenseContent)
-    ) {
+    const hasMitMention = /MIT License|MIT/i.test(licenseContent);
+    const hasGrant = /Permission is hereby granted/i.test(licenseContent);
+    const hasRights = /without restriction/i.test(licenseContent);
+    const hasDisclaimer = /without warranty of any kind/i.test(licenseContent);
+    if (!hasMitMention || !hasGrant || !hasRights || !hasDisclaimer) {
       violations.push("LICENSE does not specify a valid MIT license");
     }
   }
@@ -237,7 +238,12 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
   // 5. .gitattributes
   const gitattrContent = readRequiredFile(".gitattributes", "Git attributes");
   if (gitattrContent !== null) {
-    if (!gitattrContent.includes("eol=lf")) {
+    const activeLines = gitattrContent
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith("#"));
+    const hasActiveEolLf = activeLines.some((line) => /\beol=lf\b/.test(line));
+    if (!hasActiveEolLf) {
       violations.push(".gitattributes must enforce LF line endings (eol=lf)");
     }
   }
@@ -257,16 +263,30 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
         /** @type {Array<{ matchDepTypes?: string | string[]; major?: { enabled?: boolean } }>} */ (
           parsed.packageRules
         );
-      const hasOverridesRule =
-        Array.isArray(packageRules) &&
-        packageRules.some((rule) => {
+
+      let effectiveOverridesMajorDisabled = false;
+      let hasContradictoryOverridesRule = false;
+
+      if (Array.isArray(packageRules)) {
+        for (const rule of packageRules) {
+          if (!rule || typeof rule !== "object") continue;
           const matchTypes = Array.isArray(rule.matchDepTypes)
             ? rule.matchDepTypes
-            : [rule.matchDepTypes];
-          const isOverrides = matchTypes.includes("overrides");
-          return isOverrides && rule.major?.enabled === false;
-        });
-      if (!hasOverridesRule) {
+            : rule.matchDepTypes
+              ? [rule.matchDepTypes]
+              : [];
+          if (matchTypes.includes("overrides")) {
+            if (rule.major?.enabled === false) {
+              effectiveOverridesMajorDisabled = true;
+            } else if (rule.major?.enabled === true) {
+              effectiveOverridesMajorDisabled = false;
+              hasContradictoryOverridesRule = true;
+            }
+          }
+        }
+      }
+
+      if (!effectiveOverridesMajorDisabled || hasContradictoryOverridesRule) {
         violations.push("renovate.json must disable major updates for overrides in packageRules");
       }
     } catch (err) {
@@ -296,7 +316,24 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
   for (const { rel, label } of issueTemplates) {
     const tmplContent = readRequiredFile(rel, label);
     if (tmplContent !== null) {
-      if (!/labels:\s*needs-triage/i.test(tmplContent)) {
+      const frontMatterMatch = tmplContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+      let hasNeedsTriageInFrontMatter = false;
+      if (frontMatterMatch) {
+        const fm = frontMatterMatch[1];
+        const singleLineMatch = fm.match(/^labels:\s*(.+)$/im);
+        if (singleLineMatch) {
+          const val = singleLineMatch[1].trim();
+          if (/\bneeds-triage\b/i.test(val)) {
+            hasNeedsTriageInFrontMatter = true;
+          }
+        }
+        const listMatch = fm.match(/^labels:\s*$[\r\n]+((?:\s*-[^\r\n]*[\r\n]+)*)/im);
+        if (listMatch && /\bneeds-triage\b/i.test(listMatch[1])) {
+          hasNeedsTriageInFrontMatter = true;
+        }
+      }
+
+      if (!hasNeedsTriageInFrontMatter) {
         violations.push(`${rel} must default labels to 'needs-triage'`);
       }
       if (/ready-for-agent/i.test(tmplContent)) {
