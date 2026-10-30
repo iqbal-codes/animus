@@ -1,6 +1,12 @@
 import { open, readdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import type { LocalLoopResult, LoopEvidence } from "./loop/types";
+
+export type WatchedEvidence = Partial<LoopEvidence> & Record<string, unknown>;
+export type WatchedRunState = Omit<Partial<LocalLoopResult>, "evidence"> & {
+  evidence?: WatchedEvidence[];
+} & Record<string, unknown>;
 
 export function summarize(value: string, limit = 240): string {
   const text = value
@@ -87,16 +93,39 @@ export async function findRun(runs: string, issue?: number, runId?: string): Pro
   return matches[0]!.path;
 }
 
-export function terminalSummary(state: any): string[] {
-  if (!["waiting_approval", "failed", "interrupted"].includes(state.status)) return [];
+export async function resolveRunLap(
+  directory: string,
+  state: WatchedRunState,
+): Promise<number | undefined> {
+  if (typeof state?.lap === "number") return state.lap;
+  const match = /\/issues\/(\d+)$/.exec(String(state?.issue ?? ""));
+  if (match && match[1]) {
+    try {
+      const dossiersDir = join(resolve(directory, "..", ".."), "dossiers");
+      const dossierFile = Bun.file(join(dossiersDir, `issue-${match[1]}.json`));
+      if (await dossierFile.exists()) {
+        const d = (await dossierFile.json()) as { attempts?: Array<{ runId?: string }> };
+        const idx = d.attempts?.findIndex((a: { runId?: string }) => a.runId === state.runId);
+        if (idx !== undefined && idx >= 0) return idx + 1;
+        if (Array.isArray(d.attempts) && d.attempts.length > 0) return d.attempts.length;
+      }
+    } catch {}
+  }
+  return undefined;
+}
+
+export function terminalSummary(state: WatchedRunState): string[] {
+  if (!state.status || !["waiting_approval", "sent_back", "failed", "interrupted", "needs_owner"].includes(state.status)) return [];
   const evidence = Array.isArray(state.evidence) ? state.evidence : [];
   const last = evidence.at(-1);
+  const lapText = typeof state.lap === "number" ? ` (Lap ${state.lap})` : "";
   return [
-    `RUN ENDED: ${state.status === "waiting_approval" ? "WAITING FOR APPROVAL" : state.status.toUpperCase()}`,
-    ...(state.error ? [`Reason: ${summarize(state.error, 500)}`] : []),
+    `RUN ENDED: ${state.status === "waiting_approval" ? "WAITING FOR APPROVAL" : String(state.status).toUpperCase()}${lapText}`,
+    ...(typeof state.lap === "number" ? [`Lap: ${state.lap}`] : []),
+    ...(state.error ? [`Reason: ${summarize(String(state.error), 500)}`] : []),
     ...(last ? [`Last recorded step: ${last.role ?? "ordinary check"}, round ${last.round}; process exit ${last.exitCode} (not a verification verdict)`] : []),
-    `Worktree preserved: ${state.worktree}`,
-    `Evidence: ${state.runDirectory}`,
+    `Worktree preserved: ${String(state.worktree ?? "")}`,
+    `Evidence: ${String(state.runDirectory ?? "")}`,
     "Watcher exited because the run is terminal; it did not stop the run.",
   ];
 }
@@ -108,9 +137,14 @@ export async function watchRun(directory: string, once = false, signal?: AbortSi
   let lastActivity = Date.now();
   do {
     const state = await Bun.file(join(directory, "state.json")).json();
-    const summary = JSON.stringify([state.status, state.candidate, state.error]);
+    if (typeof state.lap !== "number") {
+      state.lap = await resolveRunLap(directory, state);
+    }
+    const lapText = typeof state.lap === "number" ? ` (Lap ${state.lap})` : "";
+    const summary = JSON.stringify([state.status, state.candidate, state.error, state.lap]);
     if (summary !== previous) {
-      console.log(`\n[${new Date().toISOString()}] ${state.status} | ${state.issue}`);
+      console.log(`\n[${new Date().toISOString()}] ${state.status} | ${state.issue}${lapText}`);
+      if (typeof state.lap === "number") console.log(`lap: ${state.lap}`);
       if (state.candidate) console.log(`candidate: ${state.candidate}`);
       if (state.error) console.log(`error: ${state.error}`);
       previous = summary;
@@ -128,7 +162,8 @@ export async function watchRun(directory: string, once = false, signal?: AbortSi
           const timestamp = (event as { timestamp?: string }).timestamp;
           const time = timestamp ? new Date(timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
           for (const line of formatSessionEvent(event)) {
-            console.log(`[${time}] [${session.replace("-session", "")}] ${line}`);
+            const lapPrefix = typeof state.lap === "number" ? `[Lap ${state.lap}] ` : "";
+            console.log(`[${time}] ${lapPrefix}[${session.replace("-session", "")}] ${line}`);
             activity = true;
           }
         }
@@ -139,6 +174,9 @@ export async function watchRun(directory: string, once = false, signal?: AbortSi
     if (activity) lastActivity = Date.now();
     // Re-read after draining logs: the run may have ended while events were read.
     const latest = await Bun.file(join(directory, "state.json")).json();
+    if (typeof latest.lap !== "number") {
+      latest.lap = state.lap ?? (await resolveRunLap(directory, latest));
+    }
     const ending = terminalSummary(latest);
     if (ending.length) { console.log(`\n${ending.join("\n")}`); return; }
     if (once) return;
@@ -159,7 +197,13 @@ if (import.meta.main) {
     if (result.exitCode !== 0) throw new Error("Unable to resolve repository state directory");
     const common = resolve(import.meta.dir, "..", result.stdout.toString().trim());
     const directory = await findRun(join(common, "factory-local-loop", "runs"), values.issue ? Number(values.issue) : undefined, values.run);
-    console.log(`Following ${directory}\nCtrl+C stops watching only. Showing one-line agent responses, commands, file actions and result summaries. Prompts/thinking are hidden. Common credentials are redacted, but output may still contain sensitive data.`);
+    let lapBanner = "";
+    try {
+      const initial = await Bun.file(join(directory, "state.json")).json();
+      const lapNum = await resolveRunLap(directory, initial);
+      if (lapNum) lapBanner = ` (Lap ${lapNum})`;
+    } catch {}
+    console.log(`Following ${directory}${lapBanner}\nCtrl+C stops watching only. Showing one-line agent responses, commands, file actions and result summaries. Prompts/thinking are hidden. Common credentials are redacted, but output may still contain sensitive data.`);
     const controller = new AbortController();
     process.once("SIGINT", () => controller.abort());
     process.once("SIGTERM", () => controller.abort());

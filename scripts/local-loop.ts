@@ -35,6 +35,7 @@ import {
   recordLapAttempt,
   shouldTriggerReflection,
   saveIssueDossier,
+  loadIssueDossier,
 } from "./loop/dossier";
 import { runPostIssueReflection } from "./loop/reflector";
 import {
@@ -344,6 +345,31 @@ export async function inspectLocalLoop(root: string) {
   return { common, primary };
 }
 
+export async function findExistingWorktreeForBranch(
+  root: string,
+  branch: string,
+): Promise<string | null> {
+  try {
+    const stdout = await git(root, "worktree", "list", "--porcelain");
+    const blocks = stdout.split("\n\n");
+    for (const block of blocks) {
+      let worktreePath = "";
+      let isTargetBranch = false;
+      for (const line of block.split("\n")) {
+        if (line.startsWith("worktree ")) {
+          worktreePath = line.slice("worktree ".length).trim();
+        } else if (line === `branch refs/heads/${branch}`) {
+          isTargetBranch = true;
+        }
+      }
+      if (isTargetBranch && worktreePath && existsSync(worktreePath)) {
+        return worktreePath;
+      }
+    }
+  } catch {}
+  return null;
+}
+
 /**
  * Executes exactly ONE autonomous lap following the original Archon SDLC lifecycle:
  * pick/route -> claim -> build (loop-work) -> check-app (silent QA) -> handoff/evidence -> review (loop-review) -> land gate.
@@ -414,14 +440,19 @@ export async function runLocalLoop(
   const branch = existingPr
     ? existingPr.headRefName
     : `local-loop/issue-${issue.number}-${runId.slice(0, 8)}`;
+  const existingWorktree = await findExistingWorktreeForBranch(root, branch);
+  const dossier = loadIssueDossier(stateRoot, issue.number);
+  const lap = (dossier?.attempts.length ?? 0) + 1;
   const initialProfile = issue.verificationProfile ?? resolveVerificationProfile(issue);
   const state: LocalLoopResult = {
     runId,
+    pid: process.pid,
+    lap,
     issue: issue.url,
     route,
     status: "preparing",
     runDirectory,
-    worktree: join(stateRoot, "worktrees", runId),
+    worktree: existingWorktree ?? join(stateRoot, "worktrees", runId),
     branch,
     base,
     pr: existingPr?.url,
@@ -507,17 +538,38 @@ export async function runLocalLoop(
     await Bun.write(join(runDirectory, "issue.json"), JSON.stringify(issue, null, 2));
     await save();
 
-    // 2. ISOLATED WORKTREE ALLOCATION
-    await mkdir(dirname(state.worktree), { recursive: true });
-    if (route === "continue") {
-      await git(root, "fetch", "origin", branch);
-      await git(root, "worktree", "add", "--no-checkout", state.worktree, `origin/${branch}`);
-      await git(state.worktree, "sparse-checkout", "set", "--no-cone", "/*", "!/.factory/holdout/");
-      await git(state.worktree, "checkout", branch);
+    // 2. ISOLATED WORKTREE ALLOCATION / REUSE
+    if (existingWorktree) {
+      await git(state.worktree, "fetch", "origin", branch);
+      await git(
+        state.worktree,
+        "checkout",
+        "-B",
+        branch,
+        `origin/${branch}`,
+        "--ignore-other-worktrees",
+      );
+      await git(state.worktree, "reset", "--hard", `origin/${branch}`);
+      await git(state.worktree, "clean", "-fd");
     } else {
-      await git(root, "worktree", "add", "--no-checkout", "-b", branch, state.worktree, base);
-      await git(state.worktree, "sparse-checkout", "set", "--no-cone", "/*", "!/.factory/holdout/");
-      await git(state.worktree, "checkout", branch);
+      await mkdir(dirname(state.worktree), { recursive: true });
+      if (route === "continue") {
+        await git(root, "fetch", "origin", branch);
+        await git(root, "worktree", "add", "--no-checkout", state.worktree, `origin/${branch}`);
+        await git(state.worktree, "sparse-checkout", "set", "--no-cone", "/*", "!/.factory/holdout/");
+        await git(
+          state.worktree,
+          "checkout",
+          "-B",
+          branch,
+          `origin/${branch}`,
+          "--ignore-other-worktrees",
+        );
+      } else {
+        await git(root, "worktree", "add", "--no-checkout", "-b", branch, state.worktree, base);
+        await git(state.worktree, "sparse-checkout", "set", "--no-cone", "/*", "!/.factory/holdout/");
+        await git(state.worktree, "checkout", "--ignore-other-worktrees", branch);
+      }
     }
 
     const assertCandidate = async (expectedCandidate?: string) => {

@@ -46,8 +46,10 @@ import {
   resolveVerificationProfile,
   getProfileInstructions,
   getIssuesWaitingApproval,
+  countActiveLaps,
   type BacklogCandidate,
 } from "../../scripts/loop/index";
+import { findExistingWorktreeForBranch } from "../../scripts/local-loop";
 
 const tempDirs: string[] = [];
 afterEach(async () => {
@@ -837,4 +839,47 @@ test("14. Scheduler waiting_approval protection: prevents re-dispatching deliver
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test("15. Scheduler capacity liveness: ignores abandoned runs with dead PIDs", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "scheduler-liveness-"));
+  try {
+    const runsDir = join(tmp, "runs");
+    await mkdir(join(runsDir, "run-alive"), { recursive: true });
+    await mkdir(join(runsDir, "run-dead"), { recursive: true });
+    await mkdir(join(runsDir, "run-no-pid"), { recursive: true });
+
+    // Current process is alive
+    await Bun.write(
+      join(runsDir, "run-alive", "state.json"),
+      JSON.stringify({ status: "building", pid: process.pid }),
+    );
+    // PID 9999999 is definitely dead
+    await Bun.write(
+      join(runsDir, "run-dead", "state.json"),
+      JSON.stringify({ status: "building", pid: 9999999 }),
+    );
+    // Backward compatibility for runs without pid
+    await Bun.write(
+      join(runsDir, "run-no-pid", "state.json"),
+      JSON.stringify({ status: "building" }),
+    );
+
+    const active = countActiveLaps(runsDir);
+    expect(active).toBe(2); // run-alive and run-no-pid, dead run is omitted
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("16. Worktree reuse: finds existing worktree holding branch ref", async () => {
+  const root = join(import.meta.dir, "../..");
+  // Main branch is definitely checked out in the root worktree
+  const found = await findExistingWorktreeForBranch(root, "main");
+  expect(found).not.toBeNull();
+  expect(existsSync(found!)).toBe(true);
+
+  // Non-existent branch returns null
+  const nonExistent = await findExistingWorktreeForBranch(root, "non-existent-branch-123456");
+  expect(nonExistent).toBeNull();
 });
