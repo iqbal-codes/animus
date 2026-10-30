@@ -54,11 +54,11 @@ Use stable AC identifiers for evidence mapping. Include check commands or artifa
 
 | State                                                        | Canonical label action                                                                   |
 | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
-| Parent spec / planning-only record                           | Use `needs-triage` or `needs-info` as appropriate.                                       |
+| Parent spec / planning-only record                           | Use `spec` alongside `ready-for-human` (or `needs-info` if incomplete). Never `ready-for-agent`. |
 | Missing or contradictory intent                              | Record the exact open question; use `needs-info` (or `needs-triage` pending assessment). |
 | Human implementation required                                | Use `ready-for-human`.                                                                   |
 | Complete executable contract with prerequisites still open   | Use `ready-for-agent`; retain dependency edges.                                          |
-| Complete, unblocked executable contract, approved for intake | Use `ready-for-agent`.                                                                   |
+| Complete, unblocked executable contract, approved for intake | Use `ready-for-agent`. Subtickets that are ambiguous or require human oversight must stay `ready-for-human` or `needs-info`. |
 | Rejected work                                                | Use `wontfix` only with an approved disposition.                                         |
 
 Admission policy evaluates OPEN issues labeled `ready-for-agent` when all referenced prerequisites are CLOSED in the fetched backlog, with no blocking labels (`needs-info`, `ready-for-human`, `needs-triage`), no exclusion labels (`wontfix`), and no active loop claim. Unlabeled issues fail-closed to `held` (`unlabeled_awaiting_triage`). Legacy `factory:` prefixed labels have no authority.
