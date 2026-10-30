@@ -22,7 +22,8 @@ Read the issue body and comments completely before making changes:
   - Review or evidence documentation gaps: update the record without touching working code.
 - Read project steering conventions: `engineering.md`, `MISSION.md`, `.factory/codebase-rules.json` (`pattern_registry` & `rules`), and product specs at the root or under `docs/`.
 - When creating or updating reusable building blocks across any layer (backend services/repositories, database migrations, CLI utilities, mobile/frontend primitives, or shared contracts), register them in `.factory/codebase-rules.json` under `pattern_registry` so future laps discover and reuse them automatically.
-
+- **Authoritative tooling & native delegation:** Validate file formats, syntax, line endings, and protocols by delegating directly to authoritative platform binaries, compilers, or established ecosystem libraries. Do not re-implement parsers, lexers, or specification engines inline.
+- **Continuation simplification:** On `continue` laps, treat repeated review friction on the same module as a directive to simplify. If code complexity or line count expands across attempts, step back and refactor: replace ad-hoc logic with standard tools, or narrow the verified boundary.
 If the work item cannot be satisfied without changing what an in-repository check judges (adding skips, loosening thresholds, or ignoring edge cases) without owner approval, halt immediately: comment on the item, label it `needs-owner`, and report `PR: none`.
 
 ## 2. Implement with tight verification loops
@@ -57,6 +58,10 @@ Return your final report in JSON (plain or within a single ```json code fence):
 {
   "candidate": "<full committed HEAD sha>",
   "verdict": "pass",
+  "summary": "Brief 1-2 sentence executive summary of what was built or repaired this lap.",
+  "changes": [
+    "file/path: concise description of change"
+  ],
   "checks": [
     { "criterion": "<criterion id or check name>", "result": "pass", "evidence": "<concrete command output or test result>" }
   ],

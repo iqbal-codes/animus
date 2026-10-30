@@ -67,10 +67,10 @@ test("1. Model Tiering: resolves roles to tiers and config models", async () => 
 
   const cfg = readArchonConfig(root);
   expect(cfg.assistant).toBe("pi");
-  expect(cfg.tiers?.large?.model).toMatch(/(?:9router|router)\/cx\/gpt-6\.1-sol/);
+  expect(cfg.tiers?.large?.model).toBeDefined();
 
   const reviewerModel = resolveModelForRole(root, "reviewer");
-  expect(reviewerModel).toMatch(/(?:9router|router)\/cx\/gpt-6\.1-sol/);
+  expect(reviewerModel).toBe(cfg.aliases?.["@reasoning"]?.model ?? cfg.tiers?.large?.model);
 });
 
 test("2. Prompts: loads decoupled markdown files from scripts/prompts and interpolates", () => {
@@ -407,8 +407,7 @@ test("11. Multiple Provider Harness Support: resolves and formats argv for Pi, C
 
   const roleConfig = resolveRoleConfig(root, "reviewer");
   expect(roleConfig.provider).toBe("pi");
-  expect(roleConfig.model).toMatch(/(?:9router|router)\/cx\/gpt-6\.1-sol/);
-
+  expect(roleConfig.model).toBe(resolveModelForRole(root, "reviewer"));
   // 4. Argv formatting across all harnesses
   const prompt = "Solve issue 99";
   const model = "gpt-5";
@@ -895,6 +894,137 @@ test("16. Worktree reuse: finds existing worktree holding branch ref", async () 
 
     const nonExistent = await findExistingWorktreeForBranch(repo, "non-existent-branch-123456");
     expect(nonExistent).toBeNull();
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("17. Scheduler needs_owner escalation: prevents re-dispatching items escalated to owner", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "scheduler-needs-owner-"));
+  try {
+    const runsDir = join(tmp, "runs");
+    await mkdir(join(runsDir, "run-escalated"), { recursive: true });
+    writeFileSync(
+      join(runsDir, "run-escalated", "state.json"),
+      JSON.stringify({
+        runId: "run-escalated",
+        issue: "https://github.com/org/repo/issues/85",
+        status: "needs_owner",
+      }),
+    );
+    const waitingSet = getIssuesWaitingApproval(runsDir);
+    expect(waitingSet.has(85)).toBe(true);
+
+    const candidates: BacklogCandidate[] = [
+      {
+        number: 85,
+        title: "Escalated feature",
+        state: "OPEN",
+        labels: ["ready-for-agent"],
+        dependencies: [],
+      },
+      {
+        number: 86,
+        title: "Next feature",
+        state: "OPEN",
+        labels: ["ready-for-agent"],
+        dependencies: [],
+      },
+    ];
+
+    const admitted = filterAdmittedIssues(candidates, new Set(), {
+      waitingApprovalIssueNumbers: waitingSet,
+    });
+    expect(admitted).toHaveLength(1);
+    expect(admitted[0]?.number).toBe(86);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("18. Scheduler dossier max_laps gate: drops candidates whose dossier attempts reached maxLaps", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "scheduler-max-laps-"));
+  try {
+    const stateRoot = join(tmp, "stateRoot");
+    await mkdir(join(stateRoot, "dossiers"), { recursive: true });
+
+    // Create dossier for issue 85 with 3 attempts
+    recordLapAttempt(
+      stateRoot,
+      {
+        issueNumber: 85,
+        issueTitle: "Feature 85",
+        issueUrl: "https://github.com/org/repo/issues/85",
+        branch: "local-loop/issue-85-abc",
+      },
+      {
+        runId: "run-1",
+        timestamp: new Date().toISOString(),
+        status: "sent_back",
+        changedFiles: [],
+        reviewFindings: ["findings"],
+        qaFailures: [],
+      },
+    );
+    recordLapAttempt(
+      stateRoot,
+      {
+        issueNumber: 85,
+        issueTitle: "Feature 85",
+        issueUrl: "https://github.com/org/repo/issues/85",
+        branch: "local-loop/issue-85-abc",
+      },
+      {
+        runId: "run-2",
+        timestamp: new Date().toISOString(),
+        status: "sent_back",
+        changedFiles: [],
+        reviewFindings: ["findings"],
+        qaFailures: [],
+      },
+    );
+    recordLapAttempt(
+      stateRoot,
+      {
+        issueNumber: 85,
+        issueTitle: "Feature 85",
+        issueUrl: "https://github.com/org/repo/issues/85",
+        branch: "local-loop/issue-85-abc",
+      },
+      {
+        runId: "run-3",
+        timestamp: new Date().toISOString(),
+        status: "sent_back",
+        changedFiles: [],
+        reviewFindings: ["findings"],
+        qaFailures: [],
+      },
+    );
+
+    const candidates: BacklogCandidate[] = [
+      {
+        number: 85,
+        title: "Feature 85 with 3 attempts",
+        state: "OPEN",
+        labels: ["ready-for-agent"],
+        dependencies: [],
+      },
+      {
+        number: 86,
+        title: "Feature 86 fresh",
+        state: "OPEN",
+        labels: ["ready-for-agent"],
+        dependencies: [],
+      },
+    ];
+
+    // Filter with maxLaps = 3
+    const admitted = filterAdmittedIssues(candidates, new Set(), {
+      stateRoot,
+      maxLaps: 3,
+    });
+    expect(admitted).toHaveLength(1);
+    expect(admitted[0]?.number).toBe(86);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

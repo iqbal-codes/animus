@@ -103,6 +103,8 @@ export interface LocalLoopResult {
   evidence: LoopEvidence[];
   error?: string;
 }
+export type LocalLoopRoute = LocalLoopResult["route"];
+export type LocalLoopStatus = LocalLoopResult["status"];
 
 export type ModelTier = "small" | "medium" | "large";
 

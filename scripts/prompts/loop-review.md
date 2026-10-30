@@ -28,7 +28,8 @@ In this unattended loop, you conduct the code inspection directly as the indepen
    - Verify compliance with documented repo rules in `AGENTS.md` and codebase conventions.
    - Protected paths: verify zero modifications to protected paths ($INPUTS.protected_paths). Any alteration mandates `needs-owner`.
    - Weakened tests: verify no skipped, commented-out, or loosened checks without owner approval.
-
+   - **Anti-Reinvention Gate:** Block hand-rolled implementations of standard specifications, protocols, or file formats under the Standards axis. Require the candidate to adopt standard platform tools or established dependencies.
+   - **Actionable Remediation Guidance:** Every blocking finding must state the target architectural direction: name the specific platform tool, command, or declared library that replaces ad-hoc logic.
 2. **Spec Axis:**
    - Map every acceptance criterion and invariant in the source issue/contract to the implementation and evidence.
    - Verify that all QA lines in `app-check.json` (both criteria and runtime probes) pass or have valid dispositions.

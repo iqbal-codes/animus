@@ -13,6 +13,8 @@ import type {
   LocalLoopOptions,
   LoopEvidence,
   LocalLoopResult,
+  LocalLoopRoute,
+  LocalLoopStatus,
 } from "./loop/types";
 import {
   resolveModelForRole,
@@ -67,7 +69,6 @@ export {
   parseAgentReport,
   extractReport,
 };
-
 export const ARCHON_BUILDER_PROMPT = `# Make the move
 
 You are the builder in an unattended development loop. The dispatcher has already chosen this
@@ -369,6 +370,78 @@ export async function findExistingWorktreeForBranch(
   } catch {}
   return null;
 }
+export interface BuilderCommentReport {
+  summary?: string;
+  changes?: string[];
+  checks?: Array<{
+    criterion?: string;
+    result?: string;
+    evidence?: string;
+  }>;
+}
+
+export interface EscalationReviewReport {
+  reason?: string;
+  outcome?: string;
+  verdict?: string;
+  findings?: string[];
+}
+
+export function formatBuilderComment(
+  report: BuilderCommentReport | null | undefined,
+  lap: number,
+  route: LocalLoopRoute,
+  candidate: string,
+): string {
+  const summary = report?.summary ? `#### 📝 Summary of Changes:\n${report.summary}\n\n` : "";
+  const changes = Array.isArray(report?.changes) && report.changes.length > 0
+    ? `#### 📁 Changes Made:\n${report.changes.map((c) => `- ${c}`).join("\n")}\n\n`
+    : "";
+  const checks = Array.isArray(report?.checks) && report.checks.length > 0
+    ? `#### 🧪 Verification Checks:\n${report.checks.map((c) => `- [x] **${c.criterion ?? "check"}**: \`${c.result ?? "ok"}\`${c.evidence ? ` (${c.evidence})` : ""}`).join("\n")}\n\n`
+    : "";
+
+  return [
+    `### 🛠️ Builder Update (Lap ${lap} — route: ${route})`,
+    "",
+    `**Candidate**: \`${candidate}\``,
+    "",
+    summary,
+    changes,
+    checks,
+  ].join("\n").trim();
+}
+
+export function formatEscalationHandoff(
+  issue: LocalIssue,
+  lap: number,
+  maxLaps: number,
+  branch: string,
+  isMaxLapsExceeded: boolean,
+  reviewReport: EscalationReviewReport | null | undefined,
+): string {
+  const reasonText = isMaxLapsExceeded
+    ? `Autonomous loop reached the maximum lap budget (${lap}/${maxLaps} laps).`
+    : "Reviewer requested human owner intervention (needs-owner).";
+
+  return [
+    "### 🛑 Autonomous Loop Halted: Handoff to Maintainer (`ready-for-human`)",
+    "",
+    "This issue has been returned to human maintainers. Label updated to `ready-for-human`.",
+    "",
+    "#### 📌 Executive Summary:",
+    `- **Status**: Halted at Lap ${lap} (max laps: ${maxLaps}). Candidate branch preserved at \`${branch}\`.`,
+    `- **Escalation Reason**: ${reasonText}`,
+    reviewReport?.reason ? `- **Reviewer Rationale**: ${reviewReport.reason}` : "",
+    "",
+    "#### 💡 Recommended Next Steps for Maintainer:",
+    "1. Checkout and inspect the branch locally:",
+    `   \`\`\`bash\n   git fetch origin ${branch} && git checkout ${branch}\n   \`\`\``,
+    "2. Review unresolved findings above and decide whether to simplify the interface, adopt standard libraries, or accept the current baseline.",
+    "3. Merge or adjust labels once resolved.",
+  ].filter(Boolean).join("\n");
+}
+
 
 /**
  * Executes exactly ONE autonomous lap following the original Archon SDLC lifecycle:
@@ -813,9 +886,17 @@ export async function runLocalLoop(
           if (prCreate.exitCode === 0) {
             state.pr = prCreate.stdout.trim();
           }
+        } else if (state.pr && route === "continue") {
+          const builderComment = formatBuilderComment(builderReport, lap, route, state.candidate);
+          await processRun(
+            ["gh", "pr", "comment", state.pr, "--body", builderComment],
+            state.worktree,
+            30_000,
+          );
         }
-      } catch (pushErr: any) {
-        console.error("Warning: Git push / PR synchronization error:", pushErr.message);
+      } catch (pushErr: unknown) {
+        const message = pushErr instanceof Error ? pushErr.message : String(pushErr);
+        console.error("Warning: Git push / PR synchronization error:", message);
       }
     }
 
@@ -865,10 +946,45 @@ export async function runLocalLoop(
     await assertCandidate(state.candidate);
     await Bun.write(join(artifactsDir, "review.json"), JSON.stringify(reviewReport, null, 2));
 
-    const isApproved = qaReport.passed && reviewReport.passed;
-    const reviewOutcome = isApproved ? "approved" : "sent back";
-    const finalStatus = isApproved ? "waiting_approval" : "sent_back";
+    const isApproved = Boolean(qaReport.passed && reviewReport.passed);
+    const isExplicitNeedsOwner =
+      reviewReport.outcome === "needs-owner" ||
+      reviewReport.verdict === "needs_owner";
+    const isMaxLapsExceeded = !isApproved && lap >= maxLaps;
+    const isNeedsOwner = !isApproved && (isExplicitNeedsOwner || isMaxLapsExceeded);
 
+    const reviewOutcome = isApproved
+      ? "approved"
+      : isNeedsOwner
+        ? "needs owner"
+        : "sent back";
+    const finalStatus: LocalLoopStatus = isApproved
+      ? "waiting_approval"
+      : isNeedsOwner
+        ? "needs_owner"
+        : "sent_back";
+
+    if (finalStatus === "needs_owner") {
+      try {
+        await processRun(
+          [
+            "gh",
+            "issue",
+            "edit",
+            String(issue.number),
+            "--add-label",
+            "ready-for-human",
+            "--remove-label",
+            "ready-for-agent",
+          ],
+          state.worktree,
+          15_000,
+        );
+      } catch (lblErr: unknown) {
+        const msg = lblErr instanceof Error ? lblErr.message : String(lblErr);
+        console.error("Warning: Failed to update GitHub issue labels on escalation:", msg);
+      }
+    }
     const changedFilesFinal = (
       await git(state.worktree, "diff", "--name-only", "--no-renames", base, state.candidate)
     )
@@ -968,11 +1084,14 @@ export async function runLocalLoop(
               "",
             ]
           : []),
-        isApproved
-          ? "✅ **Candidate verified and approved.** Awaiting human merge approval (`merge=approve`)."
-          : "⚠️ **Work item sent back.** Review feedback has been recorded for the next lap.",
+        ...(isNeedsOwner
+          ? ["", formatEscalationHandoff(issue, lap, maxLaps, branch, isMaxLapsExceeded, reviewReport)]
+          : [
+              isApproved
+                ? "✅ **Candidate verified and approved.** Awaiting human merge approval (`merge=approve`)."
+                : "⚠️ **Work item sent back.** Review feedback has been recorded for the next lap.",
+            ]),
       ];
-
       const commentProc = await processRun(
         ["gh", "pr", "comment", state.pr, "--body", commentLines.join("\n")],
         state.worktree,
@@ -986,12 +1105,42 @@ export async function runLocalLoop(
     await save();
     return state;
   } catch (error) {
-    state.status = error instanceof RoleInterrupted ? "interrupted" : "failed";
+    const isInterrupted = error instanceof RoleInterrupted;
     state.error = error instanceof Error ? error.message : String(error);
-    if (error instanceof RoleInterrupted) {
+    if (isInterrupted) {
+      state.status = "interrupted";
       await save();
       return state;
     }
+
+    const scheduleCfg = loadScheduleConfig(root);
+    const maxLaps = scheduleCfg.max_laps ?? 3;
+    const isExceeded = lap >= maxLaps;
+    const finalErrorStatus: LocalLoopStatus = isExceeded ? "needs_owner" : "failed";
+    state.status = finalErrorStatus;
+
+    if (isExceeded) {
+      try {
+        await processRun(
+          [
+            "gh",
+            "issue",
+            "edit",
+            String(issue.number),
+            "--add-label",
+            "ready-for-human",
+            "--remove-label",
+            "ready-for-agent",
+          ],
+          root,
+          15_000,
+        );
+      } catch (lblErr: unknown) {
+        const msg = lblErr instanceof Error ? lblErr.message : String(lblErr);
+        console.error("Warning: Failed to update GitHub issue labels on error escalation:", msg);
+      }
+    }
+
     try {
       const dossier = recordLapAttempt(
         stateRoot,
@@ -1005,7 +1154,7 @@ export async function runLocalLoop(
         {
           runId,
           timestamp: new Date().toISOString(),
-          status: "failed",
+          status: finalErrorStatus,
           candidateHead: state.candidate,
           changedFiles: [],
           failedStage: state.evidence.some((e) => e.kind === "check" && e.exitCode !== 0)
@@ -1016,7 +1165,7 @@ export async function runLocalLoop(
           qaFailures: [],
         },
       );
-      if (shouldTriggerReflection(dossier)) {
+      if (shouldTriggerReflection(dossier, { maxRejections: Math.max(1, maxLaps - 1) })) {
         const reflection = await runPostIssueReflection({
           root,
           worktree: existsSync(state.worktree) ? state.worktree : root,
@@ -1029,7 +1178,7 @@ export async function runLocalLoop(
         dossier.reflectedAt = new Date().toISOString();
         saveIssueDossier(stateRoot, dossier);
       }
-    } catch (reflectionError) {
+    } catch (reflectionError: unknown) {
       if (reflectionError instanceof RoleInterrupted) {
         state.status = "interrupted";
         state.error = reflectionError.message;

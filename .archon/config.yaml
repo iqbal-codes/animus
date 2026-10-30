@@ -16,13 +16,13 @@ tiers:
     effort: high
   large:
     provider: pi
-    model: 9router/cx/gpt-6.1-sol
-    effort: medium
+    model: 9router/ag/gemini-3.8-flash
+    effort: high
 
 aliases:
   '@reasoning':
     provider: pi
-    model: 9router/cx/gpt-6.1-sol
+    model: 9router/ag/gemini-3.8-flash
     effort: high
 
 worktree:

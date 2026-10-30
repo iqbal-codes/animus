@@ -15,6 +15,7 @@
   - Code review & standards: `/factory-review`
   - Defect root-causing: `/diagnosing-bugs`
   - Post-lap memory & lesson synthesis: `/factory-harness`, `.agents/skills/writing-for-agents`, `.agents/skills/skill-creator`
+  - When implementing or repairing governance policy verifiers, read `.agents/skills/policy-verifier-regressions/SKILL.md` and follow it.
 - **Verified Tool Guidance**: Inspect `.factory/tool-guidance.json` for validated CLI recipes (test, lint, format, typecheck, build) that exited code 0.
 - **Evidence-Backed Lessons**: Inspect `.factory/lessons.jsonl` for repo-specific gotchas matching target files before editing.
 - **Harness Authoring Standard**: Adhere to `docs/agents/harness-authoring-standard.md` when curating lessons or skills.

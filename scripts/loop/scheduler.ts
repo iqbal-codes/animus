@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { loadIssueDossier } from "./dossier";
 
 export interface WorkWindowConfig {
   enabled: boolean;
@@ -201,7 +202,11 @@ export function getIssuesWaitingApproval(runsDir: string): Set<number> {
       if (!existsSync(statePath)) continue;
       try {
         const state = JSON.parse(readFileSync(statePath, "utf-8"));
-        if (state.status === "waiting_approval" || state.status === "interrupted") {
+        if (
+          state.status === "waiting_approval" ||
+          state.status === "interrupted" ||
+          state.status === "needs_owner"
+        ) {
           const match = /\/issues\/(\d+)$/.exec(state.issue ?? "");
           if (match && match[1]) {
             waiting.add(Number(match[1]));
@@ -215,6 +220,8 @@ export function getIssuesWaitingApproval(runsDir: string): Set<number> {
 
 export interface FilterAdmittedIssuesOptions {
   waitingApprovalIssueNumbers?: Set<number>;
+  stateRoot?: string;
+  maxLaps?: number;
 }
 
 export function filterAdmittedIssues(
@@ -236,9 +243,16 @@ export function filterAdmittedIssues(
 
     if (issue.activeClaim) continue;
 
-    // Skip issues already delivered and waiting for human approval
+    // Skip issues already delivered and waiting for human approval or owner escalation
     if (options.waitingApprovalIssueNumbers?.has(issue.number)) continue;
 
+    // Skip issues that have reached or exceeded maxLaps in their issue dossier
+    if (options.stateRoot && options.maxLaps !== undefined) {
+      const dossier = loadIssueDossier(options.stateRoot, issue.number);
+      if (dossier && dossier.attempts.length >= options.maxLaps) {
+        continue;
+      }
+    }
     // Verify all dependencies are in closedIssueNumbers
     const allDepsSatisfied = issue.dependencies.every((dep) => closedIssueNumbers.has(dep));
     if (!allDepsSatisfied) continue;
@@ -332,8 +346,11 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
     };
   }
 
+  const stateRoot = resolve(runsDir, "..");
   const admitted = filterAdmittedIssues(backlog.issues, backlog.closedNumbers, {
     waitingApprovalIssueNumbers: waitingApprovalNumbers,
+    stateRoot,
+    maxLaps: mergedConfig.max_laps,
   });
   if (admitted.length === 0) {
     return {

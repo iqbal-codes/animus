@@ -12,6 +12,8 @@ import {
   ARCHON_BUILDER_PROMPT,
   ARCHON_QA_PROMPT,
   ARCHON_REVIEWER_PROMPT,
+  formatBuilderComment,
+  formatEscalationHandoff,
   type LocalIssue,
   type PiTransport,
 } from "../../scripts/local-loop";
@@ -476,4 +478,184 @@ test("executes lap with verification profile: docs profile instructs QA to skip 
   expect(capturedQaPrompt).toContain("Skip app launch: true");
   expect(capturedQaPrompt).toContain("Verification profile: docs");
   expect(capturedQaPrompt).toContain("Documentation only");
+});
+
+test("formatBuilderComment formats candidate, summary, changes, and checks cleanly", () => {
+  const comment = formatBuilderComment(
+    {
+      summary: "Fixed edge case validation",
+      changes: ["scripts/foo.ts: simplified regex"],
+      checks: [{ criterion: "AC1", result: "pass", evidence: "tests passed" }],
+    },
+    2,
+    "continue",
+    "abc1234",
+  );
+  expect(comment).toContain("### 🛠️ Builder Update (Lap 2 — route: continue)");
+  expect(comment).toContain("Candidate**: `abc1234`");
+  expect(comment).toContain("Fixed edge case validation");
+  expect(comment).toContain("scripts/foo.ts: simplified regex");
+  expect(comment).toContain("[x] **AC1**: `pass` (tests passed)");
+});
+
+test("formatEscalationHandoff formats executive maintainer briefing cleanly", () => {
+  const issue: LocalIssue = {
+    number: 85,
+    url: "https://github.com/org/repo/issues/85",
+    title: "governance rules",
+    body: "setup governance",
+    comments: [],
+    dependencies: [],
+    activeClaim: false,
+  };
+  const handoff = formatEscalationHandoff(issue, 3, 3, "local-loop/issue-85-abc", true, {
+    reason: "Reviewer requested owner intervention",
+  });
+  expect(handoff).toContain(
+    "### 🛑 Autonomous Loop Halted: Handoff to Maintainer (`ready-for-human`)",
+  );
+  expect(handoff).toContain("Autonomous loop reached the maximum lap budget (3/3 laps)");
+  expect(handoff).toContain("local-loop/issue-85-abc");
+  expect(handoff).toContain("Reviewer requested owner intervention");
+});
+
+test("runLocalLoop transitions to needs_owner when review returns outcome needs-owner", async () => {
+  const root = await fixture();
+  const issue: LocalIssue = {
+    number: 95,
+    url: "https://github.com/owner/repo/issues/95",
+    title: "complex refactor",
+    body: "needs architectural guidance",
+    comments: [],
+    dependencies: [],
+    activeClaim: false,
+  };
+
+  const transport: PiTransport = async ({ cwd, role }) => {
+    const head = git(cwd, "rev-parse", "HEAD");
+    if (role === "reviewer") {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  outcome: "needs-owner",
+                  sha: head,
+                  delivers: "part",
+                  dispositions: [],
+                  findings: ["Requires architectural owner intervention"],
+                  reason: "Exceeded send-back budget; architectural guidance required",
+                  passed: false,
+                }),
+              },
+            ],
+          },
+        }),
+        stderr: "",
+      };
+    }
+    return {
+      exitCode: 0,
+      stdout: JSON.stringify({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                candidate: head,
+                verdict: "pass",
+                checks: [{ criterion: "AC1", result: "pass", evidence: "pass" }],
+                findings: [],
+              }),
+            },
+          ],
+        },
+      }),
+      stderr: "",
+    };
+  };
+
+  const res = await runLocalLoop(root, issue, { pi: transport, push: false });
+  expect(res.status).toBe("needs_owner");
+});
+
+test("runLocalLoop transitions to needs_owner when lap count reaches max_laps on sent_back", async () => {
+  const root = await fixture();
+  // Set max_laps = 1 in schedule.json
+  await mkdir(join(root, ".factory"), { recursive: true });
+  await Bun.write(
+    join(root, ".factory", "schedule.json"),
+    JSON.stringify({ workflow: "archon-loop", max_laps: 1 }),
+  );
+
+  const issue: LocalIssue = {
+    number: 96,
+    url: "https://github.com/owner/repo/issues/96",
+    title: "single lap issue",
+    body: "only allowed one lap",
+    comments: [],
+    dependencies: [],
+    activeClaim: false,
+  };
+
+  const transport: PiTransport = async ({ cwd, role }) => {
+    const head = git(cwd, "rev-parse", "HEAD");
+    if (role === "reviewer") {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  outcome: "sent-back",
+                  sha: head,
+                  delivers: "part",
+                  dispositions: [],
+                  findings: ["Needs fixes"],
+                  reason: "Some checks failed",
+                  passed: false,
+                }),
+              },
+            ],
+          },
+        }),
+        stderr: "",
+      };
+    }
+    return {
+      exitCode: 0,
+      stdout: JSON.stringify({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                candidate: head,
+                verdict: "pass",
+                checks: [{ criterion: "AC1", result: "pass", evidence: "pass" }],
+                findings: [],
+              }),
+            },
+          ],
+        },
+      }),
+      stderr: "",
+    };
+  };
+
+  const res = await runLocalLoop(root, issue, { pi: transport, push: false });
+  expect(res.status).toBe("needs_owner");
 });
