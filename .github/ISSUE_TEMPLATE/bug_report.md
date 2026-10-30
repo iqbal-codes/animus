@@ -20,12 +20,12 @@ labels: needs-triage
 ## Acceptance criteria
 
 <!-- Enumerate explicit verifiable conditions that prove the defect is resolved. -->
-- [ ] AC1: 
+- [ ] AC1:
 
 ## Boundary
 
 <!-- Define files and modules within scope for this fix, and any explicit exclusions. -->
-Included: 
-Excluded: 
+Included:
+Excluded:
 
 Depends on: None

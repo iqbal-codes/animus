@@ -1,5 +1,5 @@
 import { readdirSync, statSync, readFileSync, existsSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, basename, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
@@ -288,6 +288,14 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
         }
       }
 
+      if (pattern !== "*") {
+        try {
+          gitPatternToRegex(pattern);
+        } catch {
+          violations.push(`.gitattributes contains unsupported or invalid pattern: '${pattern}'`);
+        }
+      }
+
       parsedRules.push({ pattern, line: trimmed, attrs });
     }
 
@@ -306,15 +314,95 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
 
     /**
      * @param {string} pattern
+     * @returns {{ hasSlash: boolean, regex: RegExp }}
+     */
+    function gitPatternToRegex(pattern) {
+      let hasSlash = pattern.includes("/");
+      let p = pattern;
+      if (p.startsWith("/")) {
+        p = p.slice(1);
+        hasSlash = true;
+      }
+
+      let regexStr = "";
+      let i = 0;
+      while (i < p.length) {
+        const c = p[i];
+        if (c === "\\") {
+          if (i + 1 < p.length) {
+            const next = p[i + 1];
+            if (".+*?^$()[]{}|\\".includes(next)) {
+              regexStr += "\\" + next;
+            } else {
+              regexStr += next;
+            }
+            i += 2;
+          } else {
+            regexStr += "\\\\";
+            i++;
+          }
+        } else if (c === "*") {
+          if (p[i + 1] === "*") {
+            if (p.startsWith("/**/", i)) {
+              regexStr += "(?:/|/.+/)?";
+              i += 4;
+            } else if (p.startsWith("**/", i)) {
+              regexStr += "(?:.*/)?";
+              i += 3;
+            } else if (p.slice(i) === "/**") {
+              regexStr += "(?:/.*)?";
+              i += 3;
+            } else {
+              regexStr += ".*";
+              i += 2;
+            }
+          } else {
+            regexStr += "[^/]*";
+            i++;
+          }
+        } else if (c === "?") {
+          regexStr += "[^/]";
+          i++;
+        } else if (c === "[") {
+          const closeIdx = p.indexOf("]", i + 1);
+          if (closeIdx === -1) {
+            throw new Error(`Unclosed bracket expression in pattern: '${pattern}'`);
+          }
+          let inside = p.slice(i + 1, closeIdx);
+          if (inside.startsWith("!") || inside.startsWith("^")) {
+            inside = "^/" + inside.slice(1);
+          }
+          regexStr += "[" + inside + "]";
+          i = closeIdx + 1;
+        } else if (".+^${}()|".includes(c)) {
+          regexStr += "\\" + c;
+          i++;
+        } else {
+          regexStr += c;
+          i++;
+        }
+      }
+
+      return { hasSlash, regex: new RegExp(`^${regexStr}$`) };
+    }
+
+    /**
+     * @param {string} pattern
      * @param {string} filePath
      */
     function matchGitAttrPattern(pattern, filePath) {
       if (pattern === "*") return true;
-      const escaped = pattern
-        .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-        .replace(/\*/g, ".*")
-        .replace(/\?/g, ".");
-      return new RegExp(`^${escaped}$`).test(filePath);
+      const normalizedPath = filePath.replace(/\\/g, "/").replace(/^[/]+/, "");
+      try {
+        const { hasSlash, regex } = gitPatternToRegex(pattern);
+        if (!hasSlash) {
+          const name = basename(normalizedPath);
+          return regex.test(name);
+        }
+        return regex.test(normalizedPath);
+      } catch {
+        return false;
+      }
     }
 
     /**
@@ -336,6 +424,36 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
       return { text: effText, eol: effEol };
     }
 
+    const BINARY_EXTENSIONS = new Set([
+      ".png",
+      ".jpg",
+      ".jpeg",
+      ".gif",
+      ".ico",
+      ".webp",
+      ".bmp",
+      ".tiff",
+      ".pdf",
+      ".zip",
+      ".tar",
+      ".gz",
+      ".tgz",
+      ".woff",
+      ".woff2",
+      ".ttf",
+      ".eot",
+      ".mp3",
+      ".mp4",
+      ".wav",
+      ".db",
+      ".sqlite",
+      ".bin",
+      ".exe",
+      ".so",
+      ".dylib",
+      ".dll",
+    ]);
+
     const requiredFileClasses = [
       "script.sh",
       "config.json",
@@ -344,7 +462,58 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
       "doc.md",
       "workflow.yml",
     ];
-    const failedFiles = requiredFileClasses.filter((f) => {
+
+    const filesToCheck = new Set(requiredFileClasses);
+
+    // Include explicit non-binary file paths targeted in .gitattributes rules
+    for (const { pattern } of parsedRules) {
+      if (!pattern.includes("*") && !pattern.includes("?") && !pattern.includes("[")) {
+        const clean = pattern.replace(/\\/g, "/").replace(/^[/]+/, "");
+        const ext = extname(clean).toLowerCase();
+        if (!BINARY_EXTENSIONS.has(ext)) {
+          filesToCheck.add(clean);
+        }
+      }
+    }
+
+    // Include existing repository text files discovered on disk
+    /**
+     * @param {string} dir
+     * @param {string} [rel]
+     */
+    function scanTextFiles(dir, rel = "") {
+      try {
+        const entries = readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (
+            entry.name === "node_modules" ||
+            entry.name === ".git" ||
+            entry.name === "dist" ||
+            entry.name === ".factory" ||
+            entry.name === "coverage" ||
+            entry.name === ".cache" ||
+            entry.name.startsWith(".vitest")
+          ) {
+            continue;
+          }
+          const full = join(dir, entry.name);
+          const relPath = rel ? `${rel}/${entry.name}` : entry.name;
+          if (entry.isDirectory()) {
+            scanTextFiles(full, relPath);
+          } else if (entry.isFile()) {
+            const ext = extname(entry.name).toLowerCase();
+            if (!BINARY_EXTENSIONS.has(ext)) {
+              filesToCheck.add(relPath);
+            }
+          }
+        }
+      } catch {
+        // Fall back gracefully to files already added
+      }
+    }
+    scanTextFiles(repoRoot);
+
+    const failedFiles = Array.from(filesToCheck).filter((f) => {
       const { text, eol } = getEffectiveAttrs(f);
       // In Git, LF line ending normalization requires:
       // 1) text attribute enabled ('true' or 'auto')
@@ -568,7 +737,12 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
         inSingleQuote = !inSingleQuote;
       } else if (ch === '"' && !inSingleQuote && !escaped) {
         inDoubleQuote = !inDoubleQuote;
-      } else if (ch === "#" && !inSingleQuote && !inDoubleQuote) {
+      } else if (
+        ch === "#" &&
+        !inSingleQuote &&
+        !inDoubleQuote &&
+        (i === 0 || line[i - 1] === " " || line[i - 1] === "\t")
+      ) {
         return line.slice(0, i);
       }
       escaped = false;

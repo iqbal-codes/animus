@@ -20,12 +20,12 @@ labels: needs-triage
 ## Acceptance criteria
 
 <!-- Enumerate explicit, testable criteria required for completion. -->
-- [ ] AC1: 
+- [ ] AC1:
 
 ## Boundary
 
 <!-- List included seams, modules, and directories, as well as excluded paths. -->
-Included: 
-Excluded: 
+Included:
+Excluded:
 
 Depends on: None

@@ -1661,5 +1661,159 @@ Depends on: None
       );
       expect(checkOpenSourceGovernanceFiles(d13ValidDir).ok).toBe(true);
     });
+
+    test("AC4 / Review Dispositions (D14-D15): checkOpenSourceGovernanceFiles enforces Git pattern semantics across repository paths and strict YAML comment separation against probes R16-R18", async () => {
+      const { checkOpenSourceGovernanceFiles } = await import(
+        // @ts-expect-error dynamic mjs import
+        "../../scripts/health/check-architecture.mjs"
+      );
+
+      function createValidGovDir(dir: string) {
+        mkdirSync(join(dir, ".github/ISSUE_TEMPLATE"), { recursive: true });
+        writeFileSync(
+          join(dir, "LICENSE"),
+          'MIT License\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the "Software"), to deal\nin the Software without restriction...\nTHE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND...\n',
+        );
+        writeFileSync(
+          join(dir, "CONTRIBUTING.md"),
+          "# Contributing\n\nNode 26.8.1\nBun 1.4.2\nlabq-factory setup --local-only\nbun run check\nbun run test\nbun run verify\n@labq/contracts\n@labq/client\napps/backend\napps/engine-host\n",
+        );
+        writeFileSync(join(dir, "SECURITY.md"), "# Security Policy\n");
+        writeFileSync(join(dir, "CHANGELOG.md"), "# Changelog\n");
+        writeFileSync(
+          join(dir, ".gitattributes"),
+          "* text=auto eol=lf\n*.sh text eol=lf\n*.ts text eol=lf\n*.js text eol=lf\n*.json text eol=lf\n*.md text eol=lf\n*.yml text eol=lf\n",
+        );
+        writeFileSync(
+          join(dir, "renovate.json"),
+          JSON.stringify({
+            lockFileMaintenance: { enabled: true },
+            osvVulnerabilityAlerts: true,
+            packageRules: [
+              {
+                matchDepTypes: ["overrides"],
+                matchPackageNames: ["*"],
+                major: { enabled: false },
+              },
+            ],
+          }),
+        );
+        writeFileSync(join(dir, ".github/pull_request_template.md"), "# PR\n");
+        const tmpl = `---\nname: Bug\nlabels: needs-triage\n---\n## Source and problem\n## Outcome\n## Invariants\n## Acceptance criteria\n- [ ] AC1:\n## Boundary\nDepends on: None\n`;
+        writeFileSync(join(dir, ".github/ISSUE_TEMPLATE/bug_report.md"), tmpl);
+        writeFileSync(join(dir, ".github/ISSUE_TEMPLATE/feature_request.md"), tmpl);
+      }
+
+      const d14BugTmpl = `---\nname: Bug\nlabels: needs-triage\n---\n## Source and problem\n## Outcome\n## Invariants\n## Acceptance criteria\n- [ ] AC1:\n## Boundary\nDepends on: None\n`;
+
+      // --- D14: Git pattern matching & repository path evaluation (Probes R16 & R17) ---
+      // D14.1: Probe R16 - exact real repository source path disables text normalization
+      const d14R16Dir = join(tempDir, "probe-r16-real-source-path");
+      createValidGovDir(d14R16Dir);
+      writeFileSync(
+        join(d14R16Dir, ".gitattributes"),
+        "* text=auto eol=lf\napps/backend/src/main.ts -text\n",
+      );
+      mkdirSync(join(d14R16Dir, "apps/backend/src"), { recursive: true });
+      writeFileSync(join(d14R16Dir, "apps/backend/src/main.ts"), "const x = 1;\r\n");
+      const d14R16Res = checkOpenSourceGovernanceFiles(d14R16Dir);
+      expect(d14R16Res.ok).toBe(false);
+      expect(
+        d14R16Res.violations.some((v: string) =>
+          v.includes(
+            ".gitattributes does not effectively enforce eol=lf for required file classes (apps/backend/src/main.ts)",
+          ),
+        ),
+      ).toBe(true);
+
+      // D14.2: Probe R17 - bracket character class glob '*.[tj]s !eol' unsets eol
+      const d14R17Dir = join(tempDir, "probe-r17-bracket-glob-reset");
+      createValidGovDir(d14R17Dir);
+      writeFileSync(join(d14R17Dir, ".gitattributes"), "* text=auto eol=lf\n*.[tj]s !eol\n");
+      const d14R17Res = checkOpenSourceGovernanceFiles(d14R17Dir);
+      expect(d14R17Res.ok).toBe(false);
+      expect(
+        d14R17Res.violations.some((v: string) =>
+          v.includes("does not effectively enforce eol=lf for required file classes"),
+        ),
+      ).toBe(true);
+      expect(
+        d14R17Res.violations.some((v: string) => v.includes("source.ts") && v.includes("index.js")),
+      ).toBe(true);
+
+      // D14.3: Unsupported or invalid glob pattern fails closed
+      const d14InvalidDir = join(tempDir, "probe-d14-invalid-pattern");
+      createValidGovDir(d14InvalidDir);
+      writeFileSync(join(d14InvalidDir, ".gitattributes"), "* text=auto eol=lf\n*.[tj !eol\n");
+      const d14InvalidRes = checkOpenSourceGovernanceFiles(d14InvalidDir);
+      expect(d14InvalidRes.ok).toBe(false);
+      expect(
+        d14InvalidRes.violations.some((v: string) =>
+          v.includes(".gitattributes contains unsupported or invalid pattern: '*.[tj'"),
+        ),
+      ).toBe(true);
+
+      // D14.4: Positive control - path-specific and bracket-glob rules explicitly enforcing LF
+      const d14PositiveDir = join(tempDir, "probe-d14-positive-control");
+      createValidGovDir(d14PositiveDir);
+      writeFileSync(
+        join(d14PositiveDir, ".gitattributes"),
+        "* text=auto eol=lf\n*.[tj]s text eol=lf\napps/backend/src/main.ts text eol=lf\n",
+      );
+      mkdirSync(join(d14PositiveDir, "apps/backend/src"), { recursive: true });
+      writeFileSync(join(d14PositiveDir, "apps/backend/src/main.ts"), "const x = 1;\n");
+      expect(checkOpenSourceGovernanceFiles(d14PositiveDir).ok).toBe(true);
+
+      // --- D15: Strict YAML comment separation & exact label membership (Probe R18) ---
+      // D15.1: Probe R18 - hash without preceding whitespace is scalar content, not a comment
+      const d15R18Dir = join(tempDir, "probe-r18-yaml-unseparated-hash");
+      createValidGovDir(d15R18Dir);
+      writeFileSync(
+        join(d15R18Dir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        d14BugTmpl.replace("labels: needs-triage", "labels: needs-triage#extra"),
+      );
+      const d15R18Res = checkOpenSourceGovernanceFiles(d15R18Dir);
+      expect(d15R18Res.ok).toBe(false);
+      expect(
+        d15R18Res.violations.some((v: string) =>
+          v.includes(".github/ISSUE_TEMPLATE/bug_report.md must default labels to 'needs-triage'"),
+        ),
+      ).toBe(true);
+
+      // D15.2: Unseparated hash in block sequence
+      const d15SeqDir = join(tempDir, "probe-d15-seq-unseparated-hash");
+      createValidGovDir(d15SeqDir);
+      writeFileSync(
+        join(d15SeqDir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        d14BugTmpl.replace("labels: needs-triage", "labels:\n  - needs-triage#extra"),
+      );
+      const d15SeqRes = checkOpenSourceGovernanceFiles(d15SeqDir);
+      expect(d15SeqRes.ok).toBe(false);
+      expect(
+        d15SeqRes.violations.some((v: string) =>
+          v.includes(".github/ISSUE_TEMPLATE/bug_report.md must default labels to 'needs-triage'"),
+        ),
+      ).toBe(true);
+
+      // D15.3: Positive controls with valid whitespace-separated comments
+      const d15ValidScalarDir = join(tempDir, "probe-d15-valid-scalar-comment");
+      createValidGovDir(d15ValidScalarDir);
+      writeFileSync(
+        join(d15ValidScalarDir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        d14BugTmpl.replace("labels: needs-triage", "labels: needs-triage # valid triage comment"),
+      );
+      expect(checkOpenSourceGovernanceFiles(d15ValidScalarDir).ok).toBe(true);
+
+      const d15ValidSeqDir = join(tempDir, "probe-d15-valid-seq-comment");
+      createValidGovDir(d15ValidSeqDir);
+      writeFileSync(
+        join(d15ValidSeqDir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        d14BugTmpl.replace(
+          "labels: needs-triage",
+          "labels:\n  - needs-triage # valid sequence comment",
+        ),
+      );
+      expect(checkOpenSourceGovernanceFiles(d15ValidSeqDir).ok).toBe(true);
+    });
   });
 });
