@@ -7,7 +7,7 @@ import {
   chmodSync,
   statSync,
   rmSync,
-  copyFileSync,
+  cpSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -2452,9 +2452,9 @@ Depends on: None
       // D23: Isolated checker execution (copied into an isolated temp directory without ancestor node_modules)
       const isolatedDir = join(tempDir, "isolated-checker-env");
       mkdirSync(isolatedDir, { recursive: true });
-      const srcChecker = join(process.cwd(), "scripts/health/check-architecture.mjs");
+
       const isolatedCheckerPath = join(isolatedDir, "check-architecture.mjs");
-      copyFileSync(srcChecker, isolatedCheckerPath);
+      cpSync(join(process.cwd(), "scripts/health"), isolatedDir, { recursive: true });
 
       const isolatedModule = await import(pathToFileURL(isolatedCheckerPath).href);
       const isolatedChecker = isolatedModule.checkOpenSourceGovernanceFiles;
