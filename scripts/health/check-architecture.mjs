@@ -1015,7 +1015,7 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
       function matchRenovatePattern(input, pattern) {
         if (pattern === "*" || pattern === "**" || pattern === "**/*") return true;
 
-        const isNeg = pattern.startsWith("!");
+        const isNeg = pattern.startsWith("!") && !pattern.startsWith("!(");
         const pat = isNeg ? pattern.slice(1) : pattern;
 
         if (pat.startsWith("/") && /\/i?$/.test(pat)) {
@@ -1057,8 +1057,13 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
         const list = Array.isArray(patterns) ? patterns : [patterns];
         if (list.length === 0) return false;
 
-        const positive = list.filter((p) => !String(p).startsWith("!"));
-        const negative = list.filter((p) => String(p).startsWith("!"));
+        /** @param {unknown} p */
+        const isNegativePattern = (p) => {
+          const s = String(p);
+          return s.startsWith("!") && !s.startsWith("!(");
+        };
+        const positive = list.filter((p) => !isNegativePattern(p));
+        const negative = list.filter((p) => isNegativePattern(p));
 
         if (positive.length > 0) {
           if (!positive.some((p) => matchRenovatePattern(input, String(p)))) {
