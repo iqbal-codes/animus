@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "node:net";
@@ -11,6 +11,7 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 const token = randomBytes(32).toString("hex");
 const children: Bun.Subprocess<"ignore", "pipe", "pipe">[] = [];
 const states: string[] = [];
+const toolDirs: string[] = [];
 const adapters: ReturnType<typeof Bun.serve>[] = [];
 
 afterEach(async () => {
@@ -48,14 +49,56 @@ afterEach(async () => {
     ).toEqual([]);
     await rm(state, { recursive: true });
   }
+  for (const directory of toolDirs.splice(0)) await rm(directory, { recursive: true });
   for (const outcome of outcomes) if (outcome.status === "rejected") throw outcome.reason;
 });
+
+const intakeIssue = {
+  number: 1,
+  title: "Deterministic offline intake issue",
+  state: "OPEN",
+  labels: {
+    nodes: [{ name: "ready-for-agent" }],
+    pageInfo: { hasNextPage: false, endCursor: null },
+  },
+  body: "Offline transport test",
+  comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+};
+
+async function intakeGh(response?: string): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), "factory-health-gh-"));
+  toolDirs.push(directory);
+  await writeFile(
+    join(directory, "gh"),
+    `#!${process.execPath}
+const args = process.argv.slice(2);
+const query = args.find((arg) => arg.startsWith("query="))?.slice(6);
+if (args[0] !== "api" || args[1] !== "graphql" || !query) {
+  throw new Error("Unexpected gh operation in offline health test");
+}
+const issue = ${JSON.stringify(intakeIssue)};
+let repository;
+if (query.includes("issues(first: 100,")) {
+  repository = { issues: { nodes: [issue], pageInfo: { hasNextPage: false, endCursor: null } } };
+} else if (query.includes("issue(number: $number)")) {
+  repository = { issue: args.includes("number=1") ? issue : null };
+} else {
+  throw new Error("Unexpected GraphQL query in offline health test");
+}
+console.log(${response === undefined ? "JSON.stringify({ data: { repository } })" : JSON.stringify(response)});
+`,
+    { mode: 0o755 },
+  );
+  return directory;
+}
 
 async function start(
   app: string,
   env: Record<string, string | undefined> = {},
   hostname = "127.0.0.1",
+  intakeResponse?: string,
 ) {
+  const ghDirectory = await intakeGh(intakeResponse);
   const state = await mkdtemp(join(tmpdir(), "factory-health-"));
   states.push(state);
   const child = Bun.spawn(
@@ -68,6 +111,7 @@ async function start(
         FACTORY_STATE_DIR: state,
         FACTORY_RUNTIME_CANDIDATE: "  candidate-é\n",
         FACTORY_HOST_TOKEN: token,
+        PATH: `${ghDirectory}:${process.env.PATH ?? ""}`,
         ...env,
       },
       stdin: "ignore",
@@ -94,6 +138,39 @@ async function start(
   reader.releaseLock();
   return { child, url };
 }
+
+test("ambient intake fixture settings cannot replace GitHub transport responses", async () => {
+  const backend = await start("backend", {
+    FACTORY_HOST_URL: "http://127.0.0.1:1",
+    FACTORY_INTAKE_FIXTURE: JSON.stringify([
+      { number: 999, title: "Forged admission", state: "OPEN", labels: ["ready-for-agent"] },
+    ]),
+  });
+  const response = await fetch(`${backend.url}/api/v1/intake`);
+  expect(response.status).toBe(200);
+  const result = await response.json();
+  expect(result.issues.map((issue: { number: number }) => issue.number)).toEqual([1]);
+  const targeted = await fetch(`${backend.url}/api/v1/intake/1`);
+  expect(targeted.status).toBe(200);
+  expect((await targeted.json()).number).toBe(1);
+});
+
+test("malformed offline transport responses fail closed despite ambient fixture settings", async () => {
+  const backend = await start(
+    "backend",
+    {
+      FACTORY_HOST_URL: "http://127.0.0.1:1",
+      FACTORY_INTAKE_FIXTURE: "[]",
+    },
+    "127.0.0.1",
+    "not-json",
+  );
+  for (const path of ["/api/v1/intake", "/api/v1/intake/1"]) {
+    const response = await fetch(`${backend.url}${path}`);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "intake_unavailable" });
+  }
+});
 
 test("real authenticated host and independently started backend report exact candidate", async () => {
   const host = await start("engine-host");
@@ -400,6 +477,9 @@ test("backend forwards diagnostics, catalog, and lap history from authenticated 
   expect(typeof intake.total_count).toBe("number");
   expect(Array.isArray(intake.issues)).toBe(true);
   expect(typeof intake.cached).toBe("boolean");
+  expect(intake.issues.map((issue) => [issue.number, issue.admission_status])).toEqual([
+    [1, "admitted"],
+  ]);
 
   // End-to-end control inspection and execution through backend client
   const initialControls = await client.controlState();

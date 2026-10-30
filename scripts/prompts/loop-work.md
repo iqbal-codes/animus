@@ -29,7 +29,7 @@ If the work item cannot be satisfied without changing what an in-repository chec
 
 1. **Branch workflow:** Work on the PR's branch, or create a delivery branch from the default branch (`local-loop/issue-<number>-<id>`). If another worktree holds the branch, use `git checkout -B <branch> origin/<branch> --ignore-other-worktrees`.
 2. **Branch integration:** Keep the branch current strictly via `git merge --no-edit origin/<default-branch>`. Preserve commit history without rebasing or force-pushing.
-3. **Smallest discriminating checks:** Iterate on the smallest unit test, frame, tick, or input path that isolates the behavior. Save exhaustive testing for final validation; running full end-to-end suites repeatedly on every edit wastes hours.
+3. **Smallest discriminating checks:** Iterate on the smallest unit test, frame, tick, or input path that isolates the behavior. Save exhaustive testing for final validation; running full end-to-end suites repeatedly on every edit wastes hours. Focus exclusively on the criteria and boundary files of your target issue; if tests outside your issue boundary fail, allow one bounded reproduction on the unchanged base before calling the failure pre-existing. Save that evidence, report the blocker without claiming pass, and do not expand implementation scope.
 4. **Final validation:** Run the repository's ordinary checks once on your candidate commit (`engineering.md` or harness config). Save complete output to `$ARTIFACTS_DIR/builder-checks.log` so subsequent QA and review nodes reuse it without duplicate execution. If user-visible behavior changed, launch the app according to `$INPUTS.runtime` and verify the observable user path.
 5. **Commit and push:** Commit with an imperative, conventional commit message (`feat(...)`, `fix(...)`). The host executor pushes to origin, opens or updates the PR with `Closes #<n>`, and ensures the PR is ready for review (`gh pr ready <n>`).
 
@@ -44,7 +44,8 @@ Every pull request description must contain an `## Evidence` section before this
 
 - **Protected governance paths:** Keep all protected paths strictly untouched ($INPUTS.protected_paths). If a change is genuinely required, label `needs-owner` and explain.
 - **Concurrency isolation:** Keep `Loop claim` comments untouched.
-- **Process isolation:** Record process IDs (PIDs) for any spawned services or background tasks, and terminate every process you started before ending your turn. Apply an explicit timeout to every wait.
+- **Process isolation:** Record process IDs (PIDs) for any spawned services or background tasks, and terminate every process you started before ending your turn. Apply an explicit timeout to every wait, HTTP fetch, and spawned subprocess. Never await reading daemon subprocess output streams (e.g. `proc.stderr`) to EOF before terminating the daemon.
+- **Scope & Boundary isolation:** Confine implementation strictly to the acceptance criteria and files included in the issue boundary. Bound diagnosis of unrelated failures to one base reproduction; do not refactor unrelated systems, skip failing gates, or assume failures are pre-existing from their file paths alone.
 - **Filesystem scope:** Restrict all file operations to this checkout and `$ARTIFACTS_DIR`.
 
 ## 5. Completion & Report

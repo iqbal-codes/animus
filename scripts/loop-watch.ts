@@ -88,11 +88,11 @@ export async function findRun(runs: string, issue?: number, runId?: string): Pro
 }
 
 export function terminalSummary(state: any): string[] {
-  if (!["waiting_approval", "failed"].includes(state.status)) return [];
+  if (!["waiting_approval", "failed", "interrupted"].includes(state.status)) return [];
   const evidence = Array.isArray(state.evidence) ? state.evidence : [];
   const last = evidence.at(-1);
   return [
-    `RUN ENDED: ${state.status === "failed" ? "FAILED" : "WAITING FOR APPROVAL"}`,
+    `RUN ENDED: ${state.status === "waiting_approval" ? "WAITING FOR APPROVAL" : state.status.toUpperCase()}`,
     ...(state.error ? [`Reason: ${summarize(state.error, 500)}`] : []),
     ...(last ? [`Last recorded step: ${last.role ?? "ordinary check"}, round ${last.round}; process exit ${last.exitCode} (not a verification verdict)`] : []),
     `Worktree preserved: ${state.worktree}`,
@@ -134,7 +134,7 @@ export async function watchRun(directory: string, once = false, signal?: AbortSi
         }
       }
     }
-    if (firstPoll && !history && !once && !["waiting_approval", "failed"].includes(state.status)) console.log("LIVE: historical events skipped. Waiting for new completed messages/tool results. Use --history to replay.");
+    if (firstPoll && !history && !once && !["waiting_approval", "failed", "interrupted"].includes(state.status)) console.log("LIVE: historical events skipped. Waiting for new completed messages/tool results. Use --history to replay.");
     firstPoll = false;
     if (activity) lastActivity = Date.now();
     // Re-read after draining logs: the run may have ended while events were read.

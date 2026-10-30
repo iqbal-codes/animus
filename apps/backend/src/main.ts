@@ -506,8 +506,7 @@ try {
           return Response.json({ error: "issue_not_found" }, { status: 404 });
         }
         try {
-          const backlog = await intakeService.evaluateBacklog(false);
-          const found = backlog.issues.find((i) => i.number === issueNum);
+          const found = await intakeService.getIssue(issueNum);
           if (!found) {
             return Response.json({ error: "issue_not_found" }, { status: 404 });
           }

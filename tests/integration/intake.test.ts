@@ -169,14 +169,28 @@ describe("Intake admission policy (canonical)", () => {
     let callCount = 0;
     const runner = async () => {
       callCount++;
-      return JSON.stringify([
-        {
-          number: 1,
-          title: "Issue 1",
-          state: "OPEN",
-          labels: [{ name: "ready-for-agent" }],
+      return JSON.stringify({
+        data: {
+          repository: {
+            issues: {
+              nodes: [
+                {
+                  number: 1,
+                  title: "Issue 1",
+                  body: "",
+                  state: "OPEN",
+                  labels: {
+                    nodes: [{ name: "ready-for-agent" }],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                  comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+                },
+              ],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
         },
-      ]);
+      });
     };
 
     const service = new IntakeService({ runner, ttlSeconds: 60 });

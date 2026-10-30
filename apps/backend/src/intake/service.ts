@@ -49,7 +49,6 @@ export class IntakeService {
   private cache = new Map<string, { result: IntakeResult; cachedAt: number }>();
   private readonly ttlSeconds: number;
   private readonly defaultRepo: string;
-  private readonly runner?: (cmd: string[]) => Promise<string>;
   private readonly jevFetcher?: (payload: unknown) => Promise<JevSystemOneResponse>;
   private forge: ForgeAdapter;
   private db?: DatabaseSync;
@@ -67,10 +66,9 @@ export class IntakeService {
       this.db = dbOrOptions as DatabaseSync;
     }
 
-    this.forge = forge ?? new SystemForgeAdapter();
+    this.forge = forge ?? new SystemForgeAdapter(resolvedOptions?.runner);
     this.defaultRepo = resolvedOptions?.repo || "labq-software-factory";
     this.ttlSeconds = resolvedOptions?.ttlSeconds ?? 60.0;
-    this.runner = resolvedOptions?.runner;
     this.jevFetcher = resolvedOptions?.jevFetcher;
   }
 
@@ -124,24 +122,11 @@ export class IntakeService {
     }
 
     const forge = this.getIssueForge();
-    const rawIssues = await forge.listIssues(project.repo_name);
-    const byNumber = new Map<number, RawIssue>();
-    for (const issue of rawIssues) {
-      if (typeof issue.number === "number") {
-        byNumber.set(issue.number, issue);
-      }
-    }
-
+    const rawIssues = (await forge.listIssues(project.repo_name)).filter(
+      (issue) => issue.state.toUpperCase() === "OPEN",
+    );
     const branchIntegrations = this.getBranchIntegrations(projectId);
-    const evaluated: EvaluatedIssue[] = [];
-    for (const issue of rawIssues) {
-      evaluated.push(
-        await evaluateIssueAdmission(issue, byNumber, {
-          integratedBranchIssues: branchIntegrations,
-          jevFetcher: this.jevFetcher,
-        }),
-      );
-    }
+    const evaluated = await this.evaluateIssues(project.repo_name, rawIssues, branchIntegrations);
 
     evaluated.sort((a, b) => a.number - b.number);
 
@@ -165,13 +150,13 @@ export class IntakeService {
   }
 
   async getProjectIssue(projectId: string, issueNumber: number): Promise<EvaluatedIssue> {
-    let backlog = await this.evaluateProjectBacklog(projectId, false);
-    let found = backlog.issues.find((i) => i.number === issueNumber);
-    if (!found) {
-      // Refresh cache once before throwing not found
-      backlog = await this.evaluateProjectBacklog(projectId, true);
-      found = backlog.issues.find((i) => i.number === issueNumber);
-    }
+    const project = this.resolveProject(projectId);
+    const raw = await this.getIssueForge().getIssue(project.repo_name, issueNumber);
+    const found = raw
+      ? (
+          await this.evaluateIssues(project.repo_name, [raw], this.getBranchIntegrations(projectId))
+        )[0]
+      : null;
     if (!found) {
       throw new ProjectRegistryError("issue_not_found", `Issue #${issueNumber} not found`);
     }
@@ -199,16 +184,6 @@ export class IntakeService {
 
     const labelEffects = computeLabelEffects(currentLabels, submission.labels || []);
 
-    // Simulate admission evaluation
-    const forge = this.getIssueForge();
-    const rawIssues = await forge.listIssues(project.repo_name);
-    const byNumber = new Map<number, RawIssue>();
-    for (const issue of rawIssues) {
-      if (typeof issue.number === "number") {
-        byNumber.set(issue.number, issue);
-      }
-    }
-
     const branchIntegrations = this.getBranchIntegrations(projectId);
     const simulatedIssue: RawIssue = {
       number: submission.issue_number || 999999,
@@ -219,10 +194,13 @@ export class IntakeService {
       comments: [],
     };
 
-    const simulatedAdmission = await evaluateIssueAdmission(simulatedIssue, byNumber, {
-      integratedBranchIssues: branchIntegrations,
-      jevFetcher: this.jevFetcher,
-    });
+    const [simulatedAdmission] = await this.evaluateIssues(
+      project.repo_name,
+      [simulatedIssue],
+      branchIntegrations,
+      true,
+    );
+    if (!simulatedAdmission) throw new Error("Admission preview unavailable");
 
     const proposedLower = (submission.labels || []).map((l) => l.trim().toLowerCase());
     const blockingLabels = proposedLower.filter((l) =>
@@ -373,50 +351,83 @@ export class IntakeService {
 
   // --- Legacy / Global Support for backwards compatibility ---
 
+  private repoName(): string {
+    return this.defaultRepo.includes("/") ? this.defaultRepo : "iqbal-codes/" + this.defaultRepo;
+  }
+
   async fetchRawIssues(): Promise<RawIssue[]> {
-    let repoArg = this.defaultRepo;
-    if (!repoArg.includes("/")) {
-      repoArg = `iqbal-codes/${repoArg}`;
-    }
-    const cmd = [
-      "gh",
-      "issue",
-      "list",
-      "--repo",
-      repoArg,
-      "--state",
-      "all",
-      "--limit",
-      "100",
-      "--json",
-      "number,title,labels,body,state,comments",
-    ];
+    const issues = await this.getIssueForge().listIssues(this.repoName());
+    return issues.filter((issue) => issue.state?.toUpperCase() === "OPEN");
+  }
 
-    let output: string;
-    if (this.runner) {
-      output = await this.runner(cmd);
+  async getIssue(issueNumber: number): Promise<EvaluatedIssue | null> {
+    const raw = await this.getIssueForge().getIssue(this.repoName(), issueNumber);
+    return raw ? ((await this.evaluateIssues(this.repoName(), [raw]))[0] ?? null) : null;
+  }
+
+  private async evaluateIssues(
+    repo: string,
+    issues: RawIssue[],
+    integrations = new Map<number, string>(),
+    advisory = false,
+  ): Promise<EvaluatedIssue[]> {
+    const byNumber = new Map(issues.map((issue) => [issue.number, issue]));
+    const dependencies = new Set<number>();
+    for (const issue of issues) {
+      for (const text of [
+        issue.body ?? "",
+        ...(issue.comments ?? []).map((comment) => comment.body ?? ""),
+      ]) {
+        for (const number of parseDependencies(text)) {
+          if (!byNumber.has(number) && !integrations.has(number)) dependencies.add(number);
+        }
+      }
+    }
+    const failed = new Set<number>();
+    const forge = this.getIssueForge();
+    const numbers = [...dependencies];
+    if (numbers.length && forge.getIssueStates) {
+      try {
+        const states = await forge.getIssueStates(repo, numbers);
+        for (const number of numbers) {
+          const state = states.get(number);
+          if (state) byNumber.set(number, { number, title: "", state });
+          else failed.add(number);
+        }
+      } catch {
+        for (const number of numbers) failed.add(number);
+      }
     } else {
-      const proc = Bun.spawn(cmd, {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      const exited = await proc.exited;
-      if (exited !== 0) {
-        const err = await new Response(proc.stderr).text();
-        throw new Error(`gh issue list failed: ${err}`);
+      // Bound concurrency for adapters without batched status reads.
+      for (let offset = 0; offset < numbers.length; offset += 5) {
+        await Promise.all(
+          numbers.slice(offset, offset + 5).map(async (number) => {
+            try {
+              const dependency = await forge.getIssue(repo, number);
+              if (dependency) byNumber.set(number, dependency);
+              else failed.add(number);
+            } catch {
+              failed.add(number);
+            }
+          }),
+        );
       }
-      output = await new Response(proc.stdout).text();
     }
-
-    try {
-      const data = JSON.parse(output);
-      if (!Array.isArray(data)) {
-        throw new Error("Expected array of issues from gh CLI");
-      }
-      return data as RawIssue[];
-    } catch (err: any) {
-      throw new Error(`Failed to parse gh output: ${err.message}`);
-    }
+    return Promise.all(
+      issues.map(async (issue) => {
+        const result = await evaluateIssueAdmission(issue, byNumber, {
+          integratedBranchIssues: integrations,
+          advisory,
+          jevFetcher: this.jevFetcher,
+        });
+        const unavailable = result.unsatisfied_dependencies.filter((number) => failed.has(number));
+        if (unavailable.length && result.reason.startsWith("waiting_on_dependency:")) {
+          result.reason =
+            "dependency_lookup_failed:" + unavailable.map((number) => "#" + number).join(",");
+        }
+        return result;
+      }),
+    );
   }
 
   async evaluateBacklog(forceRefresh = false): Promise<IntakeResult> {
@@ -429,17 +440,7 @@ export class IntakeService {
     }
 
     const rawIssues = await this.fetchRawIssues();
-    const byNumber = new Map<number, RawIssue>();
-    for (const issue of rawIssues) {
-      if (typeof issue.number === "number") {
-        byNumber.set(issue.number, issue);
-      }
-    }
-
-    const evaluated: EvaluatedIssue[] = [];
-    for (const issue of rawIssues) {
-      evaluated.push(await evaluateIssueAdmission(issue, byNumber, this.jevFetcher));
-    }
+    const evaluated = await this.evaluateIssues(this.repoName(), rawIssues);
 
     evaluated.sort((a, b) => a.number - b.number);
 

@@ -9,7 +9,7 @@ if (import.meta.main) {
       const { fetchGithubBacklog } = await import(
         fileURLToPath(new URL("scripts/scheduler.ts", factory))
       );
-      const data = fetchGithubBacklog(root, repo);
+      const data = await fetchGithubBacklog(root, repo);
       console.log(JSON.stringify({ ...data, closedNumbers: [...data.closedNumbers] }));
     } else if (operation === "contract") {
       const { readIssueContract } = await import(

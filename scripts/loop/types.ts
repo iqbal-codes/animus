@@ -29,6 +29,7 @@ export interface ProcessResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+  timedOut?: boolean;
 }
 
 export type AgentTransport = (request: {
@@ -37,9 +38,15 @@ export type AgentTransport = (request: {
   role: LoopRole;
   provider?: string;
   timeoutMs: number;
+  env?: Record<string, string>;
 }) => Promise<ProcessResult>;
 
 export type PiTransport = AgentTransport;
+
+export interface RoleBudget {
+  softMs: number;
+  hardMs: number;
+}
 
 export interface LocalLoopOptions {
   pi?: AgentTransport;
@@ -47,7 +54,12 @@ export interface LocalLoopOptions {
   provider?: string;
   model?: string;
   effort?: EffortRung;
+  /** Legacy per-attempt hard timeout override for every role; soft time is 80% of it. */
   timeoutMs?: number;
+  /** Builder defaults 20m/25m; other roles 15m/20m. Overrides FACTORY_LOOP_<ROLE>_SOFT_MS/HARD_MS. */
+  roleBudgets?: Partial<Record<LoopRole, RoleBudget>>;
+  /** Additional attempts in the same role/worktree, 0..2 (default 1). */
+  maxContinuations?: number;
   push?: boolean;
 }
 
@@ -76,6 +88,7 @@ export interface LocalLoopResult {
     | "waiting_approval"
     | "sent_back"
     | "needs_owner"
+    | "interrupted"
     | "failed";
   runDirectory: string;
   worktree: string;

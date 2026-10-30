@@ -47,8 +47,16 @@ describe("Repository-wide Task, Checker, and Cache Correctness", () => {
     const viteConfig = readFileSync(join(root, "vite.config.ts"), "utf-8");
     // Verify non-cacheable behavior for live execution tasks
     expect(viteConfig).toContain('"neutral-suite": { command: "vp test run", cache: false }');
-    expect(viteConfig).toContain(
-      '"bun-suite": { command: "bun test tests/integration/health.bun.test.ts", cache: false }',
-    );
+    expect(viteConfig).toContain("bun test --timeout 30000");
+    for (const file of [
+      "health",
+      "local-loop-deadlines",
+      "local-loop",
+      "scheduler-discovery",
+      "onboarding-monitor",
+    ]) {
+      expect(viteConfig).toContain(`tests/integration/${file}.bun.test.ts`);
+    }
+    expect(viteConfig).toMatch(/"bun-suite":\s*\{[\s\S]*?cache: false/);
   });
 });

@@ -105,7 +105,7 @@ export class SpecCoordinatorService {
       );
     }
 
-    const allIssues = await this.forge.listIssues(project.repo_name);
+    const allIssues = await this.forge.listIssues(project.repo_name, "ALL");
     const allIssuesMap = new Map<number, RawIssue>(
       allIssues.map((i) => [
         i.number,

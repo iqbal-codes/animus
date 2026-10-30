@@ -143,8 +143,7 @@ export async function runIntakeCommand(opts: {
       if (!rawIssue || !Number.isInteger(issueNum) || issueNum <= 0) {
         throw new Error("Usage: factory intake get <issue-number>");
       }
-      const backlog = await intake.evaluateBacklog(Boolean(opts.refresh));
-      const found = backlog.issues.find((i) => i.number === issueNum);
+      const found = await intake.getIssue(issueNum);
       if (!found) {
         throw new Error(`Issue #${issueNum} not found in intake backlog`);
       }

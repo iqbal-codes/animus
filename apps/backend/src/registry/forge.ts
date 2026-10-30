@@ -63,7 +63,12 @@ export interface ForgeAdapter {
   createRepository(repo: string, isPrivate?: boolean): Promise<ForgeRepoInfo>;
   cloneRepository(repo: string, targetPath: string): Promise<void>;
   detectLocalCheckout(checkoutPath: string): Promise<ForgeRepoInfo>;
-  listIssues?(repo: string): Promise<ForgeIssue[]>;
+  /** Defaults to OPEN discovery; ALL includes closed issues for coordination/history. */
+  listIssues?(repo: string, state?: "OPEN" | "ALL"): Promise<ForgeIssue[]>;
+  /** Targeted states keyed by each unique requested positive issue number; null means unavailable.
+   * Implementations must reject transport/partial-response errors, not convert them to null.
+   */
+  getIssueStates?(repo: string, numbers: number[]): Promise<Map<number, "OPEN" | "CLOSED" | null>>;
   getIssue?(repo: string, issueNumber: number): Promise<ForgeIssue | null>;
   createIssue?(repo: string, input: CreateIssueInput): Promise<ForgeIssue>;
   updateIssue?(repo: string, issueNumber: number, input: UpdateIssueInput): Promise<ForgeIssue>;
@@ -74,7 +79,7 @@ export interface ForgeAdapter {
 }
 
 export interface IssueForgeAdapter extends ForgeAdapter {
-  listIssues(repo: string): Promise<ForgeIssue[]>;
+  listIssues(repo: string, state?: "OPEN" | "ALL"): Promise<ForgeIssue[]>;
   getIssue(repo: string, issueNumber: number): Promise<ForgeIssue | null>;
   createIssue(repo: string, input: CreateIssueInput): Promise<ForgeIssue>;
   updateIssue(repo: string, issueNumber: number, input: UpdateIssueInput): Promise<ForgeIssue>;
@@ -153,7 +158,171 @@ export function parseGitRemote(checkoutPath: string): string | null {
   return null;
 }
 
+type GraphRecord = Record<string, unknown>;
+
+function graphRecord(value: unknown): GraphRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Incomplete GitHub GraphQL response");
+  }
+  return value as GraphRecord;
+}
+
+function validateIssueNumber(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error("Invalid issue number");
+  }
+  return value;
+}
+
+function issueState(value: unknown): "OPEN" | "CLOSED" {
+  if (value !== "OPEN" && value !== "CLOSED") throw new Error("Invalid GitHub issue state");
+  return value;
+}
+
+function graphString(value: unknown): string {
+  if (typeof value !== "string") throw new Error("Incomplete GitHub GraphQL text");
+  return value;
+}
+
+const pageFields = "pageInfo { hasNextPage endCursor }";
+const issueFields = `number title state body
+  labels(first: 100) { nodes { name } ${pageFields} }
+  comments(first: 100) { nodes { body } ${pageFields} }`;
+
 export class SystemForgeAdapter implements IssueForgeAdapter {
+  /** Full argv transport, including `gh`; rejects command failures. Used by discovery,
+   * targeted issue reads and state lookups. Defaults to asynchronous execFile (no shell).
+   */
+  constructor(
+    private readonly runner: (cmd: string[]) => Promise<string> = async (cmd) => {
+      try {
+        const { stdout } = await execFileAsync(cmd[0]!, cmd.slice(1), {
+          encoding: "utf-8",
+          timeout: 30_000,
+          maxBuffer: 16 * 1024 * 1024,
+        });
+        return stdout;
+      } catch (error) {
+        // gh exits nonzero for GraphQL NOT_FOUND too; validate its envelope below.
+        const failure = error as {
+          stdout?: unknown;
+          code?: unknown;
+          killed?: boolean;
+          signal?: unknown;
+        };
+        const stdout = failure.stdout;
+        if (
+          failure.code === 1 &&
+          !failure.killed &&
+          !failure.signal &&
+          typeof stdout === "string"
+        ) {
+          try {
+            const envelope = graphRecord(JSON.parse(stdout));
+            if (Array.isArray(envelope.errors) && envelope.errors.length > 0) return stdout;
+          } catch {
+            // Not a GraphQL response: preserve the command failure.
+          }
+        }
+        throw error;
+      }
+    },
+  ) {}
+
+  private repositoryVariables(repo: string): Record<string, string> {
+    const clean = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+    if (!/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(clean)) {
+      throw new Error("Invalid GitHub repository name");
+    }
+    const [owner, name] = clean.split("/");
+    return { owner: owner!, name: name! };
+  }
+
+  private async graphql(
+    query: string,
+    variables: Record<string, string | number>,
+    nullableFields: string[] = [],
+  ): Promise<GraphRecord> {
+    const args = ["gh", "api", "graphql", "-f", `query=${query}`];
+    for (const [key, value] of Object.entries(variables)) {
+      args.push(typeof value === "number" ? "-F" : "-f", `${key}=${value}`);
+    }
+    const response = graphRecord(JSON.parse(await this.runner(args)));
+    const data = graphRecord(response.data);
+    const repository = graphRecord(data.repository);
+    if (response.errors !== undefined) {
+      if (!Array.isArray(response.errors)) throw new Error("Invalid GitHub GraphQL errors");
+      for (const raw of response.errors) {
+        const error = graphRecord(raw);
+        const path = error.path;
+        if (
+          error.type !== "NOT_FOUND" ||
+          !Array.isArray(path) ||
+          path.length !== 2 ||
+          path[0] !== "repository" ||
+          !nullableFields.includes(String(path[1])) ||
+          repository[String(path[1])] !== null
+        ) {
+          throw new Error(`GitHub GraphQL lookup failed: ${JSON.stringify(raw)}`);
+        }
+      }
+    }
+    return repository;
+  }
+
+  private page(value: unknown, seen: Set<string>): { nodes: unknown[]; cursor: string | null } {
+    const connection = graphRecord(value);
+    const info = graphRecord(connection.pageInfo);
+    if (
+      !Array.isArray(connection.nodes) ||
+      typeof info.hasNextPage !== "boolean" ||
+      (info.endCursor !== null && typeof info.endCursor !== "string")
+    ) {
+      throw new Error("Incomplete GitHub GraphQL connection");
+    }
+    let cursor: string | null = null;
+    if (info.hasNextPage) {
+      cursor = graphString(info.endCursor);
+      if (!cursor || seen.has(cursor)) throw new Error("GitHub pagination cursor did not advance");
+      seen.add(cursor);
+    }
+    return { nodes: connection.nodes, cursor };
+  }
+
+  private async completeIssue(repo: string, value: unknown): Promise<ForgeIssue> {
+    const raw = graphRecord(value);
+    const number = validateIssueNumber(raw.number);
+    const result: ForgeIssue = {
+      number,
+      title: graphString(raw.title),
+      state: issueState(raw.state),
+      body: graphString(raw.body),
+      labels: [],
+      comments: [],
+    };
+    for (const field of ["labels", "comments"] as const) {
+      const seen = new Set<string>();
+      let page = this.page(raw[field], seen);
+      for (;;) {
+        for (const node of page.nodes) {
+          const item = graphRecord(node);
+          if (field === "labels") result.labels!.push({ name: graphString(item.name) });
+          else result.comments!.push({ body: graphString(item.body) });
+        }
+        if (page.cursor === null) break;
+        const repository = await this.graphql(
+          `query($owner: String!, $name: String!, $number: Int!, $cursor: String!) {
+            repository(owner: $owner, name: $name) { issue(number: $number) {
+              ${field}(first: 100, after: $cursor) { nodes { ${field === "labels" ? "name" : "body"} } ${pageFields} }
+            } }
+          }`,
+          { ...this.repositoryVariables(repo), number, cursor: page.cursor },
+        );
+        page = this.page(graphRecord(repository.issue)[field], seen);
+      }
+    }
+    return result;
+  }
   async listLabels(repo: string): Promise<ForgeLabel[]> {
     const { stdout } = await execFileAsync(
       "gh",
@@ -244,57 +413,84 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
     return await this.getRepository(remote);
   }
 
-  async listIssues(repo: string): Promise<ForgeIssue[]> {
-    const cleanRepo = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
-    try {
-      const output = execFileSync(
-        "gh",
-        [
-          "issue",
-          "list",
-          "--repo",
-          cleanRepo,
-          "--state",
-          "all",
-          "--limit",
-          "100",
-          "--json",
-          "number,title,labels,body,state,comments",
-        ],
-        {
-          encoding: "utf-8",
-          stdio: ["ignore", "pipe", "pipe"],
-        },
+  /** Defaults to OPEN; ALL includes both OPEN and CLOSED issues. Full body, labels
+   * and comments in either mode. Connections are cursor-paginated in pages of 100
+   * without a total cap; any incomplete page rejects.
+   */
+  async listIssues(repo: string, state: "OPEN" | "ALL" = "OPEN"): Promise<ForgeIssue[]> {
+    const variables = this.repositoryVariables(repo);
+    const result: ForgeIssue[] = [];
+    const seen = new Set<string>();
+    let cursor: string | null = null;
+    do {
+      const repository = await this.graphql(
+        `query($owner: String!, $name: String!, $cursor: String) {
+          repository(owner: $owner, name: $name) {
+            issues(first: 100, after: $cursor, states: ${state === "ALL" ? "[OPEN, CLOSED]" : "OPEN"}, orderBy: {field: CREATED_AT, direction: ASC}) {
+              nodes { ${issueFields} } ${pageFields}
+            }
+          }
+        }`,
+        { ...variables, ...(cursor === null ? {} : { cursor }) },
       );
-      return JSON.parse(output);
-    } catch (error: any) {
-      throw new Error(`Failed to list issues for ${cleanRepo}: ${error?.message || String(error)}`);
-    }
+      const page = this.page(repository.issues, seen);
+      for (const node of page.nodes) result.push(await this.completeIssue(repo, node));
+      cursor = page.cursor;
+    } while (cursor !== null);
+    return result;
   }
 
-  async getIssue(repo: string, issueNumber: number): Promise<ForgeIssue | null> {
-    const cleanRepo = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
-    try {
-      const output = execFileSync(
-        "gh",
-        [
-          "issue",
-          "view",
-          String(issueNumber),
-          "--repo",
-          cleanRepo,
-          "--json",
-          "number,title,labels,body,state,comments",
-        ],
-        {
-          encoding: "utf-8",
-          stdio: ["ignore", "pipe", "pipe"],
-        },
+  /** Deduplicated targeted lookups in batches of at most 50 aliases. Empty input
+   * makes no request. Null/field-scoped NOT_FOUND means unavailable (also for PR
+   * numbers); repository, authorization, transport and other partial errors reject.
+   */
+  async getIssueStates(
+    repo: string,
+    numbers: number[],
+  ): Promise<Map<number, "OPEN" | "CLOSED" | null>> {
+    const variables = this.repositoryVariables(repo);
+    const unique = [...new Set(numbers.map(validateIssueNumber))];
+    const result = new Map<number, "OPEN" | "CLOSED" | null>();
+    for (let offset = 0; offset < unique.length; offset += 50) {
+      const batch = unique.slice(offset, offset + 50);
+      const aliases = batch.map((number) => `issue_${number}`);
+      const repository = await this.graphql(
+        `query($owner: String!, $name: String!) {
+          repository(owner: $owner, name: $name) {
+            ${batch.map((number, index) => `${aliases[index]}: issue(number: ${number}) { number state }`).join("\n")}
+          }
+        }`,
+        variables,
+        aliases,
       );
-      return JSON.parse(output);
-    } catch {
-      return null;
+      for (const number of batch) {
+        const value = repository[`issue_${number}`];
+        if (value === null) result.set(number, null);
+        else {
+          const issue = graphRecord(value);
+          if (issue.number !== number) throw new Error("GitHub returned the wrong issue");
+          result.set(number, issueState(issue.state));
+        }
+      }
     }
+    return result;
+  }
+
+  /** Full targeted issue (including CLOSED), paginated labels/comments. Returns
+   * null only for explicit null or issue-scoped NOT_FOUND; other failures reject.
+   */
+  async getIssue(repo: string, issueNumber: number): Promise<ForgeIssue | null> {
+    const repository = await this.graphql(
+      `query($owner: String!, $name: String!, $number: Int!) {
+        repository(owner: $owner, name: $name) { issue(number: $number) { ${issueFields} } }
+      }`,
+      { ...this.repositoryVariables(repo), number: validateIssueNumber(issueNumber) },
+      ["issue"],
+    );
+    if (repository.issue === null) return null;
+    const result = await this.completeIssue(repo, repository.issue);
+    if (result.number !== issueNumber) throw new Error("GitHub returned the wrong issue");
+    return result;
   }
 
   async createIssue(repo: string, input: CreateIssueInput): Promise<ForgeIssue> {
@@ -565,11 +761,13 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
     return issue;
   }
 
-  async listIssues(repo: string): Promise<ForgeIssue[]> {
+  async listIssues(repo: string, state: "OPEN" | "ALL" = "OPEN"): Promise<ForgeIssue[]> {
     const key = repo.toLowerCase();
     const repoMap = this.issuesByRepo.get(key);
     if (!repoMap) return [];
-    return Array.from(repoMap.values()).map((i) => ({ ...i }));
+    return Array.from(repoMap.values())
+      .filter((issue) => state === "ALL" || issue.state === "OPEN")
+      .map((i) => ({ ...i }));
   }
 
   async getIssue(repo: string, issueNumber: number): Promise<ForgeIssue | null> {

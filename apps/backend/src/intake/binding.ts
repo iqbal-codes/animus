@@ -7,6 +7,7 @@ import type {
 import type { ForgeAdapter, ForgeIssue } from "../registry/forge";
 import { assertIssueForge } from "../registry/forge";
 import { evaluateIssueAdmission, type RawIssue } from "./admission";
+import { parseDependencies } from "./parser";
 
 export class TargetBindingError extends Error {
   constructor(
@@ -51,20 +52,32 @@ export async function verifyTargetBinding(
     );
   }
 
-  // 2. Fetch all live issues for dependency verification
-  let allLiveIssues: ForgeIssue[] = [];
+  const dependencies = [
+    ...new Set(
+      [
+        liveIssue.body ?? "",
+        ...(liveIssue.comments ?? []).map((comment) => comment.body ?? ""),
+      ].flatMap(parseDependencies),
+    ),
+  ];
+  const allByNumber = new Map<number, RawIssue>([[liveIssue.number, liveIssue]]);
   try {
-    allLiveIssues = await issueForge.listIssues(repoName);
+    if (dependencies.length && issueForge.getIssueStates) {
+      const states = await issueForge.getIssueStates(repoName, dependencies);
+      for (const [number, state] of states) {
+        if (state) allByNumber.set(number, { number, title: "", state });
+      }
+    } else {
+      for (const number of dependencies) {
+        const dependency = await issueForge.getIssue(repoName, number);
+        if (dependency) allByNumber.set(number, dependency);
+      }
+    }
   } catch (error: any) {
     throw new TargetBindingError(
       "target_drift",
-      `Failed to query issues for ${repoName}: ${error?.message || String(error)}`,
+      `Failed to verify dependencies: ${error?.message || String(error)}`,
     );
-  }
-
-  const allByNumber = new Map<number, RawIssue>();
-  for (const issue of allLiveIssues) {
-    allByNumber.set(issue.number, issue);
   }
 
   // 3. Query local branch integrations for this project
@@ -80,6 +93,7 @@ export async function verifyTargetBinding(
   // 4. Fresh admission evaluation
   const admission = await evaluateIssueAdmission(liveIssue, allByNumber, {
     integratedBranchIssues: integratedMap,
+    advisory: false,
   });
 
   // 5. Verify state

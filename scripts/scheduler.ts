@@ -1,4 +1,5 @@
 import { parseArgs } from "node:util";
+import { SystemForgeAdapter, type IssueForgeAdapter } from "../apps/backend/src/registry/forge";
 import { join, resolve } from "node:path";
 import {
   loadScheduleConfig,
@@ -39,81 +40,49 @@ export function parseSchedulerCliArgs(args: string[]): {
   };
 }
 
-export function fetchGithubBacklog(root: string, repo: string): {
+export async function fetchGithubBacklog(
+  _root: string,
+  repo: string,
+  adapter?: IssueForgeAdapter,
+): Promise<{
   issues: BacklogCandidate[];
   closedNumbers: Set<number>;
-} {
-  const openRes = Bun.spawnSync(
-    [
-      "gh",
-      "issue",
-      "list",
-      "--repo",
-      repo,
-      "--state",
-      "open",
-      "--limit",
-      "100",
-      "--json",
-      "number,title,state,labels,body,comments",
-    ],
-    { cwd: root, timeout: 30_000 },
-  );
-
-  if (openRes.exitCode !== 0) {
-    throw new Error(`GitHub open issue lookup failed: ${openRes.stderr.toString().trim()}`);
-  }
-
-  const closedRes = Bun.spawnSync(
-    [
-      "gh",
-      "issue",
-      "list",
-      "--repo",
-      repo,
-      "--state",
-      "closed",
-      "--limit",
-      "200",
-      "--json",
-      "number",
-    ],
-    { cwd: root, timeout: 30_000 },
-  );
-
-  if (closedRes.exitCode !== 0) {
-    throw new Error(`GitHub closed issue lookup failed: ${closedRes.stderr.toString().trim()}`);
-  }
-
-  const rawOpen = JSON.parse(openRes.stdout.toString()) as Array<{
-    number: number;
-    title: string;
-    state: string;
-    labels?: Array<{ name: string }>;
-    body?: string;
-    comments?: Array<{ body: string }>;
-  }>;
-
-  const rawClosed = JSON.parse(closedRes.stdout.toString()) as Array<{ number: number }>;
-  const closedNumbers = new Set(rawClosed.map((c) => c.number));
-
-  const issues: BacklogCandidate[] = rawOpen.map((item) => {
-    const body = item.body ?? "";
-    const comments = (item.comments ?? []).map((c) => c.body ?? "");
-    const combinedText = [body, ...comments].join("\n");
-    const dependencies = parseDependencies(combinedText);
-    const activeClaim = isActiveClaim(item.comments ?? [], body);
-
-    return {
+}> {
+  const forge = adapter ?? new SystemForgeAdapter();
+  const rawOpen = await forge.listIssues(repo);
+  const issues: BacklogCandidate[] = rawOpen
+    .filter((item) =>
+      (item.labels ?? []).some(
+        (label) =>
+          (typeof label === "string" ? label : label.name).toLowerCase() === "ready-for-agent",
+      ),
+    )
+    .map((item) => ({
       number: item.number,
       title: item.title,
       state: item.state,
-      labels: (item.labels ?? []).map((l) => l.name),
-      dependencies,
-      activeClaim,
-    };
-  });
-
+      labels: (item.labels ?? []).map((label) => (typeof label === "string" ? label : label.name)),
+      dependencies: parseDependencies(
+        [item.body ?? "", ...(item.comments ?? []).map((comment) => comment.body ?? "")].join("\n"),
+      ),
+      activeClaim: isActiveClaim(item.comments ?? [], item.body ?? ""),
+    }));
+  const openNumbers = new Set(rawOpen.map((issue) => issue.number));
+  const dependencies = [...new Set(issues.flatMap((issue) => issue.dependencies))].filter(
+    (number) => !openNumbers.has(number),
+  );
+  const states = new Map<number, string | null>();
+  if (dependencies.length) {
+    if (forge.getIssueStates) {
+      for (const [number, state] of await forge.getIssueStates(repo, dependencies))
+        states.set(number, state);
+    } else {
+      for (const number of dependencies)
+        states.set(number, (await forge.getIssue(repo, number))?.state ?? null);
+    }
+  }
+  const closedNumbers = new Set<number>();
+  for (const [number, state] of states) if (state === "CLOSED") closedNumbers.add(number);
   return { issues, closedNumbers };
 }
 
@@ -152,7 +121,9 @@ if (import.meta.main) {
 
     const launchLap = async (issue: BacklogCandidate): Promise<{ runId: string }> => {
       if (dryRun) {
-        console.log(`[DRY-RUN] Would launch autonomous lap for issue #${issue.number}: ${issue.title}`);
+        console.log(
+          `[DRY-RUN] Would launch autonomous lap for issue #${issue.number}: ${issue.title}`,
+        );
         return { runId: `dry-run-issue-${issue.number}` };
       }
 
