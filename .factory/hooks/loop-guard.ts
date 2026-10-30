@@ -253,3 +253,45 @@ export default function registerLoopGuard(api: any) {
     return undefined;
   });
 }
+
+// CLI / git hook execution support
+if (import.meta.main) {
+  const args = process.argv.slice(2);
+  const cwd = process.cwd();
+
+  // If invoked with --pre-commit or list of files
+  let filesToCheck: string[] = [];
+  if (args.includes("--pre-commit")) {
+    try {
+      const proc = Bun.spawnSync(["git", "diff", "--cached", "--name-only"], {
+        cwd,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const stdout = proc.stdout.toString();
+      filesToCheck = stdout
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
+    } catch {
+      filesToCheck = [];
+    }
+  } else {
+    filesToCheck = args.filter((a) => !a.startsWith("-"));
+  }
+
+  let hasFatalError = false;
+  for (const file of filesToCheck) {
+    if (isProtectedPath(file)) {
+      console.error(
+        `\x1b[31m[HARNESS GUARD ERROR]\x1b[0m Modifying protected path '${file}' is forbidden during delivery laps.`,
+      );
+      hasFatalError = true;
+    }
+  }
+
+  if (hasFatalError) {
+    process.exit(1);
+  }
+}
+

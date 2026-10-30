@@ -1,0 +1,5 @@
+{
+  "extensions": [
+    "./.factory/hooks/loop-guard.ts"
+  ]
+}
