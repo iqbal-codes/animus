@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, rename } from "node:fs/promises";
+import { mkdir, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { processRun } from "./loop/process";
@@ -507,7 +507,26 @@ export async function runLocalLoop(
   try {
     await mkdir(lock);
   } catch {
-    throw new Error(`Issue ${issue.number} is locked; inspect ${lock} before manual release`);
+    const ownerFile = join(lock, "owner.json");
+    let stale = false;
+    if (existsSync(ownerFile)) {
+      try {
+        const owner = JSON.parse(readFileSync(ownerFile, "utf8"));
+        if (typeof owner.pid === "number") {
+          try {
+            process.kill(owner.pid, 0);
+          } catch {
+            stale = true;
+          }
+        }
+      } catch {}
+    }
+    if (stale) {
+      await rm(lock, { recursive: true, force: true });
+      await mkdir(lock);
+    } else {
+      throw new Error(`Issue ${issue.number} is locked; inspect ${lock} before manual release`);
+    }
   }
 
   const branch = existingPr
