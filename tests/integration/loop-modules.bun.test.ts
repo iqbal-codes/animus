@@ -873,13 +873,29 @@ test("15. Scheduler capacity liveness: ignores abandoned runs with dead PIDs", a
 });
 
 test("16. Worktree reuse: finds existing worktree holding branch ref", async () => {
-  const root = join(import.meta.dir, "../..");
-  // Main branch is definitely checked out in the root worktree
-  const found = await findExistingWorktreeForBranch(root, "main");
-  expect(found).not.toBeNull();
-  expect(existsSync(found!)).toBe(true);
+  const tmp = await mkdtemp(join(tmpdir(), "worktree-reuse-test-"));
+  try {
+    const repo = join(tmp, "repo");
+    const extraWorktree = join(tmp, "extra-tree");
+    await mkdir(repo, { recursive: true });
 
-  // Non-existent branch returns null
-  const nonExistent = await findExistingWorktreeForBranch(root, "non-existent-branch-123456");
-  expect(nonExistent).toBeNull();
+    await Bun.spawn(["git", "init", "-b", "main"], { cwd: repo }).exited;
+    await Bun.spawn(["git", "config", "user.name", "Test"], { cwd: repo }).exited;
+    await Bun.spawn(["git", "config", "user.email", "test@test.local"], { cwd: repo }).exited;
+    await Bun.write(join(repo, "README.md"), "test");
+    await Bun.spawn(["git", "add", "README.md"], { cwd: repo }).exited;
+    await Bun.spawn(["git", "commit", "-m", "init"], { cwd: repo }).exited;
+
+    await Bun.spawn(["git", "branch", "feature-x"], { cwd: repo }).exited;
+    await Bun.spawn(["git", "worktree", "add", extraWorktree, "feature-x"], { cwd: repo }).exited;
+
+    const found = await findExistingWorktreeForBranch(repo, "feature-x");
+    expect(found).not.toBeNull();
+    expect(existsSync(found!)).toBe(true);
+
+    const nonExistent = await findExistingWorktreeForBranch(repo, "non-existent-branch-123456");
+    expect(nonExistent).toBeNull();
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });
