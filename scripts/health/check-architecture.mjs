@@ -238,13 +238,111 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
   // 5. .gitattributes
   const gitattrContent = readRequiredFile(".gitattributes", "Git attributes");
   if (gitattrContent !== null) {
-    const activeLines = gitattrContent
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0 && !line.startsWith("#"));
-    const hasActiveEolLf = activeLines.some((line) => /\beol=lf\b/.test(line));
+    const lines = gitattrContent.split(/\r?\n/);
+    /** @type {Array<{ pattern: string, line: string, attrs: Map<string, string | boolean> }>} */
+    const parsedRules = [];
+    /** @type {string[]} */
+    const conflictingRules = [];
+
+    for (const rawLine of lines) {
+      const trimmed = rawLine.trim();
+      if (trimmed.length === 0 || trimmed.startsWith("#")) {
+        continue;
+      }
+
+      const tokens = trimmed.split(/\s+/);
+      if (tokens.length < 2) {
+        continue;
+      }
+
+      const pattern = tokens[0];
+      const attrTokens = tokens.slice(1);
+      const attrs = new Map();
+
+      for (const token of attrTokens) {
+        if (token === "eol=crlf" || token === "eol=native" || token === "crlf") {
+          conflictingRules.push(trimmed);
+        }
+        if (token.includes("=")) {
+          const [k, v] = token.split("=");
+          attrs.set(k, v);
+        } else if (token.startsWith("-")) {
+          const k = token.slice(1);
+          attrs.set(k, false);
+        } else if (token.startsWith("!")) {
+          const k = token.slice(1);
+          attrs.delete(k);
+        } else {
+          if (token === "binary") {
+            attrs.set("binary", true);
+            attrs.set("text", false);
+            attrs.delete("eol");
+          } else if (token === "crlf") {
+            attrs.set("text", true);
+            attrs.set("eol", "crlf");
+          } else {
+            attrs.set(token, true);
+          }
+        }
+      }
+
+      parsedRules.push({ pattern, line: trimmed, attrs });
+    }
+
+    const hasActiveEolLf = parsedRules.some((r) => r.attrs.get("eol") === "lf");
     if (!hasActiveEolLf) {
       violations.push(".gitattributes must enforce LF line endings (eol=lf)");
+    }
+
+    if (conflictingRules.length > 0) {
+      for (const conflict of conflictingRules) {
+        violations.push(
+          `.gitattributes contains conflicting non-LF line ending rule: '${conflict}'`,
+        );
+      }
+    }
+
+    /**
+     * @param {string} pattern
+     * @param {string} filePath
+     */
+    function matchGitAttrPattern(pattern, filePath) {
+      if (pattern === "*") return true;
+      const escaped = pattern
+        .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+        .replace(/\*/g, ".*")
+        .replace(/\?/g, ".");
+      return new RegExp(`^${escaped}$`).test(filePath);
+    }
+
+    /**
+     * @param {string} filePath
+     */
+    function getEffectiveEol(filePath) {
+      let eff = undefined;
+      for (const { pattern, attrs } of parsedRules) {
+        if (matchGitAttrPattern(pattern, filePath)) {
+          if (attrs.has("eol")) {
+            eff = attrs.get("eol");
+          }
+        }
+      }
+      return eff;
+    }
+
+    const requiredFileClasses = [
+      "script.sh",
+      "config.json",
+      "source.ts",
+      "index.js",
+      "doc.md",
+      "workflow.yml",
+    ];
+    const failedFiles = requiredFileClasses.filter((f) => getEffectiveEol(f) !== "lf");
+    if (failedFiles.length > 0) {
+      violations.push(
+        `.gitattributes does not effectively enforce eol=lf for required file classes (${failedFiles.join(", ")})`,
+      );
     }
   }
 
@@ -259,10 +357,19 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
       if (parsed.osvVulnerabilityAlerts !== true) {
         violations.push("renovate.json must have osvVulnerabilityAlerts: true");
       }
-      const packageRules =
-        /** @type {Array<{ matchDepTypes?: string | string[]; major?: { enabled?: boolean } }>} */ (
-          parsed.packageRules
-        );
+      const packageRules = parsed.packageRules;
+
+      /**
+       * @param {any} rule
+       * @returns {boolean}
+       */
+      function ruleMatchesOverridesDepType(rule) {
+        if (rule.matchDepTypes === undefined || rule.matchDepTypes === null) {
+          return true;
+        }
+        const types = Array.isArray(rule.matchDepTypes) ? rule.matchDepTypes : [rule.matchDepTypes];
+        return types.includes("overrides") || types.includes("*");
+      }
 
       let effectiveOverridesMajorDisabled = false;
       let hasContradictoryOverridesRule = false;
@@ -270,18 +377,26 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
       if (Array.isArray(packageRules)) {
         for (const rule of packageRules) {
           if (!rule || typeof rule !== "object") continue;
+
+          const appliesToOverrides = ruleMatchesOverridesDepType(rule);
+          if (!appliesToOverrides) {
+            continue;
+          }
+
           const matchTypes = Array.isArray(rule.matchDepTypes)
             ? rule.matchDepTypes
             : rule.matchDepTypes
               ? [rule.matchDepTypes]
               : [];
-          if (matchTypes.includes("overrides")) {
-            if (rule.major?.enabled === false) {
-              effectiveOverridesMajorDisabled = true;
-            } else if (rule.major?.enabled === true) {
-              effectiveOverridesMajorDisabled = false;
-              hasContradictoryOverridesRule = true;
-            }
+          const explicitlyMatchesOverrides =
+            matchTypes.includes("overrides") || matchTypes.includes("*");
+
+          if (explicitlyMatchesOverrides && rule.major?.enabled === false) {
+            effectiveOverridesMajorDisabled = true;
+            hasContradictoryOverridesRule = false;
+          } else if (rule.major?.enabled === true) {
+            effectiveOverridesMajorDisabled = false;
+            hasContradictoryOverridesRule = true;
           }
         }
       }
@@ -313,32 +428,128 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
     "Depends on:",
   ];
 
+  /**
+   * @param {string} line
+   * @returns {string}
+   */
+  function stripYamlComment(line) {
+    let inSingleQuote = false;
+    let inDoubleQuote = false;
+    let escaped = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === "\\" && inDoubleQuote) {
+        escaped = !escaped;
+        continue;
+      }
+      if (ch === "'" && !inDoubleQuote) {
+        inSingleQuote = !inSingleQuote;
+      } else if (ch === '"' && !inSingleQuote && !escaped) {
+        inDoubleQuote = !inDoubleQuote;
+      } else if (ch === "#" && !inSingleQuote && !inDoubleQuote) {
+        return line.slice(0, i);
+      }
+      escaped = false;
+    }
+    return line;
+  }
+
+  /**
+   * @param {string} str
+   * @returns {string}
+   */
+  function cleanYamlScalar(str) {
+    let s = str.trim();
+    if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+      s = s.slice(1, -1).trim();
+    }
+    return s;
+  }
+
+  /**
+   * @param {string} fmText
+   * @returns {{ found: boolean, labels: string[] }}
+   */
+  function parseFrontMatterLabels(fmText) {
+    const rawLines = fmText.split(/\r?\n/);
+    let labelLineIndex = -1;
+    let rawValue = null;
+
+    for (let i = 0; i < rawLines.length; i++) {
+      const stripped = stripYamlComment(rawLines[i]);
+      const match = stripped.match(/^\s*labels:\s*(.*)$/i);
+      if (match) {
+        labelLineIndex = i;
+        rawValue = match[1].trim();
+        break;
+      }
+    }
+
+    if (labelLineIndex === -1 || rawValue === null) {
+      return { found: false, labels: [] };
+    }
+
+    /** @type {string[]} */
+    const labels = [];
+
+    if (rawValue.length > 0) {
+      if (rawValue.startsWith("[") && rawValue.endsWith("]")) {
+        const items = rawValue.slice(1, -1).split(",");
+        for (const item of items) {
+          const cleaned = cleanYamlScalar(item);
+          if (cleaned.length > 0) {
+            labels.push(cleaned);
+          }
+        }
+      } else {
+        const items = rawValue.split(",");
+        for (const item of items) {
+          const cleaned = cleanYamlScalar(item);
+          if (cleaned.length > 0) {
+            labels.push(cleaned);
+          }
+        }
+      }
+    } else {
+      for (let i = labelLineIndex + 1; i < rawLines.length; i++) {
+        const stripped = stripYamlComment(rawLines[i]);
+        if (stripped.trim().length === 0) continue;
+        if (/^\S/.test(stripped)) {
+          break;
+        }
+        const itemMatch = stripped.match(/^\s*-\s*(.+)$/);
+        if (itemMatch) {
+          const cleaned = cleanYamlScalar(itemMatch[1]);
+          if (cleaned.length > 0) {
+            labels.push(cleaned);
+          }
+        } else {
+          break;
+        }
+      }
+    }
+
+    return { found: true, labels };
+  }
+
   for (const { rel, label } of issueTemplates) {
     const tmplContent = readRequiredFile(rel, label);
     if (tmplContent !== null) {
       const frontMatterMatch = tmplContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-      let hasNeedsTriageInFrontMatter = false;
-      if (frontMatterMatch) {
-        const fm = frontMatterMatch[1];
-        const singleLineMatch = fm.match(/^labels:\s*(.+)$/im);
-        if (singleLineMatch) {
-          const val = singleLineMatch[1].trim();
-          if (/\bneeds-triage\b/i.test(val)) {
-            hasNeedsTriageInFrontMatter = true;
-          }
-        }
-        const listMatch = fm.match(/^labels:\s*$[\r\n]+((?:\s*-[^\r\n]*[\r\n]+)*)/im);
-        if (listMatch && /\bneeds-triage\b/i.test(listMatch[1])) {
-          hasNeedsTriageInFrontMatter = true;
-        }
+      if (!frontMatterMatch) {
+        violations.push(`${rel} must contain YAML front matter enclosed by '---'`);
+        continue;
       }
 
-      if (!hasNeedsTriageInFrontMatter) {
+      const parsed = parseFrontMatterLabels(frontMatterMatch[1]);
+      if (!parsed.found || !parsed.labels.includes("needs-triage")) {
         violations.push(`${rel} must default labels to 'needs-triage'`);
       }
-      if (/ready-for-agent/i.test(tmplContent)) {
+
+      if (parsed.labels.includes("ready-for-agent") || /ready-for-agent/i.test(tmplContent)) {
         violations.push(`${rel} must NEVER default labels to 'ready-for-agent'`);
       }
+
       for (const section of canonicalSections) {
         if (!tmplContent.includes(section)) {
           violations.push(`${rel} missing canonical contract section: '${section}'`);

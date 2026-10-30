@@ -979,5 +979,236 @@ describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollba
         ),
       ).toBe(true);
     });
+
+    test("AC4 / Review Dispositions (D5-D7): checkOpenSourceGovernanceFiles enforces effective LF attributes, parsed front-matter labels, and broad Renovate overrides policies against probes R5-R7", async () => {
+      const { checkOpenSourceGovernanceFiles } = await import(
+        // @ts-expect-error dynamic mjs import
+        "../../scripts/health/check-architecture.mjs"
+      );
+
+      function createValidGovDir(dirPath: string) {
+        mkdirSync(join(dirPath, ".github/ISSUE_TEMPLATE"), { recursive: true });
+        writeFileSync(
+          join(dirPath, "LICENSE"),
+          readFileSync(join(process.cwd(), "LICENSE"), "utf-8"),
+        );
+        writeFileSync(
+          join(dirPath, "CONTRIBUTING.md"),
+          readFileSync(join(process.cwd(), "CONTRIBUTING.md"), "utf-8"),
+        );
+        writeFileSync(
+          join(dirPath, "SECURITY.md"),
+          readFileSync(join(process.cwd(), "SECURITY.md"), "utf-8"),
+        );
+        writeFileSync(
+          join(dirPath, "CHANGELOG.md"),
+          readFileSync(join(process.cwd(), "CHANGELOG.md"), "utf-8"),
+        );
+        writeFileSync(
+          join(dirPath, ".gitattributes"),
+          readFileSync(join(process.cwd(), ".gitattributes"), "utf-8"),
+        );
+        writeFileSync(
+          join(dirPath, "renovate.json"),
+          readFileSync(join(process.cwd(), "renovate.json"), "utf-8"),
+        );
+        writeFileSync(
+          join(dirPath, ".github/pull_request_template.md"),
+          readFileSync(join(process.cwd(), ".github/pull_request_template.md"), "utf-8"),
+        );
+        writeFileSync(
+          join(dirPath, ".github/ISSUE_TEMPLATE/bug_report.md"),
+          readFileSync(join(process.cwd(), ".github/ISSUE_TEMPLATE/bug_report.md"), "utf-8"),
+        );
+        writeFileSync(
+          join(dirPath, ".github/ISSUE_TEMPLATE/feature_request.md"),
+          readFileSync(join(process.cwd(), ".github/ISSUE_TEMPLATE/feature_request.md"), "utf-8"),
+        );
+      }
+
+      // --- D5: Effective LF attributes in .gitattributes (Probe R5) ---
+      // D5.1: Probe R5 - baseline LF followed by * text eol=crlf
+      const d5Dir = join(tempDir, "probe-r5-gitattr-effective");
+      createValidGovDir(d5Dir);
+      writeFileSync(join(d5Dir, ".gitattributes"), "* text=auto eol=lf\n* text eol=crlf\n");
+      const d5Res = checkOpenSourceGovernanceFiles(d5Dir);
+      expect(d5Res.ok).toBe(false);
+      expect(
+        d5Res.violations.some((v: string) =>
+          v.includes("conflicting non-LF line ending rule: '* text eol=crlf'"),
+        ),
+      ).toBe(true);
+      expect(
+        d5Res.violations.some((v: string) =>
+          v.includes("does not effectively enforce eol=lf for required file classes"),
+        ),
+      ).toBe(true);
+
+      // D5.2: Conflicting rule on specific extension
+      const d5ExtDir = join(tempDir, "probe-r5-gitattr-ext");
+      createValidGovDir(d5ExtDir);
+      writeFileSync(join(d5ExtDir, ".gitattributes"), "* text=auto eol=lf\n*.sh text eol=crlf\n");
+      const d5ExtRes = checkOpenSourceGovernanceFiles(d5ExtDir);
+      expect(d5ExtRes.ok).toBe(false);
+      expect(
+        d5ExtRes.violations.some((v: string) =>
+          v.includes("conflicting non-LF line ending rule: '*.sh text eol=crlf'"),
+        ),
+      ).toBe(true);
+      expect(
+        d5ExtRes.violations.some((v: string) =>
+          v.includes("does not effectively enforce eol=lf for required file classes"),
+        ),
+      ).toBe(true);
+
+      // D5.3: Non-LF native eol
+      const d5NativeDir = join(tempDir, "probe-r5-gitattr-native");
+      createValidGovDir(d5NativeDir);
+      writeFileSync(join(d5NativeDir, ".gitattributes"), "* text=auto eol=native\n");
+      const d5NativeRes = checkOpenSourceGovernanceFiles(d5NativeDir);
+      expect(d5NativeRes.ok).toBe(false);
+      expect(
+        d5NativeRes.violations.some((v: string) =>
+          v.includes("conflicting non-LF line ending rule: '* text=auto eol=native'"),
+        ),
+      ).toBe(true);
+
+      // --- D6: Front-matter labels parsing & exact membership (Probe R6) ---
+      // D6.1: Probe R6 - empty scalar with comment 'labels: "" # needs-triage'
+      const d6Dir = join(tempDir, "probe-r6-empty-comment-label");
+      createValidGovDir(d6Dir);
+      const bugTmplPath = join(d6Dir, ".github/ISSUE_TEMPLATE/bug_report.md");
+      const baseBugTmpl = readFileSync(bugTmplPath, "utf-8");
+      writeFileSync(
+        bugTmplPath,
+        baseBugTmpl.replace("labels: needs-triage", 'labels: "" # needs-triage'),
+      );
+      const d6Res = checkOpenSourceGovernanceFiles(d6Dir);
+      expect(d6Res.ok).toBe(false);
+      expect(
+        d6Res.violations.some((v: string) =>
+          v.includes(".github/ISSUE_TEMPLATE/bug_report.md must default labels to 'needs-triage'"),
+        ),
+      ).toBe(true);
+
+      // D6.2: Single-quoted empty scalar with comment 'labels: \'\' # needs-triage'
+      const d6SingleQuoteDir = join(tempDir, "probe-r6-single-quote");
+      createValidGovDir(d6SingleQuoteDir);
+      writeFileSync(
+        join(d6SingleQuoteDir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        baseBugTmpl.replace("labels: needs-triage", "labels: '' # needs-triage"),
+      );
+      const d6SingleQuoteRes = checkOpenSourceGovernanceFiles(d6SingleQuoteDir);
+      expect(d6SingleQuoteRes.ok).toBe(false);
+      expect(
+        d6SingleQuoteRes.violations.some((v: string) =>
+          v.includes(".github/ISSUE_TEMPLATE/bug_report.md must default labels to 'needs-triage'"),
+        ),
+      ).toBe(true);
+
+      // D6.3: Empty unquoted value with comment 'labels: # needs-triage'
+      const d6NoValDir = join(tempDir, "probe-r6-no-val");
+      createValidGovDir(d6NoValDir);
+      writeFileSync(
+        join(d6NoValDir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        baseBugTmpl.replace("labels: needs-triage", "labels: # needs-triage"),
+      );
+      const d6NoValRes = checkOpenSourceGovernanceFiles(d6NoValDir);
+      expect(d6NoValRes.ok).toBe(false);
+      expect(
+        d6NoValRes.violations.some((v: string) =>
+          v.includes(".github/ISSUE_TEMPLATE/bug_report.md must default labels to 'needs-triage'"),
+        ),
+      ).toBe(true);
+
+      // D6.4: Valid supported forms: quoted string, inline list, block sequence
+      const d6ValidQuoted = join(tempDir, "probe-d6-valid-quoted");
+      createValidGovDir(d6ValidQuoted);
+      writeFileSync(
+        join(d6ValidQuoted, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        baseBugTmpl.replace("labels: needs-triage", 'labels: "needs-triage"'),
+      );
+      expect(checkOpenSourceGovernanceFiles(d6ValidQuoted).ok).toBe(true);
+
+      const d6ValidInlineList = join(tempDir, "probe-d6-valid-inlinelist");
+      createValidGovDir(d6ValidInlineList);
+      writeFileSync(
+        join(d6ValidInlineList, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        baseBugTmpl.replace("labels: needs-triage", 'labels: ["needs-triage"]'),
+      );
+      expect(checkOpenSourceGovernanceFiles(d6ValidInlineList).ok).toBe(true);
+
+      const d6ValidBlockSeq = join(tempDir, "probe-d6-valid-blockseq");
+      createValidGovDir(d6ValidBlockSeq);
+      writeFileSync(
+        join(d6ValidBlockSeq, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        baseBugTmpl.replace("labels: needs-triage", "labels:\n  - needs-triage # primary label"),
+      );
+      expect(checkOpenSourceGovernanceFiles(d6ValidBlockSeq).ok).toBe(true);
+
+      // --- D7: Renovate policy validation & broad matching rules (Probe R7) ---
+      // D7.1: Probe R7 - append matchPackageNames: ["*"] with major.enabled: true
+      const d7Dir = join(tempDir, "probe-r7-renovate-broad-pkg");
+      createValidGovDir(d7Dir);
+      const d7Config = JSON.parse(readFileSync(join(d7Dir, "renovate.json"), "utf-8"));
+      d7Config.packageRules.push({ matchPackageNames: ["*"], major: { enabled: true } });
+      writeFileSync(join(d7Dir, "renovate.json"), JSON.stringify(d7Config, null, 2));
+      const d7Res = checkOpenSourceGovernanceFiles(d7Dir);
+      expect(d7Res.ok).toBe(false);
+      expect(
+        d7Res.violations.some((v: string) =>
+          v.includes("renovate.json must disable major updates for overrides in packageRules"),
+        ),
+      ).toBe(true);
+
+      // D7.2: Wildcard matchDepTypes: ["*"] with major.enabled: true
+      const d7WildcardDir = join(tempDir, "probe-r7-renovate-wildcard-dep");
+      createValidGovDir(d7WildcardDir);
+      const d7WildcardConfig = JSON.parse(
+        readFileSync(join(d7WildcardDir, "renovate.json"), "utf-8"),
+      );
+      d7WildcardConfig.packageRules.push({
+        matchDepTypes: ["*"],
+        major: { enabled: true },
+      });
+      writeFileSync(
+        join(d7WildcardDir, "renovate.json"),
+        JSON.stringify(d7WildcardConfig, null, 2),
+      );
+      const d7WildcardRes = checkOpenSourceGovernanceFiles(d7WildcardDir);
+      expect(d7WildcardRes.ok).toBe(false);
+      expect(
+        d7WildcardRes.violations.some((v: string) =>
+          v.includes("renovate.json must disable major updates for overrides in packageRules"),
+        ),
+      ).toBe(true);
+
+      // D7.3: Permitted rule targeting non-overrides dependency type (e.g. dependencies)
+      const d7PermittedDir = join(tempDir, "probe-r7-renovate-permitted");
+      createValidGovDir(d7PermittedDir);
+      const d7PermittedConfig = JSON.parse(
+        readFileSync(join(d7PermittedDir, "renovate.json"), "utf-8"),
+      );
+      d7PermittedConfig.packageRules.push({
+        matchDepTypes: ["dependencies"],
+        major: { enabled: true },
+      });
+      writeFileSync(
+        join(d7PermittedDir, "renovate.json"),
+        JSON.stringify(d7PermittedConfig, null, 2),
+      );
+      expect(checkOpenSourceGovernanceFiles(d7PermittedDir).ok).toBe(true);
+
+      // D7.4: Broad rule placed before overrides rule preserves effective safety
+      const d7OrderDir = join(tempDir, "probe-r7-renovate-order");
+      createValidGovDir(d7OrderDir);
+      const d7OrderConfig = JSON.parse(readFileSync(join(d7OrderDir, "renovate.json"), "utf-8"));
+      d7OrderConfig.packageRules = [
+        { matchPackageNames: ["*"], major: { enabled: true } },
+        { matchDepTypes: ["overrides"], major: { enabled: false } },
+      ];
+      writeFileSync(join(d7OrderDir, "renovate.json"), JSON.stringify(d7OrderConfig, null, 2));
+      expect(checkOpenSourceGovernanceFiles(d7OrderDir).ok).toBe(true);
+    });
   });
 });
