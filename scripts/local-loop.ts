@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, rename } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { processRun } from "./loop/process";
+import { resolveRoleBudgets, interruptionReport, RoleInterrupted } from "./loop/deadlines";
 import type {
   LocalIssue,
   LoopRole,
@@ -95,7 +97,7 @@ If the work item cannot be satisfied without changing what an in-repository chec
 
 1. **Branch workflow:** Work on the PR's branch, or create a delivery branch from the default branch (\`local-loop/issue-<number>-<id>\`). If another worktree holds the branch, use \`git checkout -B <branch> origin/<branch> --ignore-other-worktrees\`.
 2. **Branch integration:** Keep the branch current strictly via \`git merge --no-edit origin/<default-branch>\`. Preserve commit history without rebasing or force-pushing.
-3. **Smallest discriminating checks:** Iterate on the smallest unit test, frame, tick, or input path that isolates the behavior. Save exhaustive testing for final validation; running full end-to-end suites repeatedly on every edit wastes hours.
+3. **Smallest discriminating checks:** Iterate on the smallest unit test, frame, tick, or input path that isolates the behavior. Save exhaustive testing for final validation; running full end-to-end suites repeatedly on every edit wastes hours. Focus exclusively on the criteria and boundary files of your target issue; if tests outside your issue boundary fail, perform one bounded reproduction on the unchanged base before calling them pre-existing. Record the command and both outcomes; if reproduction is unavailable or inconclusive, report an unverified blocker. Never bypass gates or expand scope to repair unrelated systems.
 4. **Final validation:** Run the repository's ordinary checks once on your candidate commit (\`engineering.md\` or harness config). Save complete output to \`$ARTIFACTS_DIR/builder-checks.log\` so subsequent QA and review nodes reuse it without duplicate execution. If user-visible behavior changed, launch the app according to \`$INPUTS.runtime\` and verify the observable user path.
 5. **Commit and push:** Commit with an imperative, conventional commit message (\`feat(...)\`, \`fix(...)\`). The host executor pushes to origin, opens or updates the PR with \`Closes #<n>\`, and ensures the PR is ready for review (\`gh pr ready <n>\`).
 
@@ -110,7 +112,8 @@ Every pull request description must contain an \`## Evidence\` section before th
 
 - **Protected governance paths:** Keep all protected paths strictly untouched ($INPUTS.protected_paths). If a change is genuinely required, label \`needs-owner\` and explain.
 - **Concurrency isolation:** Keep \`Loop claim\` comments untouched.
-- **Process isolation:** Record process IDs (PIDs) for any spawned services or background tasks, and terminate every process you started before ending your turn. Apply an explicit timeout to every wait.
+- **Process isolation:** Record process IDs (PIDs) for any spawned services or background tasks, and terminate every process you started before ending your turn. Apply an explicit timeout to every wait, HTTP fetch, and spawned subprocess. Never await reading daemon subprocess output streams (e.g. \`proc.stderr\`) to EOF before terminating the daemon.
+- **Scope & Boundary isolation:** Confine implementation strictly to the acceptance criteria and files included in the issue boundary. Do not attempt to debug or refactor unrelated test failures or unmocked external dependencies outside your boundary.
 - **Filesystem scope:** Restrict all file operations to this checkout and \`$ARTIFACTS_DIR\`.
 
 ## 5. Completion & Report
@@ -304,23 +307,6 @@ Return your final decision in JSON (plain or within a single \`\`\`json code fen
 }
 \`\`\``;
 
-async function processRun(argv: string[], cwd: string, timeoutMs: number): Promise<ProcessResult> {
-  const child = Bun.spawn(argv, {
-    cwd,
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-    timeout: timeoutMs,
-    killSignal: "SIGKILL",
-  });
-  const [exitCode, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]);
-  return { exitCode, stdout, stderr };
-}
-
 async function git(root: string, ...args: string[]): Promise<string> {
   const result = await processRun(["git", ...args], root, 30_000);
   if (result.exitCode !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr}`);
@@ -368,6 +354,7 @@ export async function runLocalLoop(
   options: LocalLoopOptions = {},
 ): Promise<LocalLoopResult> {
   validateIssue(issue);
+  const roleBudgets = resolveRoleBudgets(options);
   const timeout = options.timeoutMs ?? 20 * 60_000;
   const { common } = await inspectLocalLoop(root);
   const base = await git(root, "rev-parse", "HEAD");
@@ -448,7 +435,61 @@ export async function runLocalLoop(
   };
 
   const transport =
-    options.transport ?? options.pi ?? ((req) => processRun(req.argv, req.cwd, req.timeoutMs));
+    options.transport ?? options.pi ?? ((req) => processRun(req.argv, req.cwd, req.timeoutMs, req.env));
+
+  // Reflection uses its own report parser, but must not bypass role deadlines or checkpoints.
+  const reflectionTransport: typeof transport = async (request) => {
+    const role = "reflector";
+    const budget = roleBudgets.reflector;
+    const checkpointPath = join(handoffDir, "reflector-checkpoint.md");
+    for (let attempt = 0; attempt <= (options.maxContinuations ?? 1); attempt++) {
+      const startedAt = Date.now();
+      const softDeadline = startedAt + budget.softMs;
+      const hardDeadline = startedAt + budget.hardMs;
+      const argv = [...request.argv];
+      // All supported provider argv builders put the user prompt last.
+      argv[argv.length - 1] += [
+        "",
+        "## Bounded role execution (overrides completion instructions above)",
+        `Soft deadline (absolute Unix milliseconds): ${softDeadline}.`,
+        `Hard deadline (absolute Unix milliseconds): ${hardDeadline}; the host terminates the owned process group then.`,
+        `Write a durable checkpoint to ${checkpointPath} before the soft deadline: completed work, HEAD, dirty files, evidence, blockers, and exact next steps. Preserve this worktree.`,
+        "After soft deadline the Pi guard permits only write/edit of that exact checkpoint path and simple read-only git status/diff/rev-parse. No git add/commit, publication, or other work is allowed.",
+        "Bash defaults to 90 seconds; explicitly longer budgets are clipped to remaining hard time.",
+        'If incomplete, return {"verdict":"interrupted"}; never report completed reflection for incomplete work.',
+        ...(attempt ? [`Continuation ${attempt}: resume the SAME role in the SAME worktree. Read ${checkpointPath} and prior attempt artifacts first; retain all existing work.`] : []),
+      ].join("\n");
+      const result = await transport({
+        ...request,
+        argv,
+        timeoutMs: Math.max(1, hardDeadline - Date.now()),
+        env: {
+          ...request.env,
+          FACTORY_LOOP_SOFT_DEADLINE_MS: String(softDeadline),
+          FACTORY_LOOP_HARD_DEADLINE_MS: String(hardDeadline),
+          FACTORY_LOOP_CHECKPOINT_PATH: checkpointPath,
+        },
+      });
+      const finishedAt = Date.now();
+      const artifact = join(runDirectory, `${role}-attempt-${attempt}.json`);
+      await Bun.write(artifact, JSON.stringify({ ...result, attempt, softDeadline, hardDeadline, finishedAt }));
+      const head = await git(request.cwd, "rev-parse", "HEAD");
+      state.evidence.push({ kind: request.provider as any ?? "agent", role, round: attempt, candidate: head, artifact, exitCode: result.exitCode, provider: request.provider });
+      await save();
+      const timedOut = result.timedOut === true || result.exitCode === 124 || finishedAt >= hardDeadline;
+      if (!timedOut && !interruptionReport(result.stdout)) return result;
+      const reason = timedOut ? "hard deadline exceeded" : "agent checkpoint/interrupted report";
+      const dirty = await git(request.cwd, "status", "--porcelain", "--untracked-files=all");
+      const previous = existsSync(checkpointPath) ? readFileSync(checkpointPath, "utf8") : "# Interrupted reflector checkpoint";
+      const checkpoint = previous + `\n\n## Host checkpoint: reflector attempt ${attempt}\nReason: ${reason}\nHEAD: ${head}\nStage: ${state.status}\nArtifact: ${artifact}\nWorktree: ${request.cwd}\nDirty status:\n\`\`\`\n${dirty || "(clean)"}\n\`\`\`\n`;
+      await Bun.write(checkpointPath, checkpoint);
+      await Bun.write(join(handoffDir, `${role}-attempt-${attempt}-checkpoint.md`), checkpoint);
+      if (attempt === (options.maxContinuations ?? 1)) {
+        throw new RoleInterrupted(`reflector interrupted: ${reason}; continuation budget exhausted; see ${checkpointPath}`);
+      }
+    }
+    throw new RoleInterrupted("reflector continuation budget exhausted");
+  };
 
   try {
     await Bun.write(
@@ -589,42 +630,80 @@ export async function runLocalLoop(
       const roleModel = options.model ?? resolveModelForRole(root, role);
       const roleEffort = options.effort ?? resolveEffortForRole(root, role);
 
-      const stepNum = role === "builder" ? 0 : role === "qa" ? 1 : 2;
-      const sessionDirectory = join(runDirectory, `${stepNum}-${role}-session`);
-      await mkdir(sessionDirectory, { recursive: true });
-      const argv = buildProviderArgv(roleProvider, {
-        model: roleModel,
-        effort: roleEffort,
-        prompt,
-        sessionDir: sessionDirectory,
-        skills: resolveAllowedSkills(root, role),
-        extensions: resolveLoopExtensions(root),
-        appendSystemPrompts: buildCuratedAppendPrompts(root, issue, changedFilesList),
-      });
-
-      const result = await transport({
-        argv,
-        cwd: state.worktree,
-        role,
-        provider: roleProvider,
-        timeoutMs: timeout,
-      });
-      const artifact = join(runDirectory, `${role}.json`);
-      await Bun.write(artifact, JSON.stringify(result));
-      const head = await git(state.worktree, "rev-parse", "HEAD");
-      state.evidence.push({
-        kind: roleProvider === "pi" ? "pi" : (roleProvider as any),
-        role,
-        round: 0,
-        candidate: head,
-        artifact,
-        exitCode: result.exitCode,
-        provider: roleProvider,
-        effort: roleEffort,
-      });
-      await save();
-      if (result.exitCode !== 0) throw new Error(`${roleProvider} ${role} process failed; see ${artifact}`);
-      return extractReport(result.stdout, head);
+      const checkpointPath = join(handoffDir, "checkpoint.md");
+      const budget = roleBudgets[role];
+      for (let attempt = 0; attempt <= (options.maxContinuations ?? 1); attempt++) {
+        await inspectLocalLoop(root);
+        const startedAt = Date.now();
+        const softDeadline = startedAt + budget.softMs;
+        const hardDeadline = startedAt + budget.hardMs;
+        const deadlinePrompt = [
+          prompt,
+          "",
+          "## Bounded role execution (overrides completion instructions above)",
+          `Soft deadline (absolute Unix milliseconds): ${softDeadline} (${new Date(softDeadline).toISOString()}).`,
+          `Hard deadline (absolute Unix milliseconds): ${hardDeadline}; the host terminates the owned process group then.`,
+          `Write a durable checkpoint to ${checkpointPath} before the soft deadline: completed work, HEAD, dirty files, evidence, blockers, and exact next steps. Preserve this worktree.`,
+          "After soft deadline the Pi guard permits only write/edit of that exact checkpoint path and simple read-only git status/diff/rev-parse. No git add/commit, publication, or other work is allowed.",
+          "Bash defaults to 90 seconds; explicitly longer budgets are clipped to remaining hard time. Do not start work that cannot finish before the deadline.",
+          'If incomplete, return {"verdict":"interrupted"}; never report pass for incomplete work.',
+          ...(attempt ? [`Continuation ${attempt}: resume the SAME role in the SAME worktree. Read ${checkpointPath} and prior attempt artifacts first; retain all existing work and do not restart the task.`] : []),
+        ].join("\n");
+        const stepNum = role === "builder" ? 0 : role === "qa" ? 1 : 2;
+        const sessionDirectory = join(runDirectory, attempt === 0
+          ? `${stepNum}-${role}-session` : `${stepNum}-${role}-attempt-${attempt}-session`);
+        await mkdir(sessionDirectory, { recursive: true });
+        const argv = buildProviderArgv(roleProvider, {
+          model: roleModel,
+          effort: roleEffort,
+          prompt: deadlinePrompt,
+          sessionDir: sessionDirectory,
+          skills: resolveAllowedSkills(root, role),
+          extensions: resolveLoopExtensions(root),
+          appendSystemPrompts: buildCuratedAppendPrompts(root, issue, changedFilesList),
+        });
+        const result = await transport({
+          argv,
+          cwd: state.worktree,
+          role,
+          provider: roleProvider,
+          timeoutMs: Math.max(1, hardDeadline - Date.now()),
+          env: {
+            FACTORY_LOOP_SOFT_DEADLINE_MS: String(softDeadline),
+            FACTORY_LOOP_HARD_DEADLINE_MS: String(hardDeadline),
+            FACTORY_LOOP_CHECKPOINT_PATH: checkpointPath,
+          },
+        });
+        const finishedAt = Date.now();
+        const artifact = join(runDirectory, `${role}-attempt-${attempt}.json`);
+        await Bun.write(artifact, JSON.stringify({ ...result, attempt, softDeadline, hardDeadline, finishedAt }));
+        const head = await git(state.worktree, "rev-parse", "HEAD");
+        state.evidence.push({
+          kind: roleProvider === "pi" ? "pi" : (roleProvider as any),
+          role,
+          round: attempt,
+          candidate: head,
+          artifact,
+          exitCode: result.exitCode,
+          provider: roleProvider,
+          effort: roleEffort,
+        });
+        await save();
+        const timedOut = result.timedOut === true || result.exitCode === 124 || finishedAt >= hardDeadline;
+        if (timedOut || interruptionReport(result.stdout)) {
+          const reason = timedOut ? "hard deadline exceeded" : "agent checkpoint/interrupted report";
+          const dirty = await git(state.worktree, "status", "--porcelain", "--untracked-files=all");
+          const facts = `\n\n## Host checkpoint: ${role} attempt ${attempt}\nReason: ${reason}\nHEAD: ${head}\nStage: ${state.status}\nArtifact: ${artifact}\nWorktree: ${state.worktree}\nDirty status:\n\`\`\`\n${dirty || "(clean)"}\n\`\`\`\n`;
+          const previous = existsSync(checkpointPath) ? readFileSync(checkpointPath, "utf8") : "# Interrupted role checkpoint";
+          await Bun.write(checkpointPath, previous + facts);
+          await Bun.write(join(handoffDir, `${role}-attempt-${attempt}-checkpoint.md`), previous + facts);
+          if (attempt < (options.maxContinuations ?? 1)) continue;
+          throw new RoleInterrupted(`${role} interrupted: ${reason}; continuation budget exhausted; see ${checkpointPath}`);
+        }
+        if (result.exitCode !== 0) throw new Error(`${roleProvider} ${role} process failed; see ${artifact}`);
+        return extractReport(result.stdout, head);
+      }
+      throw new RoleInterrupted(`${role} continuation budget exhausted`);
     };
 
     // -------------------------------------------------------------
@@ -777,8 +856,8 @@ export async function runLocalLoop(
         worktree: state.worktree,
         dossier,
         artifactsDir,
-        transport,
-        timeoutMs: timeout,
+        transport: reflectionTransport,
+        timeoutMs: roleBudgets.reflector.hardMs,
       });
       await Bun.write(join(artifactsDir, "reflection.json"), JSON.stringify(reflection, null, 2));
       dossier.reflectedAt = new Date().toISOString();
@@ -855,8 +934,12 @@ export async function runLocalLoop(
     await save();
     return state;
   } catch (error) {
-    state.status = "failed";
+    state.status = error instanceof RoleInterrupted ? "interrupted" : "failed";
     state.error = error instanceof Error ? error.message : String(error);
+    if (error instanceof RoleInterrupted) {
+      await save();
+      return state;
+    }
     try {
       const dossier = recordLapAttempt(
         stateRoot,
@@ -887,19 +970,25 @@ export async function runLocalLoop(
           worktree: existsSync(state.worktree) ? state.worktree : root,
           dossier,
           artifactsDir,
-          transport,
-          timeoutMs: timeout,
+          transport: reflectionTransport,
+          timeoutMs: roleBudgets.reflector.hardMs,
         });
         await Bun.write(join(artifactsDir, "reflection.json"), JSON.stringify(reflection, null, 2));
         dossier.reflectedAt = new Date().toISOString();
         saveIssueDossier(stateRoot, dossier);
       }
-    } catch {}
+    } catch (reflectionError) {
+      if (reflectionError instanceof RoleInterrupted) {
+        state.status = "interrupted";
+        state.error = reflectionError.message;
+      }
+    }
     await save();
     return state;
   } finally {
     try {
       await Bun.spawn(["rm", "-rf", lock]).exited;
     } catch {}
+
   }
 }

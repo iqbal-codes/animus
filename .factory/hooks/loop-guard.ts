@@ -9,7 +9,7 @@
  * 5. Verified CLI guidance hints on bash tool failures (.factory/tool-guidance.json)
  */
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 export interface CodebaseRule {
   id: string;
@@ -169,7 +169,49 @@ export default function registerLoopGuard(api: any) {
 
   api.on("tool_call", async (event: any) => {
     const toolName = String(event?.toolName ?? "");
-    const args = event?.args ?? {};
+    const args = (event?.input ?? event?.args ?? {}) as Record<string, any>;
+
+    const now = Date.now();
+    const hardDeadline = Number(process.env.FACTORY_LOOP_HARD_DEADLINE_MS);
+    const softDeadline = Number(process.env.FACTORY_LOOP_SOFT_DEADLINE_MS);
+    if (Number.isFinite(hardDeadline) && hardDeadline > 0 && now >= hardDeadline) {
+      return {
+        block: true,
+        reason:
+          "HARD DEADLINE: stop tools and report interrupted; the host preserves this attempt.",
+      };
+    }
+    if (Number.isFinite(softDeadline) && softDeadline > 0 && now >= softDeadline) {
+      const checkpoint = process.env.FACTORY_LOOP_CHECKPOINT_PATH;
+      const checkpointWrite =
+        (toolName === "write" || toolName === "edit") &&
+        checkpoint &&
+        typeof args.path === "string" &&
+        resolve(args.path) === resolve(checkpoint);
+      // Deliberately allow only simple read-only git commands, not arbitrary shell syntax.
+      const gitInspection =
+        toolName === "bash" &&
+        typeof args.command === "string" &&
+        /^git (?:status(?: --short)?|diff(?: --stat| --name-only)?|rev-parse HEAD)$/.test(
+          args.command.trim(),
+        );
+      if (!checkpointWrite && !gitInspection) {
+        return {
+          block: true,
+          reason: `SOFT DEADLINE: stop new work, write progress, checks, blockers and next steps to ${checkpoint ?? "the checkpoint path in your prompt"}, then report {"verdict":"interrupted"}. Do not claim pass.`,
+        };
+      }
+    }
+    if (toolName === "bash") {
+      const requested =
+        typeof args.timeout === "number" && Number.isFinite(args.timeout) && args.timeout > 0
+          ? args.timeout
+          : 90;
+      args.timeout =
+        Number.isFinite(hardDeadline) && hardDeadline > 0
+          ? Math.min(requested, Math.max(0.001, (hardDeadline - now) / 1000))
+          : requested;
+    }
 
     if ((toolName === "write" || toolName === "edit") && typeof args.path === "string") {
       if (isProtectedPath(args.path)) {
@@ -201,15 +243,30 @@ export default function registerLoopGuard(api: any) {
 
   api.on("tool_result", async (event: any) => {
     const toolName = String(event?.toolName ?? "");
-    const args = event?.args ?? {};
+    const args = event?.input ?? event?.args ?? {};
 
     if (toolName === "bash" && event?.isError) {
       const guidance = loadToolGuidance(process.cwd());
       const entries = Object.entries(guidance);
+      const hints: string[] = [];
       if (entries.length > 0) {
         const hint = entries.map(([k, v]) => `${k}: \`${v}\``).join(", ");
+        hints.push(`[HARNESS TOOL GUIDANCE HINT] Verified repository commands -> ${hint}`);
+      }
+      const rawText = Array.isArray(event?.content)
+        ? event.content.map((c: any) => c?.text ?? "").join("\n")
+        : String(event?.content ?? "");
+      if (
+        rawText.toLowerCase().includes("timed out") ||
+        rawText.toLowerCase().includes("timeout")
+      ) {
+        hints.push(
+          "[HARNESS TIMEOUT HINT] Command exceeded timeout budget. Avoid long-running background tasks without explicit timeouts, and avoid reading daemon process streams before process termination.",
+        );
+      }
+      if (hints.length > 0) {
         return {
-          appendText: `\n[HARNESS TOOL GUIDANCE HINT] Verified repository commands -> ${hint}`,
+          content: [...(event.content ?? []), { type: "text", text: `\n${hints.join("\n")}` }],
         };
       }
     }
@@ -245,7 +302,7 @@ export default function registerLoopGuard(api: any) {
       }
       if (sections.length > 0) {
         return {
-          appendText: `\n${sections.join("\n")}`,
+          content: [...(event.content ?? []), { type: "text", text: `\n${sections.join("\n")}` }],
         };
       }
     }
@@ -294,4 +351,3 @@ if (import.meta.main) {
     process.exit(1);
   }
 }
-

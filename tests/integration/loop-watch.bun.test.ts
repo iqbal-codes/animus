@@ -85,6 +85,14 @@ test("terminal failures explain the end instead of implying a successful QA exit
   expect(lines).toContain("Reason: Malformed QA report");
   expect(lines).toContain("not a verification verdict");
   expect(terminalSummary({ status: "building" })).toEqual([]);
+  const interrupted = terminalSummary({
+    status: "interrupted",
+    error: "continuation budget exhausted",
+    worktree: "/work",
+    runDirectory: "/evidence",
+  }).join("\n");
+  expect(interrupted).toContain("RUN ENDED: INTERRUPTED");
+  expect(interrupted).toContain("Worktree preserved: /work");
 });
 
 test("default watcher skips old messages and explains an already-ended run", async () => {

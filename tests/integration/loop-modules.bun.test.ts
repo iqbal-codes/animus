@@ -796,10 +796,23 @@ test("14. Scheduler waiting_approval protection: prevents re-dispatching deliver
       }),
     );
 
+    mkdirSync(join(runsDir, "interrupted-98"));
+    writeFileSync(
+      join(runsDir, "interrupted-98", "state.json"),
+      JSON.stringify({ issue: "https://github.com/org/repo/issues/98", status: "interrupted" }),
+    );
     const waitingSet = getIssuesWaitingApproval(runsDir);
     expect(waitingSet.has(99)).toBe(true);
+    expect(waitingSet.has(98)).toBe(true);
 
     const candidates: BacklogCandidate[] = [
+      {
+        number: 98,
+        title: "Interrupted work preserved for manual resumption",
+        state: "OPEN",
+        labels: ["ready-for-agent"],
+        dependencies: [],
+      },
       {
         number: 99,
         title: "Feature 99 awaiting human approval",

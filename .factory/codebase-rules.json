@@ -3,6 +3,14 @@
   "description": "Domain-agnostic codebase conventions & shared pattern registry (Backend, Frontend, Mobile, CLI, Database) enforced by loop-guard.ts",
   "rules": [],
   "pattern_registry": {
+    "loop_processes": {
+      "file_glob": "scripts/**/*.ts",
+      "guidance": "Use scripts/loop/process.ts processRun for bounded POSIX process-group execution and scripts/loop/deadlines.ts for role budgets; preserve checkpoints and never terminate processes by worktree or name."
+    },
+    "forge_discovery": {
+      "file_glob": "apps/backend/src/**/*.ts",
+      "guidance": "Use SystemForgeAdapter paginated listIssues and getIssueStates batches; resolve only referenced dependencies and keep cached discovery separate from fresh target binding."
+    },
     "contracts": "Define shared schemas, DTOs, and domain types in dedicated contract/type modules with zero explicit 'any'.",
     "persistence": "Execute database and external storage operations through repository/service abstractions and transactional migration helpers.",
     "error_handling": "Return typed domain errors and structured status codes rather than silent catch blocks or raw exception strings.",

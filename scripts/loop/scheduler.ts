@@ -190,7 +190,7 @@ export function getIssuesWaitingApproval(runsDir: string): Set<number> {
       if (!existsSync(statePath)) continue;
       try {
         const state = JSON.parse(readFileSync(statePath, "utf-8"));
-        if (state.status === "waiting_approval") {
+        if (state.status === "waiting_approval" || state.status === "interrupted") {
           const match = /\/issues\/(\d+)$/.exec(state.issue ?? "");
           if (match && match[1]) {
             waiting.add(Number(match[1]));

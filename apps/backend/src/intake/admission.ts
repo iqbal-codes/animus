@@ -58,6 +58,7 @@ export async function runJevAdvisory(
   body: string,
   labels: string[],
   fetcher?: (payload: unknown) => Promise<JevSystemOneResponse>,
+  enabled = true,
 ): Promise<{
   rec_label: string | null;
   conf: number | null;
@@ -68,7 +69,7 @@ export async function runJevAdvisory(
   error?: string;
 }> {
   const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey && !fetcher) {
+  if (!enabled || (!apiKey && !fetcher)) {
     return {
       rec_label: null,
       conf: null,
@@ -172,6 +173,7 @@ export async function runJevAdvisory(
 }
 
 export interface AdmissionOptions {
+  advisory?: boolean;
   integratedBranchIssues?: Set<number> | Map<number, string>;
   jevFetcher?: (payload: unknown) => Promise<JevSystemOneResponse>;
 }
@@ -274,7 +276,13 @@ export async function evaluateIssueAdmission(
 
   // 2. Unlabeled check
   if (labelNames.length === 0) {
-    const jev = await runJevAdvisory(title, body, labelNames, options.jevFetcher);
+    const jev = await runJevAdvisory(
+      title,
+      body,
+      labelNames,
+      options.jevFetcher,
+      options.advisory !== false,
+    );
     if (jev.error) {
       return {
         number,
@@ -336,7 +344,13 @@ export async function evaluateIssueAdmission(
       jev_meta: null,
     };
     if (lowerCanonicalLabels.has("needs-triage")) {
-      jev = await runJevAdvisory(title, body, labelNames, options.jevFetcher);
+      jev = await runJevAdvisory(
+        title,
+        body,
+        labelNames,
+        options.jevFetcher,
+        options.advisory !== false,
+      );
       if (jev.error) {
         return {
           number,
