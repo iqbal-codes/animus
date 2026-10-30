@@ -1410,5 +1410,256 @@ describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollba
         ),
       ).toBe(true);
     });
+
+    test("AC4 / Review Dispositions (D11-D13): checkOpenSourceGovernanceFiles enforces combined text/eol Git normalization, comprehensive Renovate overrides matcher coverage, and strict YAML scalar continuations & case sensitivity against probes R12-R15", async () => {
+      const { checkOpenSourceGovernanceFiles } = await import(
+        // @ts-expect-error dynamic mjs import
+        "../../scripts/health/check-architecture.mjs"
+      );
+
+      function createValidGovDir(dir: string) {
+        mkdirSync(join(dir, ".github/ISSUE_TEMPLATE"), { recursive: true });
+        writeFileSync(
+          join(dir, "LICENSE"),
+          `MIT License\n\nCopyright (c) 2026\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the "Software"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nTHE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.`,
+        );
+        writeFileSync(
+          join(dir, "CONTRIBUTING.md"),
+          `# Contributing\n\nNode 26.8.1\nBun 1.4.2\nlabq-factory setup --local-only\nbun run check\nbun run test\nbun run verify\n@labq/contracts\n@labq/client\napps/backend\napps/engine-host`,
+        );
+        writeFileSync(join(dir, "SECURITY.md"), "# Security Policy\n");
+        writeFileSync(join(dir, "CHANGELOG.md"), "# Changelog\n");
+        writeFileSync(join(dir, ".gitattributes"), "* text=auto eol=lf\n");
+        writeFileSync(
+          join(dir, "renovate.json"),
+          JSON.stringify(
+            {
+              $schema: "https://docs.renovatebot.com/renovate-schema.json",
+              osvVulnerabilityAlerts: true,
+              lockFileMaintenance: { enabled: true },
+              packageRules: [
+                {
+                  matchDepTypes: ["overrides"],
+                  major: { enabled: false },
+                },
+              ],
+            },
+            null,
+            2,
+          ),
+        );
+        writeFileSync(join(dir, ".github/pull_request_template.md"), "# PR\n");
+        const tmpl = `---\nname: Bug\nlabels: needs-triage\n---\n## Source and problem\n## Outcome\n## Invariants\n## Acceptance criteria\n- [ ] AC1:\n## Boundary\nDepends on: None\n`;
+        writeFileSync(join(dir, ".github/ISSUE_TEMPLATE/bug_report.md"), tmpl);
+        writeFileSync(join(dir, ".github/ISSUE_TEMPLATE/feature_request.md"), tmpl);
+      }
+
+      // --- D11: Combined text and eol attributes for LF normalization (Probe R12) ---
+      // D11.1: Probe R12 - '*.sh -text' disables text normalization despite eol=lf
+      const d11Dir = join(tempDir, "probe-r12-gitattr-text-disabled");
+      createValidGovDir(d11Dir);
+      writeFileSync(join(d11Dir, ".gitattributes"), "* text=auto eol=lf\n*.sh -text\n");
+      const d11Res = checkOpenSourceGovernanceFiles(d11Dir);
+      expect(d11Res.ok).toBe(false);
+      expect(
+        d11Res.violations.some((v: string) =>
+          v.includes(
+            ".gitattributes does not effectively enforce eol=lf for required file classes (script.sh)",
+          ),
+        ),
+      ).toBe(true);
+
+      // D11.2: '*.sh binary' unsets text and leaves eol unspecified
+      const d11BinaryDir = join(tempDir, "probe-d11-gitattr-binary");
+      createValidGovDir(d11BinaryDir);
+      writeFileSync(join(d11BinaryDir, ".gitattributes"), "* text=auto eol=lf\n*.sh binary\n");
+      const d11BinaryRes = checkOpenSourceGovernanceFiles(d11BinaryDir);
+      expect(d11BinaryRes.ok).toBe(false);
+      expect(
+        d11BinaryRes.violations.some((v: string) =>
+          v.includes(
+            ".gitattributes does not effectively enforce eol=lf for required file classes (script.sh)",
+          ),
+        ),
+      ).toBe(true);
+
+      // D11.3: '*.ts !text' leaves text unspecified
+      const d11UnsetTextDir = join(tempDir, "probe-d11-gitattr-unset-text");
+      createValidGovDir(d11UnsetTextDir);
+      writeFileSync(join(d11UnsetTextDir, ".gitattributes"), "* text=auto eol=lf\n*.ts !text\n");
+      const d11UnsetTextRes = checkOpenSourceGovernanceFiles(d11UnsetTextDir);
+      expect(d11UnsetTextRes.ok).toBe(false);
+      expect(
+        d11UnsetTextRes.violations.some((v: string) =>
+          v.includes(
+            ".gitattributes does not effectively enforce eol=lf for required file classes (source.ts)",
+          ),
+        ),
+      ).toBe(true);
+
+      // D11.4: Explicit text re-enabling after -text preserves effective safety
+      const d11ReEnableDir = join(tempDir, "probe-d11-gitattr-reenable");
+      createValidGovDir(d11ReEnableDir);
+      writeFileSync(
+        join(d11ReEnableDir, ".gitattributes"),
+        "*.sh -text\n* text=auto eol=lf\n*.sh text eol=lf\n",
+      );
+      expect(checkOpenSourceGovernanceFiles(d11ReEnableDir).ok).toBe(true);
+
+      // --- D12: Renovate overrides rule restriction across matchers (Probe R13) ---
+      // D12.1: Probe R13 - sole overrides disabling rule restricted by matchFileNames
+      const d12Dir = join(tempDir, "probe-r13-renovate-matchfilenames");
+      createValidGovDir(d12Dir);
+      const d12Config = JSON.parse(readFileSync(join(d12Dir, "renovate.json"), "utf-8"));
+      d12Config.packageRules[0].matchFileNames = ["unrelated/package.json"];
+      writeFileSync(join(d12Dir, "renovate.json"), JSON.stringify(d12Config, null, 2));
+      const d12Res = checkOpenSourceGovernanceFiles(d12Dir);
+      expect(d12Res.ok).toBe(false);
+      expect(
+        d12Res.violations.some((v: string) =>
+          v.includes("renovate.json must disable major updates for overrides in packageRules"),
+        ),
+      ).toBe(true);
+
+      // D12.2: Overrides disabling rule restricted by non-npm manager (e.g. cargo)
+      const d12ManagerDir = join(tempDir, "probe-d12-renovate-manager");
+      createValidGovDir(d12ManagerDir);
+      const d12ManagerConfig = JSON.parse(
+        readFileSync(join(d12ManagerDir, "renovate.json"), "utf-8"),
+      );
+      d12ManagerConfig.packageRules[0].matchManagers = ["cargo"];
+      writeFileSync(
+        join(d12ManagerDir, "renovate.json"),
+        JSON.stringify(d12ManagerConfig, null, 2),
+      );
+      const d12ManagerRes = checkOpenSourceGovernanceFiles(d12ManagerDir);
+      expect(d12ManagerRes.ok).toBe(false);
+      expect(
+        d12ManagerRes.violations.some((v: string) =>
+          v.includes("renovate.json must disable major updates for overrides in packageRules"),
+        ),
+      ).toBe(true);
+
+      // D12.3: Overrides disabling rule restricted by non-major update type
+      const d12UpdateTypeDir = join(tempDir, "probe-d12-renovate-updatetype");
+      createValidGovDir(d12UpdateTypeDir);
+      const d12UpdateTypeConfig = JSON.parse(
+        readFileSync(join(d12UpdateTypeDir, "renovate.json"), "utf-8"),
+      );
+      d12UpdateTypeConfig.packageRules[0].matchUpdateTypes = ["minor"];
+      writeFileSync(
+        join(d12UpdateTypeDir, "renovate.json"),
+        JSON.stringify(d12UpdateTypeConfig, null, 2),
+      );
+      const d12UpdateTypeRes = checkOpenSourceGovernanceFiles(d12UpdateTypeDir);
+      expect(d12UpdateTypeRes.ok).toBe(false);
+      expect(
+        d12UpdateTypeRes.violations.some((v: string) =>
+          v.includes("renovate.json must disable major updates for overrides in packageRules"),
+        ),
+      ).toBe(true);
+
+      // D12.4: Overrides disabling rule with file exclusions
+      const d12ExcludeFileDir = join(tempDir, "probe-d12-renovate-excludefile");
+      createValidGovDir(d12ExcludeFileDir);
+      const d12ExcludeFileConfig = JSON.parse(
+        readFileSync(join(d12ExcludeFileDir, "renovate.json"), "utf-8"),
+      );
+      d12ExcludeFileConfig.packageRules[0].excludeFileNames = ["apps/backend/package.json"];
+      writeFileSync(
+        join(d12ExcludeFileDir, "renovate.json"),
+        JSON.stringify(d12ExcludeFileConfig, null, 2),
+      );
+      const d12ExcludeFileRes = checkOpenSourceGovernanceFiles(d12ExcludeFileDir);
+      expect(d12ExcludeFileRes.ok).toBe(false);
+      expect(
+        d12ExcludeFileRes.violations.some((v: string) =>
+          v.includes("renovate.json must disable major updates for overrides in packageRules"),
+        ),
+      ).toBe(true);
+
+      // D12.5: Allowed unrestricted wildcard matchFileNames: ["**/*"] passes cleanly
+      const d12WildcardFileDir = join(tempDir, "probe-d12-renovate-wildcardfile");
+      createValidGovDir(d12WildcardFileDir);
+      const d12WildcardFileConfig = JSON.parse(
+        readFileSync(join(d12WildcardFileDir, "renovate.json"), "utf-8"),
+      );
+      d12WildcardFileConfig.packageRules[0].matchFileNames = ["**/*"];
+      writeFileSync(
+        join(d12WildcardFileDir, "renovate.json"),
+        JSON.stringify(d12WildcardFileConfig, null, 2),
+      );
+      expect(checkOpenSourceGovernanceFiles(d12WildcardFileDir).ok).toBe(true);
+
+      // --- D13: YAML scalar continuation and case sensitivity (Probes R14 & R15) ---
+      const d13BugTmpl = `---
+name: Bug Report
+about: Create a report to help us fix a defect
+title: "fix: "
+labels: needs-triage
+---
+## Source and problem
+## Outcome
+## Invariants
+## Acceptance criteria
+- [ ] AC1:
+## Boundary
+Depends on: None
+`;
+
+      // D13.1: Probe R14 - indented scalar continuation line alters the label value
+      const d13ContinuationDir = join(tempDir, "probe-r14-yaml-continuation");
+      createValidGovDir(d13ContinuationDir);
+      writeFileSync(
+        join(d13ContinuationDir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        d13BugTmpl.replace("labels: needs-triage", "labels: needs-triage\n  extra"),
+      );
+      const d13ContinuationRes = checkOpenSourceGovernanceFiles(d13ContinuationDir);
+      expect(d13ContinuationRes.ok).toBe(false);
+      expect(
+        d13ContinuationRes.violations.some((v: string) =>
+          v.includes(".github/ISSUE_TEMPLATE/bug_report.md must default labels to 'needs-triage'"),
+        ),
+      ).toBe(true);
+
+      // D13.2: Probe R15 - capitalized 'Labels:' key is rejected (YAML mapping keys are case-sensitive)
+      const d13CaseDir = join(tempDir, "probe-r15-yaml-case-sensitive");
+      createValidGovDir(d13CaseDir);
+      writeFileSync(
+        join(d13CaseDir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        d13BugTmpl.replace("labels: needs-triage", "Labels: needs-triage"),
+      );
+      const d13CaseRes = checkOpenSourceGovernanceFiles(d13CaseDir);
+      expect(d13CaseRes.ok).toBe(false);
+      expect(
+        d13CaseRes.violations.some((v: string) =>
+          v.includes(".github/ISSUE_TEMPLATE/bug_report.md must default labels to 'needs-triage'"),
+        ),
+      ).toBe(true);
+
+      // D13.3: Sequence item continuation line alters list item value
+      const d13SeqContinuationDir = join(tempDir, "probe-d13-seq-continuation");
+      createValidGovDir(d13SeqContinuationDir);
+      writeFileSync(
+        join(d13SeqContinuationDir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        d13BugTmpl.replace("labels: needs-triage", "labels:\n  - needs-triage\n    extra"),
+      );
+      const d13SeqContinuationRes = checkOpenSourceGovernanceFiles(d13SeqContinuationDir);
+      expect(d13SeqContinuationRes.ok).toBe(false);
+      expect(
+        d13SeqContinuationRes.violations.some((v: string) =>
+          v.includes(".github/ISSUE_TEMPLATE/bug_report.md must default labels to 'needs-triage'"),
+        ),
+      ).toBe(true);
+
+      // D13.4: Valid cases (exact scalar, bracketed sequence, block sequence) pass
+      const d13ValidDir = join(tempDir, "probe-d13-valid");
+      createValidGovDir(d13ValidDir);
+      writeFileSync(
+        join(d13ValidDir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        d13BugTmpl.replace("labels: needs-triage", "labels: needs-triage"),
+      );
+      expect(checkOpenSourceGovernanceFiles(d13ValidDir).ok).toBe(true);
+    });
   });
 });

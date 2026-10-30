@@ -320,16 +320,20 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
     /**
      * @param {string} filePath
      */
-    function getEffectiveEol(filePath) {
-      let eff = undefined;
+    function getEffectiveAttrs(filePath) {
+      let effText = undefined;
+      let effEol = undefined;
       for (const { pattern, attrs } of parsedRules) {
         if (matchGitAttrPattern(pattern, filePath)) {
+          if (attrs.has("text")) {
+            effText = attrs.get("text");
+          }
           if (attrs.has("eol")) {
-            eff = attrs.get("eol");
+            effEol = attrs.get("eol");
           }
         }
       }
-      return eff;
+      return { text: effText, eol: effEol };
     }
 
     const requiredFileClasses = [
@@ -340,7 +344,16 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
       "doc.md",
       "workflow.yml",
     ];
-    const failedFiles = requiredFileClasses.filter((f) => getEffectiveEol(f) !== "lf");
+    const failedFiles = requiredFileClasses.filter((f) => {
+      const { text, eol } = getEffectiveAttrs(f);
+      // In Git, LF line ending normalization requires:
+      // 1) text attribute enabled ('true' or 'auto')
+      // 2) eol attribute explicitly set to 'lf'
+      // If text is unset (false), binary, or unspecified, Git does not perform eol conversion.
+      const isTextEnabled = text === true || text === "auto";
+      const isEolLf = eol === "lf";
+      return !isTextEnabled || !isEolLf;
+    });
     if (failedFiles.length > 0) {
       violations.push(
         `.gitattributes does not effectively enforce eol=lf for required file classes (${failedFiles.join(", ")})`,
@@ -377,52 +390,102 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
        * @param {any} rule
        * @returns {boolean}
        */
-      function isUnrestrictedPackageMatch(rule) {
-        if (rule.matchPackageNames !== undefined && rule.matchPackageNames !== null) {
-          const names = Array.isArray(rule.matchPackageNames)
-            ? rule.matchPackageNames
-            : [rule.matchPackageNames];
-          if (names.length === 0) return false;
-          for (const n of names) {
-            if (n !== "*" && n !== ".*") return false;
+      function isUnrestrictedOverridesRule(rule) {
+        if (!rule || typeof rule !== "object") return false;
+
+        // Any non-empty exclude* property restricts the rule
+        for (const key of Object.keys(rule)) {
+          if (key.startsWith("exclude")) {
+            const val = rule[key];
+            if (val !== undefined && val !== null) {
+              if (Array.isArray(val) && val.length > 0) return false;
+              if (typeof val === "string" && val.length > 0) return false;
+              if (typeof val === "boolean" && val === true) return false;
+            }
           }
         }
-        if (rule.matchPackagePatterns !== undefined && rule.matchPackagePatterns !== null) {
-          const patterns = Array.isArray(rule.matchPackagePatterns)
-            ? rule.matchPackagePatterns
-            : [rule.matchPackagePatterns];
-          if (patterns.length === 0) return false;
-          for (const p of patterns) {
-            if (p !== ".*" && p !== "*") return false;
+
+        // Check package name / dep name matchers
+        for (const key of ["matchPackageNames", "matchDepNames"]) {
+          if (rule[key] !== undefined && rule[key] !== null) {
+            const items = Array.isArray(rule[key]) ? rule[key] : [rule[key]];
+            if (items.length === 0) return false;
+            for (const item of items) {
+              if (item !== "*" && item !== ".*") return false;
+            }
           }
         }
+
+        // Check package pattern / dep pattern matchers
+        for (const key of ["matchPackagePatterns", "matchDepPatterns"]) {
+          if (rule[key] !== undefined && rule[key] !== null) {
+            const items = Array.isArray(rule[key]) ? rule[key] : [rule[key]];
+            if (items.length === 0) return false;
+            for (const item of items) {
+              if (item !== "*" && item !== ".*") return false;
+            }
+          }
+        }
+
+        // Check package prefixes
         if (rule.matchPackagePrefixes !== undefined && rule.matchPackagePrefixes !== null) {
-          const prefixes = Array.isArray(rule.matchPackagePrefixes)
+          const items = Array.isArray(rule.matchPackagePrefixes)
             ? rule.matchPackagePrefixes
             : [rule.matchPackagePrefixes];
-          if (prefixes.length === 0) return false;
-          for (const p of prefixes) {
-            if (p !== "*") return false;
+          if (items.length === 0) return false;
+          for (const item of items) {
+            if (item !== "*") return false;
           }
         }
-        if (
-          rule.excludePackageNames &&
-          (!Array.isArray(rule.excludePackageNames) || rule.excludePackageNames.length > 0)
-        ) {
-          return false;
+
+        // Check file / path matchers
+        for (const key of ["matchFileNames", "matchPaths"]) {
+          if (rule[key] !== undefined && rule[key] !== null) {
+            const items = Array.isArray(rule[key]) ? rule[key] : [rule[key]];
+            if (items.length === 0) return false;
+            for (const item of items) {
+              if (item !== "*" && item !== "**/*") return false;
+            }
+          }
         }
-        if (
-          rule.excludePackagePatterns &&
-          (!Array.isArray(rule.excludePackagePatterns) || rule.excludePackagePatterns.length > 0)
-        ) {
-          return false;
+
+        // Check manager matchers
+        if (rule.matchManagers !== undefined && rule.matchManagers !== null) {
+          const items = Array.isArray(rule.matchManagers)
+            ? rule.matchManagers
+            : [rule.matchManagers];
+          if (items.length === 0) return false;
+          if (!items.includes("npm") && !items.includes("*")) return false;
         }
-        if (
-          rule.excludePackagePrefixes &&
-          (!Array.isArray(rule.excludePackagePrefixes) || rule.excludePackagePrefixes.length > 0)
-        ) {
-          return false;
+
+        // Check update type matchers
+        if (rule.matchUpdateTypes !== undefined && rule.matchUpdateTypes !== null) {
+          const items = Array.isArray(rule.matchUpdateTypes)
+            ? rule.matchUpdateTypes
+            : [rule.matchUpdateTypes];
+          if (items.length === 0) return false;
+          if (!items.includes("major") && !items.includes("*")) return false;
         }
+
+        // Fail closed on any other match* key (e.g. matchDatasources, matchCurrentVersion, etc.)
+        const knownAllowedMatchKeys = new Set([
+          "matchDepTypes",
+          "matchPackageNames",
+          "matchDepNames",
+          "matchPackagePatterns",
+          "matchDepPatterns",
+          "matchPackagePrefixes",
+          "matchFileNames",
+          "matchPaths",
+          "matchManagers",
+          "matchUpdateTypes",
+        ]);
+        for (const key of Object.keys(rule)) {
+          if (key.startsWith("match") && !knownAllowedMatchKeys.has(key)) {
+            return false;
+          }
+        }
+
         return true;
       }
 
@@ -448,7 +511,7 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
 
           if (
             explicitlyMatchesOverrides &&
-            isUnrestrictedPackageMatch(rule) &&
+            isUnrestrictedOverridesRule(rule) &&
             rule.major?.enabled === false
           ) {
             effectiveOverridesMajorDisabled = true;
@@ -532,67 +595,145 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
   function parseFrontMatterLabels(fmText) {
     const rawLines = fmText.split(/\r?\n/);
     let labelLineIndex = -1;
-    let rawValue = null;
+    let initialValue = null;
 
     for (let i = 0; i < rawLines.length; i++) {
       const stripped = stripYamlComment(rawLines[i]);
-      // Top-level YAML mapping key must start at column 0 (no leading whitespace)
-      const match = stripped.match(/^labels\s*:\s*(.*)$/i);
+      // Top-level YAML mapping key must start at column 0 (no leading whitespace),
+      // and mapping keys are strictly case-sensitive in YAML (must be lowercase 'labels').
+      const match = stripped.match(/^labels\s*:\s*(.*)$/);
       if (match) {
         labelLineIndex = i;
-        rawValue = match[1].trim();
+        initialValue = match[1].trim();
         break;
       }
     }
 
-    if (labelLineIndex === -1 || rawValue === null) {
+    if (labelLineIndex === -1 || initialValue === null) {
       return { found: false, labels: [] };
     }
 
     /** @type {string[]} */
     const labels = [];
 
-    if (rawValue.length > 0) {
-      if (rawValue.startsWith("{") && rawValue.endsWith("}")) {
-        // Mapping/dictionary is an invalid/unsupported form for labels
+    // Check for mapping/dict syntax e.g. `{ foo: bar }` which is invalid for labels
+    if (initialValue.startsWith("{")) {
+      return { found: true, labels: [] };
+    }
+
+    // Case 1: Flow sequence (bracketed list) e.g. `[needs-triage, bug]`
+    if (initialValue.startsWith("[")) {
+      let bracketContent = initialValue;
+      let currentIndex = labelLineIndex + 1;
+      while (!bracketContent.includes("]") && currentIndex < rawLines.length) {
+        const nextStripped = stripYamlComment(rawLines[currentIndex]);
+        if (/^\S/.test(nextStripped) && !nextStripped.startsWith("]")) {
+          // Unindented line before closing bracket means malformed flow sequence
+          return { found: true, labels: [] };
+        }
+        bracketContent += " " + nextStripped.trim();
+        currentIndex++;
+      }
+      const closeBracket = bracketContent.indexOf("]");
+      if (closeBracket === -1) {
         return { found: true, labels: [] };
       }
-      if (rawValue.startsWith("[") && rawValue.endsWith("]")) {
-        const items = rawValue.slice(1, -1).split(",");
-        for (const item of items) {
-          const cleaned = cleanYamlScalar(item);
-          if (cleaned.length > 0) {
-            labels.push(cleaned);
-          }
+      const inside = bracketContent.slice(1, closeBracket);
+      const items = inside.split(",");
+      for (const item of items) {
+        const cleaned = cleanYamlScalar(item);
+        if (cleaned.length > 0) {
+          labels.push(cleaned);
         }
+      }
+      return { found: true, labels };
+    }
+
+    // Case 2: Inline scalar e.g. `labels: needs-triage`
+    if (initialValue.length > 0) {
+      let scalarValue = initialValue;
+      // In YAML, any indented lines directly following a scalar key are continuation lines
+      let currentIndex = labelLineIndex + 1;
+      while (currentIndex < rawLines.length) {
+        const rawLine = rawLines[currentIndex];
+        const nextStripped = stripYamlComment(rawLine);
+        if (nextStripped.trim().length === 0) {
+          currentIndex++;
+          continue;
+        }
+        // If line starts at column 0 (non-whitespace), scalar has ended
+        if (/^\S/.test(nextStripped)) {
+          break;
+        }
+        // Indented continuation line modifies the scalar value
+        scalarValue += " " + nextStripped.trim();
+        currentIndex++;
+      }
+
+      const items = scalarValue.split(",");
+      for (const item of items) {
+        const cleaned = cleanYamlScalar(item);
+        if (cleaned.length > 0) {
+          labels.push(cleaned);
+        }
+      }
+      return { found: true, labels };
+    }
+
+    // Case 3: Block sequence or multiline block under `labels:`
+    let currentIndex = labelLineIndex + 1;
+    let currentItem = null;
+
+    while (currentIndex < rawLines.length) {
+      const rawLine = rawLines[currentIndex];
+      const stripped = stripYamlComment(rawLine);
+      if (stripped.trim().length === 0) {
+        currentIndex++;
+        continue;
+      }
+      // Top-level unindented line marks end of block
+      if (/^\S/.test(stripped)) {
+        break;
+      }
+
+      // Check if this is a sequence item `- ...`
+      const itemMatch = stripped.match(/^\s*-\s*(.*)$/);
+      if (itemMatch) {
+        if (currentItem !== null) {
+          const cleaned = cleanYamlScalar(currentItem);
+          if (cleaned.length > 0) labels.push(cleaned);
+        }
+        currentItem = itemMatch[1].trim();
+      } else if (currentItem !== null) {
+        // Indented continuation line for current sequence item
+        currentItem += " " + stripped.trim();
       } else {
-        const items = rawValue.split(",");
-        for (const item of items) {
-          const cleaned = cleanYamlScalar(item);
-          if (cleaned.length > 0) {
-            labels.push(cleaned);
+        // Indented line that is not a sequence item and has no item started:
+        // Multiline scalar or unsupported structure under `labels:`
+        let multilineScalar = stripped.trim();
+        currentIndex++;
+        while (currentIndex < rawLines.length) {
+          const nextStripped = stripYamlComment(rawLines[currentIndex]);
+          if (nextStripped.trim().length === 0) {
+            currentIndex++;
+            continue;
           }
+          if (/^\S/.test(nextStripped)) break;
+          multilineScalar += " " + nextStripped.trim();
+          currentIndex++;
         }
+        const cleaned = cleanYamlScalar(multilineScalar);
+        if (cleaned.length > 0) {
+          labels.push(cleaned);
+        }
+        return { found: true, labels };
       }
-    } else {
-      for (let i = labelLineIndex + 1; i < rawLines.length; i++) {
-        const stripped = stripYamlComment(rawLines[i]);
-        if (stripped.trim().length === 0) continue;
-        // Non-indented line is the next top-level mapping key
-        if (/^\S/.test(stripped)) {
-          break;
-        }
-        const itemMatch = stripped.match(/^\s*-\s*(.+)$/);
-        if (itemMatch) {
-          const cleaned = cleanYamlScalar(itemMatch[1]);
-          if (cleaned.length > 0) {
-            labels.push(cleaned);
-          }
-        } else {
-          // Indented line that is not a list item indicates unsupported/invalid structure
-          break;
-        }
-      }
+      currentIndex++;
+    }
+
+    if (currentItem !== null) {
+      const cleaned = cleanYamlScalar(currentItem);
+      if (cleaned.length > 0) labels.push(cleaned);
     }
 
     return { found: true, labels };
