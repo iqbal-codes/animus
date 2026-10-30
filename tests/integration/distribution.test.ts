@@ -2212,5 +2212,128 @@ Depends on: None
       writeFileSync(regexFile, JSON.stringify(regexConfig, null, 2));
       expect(checkOpenSourceGovernanceFiles(d20RegexDir).ok).toBe(true);
     });
+
+    test("AC4 / Review Dispositions (D21): checkOpenSourceGovernanceFiles enforces Renovate extglob and brace matching semantics against probes R26-R27", async () => {
+      const { checkOpenSourceGovernanceFiles } = await import(
+        // @ts-expect-error dynamic mjs import
+        "../../scripts/health/check-architecture.mjs"
+      );
+      const createValidGovDir = (dir: string) => {
+        mkdirSync(join(dir, ".github/ISSUE_TEMPLATE"), { recursive: true });
+        writeFileSync(
+          join(dir, "LICENSE"),
+          "MIT License\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nwithout restriction, including without limitation the rights to use, copy,\nwithout warranty of any kind.\n",
+        );
+        writeFileSync(
+          join(dir, "CONTRIBUTING.md"),
+          "# Contributing\n\nNode: 26.8.1\nBun: 1.4.2\n\nSetup:\nlabq-factory setup --local-only\n\nCheck commands:\nbun run check\nbun run test\nbun run verify\n\nBoundaries: @labq/contracts, @labq/client, apps/backend, apps/engine-host\n",
+        );
+        writeFileSync(join(dir, "SECURITY.md"), "# Security Policy\n");
+        writeFileSync(join(dir, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n");
+        writeFileSync(join(dir, ".gitattributes"), "* text=auto eol=lf\n");
+        writeFileSync(
+          join(dir, "renovate.json"),
+          JSON.stringify(
+            {
+              $schema: "https://docs.renovatebot.com/renovate-schema.json",
+              extends: ["config:recommended"],
+              lockFileMaintenance: { enabled: true },
+              osvVulnerabilityAlerts: true,
+              packageRules: [
+                {
+                  matchDepTypes: ["overrides"],
+                  major: { enabled: false },
+                },
+              ],
+            },
+            null,
+            2,
+          ),
+        );
+        writeFileSync(join(dir, ".github/pull_request_template.md"), "## Evidence\n");
+        writeFileSync(
+          join(dir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+          "---\nname: Bug Report\nabout: Report a defect\ntitle: 'fix: '\nlabels: needs-triage\n---\n\n## Source and problem\n## Outcome\n## Invariants\n## Acceptance criteria\n## Boundary\n## Depends on:\n",
+        );
+        writeFileSync(
+          join(dir, ".github/ISSUE_TEMPLATE/feature_request.md"),
+          "---\nname: Feature Request\nabout: Suggest an idea\ntitle: 'feat: '\nlabels: needs-triage\n---\n\n## Source and problem\n## Outcome\n## Invariants\n## Acceptance criteria\n## Boundary\n## Depends on:\n",
+        );
+      };
+
+      // D21.1: Probe R26 - extglob matcher 'matchDepTypes: ["@(overrides|dependencies)"]' re-enabling major updates fails closed
+      const d21R26Dir = join(tempDir, "probe-r26-extglob-overrides-enable");
+      createValidGovDir(d21R26Dir);
+      const r26File = join(d21R26Dir, "renovate.json");
+      const r26Config = JSON.parse(readFileSync(r26File, "utf8"));
+      r26Config.packageRules.push({
+        matchDepTypes: ["@(overrides|dependencies)"],
+        major: { enabled: true },
+      });
+      writeFileSync(r26File, JSON.stringify(r26Config, null, 2));
+      const d21R26Res = checkOpenSourceGovernanceFiles(d21R26Dir);
+      expect(d21R26Res.ok).toBe(false);
+      expect(
+        d21R26Res.violations.some((v: string) =>
+          v.includes("renovate.json must disable major updates for overrides in packageRules"),
+        ),
+      ).toBe(true);
+
+      // D21.2: Probe R27 - brace package matcher 'matchPackageNames: ["{vite,vitest}"]' re-enabling major updates fails closed
+      const d21R27Dir = join(tempDir, "probe-r27-brace-package-enable");
+      createValidGovDir(d21R27Dir);
+      const r27File = join(d21R27Dir, "renovate.json");
+      const r27Config = JSON.parse(readFileSync(r27File, "utf8"));
+      r27Config.packageRules.push({
+        matchDepTypes: ["overrides"],
+        matchPackageNames: ["{vite,vitest}"],
+        major: { enabled: true },
+      });
+      writeFileSync(r27File, JSON.stringify(r27Config, null, 2));
+      const d21R27Res = checkOpenSourceGovernanceFiles(d21R27Dir);
+      expect(d21R27Res.ok).toBe(false);
+      expect(
+        d21R27Res.violations.some((v: string) =>
+          v.includes("renovate.json must disable major updates for overrides in packageRules"),
+        ),
+      ).toBe(true);
+
+      // D21.3: Positive control - extglob non-overrides enabling rule passes cleanly
+      const d21NonOverridesDir = join(tempDir, "probe-d21-positive-extglob-non-overrides");
+      createValidGovDir(d21NonOverridesDir);
+      const nonOverridesFile = join(d21NonOverridesDir, "renovate.json");
+      const nonOverridesConfig = JSON.parse(readFileSync(nonOverridesFile, "utf8"));
+      nonOverridesConfig.packageRules.push({
+        matchDepTypes: ["@(devDependencies|optionalDependencies)"],
+        major: { enabled: true },
+      });
+      writeFileSync(nonOverridesFile, JSON.stringify(nonOverridesConfig, null, 2));
+      expect(checkOpenSourceGovernanceFiles(d21NonOverridesDir).ok).toBe(true);
+
+      // D21.4: Positive control - brace matcher for non-override package names passes cleanly
+      const d21NonOverridePkgsDir = join(tempDir, "probe-d21-positive-brace-non-overrides");
+      createValidGovDir(d21NonOverridePkgsDir);
+      const nonOverridePkgsFile = join(d21NonOverridePkgsDir, "renovate.json");
+      const nonOverridePkgsConfig = JSON.parse(readFileSync(nonOverridePkgsFile, "utf8"));
+      nonOverridePkgsConfig.packageRules.push({
+        matchDepTypes: ["overrides"],
+        matchPackageNames: ["{unrelated-alpha,unrelated-beta}"],
+        major: { enabled: true },
+      });
+      writeFileSync(nonOverridePkgsFile, JSON.stringify(nonOverridePkgsConfig, null, 2));
+      expect(checkOpenSourceGovernanceFiles(d21NonOverridePkgsDir).ok).toBe(true);
+
+      // D21.5: Positive control - negative extglob excluding overrides passes cleanly
+      const d21NegExtglobDir = join(tempDir, "probe-d21-positive-neg-extglob");
+      createValidGovDir(d21NegExtglobDir);
+      const negExtglobFile = join(d21NegExtglobDir, "renovate.json");
+      const negExtglobConfig = JSON.parse(readFileSync(negExtglobFile, "utf8"));
+      negExtglobConfig.packageRules.push({
+        matchDepTypes: ["!(overrides)"],
+        major: { enabled: true },
+      });
+      writeFileSync(negExtglobFile, JSON.stringify(negExtglobConfig, null, 2));
+      expect(checkOpenSourceGovernanceFiles(d21NegExtglobDir).ok).toBe(true);
+    });
   });
 });

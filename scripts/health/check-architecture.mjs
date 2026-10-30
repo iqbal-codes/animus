@@ -2,6 +2,16 @@ import { readdirSync, statSync, readFileSync, existsSync } from "node:fs";
 import { join, relative, basename, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
+
+/** @type {((pattern: string, options?: Record<string, unknown>) => (input: string) => boolean) | null} */
+let picomatchFn = null;
+try {
+  const req = createRequire(import.meta.url);
+  picomatchFn = req("picomatch");
+} catch {
+  // picomatch unavailable; fallback to built-in globToRegExp
+}
 
 const POSIX_CLASSES = {
   "[:alnum:]": "a-zA-Z0-9",
@@ -792,64 +802,208 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
       const testPackages = Array.from(new Set([...rootOverrides, ...canonicalPackages]));
 
       /**
+       * Expand braces in glob pattern (e.g. {vite,vitest} -> ['vite', 'vitest'])
+       * @param {string} pattern
+       * @returns {string[]}
+       */
+      function expandBraces(pattern) {
+        let start = -1;
+        let depth = 0;
+        for (let i = 0; i < pattern.length; i++) {
+          if (pattern[i] === "\\") {
+            i++;
+            continue;
+          }
+          if (pattern[i] === "{") {
+            if (depth === 0) start = i;
+            depth++;
+          } else if (pattern[i] === "}") {
+            depth--;
+            if (depth === 0 && start !== -1) {
+              const body = pattern.slice(start + 1, i);
+              let commaFound = false;
+              let subDepth = 0;
+              const parts = [];
+              let current = "";
+              for (let j = 0; j < body.length; j++) {
+                if (body[j] === "\\") {
+                  current += body[j] + (body[j + 1] || "");
+                  j++;
+                  continue;
+                }
+                if (body[j] === "{") subDepth++;
+                else if (body[j] === "}") subDepth--;
+                else if (body[j] === "," && subDepth === 0) {
+                  commaFound = true;
+                  parts.push(current);
+                  current = "";
+                  continue;
+                }
+                current += body[j];
+              }
+              parts.push(current);
+              if (commaFound) {
+                const prefix = pattern.slice(0, start);
+                const suffix = pattern.slice(i + 1);
+                const results = [];
+                for (const part of parts) {
+                  for (const expanded of expandBraces(prefix + part + suffix)) {
+                    results.push(expanded);
+                  }
+                }
+                return results;
+              }
+              start = -1;
+            }
+          }
+        }
+        return [pattern];
+      }
+
+      /**
+       * Compile a single glob (with braces already expanded) into regex pattern body
+       * @param {string} glob
+       * @returns {string}
+       */
+      function parseGlobTokens(glob) {
+        let i = 0;
+
+        function parseSub() {
+          let sub = "";
+          while (i < glob.length) {
+            if (glob.slice(i, i + 3) === "**/") {
+              sub += "(?:.*\\/)?";
+              i += 3;
+              continue;
+            }
+            if (glob.slice(i, i + 2) === "**") {
+              sub += ".*";
+              i += 2;
+              continue;
+            }
+
+            // Extglobs: @(, ?(, *(, +(, !(
+            if (i + 1 < glob.length && "@?*+!".includes(glob[i]) && glob[i + 1] === "(") {
+              const type = glob[i];
+              i += 2;
+              const alts = [];
+              let currentAlt = "";
+              let closed = false;
+              while (i < glob.length) {
+                if (glob[i] === ")") {
+                  closed = true;
+                  break;
+                }
+                if (glob[i] === "|") {
+                  alts.push(currentAlt);
+                  currentAlt = "";
+                  i++;
+                  continue;
+                }
+                if (i + 1 < glob.length && "@?*+!".includes(glob[i]) && glob[i + 1] === "(") {
+                  currentAlt += parseSub();
+                  continue;
+                }
+                if (glob[i] === "*") {
+                  currentAlt += "[^/]*";
+                  i++;
+                } else if (glob[i] === "?") {
+                  currentAlt += "[^/]";
+                  i++;
+                } else if (glob[i] === "\\") {
+                  i++;
+                  if (i < glob.length) {
+                    currentAlt += "\\" + glob[i];
+                    i++;
+                  }
+                } else if ("()+{}^$|.[].".includes(glob[i])) {
+                  currentAlt += "\\" + glob[i];
+                  i++;
+                } else {
+                  currentAlt += glob[i];
+                  i++;
+                }
+              }
+              alts.push(currentAlt);
+              if (closed) {
+                i++; // skip ')'
+              } else {
+                // Malformed / unclosed extglob fails closed
+                return "(?!)";
+              }
+
+              const altRegex = alts.join("|");
+              if (type === "@") {
+                sub += "(?:" + altRegex + ")";
+              } else if (type === "?") {
+                sub += "(?:" + altRegex + ")?";
+              } else if (type === "*") {
+                sub += "(?:" + altRegex + ")*";
+              } else if (type === "+") {
+                sub += "(?:" + altRegex + ")+";
+              } else if (type === "!") {
+                sub += "(?:(?!(?:" + altRegex + ")$)[^/]*)";
+              }
+              continue;
+            }
+
+            const ch = glob[i];
+            if (ch === "*") {
+              sub += ".*";
+              i++;
+            } else if (ch === "?") {
+              sub += ".";
+              i++;
+            } else if (ch === "[") {
+              let j = i + 1;
+              if (j < glob.length && (glob[j] === "!" || glob[j] === "^")) j++;
+              if (j < glob.length && glob[j] === "]") j++;
+              while (j < glob.length && glob[j] !== "]") j++;
+              if (j >= glob.length) {
+                sub += "\\[";
+                i++;
+              } else {
+                const classBody = glob.slice(i + 1, j);
+                if (classBody.startsWith("!")) {
+                  sub += "[^" + classBody.slice(1) + "]";
+                } else {
+                  sub += "[" + classBody + "]";
+                }
+                i = j + 1;
+              }
+            } else if (ch === "\\") {
+              i++;
+              if (i < glob.length) {
+                sub += "\\" + glob[i];
+                i++;
+              }
+            } else if ("()+{}^$|.".includes(ch)) {
+              sub += "\\" + ch;
+              i++;
+            } else {
+              sub += ch;
+              i++;
+            }
+          }
+          return sub;
+        }
+
+        return "^" + parseSub() + "$";
+      }
+
+      /**
        * Convert glob pattern to regular expression (compatible with minimatch / picomatch)
+       * Supports braces ({a,b}) and extglobs (@(a|b), ?(a|b), *(a|b), +(a|b), !(a|b)).
        * @param {string} glob
        * @returns {RegExp}
        */
       function globToRegExp(glob) {
-        let re = "^";
-        let i = 0;
-        while (i < glob.length) {
-          if (glob.slice(i, i + 3) === "**/") {
-            re += "(?:.*\\/)?";
-            i += 3;
-            continue;
-          }
-          const ch = glob[i];
-          if (ch === "*") {
-            if (glob[i + 1] === "*") {
-              re += ".*";
-              i += 2;
-              continue;
-            }
-            re += ".*";
-            i++;
-          } else if (ch === "?") {
-            re += ".";
-            i++;
-          } else if (ch === "[") {
-            let j = i + 1;
-            if (j < glob.length && (glob[j] === "!" || glob[j] === "^")) j++;
-            if (j < glob.length && glob[j] === "]") j++;
-            while (j < glob.length && glob[j] !== "]") j++;
-            if (j >= glob.length) {
-              re += "\\[";
-              i++;
-            } else {
-              const classBody = glob.slice(i + 1, j);
-              if (classBody.startsWith("!")) {
-                re += "[^" + classBody.slice(1) + "]";
-              } else {
-                re += "[" + classBody + "]";
-              }
-              i = j + 1;
-            }
-          } else if (ch === "\\") {
-            i++;
-            if (i < glob.length) {
-              re += "\\" + glob[i];
-              i++;
-            }
-          } else if ("()+{}^$|.".includes(ch)) {
-            re += "\\" + ch;
-            i++;
-          } else {
-            re += ch;
-            i++;
-          }
+        const expanded = expandBraces(glob);
+        if (expanded.length === 1) {
+          return new RegExp(parseGlobTokens(expanded[0]), "i");
         }
-        re += "$";
-        return new RegExp(re, "i");
+        const regexes = expanded.map((p) => parseGlobTokens(p).slice(1, -1));
+        return new RegExp("^(?:" + regexes.join("|") + ")$", "i");
       }
 
       /**
@@ -874,6 +1028,14 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
           } catch {
             return false;
           }
+        }
+
+        if (picomatchFn) {
+          try {
+            const isMatch = picomatchFn(pat, { dot: true, nocase: true });
+            const res = isMatch(input);
+            return isNeg ? !res : res;
+          } catch {}
         }
 
         try {
