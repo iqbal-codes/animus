@@ -2,16 +2,6 @@ import { readdirSync, statSync, readFileSync, existsSync } from "node:fs";
 import { join, relative, basename, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { createRequire } from "node:module";
-
-/** @type {((pattern: string, options?: Record<string, unknown>) => (input: string) => boolean) | null} */
-let picomatchFn = null;
-try {
-  const req = createRequire(import.meta.url);
-  picomatchFn = req("picomatch");
-} catch {
-  // picomatch unavailable; fallback to built-in globToRegExp
-}
 
 const POSIX_CLASSES = {
   "[:alnum:]": "a-zA-Z0-9",
@@ -802,7 +792,7 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
       const testPackages = Array.from(new Set([...rootOverrides, ...canonicalPackages]));
 
       /**
-       * Expand braces in glob pattern (e.g. {vite,vitest} -> ['vite', 'vitest'])
+       * Expand braces in glob pattern (e.g. {vite,vitest} -> ['vite', 'vitest'] or v{a..z}te)
        * @param {string} pattern
        * @returns {string[]}
        */
@@ -821,28 +811,71 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
             depth--;
             if (depth === 0 && start !== -1) {
               const body = pattern.slice(start + 1, i);
-              let commaFound = false;
-              let subDepth = 0;
-              const parts = [];
-              let current = "";
-              for (let j = 0; j < body.length; j++) {
-                if (body[j] === "\\") {
-                  current += body[j] + (body[j + 1] || "");
-                  j++;
-                  continue;
+              let parts = null;
+
+              const rangeMatch = body.match(/^([a-zA-Z0-9]+)\.\.([a-zA-Z0-9]+)(?:\.\.(-?\d+))?$/);
+              if (rangeMatch) {
+                const from = rangeMatch[1];
+                const to = rangeMatch[2];
+                const stepVal = rangeMatch[3] ? parseInt(rangeMatch[3], 10) : null;
+
+                if (/^[0-9]+$/.test(from) && /^[0-9]+$/.test(to)) {
+                  const startNum = parseInt(from, 10);
+                  const endNum = parseInt(to, 10);
+                  const step = stepVal !== null ? Math.abs(stepVal) : 1;
+                  if (step > 0) {
+                    parts = [];
+                    if (startNum <= endNum) {
+                      for (let n = startNum; n <= endNum; n += step) parts.push(String(n));
+                    } else {
+                      for (let n = startNum; n >= endNum; n -= step) parts.push(String(n));
+                    }
+                  }
+                } else if (from.length === 1 && to.length === 1) {
+                  const startCode = from.charCodeAt(0);
+                  const endCode = to.charCodeAt(0);
+                  const step = stepVal !== null ? Math.abs(stepVal) : 1;
+                  if (step > 0) {
+                    parts = [];
+                    if (startCode <= endCode) {
+                      for (let c = startCode; c <= endCode; c += step)
+                        parts.push(String.fromCharCode(c));
+                    } else {
+                      for (let c = startCode; c >= endCode; c -= step)
+                        parts.push(String.fromCharCode(c));
+                    }
+                  }
                 }
-                if (body[j] === "{") subDepth++;
-                else if (body[j] === "}") subDepth--;
-                else if (body[j] === "," && subDepth === 0) {
-                  commaFound = true;
-                  parts.push(current);
-                  current = "";
-                  continue;
-                }
-                current += body[j];
               }
-              parts.push(current);
-              if (commaFound) {
+
+              if (!parts) {
+                let commaFound = false;
+                let subDepth = 0;
+                const commaParts = [];
+                let current = "";
+                for (let j = 0; j < body.length; j++) {
+                  if (body[j] === "\\") {
+                    current += body[j] + (body[j + 1] || "");
+                    j++;
+                    continue;
+                  }
+                  if (body[j] === "{") subDepth++;
+                  else if (body[j] === "}") subDepth--;
+                  else if (body[j] === "," && subDepth === 0) {
+                    commaFound = true;
+                    commaParts.push(current);
+                    current = "";
+                    continue;
+                  }
+                  current += body[j];
+                }
+                commaParts.push(current);
+                if (commaFound) {
+                  parts = commaParts;
+                }
+              }
+
+              if (parts) {
                 const prefix = pattern.slice(0, start);
                 const suffix = pattern.slice(i + 1);
                 const results = [];
@@ -853,6 +886,7 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
                 }
                 return results;
               }
+
               start = -1;
             }
           }
@@ -868,18 +902,12 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
       function parseGlobTokens(glob) {
         let i = 0;
 
-        function parseSub() {
-          let sub = "";
+        /** @param {boolean} [until] */
+        function parseTokens(until) {
+          let res = "";
           while (i < glob.length) {
-            if (glob.slice(i, i + 3) === "**/") {
-              sub += "(?:.*\\/)?";
-              i += 3;
-              continue;
-            }
-            if (glob.slice(i, i + 2) === "**") {
-              sub += ".*";
-              i += 2;
-              continue;
+            if (until && (glob[i] === ")" || glob[i] === "|")) {
+              break;
             }
 
             // Extglobs: @(, ?(, *(, +(, !(
@@ -887,72 +915,59 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
               const type = glob[i];
               i += 2;
               const alts = [];
-              let currentAlt = "";
-              let closed = false;
-              while (i < glob.length) {
-                if (glob[i] === ")") {
-                  closed = true;
+              let malformed = false;
+              while (true) {
+                const alt = parseTokens(true);
+                alts.push(alt);
+                if (i >= glob.length) {
+                  malformed = true;
                   break;
                 }
                 if (glob[i] === "|") {
-                  alts.push(currentAlt);
-                  currentAlt = "";
                   i++;
                   continue;
                 }
-                if (i + 1 < glob.length && "@?*+!".includes(glob[i]) && glob[i + 1] === "(") {
-                  currentAlt += parseSub();
-                  continue;
-                }
-                if (glob[i] === "*") {
-                  currentAlt += "[^/]*";
+                if (glob[i] === ")") {
                   i++;
-                } else if (glob[i] === "?") {
-                  currentAlt += "[^/]";
-                  i++;
-                } else if (glob[i] === "\\") {
-                  i++;
-                  if (i < glob.length) {
-                    currentAlt += "\\" + glob[i];
-                    i++;
-                  }
-                } else if ("()+{}^$|.[].".includes(glob[i])) {
-                  currentAlt += "\\" + glob[i];
-                  i++;
-                } else {
-                  currentAlt += glob[i];
-                  i++;
+                  break;
                 }
               }
-              alts.push(currentAlt);
-              if (closed) {
-                i++; // skip ')'
-              } else {
-                // Malformed / unclosed extglob fails closed
+              if (malformed) {
                 return "(?!)";
               }
 
               const altRegex = alts.join("|");
               if (type === "@") {
-                sub += "(?:" + altRegex + ")";
+                res += "(?:" + altRegex + ")";
               } else if (type === "?") {
-                sub += "(?:" + altRegex + ")?";
+                res += "(?:" + altRegex + ")?";
               } else if (type === "*") {
-                sub += "(?:" + altRegex + ")*";
+                res += "(?:" + altRegex + ")*";
               } else if (type === "+") {
-                sub += "(?:" + altRegex + ")+";
+                res += "(?:" + altRegex + ")+";
               } else if (type === "!") {
-                sub += "(?:(?!(?:" + altRegex + ")$)[^/]*)";
+                res += "(?:(?!(?:" + altRegex + ")$)[^/]*)";
               }
+              continue;
+            }
+
+            if (glob.slice(i, i + 3) === "**/") {
+              res += "(?:.*\\/)?";
+              i += 3;
+              continue;
+            }
+            if (glob.slice(i, i + 2) === "**") {
+              res += ".*";
+              i += 2;
               continue;
             }
 
             const ch = glob[i];
             if (ch === "*") {
-              sub += ".*";
+              res += "[^/]*";
               i++;
             } else if (ch === "?") {
-              sub += ".";
+              res += "[^/]";
               i++;
             } else if (ch === "[") {
               let j = i + 1;
@@ -960,49 +975,49 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
               if (j < glob.length && glob[j] === "]") j++;
               while (j < glob.length && glob[j] !== "]") j++;
               if (j >= glob.length) {
-                sub += "\\[";
+                res += "\\[";
                 i++;
               } else {
                 const classBody = glob.slice(i + 1, j);
                 if (classBody.startsWith("!")) {
-                  sub += "[^" + classBody.slice(1) + "]";
+                  res += "[^" + classBody.slice(1) + "]";
                 } else {
-                  sub += "[" + classBody + "]";
+                  res += "[" + classBody + "]";
                 }
                 i = j + 1;
               }
             } else if (ch === "\\") {
               i++;
               if (i < glob.length) {
-                sub += "\\" + glob[i];
+                res += "\\" + glob[i];
                 i++;
               }
             } else if ("()+{}^$|.".includes(ch)) {
-              sub += "\\" + ch;
+              res += "\\" + ch;
               i++;
             } else {
-              sub += ch;
+              res += ch;
               i++;
             }
           }
-          return sub;
+          return res;
         }
 
-        return "^" + parseSub() + "$";
+        return parseTokens(false);
       }
 
       /**
        * Convert glob pattern to regular expression (compatible with minimatch / picomatch)
-       * Supports braces ({a,b}) and extglobs (@(a|b), ?(a|b), *(a|b), +(a|b), !(a|b)).
+       * Supports braces ({a,b}, {a..z}) and extglobs (@(a|b), ?(a|b), *(a|b), +(a|b), !(a|b)).
        * @param {string} glob
        * @returns {RegExp}
        */
       function globToRegExp(glob) {
         const expanded = expandBraces(glob);
         if (expanded.length === 1) {
-          return new RegExp(parseGlobTokens(expanded[0]), "i");
+          return new RegExp("^" + parseGlobTokens(expanded[0]) + "$", "i");
         }
-        const regexes = expanded.map((p) => parseGlobTokens(p).slice(1, -1));
+        const regexes = expanded.map((p) => parseGlobTokens(p));
         return new RegExp("^(?:" + regexes.join("|") + ")$", "i");
       }
 
@@ -1028,14 +1043,6 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
           } catch {
             return false;
           }
-        }
-
-        if (picomatchFn) {
-          try {
-            const isMatch = picomatchFn(pat, { dot: true, nocase: true });
-            const res = isMatch(input);
-            return isNeg ? !res : res;
-          } catch {}
         }
 
         try {
@@ -1303,15 +1310,84 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
   }
 
   /**
+   * Decode double-quoted scalar escapes according to YAML 1.2
+   * @param {string} str
+   * @returns {string}
+   */
+  function unescapeYamlDoubleQuoted(str) {
+    let res = "";
+    for (let i = 0; i < str.length; i++) {
+      if (str[i] === "\\" && i + 1 < str.length) {
+        i++;
+        const next = str[i];
+        if (
+          next === "x" &&
+          i + 2 < str.length &&
+          /^[0-9a-fA-F]{2}$/.test(str.slice(i + 1, i + 3))
+        ) {
+          res += String.fromCharCode(parseInt(str.slice(i + 1, i + 3), 16));
+          i += 2;
+        } else if (
+          next === "u" &&
+          i + 4 < str.length &&
+          /^[0-9a-fA-F]{4}$/.test(str.slice(i + 1, i + 5))
+        ) {
+          res += String.fromCharCode(parseInt(str.slice(i + 1, i + 5), 16));
+          i += 4;
+        } else if (
+          next === "U" &&
+          i + 8 < str.length &&
+          /^[0-9a-fA-F]{8}$/.test(str.slice(i + 1, i + 9))
+        ) {
+          res += String.fromCodePoint(parseInt(str.slice(i + 1, i + 9), 16));
+          i += 8;
+        } else if (next === "n") {
+          res += "\n";
+        } else if (next === "r") {
+          res += "\r";
+        } else if (next === "t") {
+          res += "\t";
+        } else if (next === "b") {
+          res += "\b";
+        } else if (next === "f") {
+          res += "\f";
+        } else if (next === "v") {
+          res += "\v";
+        } else if (next === "0") {
+          res += "\0";
+        } else if (next === "e") {
+          res += "\x1b";
+        } else if (next === '"') {
+          res += '"';
+        } else if (next === "\\") {
+          res += "\\";
+        } else if (next === "/") {
+          res += "/";
+        } else if (next === " ") {
+          res += " ";
+        } else {
+          res += next;
+        }
+      } else {
+        res += str[i];
+      }
+    }
+    return res;
+  }
+
+  /**
    * @param {string} str
    * @returns {string}
    */
   function cleanYamlScalar(str) {
     let s = str.trim();
-    if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
-      s = s.slice(1, -1).trim();
+    if (s.startsWith('"') && s.endsWith('"') && s.length >= 2) {
+      return unescapeYamlDoubleQuoted(s.slice(1, -1));
     }
-    return s;
+    if (s.startsWith("'") && s.endsWith("'") && s.length >= 2) {
+      return s.slice(1, -1).replace(/''/g, "'");
+    }
+    return s.replace(/\\ /g, " ");
   }
 
   /**
@@ -1640,6 +1716,8 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
         continue;
       }
 
+      /** @type {string[] | null} */
+      let rubyLabelList = null;
       if (existsSync("/usr/bin/ruby")) {
         try {
           const rubyOut = execFileSync(
@@ -1654,13 +1732,22 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
           const rubyData = JSON.parse(rubyOut);
           if (rubyData && typeof rubyData === "object") {
             const rubyLabels = rubyData.labels;
-            const rubyLabelList = Array.isArray(rubyLabels)
+            rubyLabelList = Array.isArray(rubyLabels)
               ? rubyLabels.map(String)
               : typeof rubyLabels === "string"
                 ? rubyLabels.split(",").map((s) => s.trim())
                 : [];
             if (!rubyLabelList.includes("needs-triage")) {
-              violations.push(`${rel} must default labels to 'needs-triage'`);
+              const msg = `${rel} must default labels to 'needs-triage'`;
+              if (!violations.includes(msg)) {
+                violations.push(msg);
+              }
+            }
+            if (rubyLabelList.some((l) => l.trim().toLowerCase() === "ready-for-agent")) {
+              const msg = `${rel} must NEVER default labels to 'ready-for-agent'`;
+              if (!violations.includes(msg)) {
+                violations.push(msg);
+              }
             }
           }
         } catch {
@@ -1684,8 +1771,17 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
         }
       }
 
-      if (parsed.labels.includes("ready-for-agent") || /ready-for-agent/i.test(tmplContent)) {
-        violations.push(`${rel} must NEVER default labels to 'ready-for-agent'`);
+      const hasForbiddenLabel =
+        parsed.labels.some((l) => l.trim().toLowerCase() === "ready-for-agent") ||
+        (rubyLabelList &&
+          rubyLabelList.some((l) => l.trim().toLowerCase() === "ready-for-agent")) ||
+        /ready-for-agent/i.test(tmplContent);
+
+      if (hasForbiddenLabel) {
+        const msg = `${rel} must NEVER default labels to 'ready-for-agent'`;
+        if (!violations.includes(msg)) {
+          violations.push(msg);
+        }
       }
 
       for (const section of canonicalSections) {

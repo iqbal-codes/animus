@@ -7,11 +7,13 @@ import {
   chmodSync,
   statSync,
   rmSync,
+  copyFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { execFileSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 
 describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollback (Issue #65)", () => {
   let tempDir: string;
@@ -2334,6 +2336,233 @@ Depends on: None
       });
       writeFileSync(negExtglobFile, JSON.stringify(negExtglobConfig, null, 2));
       expect(checkOpenSourceGovernanceFiles(d21NegExtglobDir).ok).toBe(true);
+    });
+
+    test("AC4 / Review Dispositions (D22-D23): checkOpenSourceGovernanceFiles enforces decoded YAML front-matter labels against escaped ready-for-agent injections, and deterministic isolated matching for nested extglobs and brace ranges without ambient dependencies", async () => {
+      const { checkOpenSourceGovernanceFiles } = await import(
+        // @ts-expect-error dynamic mjs import
+        "../../scripts/health/check-architecture.mjs"
+      );
+
+      const createValidGovDir = (dir: string) => {
+        mkdirSync(join(dir, ".github/ISSUE_TEMPLATE"), { recursive: true });
+        writeFileSync(
+          join(dir, "LICENSE"),
+          "MIT License\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nwithout restriction, including without limitation the rights to use, copy,\nwithout warranty of any kind.\n",
+        );
+        writeFileSync(
+          join(dir, "CONTRIBUTING.md"),
+          "# Contributing\n\nNode: 26.8.1\nBun: 1.4.2\n\nSetup:\nlabq-factory setup --local-only\n\nCheck commands:\nbun run check\nbun run test\nbun run verify\n\nBoundaries: @labq/contracts, @labq/client, apps/backend, apps/engine-host\n",
+        );
+        writeFileSync(join(dir, "SECURITY.md"), "# Security Policy\n");
+        writeFileSync(join(dir, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n");
+        writeFileSync(join(dir, ".gitattributes"), "* text=auto eol=lf\n");
+        writeFileSync(
+          join(dir, "renovate.json"),
+          JSON.stringify(
+            {
+              $schema: "https://docs.renovatebot.com/renovate-schema.json",
+              extends: ["config:recommended"],
+              lockFileMaintenance: { enabled: true },
+              osvVulnerabilityAlerts: true,
+              packageRules: [
+                {
+                  matchDepTypes: ["overrides"],
+                  major: { enabled: false },
+                },
+              ],
+            },
+            null,
+            2,
+          ),
+        );
+        writeFileSync(join(dir, ".github/pull_request_template.md"), "## Evidence\n");
+        writeFileSync(
+          join(dir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+          "---\nname: Bug Report\nabout: Report a defect\ntitle: 'fix: '\nlabels: needs-triage\n---\n\n## Source and problem\n## Outcome\n## Invariants\n## Acceptance criteria\n## Boundary\n## Depends on:\n",
+        );
+        writeFileSync(
+          join(dir, ".github/ISSUE_TEMPLATE/feature_request.md"),
+          "---\nname: Feature Request\nabout: Suggest an idea\ntitle: 'feat: '\nlabels: needs-triage\n---\n\n## Source and problem\n## Outcome\n## Invariants\n## Acceptance criteria\n## Boundary\n## Depends on:\n",
+        );
+      };
+
+      // D22.1: Unicode-escaped label injection 'labels: [needs-triage, "ready-for-\\u0061gent"]' fails closed
+      const d22UnicodeDir = join(tempDir, "probe-d22-unicode-escaped-forbidden-label");
+      createValidGovDir(d22UnicodeDir);
+      const bugTmplPath = join(d22UnicodeDir, ".github/ISSUE_TEMPLATE/bug_report.md");
+      const baseContent = readFileSync(bugTmplPath, "utf8");
+      writeFileSync(
+        bugTmplPath,
+        baseContent.replace(
+          "labels: needs-triage",
+          'labels: [needs-triage, "ready-for-\\u0061gent"]',
+        ),
+      );
+      const d22UnicodeRes = checkOpenSourceGovernanceFiles(d22UnicodeDir);
+      expect(d22UnicodeRes.ok).toBe(false);
+      expect(
+        d22UnicodeRes.violations.some((v: string) =>
+          v.includes("must NEVER default labels to 'ready-for-agent'"),
+        ),
+      ).toBe(true);
+
+      // D22.2: Hex-escaped label injection 'labels: [needs-triage, "ready-for-\\x61gent"]' fails closed
+      const d22HexDir = join(tempDir, "probe-d22-hex-escaped-forbidden-label");
+      createValidGovDir(d22HexDir);
+      writeFileSync(
+        join(d22HexDir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        baseContent.replace(
+          "labels: needs-triage",
+          'labels: [needs-triage, "ready-for-\\x61gent"]',
+        ),
+      );
+      const d22HexRes = checkOpenSourceGovernanceFiles(d22HexDir);
+      expect(d22HexRes.ok).toBe(false);
+      expect(
+        d22HexRes.violations.some((v: string) =>
+          v.includes("must NEVER default labels to 'ready-for-agent'"),
+        ),
+      ).toBe(true);
+
+      // D22.3: Escaped scalar label injection 'labels: "ready-for-\\u0061gent"' fails closed
+      const d22ScalarDir = join(tempDir, "probe-d22-scalar-escaped-forbidden-label");
+      createValidGovDir(d22ScalarDir);
+      writeFileSync(
+        join(d22ScalarDir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        baseContent.replace("labels: needs-triage", 'labels: "ready-for-\\u0061gent"'),
+      );
+      const d22ScalarRes = checkOpenSourceGovernanceFiles(d22ScalarDir);
+      expect(d22ScalarRes.ok).toBe(false);
+      expect(
+        d22ScalarRes.violations.some((v: string) =>
+          v.includes("must NEVER default labels to 'ready-for-agent'"),
+        ),
+      ).toBe(true);
+
+      // D22.4: Valid label list control 'labels: [needs-triage, bug]' passes cleanly
+      const d22ValidDir = join(tempDir, "probe-d22-valid-label-list");
+      createValidGovDir(d22ValidDir);
+      writeFileSync(
+        join(d22ValidDir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        baseContent.replace("labels: needs-triage", "labels: [needs-triage, bug]"),
+      );
+      expect(checkOpenSourceGovernanceFiles(d22ValidDir).ok).toBe(true);
+
+      // D23: Isolated checker execution (copied into an isolated temp directory without ancestor node_modules)
+      const isolatedDir = join(tempDir, "isolated-checker-env");
+      mkdirSync(isolatedDir, { recursive: true });
+      const srcChecker = join(process.cwd(), "scripts/health/check-architecture.mjs");
+      const isolatedCheckerPath = join(isolatedDir, "check-architecture.mjs");
+      copyFileSync(srcChecker, isolatedCheckerPath);
+
+      const isolatedModule = await import(pathToFileURL(isolatedCheckerPath).href);
+      const isolatedChecker = isolatedModule.checkOpenSourceGovernanceFiles;
+
+      // D23.1: Probe R28 - nested extglob '@(overrides|@(dependencies|peerDependencies))' fails closed in isolated environment
+      const d23NestedDir = join(tempDir, "probe-d23-nested-extglob-isolated");
+      createValidGovDir(d23NestedDir);
+      const nestedRenovate = JSON.parse(readFileSync(join(d23NestedDir, "renovate.json"), "utf8"));
+      nestedRenovate.packageRules.push({
+        matchDepTypes: ["@(overrides|@(dependencies|peerDependencies))"],
+        major: { enabled: true },
+      });
+      writeFileSync(join(d23NestedDir, "renovate.json"), JSON.stringify(nestedRenovate, null, 2));
+      const d23NestedRes = isolatedChecker(d23NestedDir);
+      expect(d23NestedRes.ok).toBe(false);
+      expect(
+        d23NestedRes.violations.some((v: string) =>
+          v.includes("renovate.json must disable major updates for overrides in packageRules"),
+        ),
+      ).toBe(true);
+
+      // D23.2: Probe R29 - nested extglob '@(@(overrides|dependencies)|peerDependencies)' fails closed in isolated environment
+      const d23Nested2Dir = join(tempDir, "probe-d23-nested-extglob-2-isolated");
+      createValidGovDir(d23Nested2Dir);
+      const nested2Renovate = JSON.parse(
+        readFileSync(join(d23Nested2Dir, "renovate.json"), "utf8"),
+      );
+      nested2Renovate.packageRules.push({
+        matchDepTypes: ["@(@(overrides|dependencies)|peerDependencies)"],
+        major: { enabled: true },
+      });
+      writeFileSync(join(d23Nested2Dir, "renovate.json"), JSON.stringify(nested2Renovate, null, 2));
+      const d23Nested2Res = isolatedChecker(d23Nested2Dir);
+      expect(d23Nested2Res.ok).toBe(false);
+      expect(
+        d23Nested2Res.violations.some((v: string) =>
+          v.includes("renovate.json must disable major updates for overrides in packageRules"),
+        ),
+      ).toBe(true);
+
+      // D23.3: Probe R30 - range brace package matcher 'v{a..z}te' fails closed in isolated environment
+      const d23RangeDir = join(tempDir, "probe-d23-range-brace-isolated");
+      createValidGovDir(d23RangeDir);
+      const rangeRenovate = JSON.parse(readFileSync(join(d23RangeDir, "renovate.json"), "utf8"));
+      rangeRenovate.packageRules.push({
+        matchDepTypes: ["overrides"],
+        matchPackageNames: ["v{a..z}te"],
+        major: { enabled: true },
+      });
+      writeFileSync(join(d23RangeDir, "renovate.json"), JSON.stringify(rangeRenovate, null, 2));
+      const d23RangeRes = isolatedChecker(d23RangeDir);
+      expect(d23RangeRes.ok).toBe(false);
+      expect(
+        d23RangeRes.violations.some((v: string) =>
+          v.includes("renovate.json must disable major updates for overrides in packageRules"),
+        ),
+      ).toBe(true);
+
+      // D23.4: Permitted non-overrides control in isolated environment passes cleanly
+      const d23PermittedDir = join(tempDir, "probe-d23-permitted-isolated");
+      createValidGovDir(d23PermittedDir);
+      const permittedRenovate = JSON.parse(
+        readFileSync(join(d23PermittedDir, "renovate.json"), "utf8"),
+      );
+      permittedRenovate.packageRules.push({
+        matchDepTypes: ["devDependencies"],
+        major: { enabled: true },
+      });
+      writeFileSync(
+        join(d23PermittedDir, "renovate.json"),
+        JSON.stringify(permittedRenovate, null, 2),
+      );
+      expect(isolatedChecker(d23PermittedDir).ok).toBe(true);
+
+      // D23.5: Non-matching range brace control in isolated environment passes cleanly
+      const d23NonMatchRangeDir = join(tempDir, "probe-d23-nonmatch-range-isolated");
+      createValidGovDir(d23NonMatchRangeDir);
+      const nonMatchRenovate = JSON.parse(
+        readFileSync(join(d23NonMatchRangeDir, "renovate.json"), "utf8"),
+      );
+      nonMatchRenovate.packageRules.push({
+        matchDepTypes: ["overrides"],
+        matchPackageNames: ["pkg-{0..9}"],
+        major: { enabled: true },
+      });
+      writeFileSync(
+        join(d23NonMatchRangeDir, "renovate.json"),
+        JSON.stringify(nonMatchRenovate, null, 2),
+      );
+      expect(isolatedChecker(d23NonMatchRangeDir).ok).toBe(true);
+
+      // D23.6: Rule order control - subsequent unrestricted override rule disabling major overrides succeeds
+      const d23OrderDir = join(tempDir, "probe-d23-order-isolated");
+      createValidGovDir(d23OrderDir);
+      const orderRenovate = JSON.parse(readFileSync(join(d23OrderDir, "renovate.json"), "utf8"));
+      orderRenovate.packageRules.push(
+        {
+          matchDepTypes: ["overrides"],
+          matchPackageNames: ["vite"],
+          major: { enabled: true },
+        },
+        {
+          matchDepTypes: ["overrides"],
+          major: { enabled: false },
+        },
+      );
+      writeFileSync(join(d23OrderDir, "renovate.json"), JSON.stringify(orderRenovate, null, 2));
+      expect(isolatedChecker(d23OrderDir).ok).toBe(true);
     });
   });
 });
