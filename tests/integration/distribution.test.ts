@@ -1871,16 +1871,14 @@ Depends on: None
       writeFileSync(join(d16R19Dir, "apps/backend/src/main.ts"), "const x = 1;\r\n");
 
       // Verify with real Git attributes that text is unset
-      try {
-        execFileSync("git", ["init", "-q"], { cwd: d16R19Dir });
-        execFileSync("git", ["config", "core.autocrlf", "false"], { cwd: d16R19Dir });
-        const gitAttr = execFileSync(
-          "git",
-          ["check-attr", "text", "eol", "--", "apps/backend/src/main.ts"],
-          { cwd: d16R19Dir, encoding: "utf8" },
-        );
-        expect(gitAttr).toContain("apps/backend/src/main.ts: text: unset");
-      } catch {}
+      execFileSync("git", ["init", "-q"], { cwd: d16R19Dir });
+      execFileSync("git", ["config", "core.autocrlf", "false"], { cwd: d16R19Dir });
+      const gitAttr16 = execFileSync(
+        "git",
+        ["check-attr", "text", "eol", "--", "apps/backend/src/main.ts"],
+        { cwd: d16R19Dir, encoding: "utf8" },
+      );
+      expect(gitAttr16).toContain("apps/backend/src/main.ts: text: unset");
 
       const d16R19Res = checkOpenSourceGovernanceFiles(d16R19Dir);
       expect(d16R19Res.ok).toBe(false);
@@ -1923,16 +1921,14 @@ Depends on: None
       mkdirSync(join(d17R20Dir, "apps/backend/src"), { recursive: true });
       writeFileSync(join(d17R20Dir, "apps/backend/src/main.ts"), "const x = 1;\r\n");
 
-      try {
-        execFileSync("git", ["init", "-q"], { cwd: d17R20Dir });
-        execFileSync("git", ["config", "core.autocrlf", "false"], { cwd: d17R20Dir });
-        const gitAttr = execFileSync(
-          "git",
-          ["check-attr", "text", "eol", "--", "apps/backend/src/main.ts"],
-          { cwd: d17R20Dir, encoding: "utf8" },
-        );
-        expect(gitAttr).toContain("apps/backend/src/main.ts: text: unset");
-      } catch {}
+      execFileSync("git", ["init", "-q"], { cwd: d17R20Dir });
+      execFileSync("git", ["config", "core.autocrlf", "false"], { cwd: d17R20Dir });
+      const gitAttr20 = execFileSync(
+        "git",
+        ["check-attr", "text", "eol", "--", "apps/backend/src/main.ts"],
+        { cwd: d17R20Dir, encoding: "utf8" },
+      );
+      expect(gitAttr20).toContain("apps/backend/src/main.ts: text: unset");
 
       const d17R20Res = checkOpenSourceGovernanceFiles(d17R20Dir);
       expect(d17R20Res.ok).toBe(false);
@@ -1952,16 +1948,14 @@ Depends on: None
       mkdirSync(join(d17R21Dir, "apps/backend/src"), { recursive: true });
       writeFileSync(join(d17R21Dir, "apps/backend/src/main.ts"), "const x = 1;\r\n");
 
-      try {
-        execFileSync("git", ["init", "-q"], { cwd: d17R21Dir });
-        execFileSync("git", ["config", "core.autocrlf", "false"], { cwd: d17R21Dir });
-        const gitAttr = execFileSync(
-          "git",
-          ["check-attr", "text", "eol", "--", "apps/backend/src/main.ts"],
-          { cwd: d17R21Dir, encoding: "utf8" },
-        );
-        expect(gitAttr).toContain("apps/backend/src/main.ts: text: unset");
-      } catch {}
+      execFileSync("git", ["init", "-q"], { cwd: d17R21Dir });
+      execFileSync("git", ["config", "core.autocrlf", "false"], { cwd: d17R21Dir });
+      const gitAttr21 = execFileSync(
+        "git",
+        ["check-attr", "text", "eol", "--", "apps/backend/src/main.ts"],
+        { cwd: d17R21Dir, encoding: "utf8" },
+      );
+      expect(gitAttr21).toContain("apps/backend/src/main.ts: text: unset");
 
       const d17R21Res = checkOpenSourceGovernanceFiles(d17R21Dir);
       expect(d17R21Res.ok).toBe(false);
@@ -2055,6 +2049,168 @@ Depends on: None
         d16BugTmpl.replace("labels: needs-triage", "labels: [\n  needs-triage,\n  bug\n]"),
       );
       expect(checkOpenSourceGovernanceFiles(d18ValidMultilineDir).ok).toBe(true);
+    });
+
+    test("AC4 / Review Dispositions (D19-D20): checkOpenSourceGovernanceFiles enforces duplicate key rejection in front matter and Renovate glob/regex matching semantics against probes R23-R25", async () => {
+      const { checkOpenSourceGovernanceFiles } = await import(
+        // @ts-expect-error dynamic mjs import
+        "../../scripts/health/check-architecture.mjs"
+      );
+      const createValidGovDir = (dir: string) => {
+        mkdirSync(join(dir, ".github/ISSUE_TEMPLATE"), { recursive: true });
+        writeFileSync(
+          join(dir, "LICENSE"),
+          "MIT License\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nwithout restriction, including without limitation the rights to use, copy,\nwithout warranty of any kind.\n",
+        );
+        writeFileSync(
+          join(dir, "CONTRIBUTING.md"),
+          "# Contributing\n\nNode: 26.8.1\nBun: 1.4.2\n\nSetup:\nlabq-factory setup --local-only\n\nCheck commands:\nbun run check\nbun run test\nbun run verify\n\nBoundaries: @labq/contracts, @labq/client, apps/backend, apps/engine-host\n",
+        );
+        writeFileSync(join(dir, "SECURITY.md"), "# Security Policy\n");
+        writeFileSync(join(dir, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n");
+        writeFileSync(join(dir, ".gitattributes"), "* text=auto eol=lf\n");
+        writeFileSync(
+          join(dir, "renovate.json"),
+          JSON.stringify(
+            {
+              $schema: "https://docs.renovatebot.com/renovate-schema.json",
+              extends: ["config:recommended"],
+              lockFileMaintenance: { enabled: true },
+              osvVulnerabilityAlerts: true,
+              packageRules: [
+                {
+                  matchDepTypes: ["overrides"],
+                  major: { enabled: false },
+                },
+              ],
+            },
+            null,
+            2,
+          ),
+        );
+        writeFileSync(join(dir, ".github/pull_request_template.md"), "## Evidence\n");
+        writeFileSync(
+          join(dir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+          "---\nname: Bug Report\nabout: Report a defect\ntitle: 'fix: '\nlabels: needs-triage\n---\n\n## Source and problem\n## Outcome\n## Invariants\n## Acceptance criteria\n## Boundary\n## Depends on:\n",
+        );
+        writeFileSync(
+          join(dir, ".github/ISSUE_TEMPLATE/feature_request.md"),
+          "---\nname: Feature Request\nabout: Suggest an idea\ntitle: 'feat: '\nlabels: needs-triage\n---\n\n## Source and problem\n## Outcome\n## Invariants\n## Acceptance criteria\n## Boundary\n## Depends on:\n",
+        );
+      };
+
+      const bugTmpl =
+        "---\nname: Bug Report\nabout: Report a defect\ntitle: 'fix: '\nlabels: needs-triage\n---\n\n## Source and problem\n## Outcome\n## Invariants\n## Acceptance criteria\n## Boundary\n## Depends on:\n";
+
+      // --- D19: Duplicate YAML front matter keys bypass label validation (Probe R23) ---
+      // D19.1: Probe R23 - duplicate 'labels:' key where first is needs-triage and second is bug
+      const d19R23Dir = join(tempDir, "probe-r23-duplicate-label-key");
+      createValidGovDir(d19R23Dir);
+      writeFileSync(
+        join(d19R23Dir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        bugTmpl.replace("labels: needs-triage", "labels: needs-triage\nlabels: bug"),
+      );
+      const d19R23Res = checkOpenSourceGovernanceFiles(d19R23Dir);
+      expect(d19R23Res.ok).toBe(false);
+      expect(
+        d19R23Res.violations.some((v: string) =>
+          v.includes("front matter contains duplicate key: 'labels'"),
+        ),
+      ).toBe(true);
+      expect(
+        d19R23Res.violations.some((v: string) =>
+          v.includes(".github/ISSUE_TEMPLATE/bug_report.md must default labels to 'needs-triage'"),
+        ),
+      ).toBe(true);
+
+      // D19.2: Duplicate top-level key for other mapping field (e.g. duplicate 'name:')
+      const d19DupNameDir = join(tempDir, "probe-d19-duplicate-name-key");
+      createValidGovDir(d19DupNameDir);
+      writeFileSync(
+        join(d19DupNameDir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        bugTmpl.replace("name: Bug Report", "name: Bug Report\nname: Defect"),
+      );
+      const d19DupNameRes = checkOpenSourceGovernanceFiles(d19DupNameDir);
+      expect(d19DupNameRes.ok).toBe(false);
+      expect(
+        d19DupNameRes.violations.some((v: string) =>
+          v.includes("front matter contains duplicate key: 'name'"),
+        ),
+      ).toBe(true);
+
+      // D19.3: Positive controls: single valid scalar and block list labels
+      const d19ScalarDir = join(tempDir, "probe-d19-positive-scalar");
+      createValidGovDir(d19ScalarDir);
+      expect(checkOpenSourceGovernanceFiles(d19ScalarDir).ok).toBe(true);
+
+      const d19BlockListDir = join(tempDir, "probe-d19-positive-block-list");
+      createValidGovDir(d19BlockListDir);
+      writeFileSync(
+        join(d19BlockListDir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        bugTmpl.replace("labels: needs-triage", "labels:\n  - needs-triage\n  - bug"),
+      );
+      expect(checkOpenSourceGovernanceFiles(d19BlockListDir).ok).toBe(true);
+
+      // --- D20: Renovate string-matching semantics (Probes R24 & R25) ---
+      // D20.1: Probe R24 - glob matcher 'matchDepTypes: ["over*"]' re-enabling major updates
+      const d20R24Dir = join(tempDir, "probe-r24-overrides-glob-enable");
+      createValidGovDir(d20R24Dir);
+      const r24File = join(d20R24Dir, "renovate.json");
+      const r24Config = JSON.parse(readFileSync(r24File, "utf8"));
+      r24Config.packageRules.push({ matchDepTypes: ["over*"], major: { enabled: true } });
+      writeFileSync(r24File, JSON.stringify(r24Config, null, 2));
+      const d20R24Res = checkOpenSourceGovernanceFiles(d20R24Dir);
+      expect(d20R24Res.ok).toBe(false);
+      expect(
+        d20R24Res.violations.some((v: string) =>
+          v.includes("renovate.json must disable major updates for overrides in packageRules"),
+        ),
+      ).toBe(true);
+
+      // D20.2: Probe R25 - restricted dot-star glob 'matchPackageNames: [".*"]' does not cover non-dot packages
+      const d20R25Dir = join(tempDir, "probe-r25-restricted-dot-star");
+      createValidGovDir(d20R25Dir);
+      const r25File = join(d20R25Dir, "renovate.json");
+      const r25Config = JSON.parse(readFileSync(r25File, "utf8"));
+      r25Config.packageRules[0].matchPackageNames = [".*"];
+      writeFileSync(r25File, JSON.stringify(r25Config, null, 2));
+      const d20R25Res = checkOpenSourceGovernanceFiles(d20R25Dir);
+      expect(d20R25Res.ok).toBe(false);
+      expect(
+        d20R25Res.violations.some((v: string) =>
+          v.includes("renovate.json must disable major updates for overrides in packageRules"),
+        ),
+      ).toBe(true);
+
+      // D20.3: Positive control - appending non-overrides enabling rule passes cleanly
+      const d20NonOverridesDir = join(tempDir, "probe-d20-positive-non-overrides");
+      createValidGovDir(d20NonOverridesDir);
+      const nonOverridesFile = join(d20NonOverridesDir, "renovate.json");
+      const nonOverridesConfig = JSON.parse(readFileSync(nonOverridesFile, "utf8"));
+      nonOverridesConfig.packageRules.push({
+        matchDepTypes: ["devDependencies"],
+        major: { enabled: true },
+      });
+      writeFileSync(nonOverridesFile, JSON.stringify(nonOverridesConfig, null, 2));
+      expect(checkOpenSourceGovernanceFiles(d20NonOverridesDir).ok).toBe(true);
+
+      // D20.4: Positive control - unrestricted wildcard 'matchPackageNames: ["*"]' passes cleanly
+      const d20WildcardDir = join(tempDir, "probe-d20-positive-wildcard");
+      createValidGovDir(d20WildcardDir);
+      const wildcardFile = join(d20WildcardDir, "renovate.json");
+      const wildcardConfig = JSON.parse(readFileSync(wildcardFile, "utf8"));
+      wildcardConfig.packageRules[0].matchPackageNames = ["*"];
+      writeFileSync(wildcardFile, JSON.stringify(wildcardConfig, null, 2));
+      expect(checkOpenSourceGovernanceFiles(d20WildcardDir).ok).toBe(true);
+
+      // D20.5: Positive control - unrestricted regex 'matchPackageNames: ["/^.*$/"]' passes cleanly
+      const d20RegexDir = join(tempDir, "probe-d20-positive-regex");
+      createValidGovDir(d20RegexDir);
+      const regexFile = join(d20RegexDir, "renovate.json");
+      const regexConfig = JSON.parse(readFileSync(regexFile, "utf8"));
+      regexConfig.packageRules[0].matchPackageNames = ["/^.*$/"];
+      writeFileSync(regexFile, JSON.stringify(regexConfig, null, 2));
+      expect(checkOpenSourceGovernanceFiles(d20RegexDir).ok).toBe(true);
     });
   });
 });

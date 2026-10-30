@@ -770,6 +770,149 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
       }
       const packageRules = parsed.packageRules;
 
+      const canonicalPackages = [
+        "lodash",
+        "vite",
+        "vitest",
+        "express",
+        "@types/node",
+        "@voidzero-dev/vite-plus-core",
+        "react",
+      ];
+      let rootOverrides = ["vite", "vitest"];
+      try {
+        const pkgJsonPath = join(repoRoot, "package.json");
+        if (existsSync(pkgJsonPath)) {
+          const rootPkg = JSON.parse(readFileSync(pkgJsonPath, "utf-8"));
+          if (rootPkg.overrides && typeof rootPkg.overrides === "object") {
+            rootOverrides = Object.keys(rootPkg.overrides);
+          }
+        }
+      } catch {}
+      const testPackages = Array.from(new Set([...rootOverrides, ...canonicalPackages]));
+
+      /**
+       * Convert glob pattern to regular expression (compatible with minimatch / picomatch)
+       * @param {string} glob
+       * @returns {RegExp}
+       */
+      function globToRegExp(glob) {
+        let re = "^";
+        let i = 0;
+        while (i < glob.length) {
+          if (glob.slice(i, i + 3) === "**/") {
+            re += "(?:.*\\/)?";
+            i += 3;
+            continue;
+          }
+          const ch = glob[i];
+          if (ch === "*") {
+            if (glob[i + 1] === "*") {
+              re += ".*";
+              i += 2;
+              continue;
+            }
+            re += ".*";
+            i++;
+          } else if (ch === "?") {
+            re += ".";
+            i++;
+          } else if (ch === "[") {
+            let j = i + 1;
+            if (j < glob.length && (glob[j] === "!" || glob[j] === "^")) j++;
+            if (j < glob.length && glob[j] === "]") j++;
+            while (j < glob.length && glob[j] !== "]") j++;
+            if (j >= glob.length) {
+              re += "\\[";
+              i++;
+            } else {
+              const classBody = glob.slice(i + 1, j);
+              if (classBody.startsWith("!")) {
+                re += "[^" + classBody.slice(1) + "]";
+              } else {
+                re += "[" + classBody + "]";
+              }
+              i = j + 1;
+            }
+          } else if (ch === "\\") {
+            i++;
+            if (i < glob.length) {
+              re += "\\" + glob[i];
+              i++;
+            }
+          } else if ("()+{}^$|.".includes(ch)) {
+            re += "\\" + ch;
+            i++;
+          } else {
+            re += ch;
+            i++;
+          }
+        }
+        re += "$";
+        return new RegExp(re, "i");
+      }
+
+      /**
+       * Match single string against Renovate pattern (regex /.../ or glob)
+       * @param {string} input
+       * @param {string} pattern
+       * @returns {boolean}
+       */
+      function matchRenovatePattern(input, pattern) {
+        if (pattern === "*" || pattern === "**" || pattern === "**/*") return true;
+
+        const isNeg = pattern.startsWith("!");
+        const pat = isNeg ? pattern.slice(1) : pattern;
+
+        if (pat.startsWith("/") && /\/i?$/.test(pat)) {
+          const ignoreCase = pat.endsWith("i");
+          const regexBody = pat.slice(1, ignoreCase ? -2 : -1);
+          try {
+            const reg = new RegExp(regexBody, ignoreCase ? "i" : "");
+            const res = reg.test(input);
+            return isNeg ? !res : res;
+          } catch {
+            return false;
+          }
+        }
+
+        try {
+          const res = globToRegExp(pat).test(input);
+          return isNeg ? !res : res;
+        } catch {
+          return false;
+        }
+      }
+
+      /**
+       * Match single string against Renovate pattern list
+       * @param {string} input
+       * @param {any} patterns
+       * @returns {boolean}
+       */
+      function matchRenovatePatternList(input, patterns) {
+        if (patterns === undefined || patterns === null) return true;
+        const list = Array.isArray(patterns) ? patterns : [patterns];
+        if (list.length === 0) return false;
+
+        const positive = list.filter((p) => !String(p).startsWith("!"));
+        const negative = list.filter((p) => String(p).startsWith("!"));
+
+        if (positive.length > 0) {
+          if (!positive.some((p) => matchRenovatePattern(input, String(p)))) {
+            return false;
+          }
+        }
+
+        if (negative.length > 0) {
+          if (!negative.every((p) => matchRenovatePattern(input, String(p)))) {
+            return false;
+          }
+        }
+
+        return true;
+      }
+
       /**
        * @param {any} rule
        * @returns {boolean}
@@ -778,8 +921,7 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
         if (rule.matchDepTypes === undefined || rule.matchDepTypes === null) {
           return true;
         }
-        const types = Array.isArray(rule.matchDepTypes) ? rule.matchDepTypes : [rule.matchDepTypes];
-        return types.includes("overrides") || types.includes("*");
+        return matchRenovatePatternList("overrides", rule.matchDepTypes);
       }
 
       /**
@@ -802,23 +944,17 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
         }
 
         // Check package name / dep name matchers
-        for (const key of ["matchPackageNames", "matchDepNames"]) {
+        for (const key of [
+          "matchPackageNames",
+          "matchDepNames",
+          "matchPackagePatterns",
+          "matchDepPatterns",
+        ]) {
           if (rule[key] !== undefined && rule[key] !== null) {
             const items = Array.isArray(rule[key]) ? rule[key] : [rule[key]];
             if (items.length === 0) return false;
-            for (const item of items) {
-              if (item !== "*" && item !== ".*") return false;
-            }
-          }
-        }
-
-        // Check package pattern / dep pattern matchers
-        for (const key of ["matchPackagePatterns", "matchDepPatterns"]) {
-          if (rule[key] !== undefined && rule[key] !== null) {
-            const items = Array.isArray(rule[key]) ? rule[key] : [rule[key]];
-            if (items.length === 0) return false;
-            for (const item of items) {
-              if (item !== "*" && item !== ".*") return false;
+            if (!testPackages.every((pkg) => matchRenovatePatternList(pkg, items))) {
+              return false;
             }
           }
         }
@@ -829,8 +965,8 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
             ? rule.matchPackagePrefixes
             : [rule.matchPackagePrefixes];
           if (items.length === 0) return false;
-          for (const item of items) {
-            if (item !== "*") return false;
+          if (!testPackages.every((pkg) => matchRenovatePatternList(pkg, items))) {
+            return false;
           }
         }
 
@@ -839,8 +975,8 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
           if (rule[key] !== undefined && rule[key] !== null) {
             const items = Array.isArray(rule[key]) ? rule[key] : [rule[key]];
             if (items.length === 0) return false;
-            for (const item of items) {
-              if (item !== "*" && item !== "**/*") return false;
+            if (!matchRenovatePatternList("package.json", items)) {
+              return false;
             }
           }
         }
@@ -851,7 +987,7 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
             ? rule.matchManagers
             : [rule.matchManagers];
           if (items.length === 0) return false;
-          if (!items.includes("npm") && !items.includes("*")) return false;
+          if (!matchRenovatePatternList("npm", items)) return false;
         }
 
         // Check update type matchers
@@ -860,7 +996,7 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
             ? rule.matchUpdateTypes
             : [rule.matchUpdateTypes];
           if (items.length === 0) return false;
-          if (!items.includes("major") && !items.includes("*")) return false;
+          if (!matchRenovatePatternList("major", items)) return false;
         }
 
         // Fail closed on any other match* key (e.g. matchDatasources, matchCurrentVersion, etc.)
@@ -897,24 +1033,46 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
             continue;
           }
 
-          const matchTypes = Array.isArray(rule.matchDepTypes)
-            ? rule.matchDepTypes
-            : rule.matchDepTypes
-              ? [rule.matchDepTypes]
-              : [];
-          const explicitlyMatchesOverrides =
-            matchTypes.includes("overrides") || matchTypes.includes("*");
-
-          if (
-            explicitlyMatchesOverrides &&
-            isUnrestrictedOverridesRule(rule) &&
-            rule.major?.enabled === false
-          ) {
+          if (isUnrestrictedOverridesRule(rule) && rule.major?.enabled === false) {
             effectiveOverridesMajorDisabled = true;
             hasContradictoryOverridesRule = false;
           } else if (rule.major?.enabled === true) {
-            effectiveOverridesMajorDisabled = false;
-            hasContradictoryOverridesRule = true;
+            const matchesFile =
+              rule.matchFileNames === undefined && rule.matchPaths === undefined
+                ? true
+                : matchRenovatePatternList("package.json", rule.matchFileNames || rule.matchPaths);
+            const matchesManager =
+              rule.matchManagers === undefined
+                ? true
+                : matchRenovatePatternList("npm", rule.matchManagers);
+            const matchesUpdateType =
+              rule.matchUpdateTypes === undefined
+                ? true
+                : matchRenovatePatternList("major", rule.matchUpdateTypes);
+
+            const hasPackageMatcher =
+              rule.matchPackageNames !== undefined ||
+              rule.matchDepNames !== undefined ||
+              rule.matchPackagePatterns !== undefined ||
+              rule.matchDepPatterns !== undefined ||
+              rule.matchPackagePrefixes !== undefined;
+
+            const matchesAnyOverridePkg = !hasPackageMatcher
+              ? true
+              : testPackages.some((pkg) => {
+                  const items =
+                    rule.matchPackageNames ||
+                    rule.matchDepNames ||
+                    rule.matchPackagePatterns ||
+                    rule.matchDepPatterns ||
+                    rule.matchPackagePrefixes;
+                  return matchRenovatePatternList(pkg, items);
+                });
+
+            if (matchesFile && matchesManager && matchesUpdateType && matchesAnyOverridePkg) {
+              effectiveOverridesMajorDisabled = false;
+              hasContradictoryOverridesRule = true;
+            }
           }
         }
       }
@@ -991,35 +1149,120 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
 
   /**
    * @param {string} fmText
-   * @returns {{ found: boolean, labels: string[] }}
+   * @returns {{ found: boolean, labels: string[], duplicateKeys: string[], invalid: boolean }}
    */
   function parseFrontMatterLabels(fmText) {
     const rawLines = fmText.split(/\r?\n/);
-    let labelLineIndex = -1;
-    let initialValue = null;
+    const seenKeys = new Map();
+    /** @type {string[]} */
+    const duplicateKeys = [];
+    /** @type {{ key: string, lineIndex: number, initialValue: string, lines: string[] }[]} */
+    const sections = [];
+
+    let currentSection = null;
+    let insideFlowSeq = false;
 
     for (let i = 0; i < rawLines.length; i++) {
-      const stripped = stripYamlComment(rawLines[i]);
-      // Top-level YAML mapping key must start at column 0 (no leading whitespace),
-      // and mapping keys are strictly case-sensitive in YAML (must be lowercase 'labels').
-      const match = stripped.match(/^labels\s*:\s*(.*)$/);
-      if (match) {
-        labelLineIndex = i;
-        initialValue = match[1].trim();
-        break;
+      const rawLine = rawLines[i];
+      const stripped = stripYamlComment(rawLine);
+      if (stripped.trim().length === 0) {
+        if (currentSection) {
+          currentSection.lines.push(rawLine);
+        }
+        continue;
+      }
+
+      if (!insideFlowSeq && /^\S/.test(stripped)) {
+        const match = stripped.match(/^([a-zA-Z0-9_-]+)\s*:(.*)$/);
+        if (!match) {
+          return { found: false, labels: [], duplicateKeys, invalid: true };
+        }
+        const key = match[1];
+        const initialValue = match[2].trim();
+        const count = seenKeys.get(key) || 0;
+        if (count > 0 && !duplicateKeys.includes(key)) {
+          duplicateKeys.push(key);
+        }
+        seenKeys.set(key, count + 1);
+
+        currentSection = {
+          key,
+          lineIndex: i,
+          initialValue,
+          lines: [rawLine],
+        };
+        sections.push(currentSection);
+
+        if (initialValue.startsWith("[")) {
+          let inSingle = false;
+          let inDouble = false;
+          let escaped = false;
+          let closed = false;
+          for (let j = 0; j < initialValue.length; j++) {
+            const ch = initialValue[j];
+            if (escaped) {
+              escaped = false;
+              continue;
+            }
+            if (ch === "\\" && inDouble) {
+              escaped = true;
+              continue;
+            }
+            if (ch === "'" && !inDouble) inSingle = !inSingle;
+            else if (ch === '"' && !inSingle) inDouble = !inDouble;
+            else if (ch === "]" && !inSingle && !inDouble) {
+              closed = true;
+              break;
+            }
+          }
+          insideFlowSeq = !closed;
+        }
+      } else {
+        if (!currentSection) {
+          return { found: false, labels: [], duplicateKeys, invalid: true };
+        }
+        currentSection.lines.push(rawLine);
+
+        if (insideFlowSeq) {
+          let inSingle = false;
+          let inDouble = false;
+          let escaped = false;
+          for (let j = 0; j < stripped.length; j++) {
+            const ch = stripped[j];
+            if (escaped) {
+              escaped = false;
+              continue;
+            }
+            if (ch === "\\" && inDouble) {
+              escaped = true;
+              continue;
+            }
+            if (ch === "'" && !inDouble) inSingle = !inSingle;
+            else if (ch === '"' && !inSingle) inDouble = !inDouble;
+            else if (ch === "]" && !inSingle && !inDouble) {
+              insideFlowSeq = false;
+              break;
+            }
+          }
+        }
       }
     }
 
-    if (labelLineIndex === -1 || initialValue === null) {
-      return { found: false, labels: [] };
+    const labelSections = sections.filter((s) => s.key === "labels");
+    if (labelSections.length === 0) {
+      return { found: false, labels: [], duplicateKeys, invalid: false };
     }
+
+    // Last key wins in YAML mapping; duplicateKeys records if duplicates exist
+    const targetSection = labelSections[labelSections.length - 1];
+    const { initialValue, lines: sectionLines } = targetSection;
 
     /** @type {string[]} */
     const labels = [];
 
     // Check for mapping/dict syntax e.g. `{ foo: bar }` which is invalid for labels
     if (initialValue.startsWith("{")) {
-      return { found: true, labels: [] };
+      return { found: true, labels: [], duplicateKeys, invalid: false };
     }
 
     // Case 1: Flow sequence (bracketed list) e.g. `[needs-triage, bug]`
@@ -1031,19 +1274,14 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
       let closed = false;
       let trailing = "";
 
-      for (let lineIdx = labelLineIndex; lineIdx < rawLines.length; lineIdx++) {
-        const rawLine = rawLines[lineIdx];
+      for (let lineIdx = 0; lineIdx < sectionLines.length; lineIdx++) {
+        const rawLine = sectionLines[lineIdx];
         const stripped = stripYamlComment(rawLine);
-        const lineText = lineIdx === labelLineIndex ? initialValue : stripped;
+        const lineText = lineIdx === 0 ? initialValue : stripped;
 
-        if (
-          lineIdx > labelLineIndex &&
-          /^\S/.test(stripped) &&
-          !stripped.trim().startsWith("]") &&
-          !closed
-        ) {
+        if (lineIdx > 0 && /^\S/.test(stripped) && !stripped.trim().startsWith("]") && !closed) {
           // Unindented line before closing bracket means malformed flow sequence
-          return { found: true, labels: [] };
+          return { found: true, labels: [], duplicateKeys, invalid: false };
         }
 
         for (let j = 0; j < lineText.length; j++) {
@@ -1083,7 +1321,7 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
 
         if (closed) {
           if (trailing.length > 0) {
-            return { found: true, labels: [] };
+            return { found: true, labels: [], duplicateKeys, invalid: false };
           }
           break;
         }
@@ -1091,14 +1329,14 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
       }
 
       if (!closed || insideSingle || insideDouble) {
-        return { found: true, labels: [] };
+        return { found: true, labels: [], duplicateKeys, invalid: false };
       }
 
       const openIdx = content.indexOf("[");
-      if (openIdx === -1) return { found: true, labels: [] };
+      if (openIdx === -1) return { found: true, labels: [], duplicateKeys, invalid: false };
       const inside = content.slice(openIdx + 1).trim();
       if (inside.length === 0) {
-        return { found: true, labels: [] };
+        return { found: true, labels: [], duplicateKeys, invalid: false };
       }
 
       let curItem = "";
@@ -1131,7 +1369,7 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
         if (ch === "," && !insideSingle && !insideDouble) {
           const cleaned = cleanYamlScalar(curItem);
           if (cleaned.length === 0) {
-            return { found: true, labels: [] };
+            return { found: true, labels: [], duplicateKeys, invalid: false };
           }
           labels.push(cleaned);
           curItem = "";
@@ -1141,39 +1379,30 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
       }
 
       if (insideSingle || insideDouble) {
-        return { found: true, labels: [] };
+        return { found: true, labels: [], duplicateKeys, invalid: false };
       }
 
       const lastCleaned = cleanYamlScalar(curItem);
       if (lastCleaned.length === 0 && labels.length > 0 && curItem.trim().length > 0) {
-        return { found: true, labels: [] };
+        return { found: true, labels: [], duplicateKeys, invalid: false };
       }
       if (lastCleaned.length > 0) {
         labels.push(lastCleaned);
       }
 
-      return { found: true, labels };
+      return { found: true, labels, duplicateKeys, invalid: false };
     }
 
     // Case 2: Inline scalar e.g. `labels: needs-triage`
     if (initialValue.length > 0) {
       let scalarValue = initialValue;
-      // In YAML, any indented lines directly following a scalar key are continuation lines
-      let currentIndex = labelLineIndex + 1;
-      while (currentIndex < rawLines.length) {
-        const rawLine = rawLines[currentIndex];
+      for (let lineIdx = 1; lineIdx < sectionLines.length; lineIdx++) {
+        const rawLine = sectionLines[lineIdx];
         const nextStripped = stripYamlComment(rawLine);
         if (nextStripped.trim().length === 0) {
-          currentIndex++;
           continue;
         }
-        // If line starts at column 0 (non-whitespace), scalar has ended
-        if (/^\S/.test(nextStripped)) {
-          break;
-        }
-        // Indented continuation line modifies the scalar value
         scalarValue += " " + nextStripped.trim();
-        currentIndex++;
       }
 
       const items = scalarValue.split(",");
@@ -1183,23 +1412,17 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
           labels.push(cleaned);
         }
       }
-      return { found: true, labels };
+      return { found: true, labels, duplicateKeys, invalid: false };
     }
 
     // Case 3: Block sequence or multiline block under `labels:`
-    let currentIndex = labelLineIndex + 1;
     let currentItem = null;
 
-    while (currentIndex < rawLines.length) {
-      const rawLine = rawLines[currentIndex];
+    for (let lineIdx = 1; lineIdx < sectionLines.length; lineIdx++) {
+      const rawLine = sectionLines[lineIdx];
       const stripped = stripYamlComment(rawLine);
       if (stripped.trim().length === 0) {
-        currentIndex++;
         continue;
-      }
-      // Top-level unindented line marks end of block
-      if (/^\S/.test(stripped)) {
-        break;
       }
 
       // Check if this is a sequence item `- ...`
@@ -1215,26 +1438,22 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
         currentItem += " " + stripped.trim();
       } else {
         // Indented line that is not a sequence item and has no item started:
-        // Multiline scalar or unsupported structure under `labels:`
+        // Multiline scalar under `labels:`
         let multilineScalar = stripped.trim();
-        currentIndex++;
-        while (currentIndex < rawLines.length) {
-          const nextStripped = stripYamlComment(rawLines[currentIndex]);
-          if (nextStripped.trim().length === 0) {
-            currentIndex++;
-            continue;
+        lineIdx++;
+        while (lineIdx < sectionLines.length) {
+          const nextStripped = stripYamlComment(sectionLines[lineIdx]);
+          if (nextStripped.trim().length > 0) {
+            multilineScalar += " " + nextStripped.trim();
           }
-          if (/^\S/.test(nextStripped)) break;
-          multilineScalar += " " + nextStripped.trim();
-          currentIndex++;
+          lineIdx++;
         }
         const cleaned = cleanYamlScalar(multilineScalar);
         if (cleaned.length > 0) {
           labels.push(cleaned);
         }
-        return { found: true, labels };
+        return { found: true, labels, duplicateKeys, invalid: false };
       }
-      currentIndex++;
     }
 
     if (currentItem !== null) {
@@ -1242,7 +1461,7 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
       if (cleaned.length > 0) labels.push(cleaned);
     }
 
-    return { found: true, labels };
+    return { found: true, labels, duplicateKeys, invalid: false };
   }
 
   for (const { rel, label } of issueTemplates) {
@@ -1256,18 +1475,46 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
 
       if (existsSync("/usr/bin/ruby")) {
         try {
-          execFileSync("/usr/bin/ruby", ["-ryaml", "-e", "YAML.safe_load(STDIN.read)"], {
-            input: frontMatterMatch[1],
-            stdio: ["pipe", "ignore", "ignore"],
-          });
+          const rubyOut = execFileSync(
+            "/usr/bin/ruby",
+            ["-ryaml", "-rjson", "-e", "puts JSON.generate(YAML.safe_load(STDIN.read))"],
+            {
+              input: frontMatterMatch[1],
+              encoding: "utf-8",
+              stdio: ["pipe", "pipe", "ignore"],
+            },
+          );
+          const rubyData = JSON.parse(rubyOut);
+          if (rubyData && typeof rubyData === "object") {
+            const rubyLabels = rubyData.labels;
+            const rubyLabelList = Array.isArray(rubyLabels)
+              ? rubyLabels.map(String)
+              : typeof rubyLabels === "string"
+                ? rubyLabels.split(",").map((s) => s.trim())
+                : [];
+            if (!rubyLabelList.includes("needs-triage")) {
+              violations.push(`${rel} must default labels to 'needs-triage'`);
+            }
+          }
         } catch {
           violations.push(`${rel} contains invalid YAML front matter`);
         }
       }
 
       const parsed = parseFrontMatterLabels(frontMatterMatch[1]);
+      if (parsed.duplicateKeys && parsed.duplicateKeys.length > 0) {
+        for (const k of parsed.duplicateKeys) {
+          violations.push(`${rel} front matter contains duplicate key: '${k}'`);
+        }
+      }
+      if (parsed.invalid) {
+        violations.push(`${rel} contains invalid YAML front matter`);
+      }
       if (!parsed.found || !parsed.labels.includes("needs-triage")) {
-        violations.push(`${rel} must default labels to 'needs-triage'`);
+        const msg = `${rel} must default labels to 'needs-triage'`;
+        if (!violations.includes(msg)) {
+          violations.push(msg);
+        }
       }
 
       if (parsed.labels.includes("ready-for-agent") || /ready-for-agent/i.test(tmplContent)) {
