@@ -589,4 +589,297 @@ describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollba
       expect(readmeDoc).not.toContain("python3 app.py");
     });
   });
+
+  describe("Issue #85: Open-Source Governance, Community Templates, and Workspace Package Edges", () => {
+    test("AC1: checkWorkspacePackageEdges validates clean repository edges cleanly", async () => {
+      const { checkWorkspacePackageEdges } = await import(
+        // @ts-expect-error dynamic mjs import
+        "../../scripts/health/check-architecture.mjs"
+      );
+
+      const result = checkWorkspacePackageEdges(process.cwd());
+      expect(result.ok).toBe(true);
+      expect(result.violations).toHaveLength(0);
+    });
+
+    test("AC1 & AC4: checkWorkspacePackageEdges fails closed on forbidden dependency edges across workspace packages", async () => {
+      const { checkWorkspacePackageEdges } = await import(
+        // @ts-expect-error dynamic mjs import
+        "../../scripts/health/check-architecture.mjs"
+      );
+
+      const initCleanWorkspace = (root: string) => {
+        const pkgs = [
+          "packages/contracts",
+          "packages/client",
+          "apps/backend",
+          "apps/engine-host",
+          "apps/launcher",
+        ];
+        for (const p of pkgs) {
+          const dir = join(root, p);
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(join(dir, "package.json"), JSON.stringify({ name: p, dependencies: {} }));
+        }
+      };
+
+      // 1. contracts -> @labq/backend
+      {
+        const caseDir = join(tempDir, "case-contracts-backend");
+        initCleanWorkspace(caseDir);
+        writeFileSync(
+          join(caseDir, "packages/contracts/package.json"),
+          JSON.stringify({
+            name: "@labq/contracts",
+            dependencies: { "@labq/backend": "workspace:*" },
+          }),
+        );
+        const res = checkWorkspacePackageEdges(caseDir);
+        expect(res.ok).toBe(false);
+        expect(
+          res.violations.some(
+            (v: string) => v.includes("packages/contracts") && v.includes("@labq/backend"),
+          ),
+        ).toBe(true);
+      }
+
+      // 2. contracts -> @labq/client in devDependencies
+      {
+        const caseDir = join(tempDir, "case-contracts-client");
+        initCleanWorkspace(caseDir);
+        writeFileSync(
+          join(caseDir, "packages/contracts/package.json"),
+          JSON.stringify({
+            name: "@labq/contracts",
+            devDependencies: { "@labq/client": "workspace:*" },
+          }),
+        );
+        const res = checkWorkspacePackageEdges(caseDir);
+        expect(res.ok).toBe(false);
+        expect(
+          res.violations.some(
+            (v: string) => v.includes("packages/contracts") && v.includes("@labq/client"),
+          ),
+        ).toBe(true);
+      }
+
+      // 3. client -> @labq/launcher in peerDependencies
+      {
+        const caseDir = join(tempDir, "case-client-launcher");
+        initCleanWorkspace(caseDir);
+        writeFileSync(
+          join(caseDir, "packages/client/package.json"),
+          JSON.stringify({
+            name: "@labq/client",
+            peerDependencies: { "@labq/launcher": "workspace:*" },
+          }),
+        );
+        const res = checkWorkspacePackageEdges(caseDir);
+        expect(res.ok).toBe(false);
+        expect(
+          res.violations.some(
+            (v: string) => v.includes("packages/client") && v.includes("@labq/launcher"),
+          ),
+        ).toBe(true);
+      }
+
+      // 4. backend -> @labq/engine-host in optionalDependencies
+      {
+        const caseDir = join(tempDir, "case-backend-engine");
+        initCleanWorkspace(caseDir);
+        writeFileSync(
+          join(caseDir, "apps/backend/package.json"),
+          JSON.stringify({
+            name: "@labq/backend",
+            optionalDependencies: { "@labq/engine-host": "workspace:*" },
+          }),
+        );
+        const res = checkWorkspacePackageEdges(caseDir);
+        expect(res.ok).toBe(false);
+        expect(
+          res.violations.some(
+            (v: string) => v.includes("apps/backend") && v.includes("@labq/engine-host"),
+          ),
+        ).toBe(true);
+      }
+
+      // 5. engine-host -> @labq/backend in dependencies
+      {
+        const caseDir = join(tempDir, "case-engine-backend");
+        initCleanWorkspace(caseDir);
+        writeFileSync(
+          join(caseDir, "apps/engine-host/package.json"),
+          JSON.stringify({
+            name: "@labq/engine-host",
+            dependencies: { "@labq/backend": "workspace:*" },
+          }),
+        );
+        const res = checkWorkspacePackageEdges(caseDir);
+        expect(res.ok).toBe(false);
+        expect(
+          res.violations.some(
+            (v: string) => v.includes("apps/engine-host") && v.includes("@labq/backend"),
+          ),
+        ).toBe(true);
+      }
+
+      // 6. Missing package.json fails closed
+      {
+        const caseDir = join(tempDir, "case-missing-pkg");
+        mkdirSync(caseDir, { recursive: true });
+        const res = checkWorkspacePackageEdges(caseDir);
+        expect(res.ok).toBe(false);
+        expect(res.violations.length).toBeGreaterThan(0);
+        expect(res.violations[0]).toContain("package.json missing");
+      }
+
+      // 7. Malformed package.json fails closed
+      {
+        const caseDir = join(tempDir, "case-malformed-pkg");
+        initCleanWorkspace(caseDir);
+        writeFileSync(join(caseDir, "packages/contracts/package.json"), "{ malformed json");
+        const res = checkWorkspacePackageEdges(caseDir);
+        expect(res.ok).toBe(false);
+        expect(res.violations.some((v: string) => v.includes("failed to parse package.json"))).toBe(
+          true,
+        );
+      }
+    });
+
+    test("AC2 & AC3: checkOpenSourceGovernanceFiles validates required governance baseline files on repository", async () => {
+      const { checkOpenSourceGovernanceFiles } = await import(
+        // @ts-expect-error dynamic mjs import
+        "../../scripts/health/check-architecture.mjs"
+      );
+
+      const result = checkOpenSourceGovernanceFiles(process.cwd());
+      expect(result.ok).toBe(true);
+      expect(result.violations).toHaveLength(0);
+
+      // Verify specific governance file invariants directly
+      const license = readFileSync(join(process.cwd(), "LICENSE"), "utf-8");
+      expect(license).toContain("MIT License");
+      expect(license).toContain("Permission is hereby granted");
+
+      const contributing = readFileSync(join(process.cwd(), "CONTRIBUTING.md"), "utf-8");
+      expect(contributing).toContain("26.8.1");
+      expect(contributing).toContain("1.4.2");
+      expect(contributing).toContain("labq-factory setup --local-only");
+      expect(contributing).toContain("bun run check");
+      expect(contributing).toContain("bun run test");
+      expect(contributing).toContain("bun run verify");
+      expect(contributing).toContain("@labq/contracts");
+      expect(contributing).toContain("@labq/client");
+      expect(contributing).toContain("apps/backend");
+      expect(contributing).toContain("apps/engine-host");
+
+      const security = readFileSync(join(process.cwd(), "SECURITY.md"), "utf-8");
+      expect(security).toContain("Security Policy");
+      expect(security).toContain("Reporting a Vulnerability");
+      expect(security).toContain("127.0.0.1");
+
+      const changelog = readFileSync(join(process.cwd(), "CHANGELOG.md"), "utf-8");
+      expect(changelog).toContain("# Changelog");
+
+      const gitattributes = readFileSync(join(process.cwd(), ".gitattributes"), "utf-8");
+      expect(gitattributes).toContain("eol=lf");
+
+      const renovate = JSON.parse(readFileSync(join(process.cwd(), "renovate.json"), "utf-8"));
+      expect(renovate.lockFileMaintenance.enabled).toBe(true);
+      expect(renovate.osvVulnerabilityAlerts).toBe(true);
+      expect(
+        renovate.packageRules.some(
+          (r: any) => r.matchDepTypes?.includes("overrides") && r.major?.enabled === false,
+        ),
+      ).toBe(true);
+
+      const prTmpl = readFileSync(join(process.cwd(), ".github/pull_request_template.md"), "utf-8");
+      expect(prTmpl).toContain("## Evidence");
+      expect(prTmpl).toContain("## Problem and Outcome");
+
+      const bugTmpl = readFileSync(
+        join(process.cwd(), ".github/ISSUE_TEMPLATE/bug_report.md"),
+        "utf-8",
+      );
+      expect(bugTmpl).toContain("labels: needs-triage");
+      expect(bugTmpl).not.toContain("ready-for-agent");
+      expect(bugTmpl).toContain("## Source and problem");
+      expect(bugTmpl).toContain("## Outcome");
+      expect(bugTmpl).toContain("## Invariants");
+      expect(bugTmpl).toContain("## Acceptance criteria");
+      expect(bugTmpl).toContain("## Boundary");
+      expect(bugTmpl).toContain("Depends on:");
+
+      const featTmpl = readFileSync(
+        join(process.cwd(), ".github/ISSUE_TEMPLATE/feature_request.md"),
+        "utf-8",
+      );
+      expect(featTmpl).toContain("labels: needs-triage");
+      expect(featTmpl).not.toContain("ready-for-agent");
+      expect(featTmpl).toContain("## Source and problem");
+      expect(featTmpl).toContain("## Outcome");
+      expect(featTmpl).toContain("## Invariants");
+      expect(featTmpl).toContain("## Acceptance criteria");
+      expect(featTmpl).toContain("## Boundary");
+      expect(featTmpl).toContain("Depends on:");
+    });
+
+    test("AC4: checkOpenSourceGovernanceFiles fails closed on missing or invalid governance files", async () => {
+      const { checkOpenSourceGovernanceFiles } = await import(
+        // @ts-expect-error dynamic mjs import
+        "../../scripts/health/check-architecture.mjs"
+      );
+
+      // 1. Empty directory reports all missing files
+      const emptyDir = join(tempDir, "case-empty-gov");
+      mkdirSync(emptyDir, { recursive: true });
+      const emptyRes = checkOpenSourceGovernanceFiles(emptyDir);
+      expect(emptyRes.ok).toBe(false);
+      expect(emptyRes.violations.length).toBeGreaterThanOrEqual(8);
+      expect(emptyRes.violations.some((v: string) => v.includes("LICENSE"))).toBe(true);
+      expect(emptyRes.violations.some((v: string) => v.includes("CONTRIBUTING.md"))).toBe(true);
+      expect(emptyRes.violations.some((v: string) => v.includes("renovate.json"))).toBe(true);
+
+      // 2. Invalid renovate configuration fails closed
+      const badRenovateDir = join(tempDir, "case-bad-renovate");
+      mkdirSync(badRenovateDir, { recursive: true });
+      writeFileSync(
+        join(badRenovateDir, "renovate.json"),
+        JSON.stringify({
+          lockFileMaintenance: { enabled: false },
+          osvVulnerabilityAlerts: false,
+        }),
+      );
+      const badRenovateRes = checkOpenSourceGovernanceFiles(badRenovateDir);
+      expect(badRenovateRes.ok).toBe(false);
+      expect(
+        badRenovateRes.violations.some((v: string) =>
+          v.includes("lockFileMaintenance.enabled: true"),
+        ),
+      ).toBe(true);
+      expect(
+        badRenovateRes.violations.some((v: string) => v.includes("osvVulnerabilityAlerts: true")),
+      ).toBe(true);
+      expect(
+        badRenovateRes.violations.some((v: string) =>
+          v.includes("disable major updates for overrides"),
+        ),
+      ).toBe(true);
+
+      // 3. Issue template with illegal ready-for-agent label default fails closed
+      const badTmplDir = join(tempDir, "case-bad-template");
+      mkdirSync(join(badTmplDir, ".github/ISSUE_TEMPLATE"), { recursive: true });
+      writeFileSync(
+        join(badTmplDir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        `---\nname: Bug\nlabels: ready-for-agent\n---\n## Source and problem\n## Outcome\n## Invariants\n## Acceptance criteria\n## Boundary\nDepends on:\n`,
+      );
+      const badTmplRes = checkOpenSourceGovernanceFiles(badTmplDir);
+      expect(badTmplRes.ok).toBe(false);
+      expect(
+        badTmplRes.violations.some((v: string) =>
+          v.includes("NEVER default labels to 'ready-for-agent'"),
+        ),
+      ).toBe(true);
+    });
+  });
 });
