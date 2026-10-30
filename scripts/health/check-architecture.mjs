@@ -1,127 +1,64 @@
-import { readdirSync, statSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { scanSnippet, checkArchitectureRules } from "./rules/code-boundaries.mjs";
+import { checkWorkspacePackageEdges } from "./rules/workspace-edges.mjs";
+import { checkOpenSourceGovernanceFiles } from "./governance/index.mjs";
 
-/**
- * @param {string} filePath
- * @param {string} content
- * @returns {string[]}
- */
-export function scanSnippet(filePath, content) {
-  const violations = [];
-  const normalizedPath = filePath.replace(/\\/g, "/");
+// Re-export public API
+export {
+  scanSnippet,
+  checkArchitectureRules,
+  checkWorkspacePackageEdges,
+  checkOpenSourceGovernanceFiles,
+};
 
-  // Rule 1: packages/contracts cannot import apps
-  if (
-    normalizedPath.startsWith("packages/contracts/") ||
-    normalizedPath.includes("/packages/contracts/")
-  ) {
-    if (
-      /@labq\/backend/i.test(content) ||
-      /@labq\/engine-host/i.test(content) ||
-      /@labq\/launcher/i.test(content)
-    ) {
-      violations.push(`${filePath}: packages/contracts cannot import applications`);
-    }
-  }
-
-  // Rule 2: packages/client cannot import server internals or Node builtins
-  if (
-    normalizedPath.startsWith("packages/client/") ||
-    normalizedPath.includes("/packages/client/")
-  ) {
-    if (/@labq\/backend/i.test(content) || /@labq\/engine-host/i.test(content)) {
-      violations.push(`${filePath}: packages/client cannot import server internals`);
-    }
-    if (
-      /from\s+["']node:[^"']+["']/i.test(content) ||
-      /require\(["']node:[^"']+["']\)/i.test(content)
-    ) {
-      violations.push(`${filePath}: packages/client cannot import Node built-ins (node:*)`);
-    }
-  }
-
-  // Rule 3: apps/backend cannot import engine-host internals
-  if (normalizedPath.startsWith("apps/backend/") || normalizedPath.includes("/apps/backend/")) {
-    if (/@labq\/engine-host/i.test(content)) {
-      violations.push(`${filePath}: apps/backend cannot import engine-host internals`);
-    }
-  }
-
-  // Rule 4: apps/engine-host cannot import backend internals
-  if (
-    normalizedPath.startsWith("apps/engine-host/") ||
-    normalizedPath.includes("/apps/engine-host/")
-  ) {
-    if (/@labq\/backend/i.test(content)) {
-      violations.push(`${filePath}: apps/engine-host cannot import backend internals`);
-    }
-  }
-
-  return violations;
-}
-
-/**
- * @param {string} repoRoot
- * @returns {{ ok: boolean, violations: string[] }}
- */
-export function checkArchitectureRules(repoRoot) {
-  /** @type {string[]} */
-  const violations = [];
-  const targetDirs = [
-    join(repoRoot, "packages/contracts/src"),
-    join(repoRoot, "packages/client/src"),
-    join(repoRoot, "apps/backend/src"),
-    join(repoRoot, "apps/engine-host/src"),
-  ];
-
-  /**
-   * @param {string} dir
-   */
-  function walk(dir) {
-    try {
-      const entries = readdirSync(dir);
-      for (const entry of entries) {
-        const fullPath = join(dir, entry);
-        const stat = statSync(fullPath);
-        if (stat.isDirectory()) {
-          walk(fullPath);
-        } else if (/\.(ts|tsx|js|jsx)$/.test(entry)) {
-          const content = readFileSync(fullPath, "utf-8");
-          const relPath = relative(repoRoot, fullPath);
-          const fileViolations = scanSnippet(relPath, content);
-          violations.push(...fileViolations);
-        }
-      }
-    } catch {}
-  }
-
-  for (const dir of targetDirs) {
-    walk(dir);
-  }
-
-  return {
-    ok: violations.length === 0,
-    violations,
-  };
-}
-
-checkArchitectureRules.scanSnippet = scanSnippet;
+// Attach sub-methods for namespace compatibility
+Object.assign(checkArchitectureRules, {
+  scanSnippet,
+  checkWorkspacePackageEdges,
+  checkOpenSourceGovernanceFiles,
+});
 
 const isMain =
   process.argv[1] &&
   process.argv[1].endsWith("check-architecture.mjs") &&
   fileURLToPath(import.meta.url) === process.argv[1];
+
 if (isMain) {
-  const result = checkArchitectureRules(process.cwd());
-  if (!result.ok) {
+  const repoRoot = process.cwd();
+  let hasFailure = false;
+
+  const archResult = checkArchitectureRules(repoRoot);
+  if (!archResult.ok) {
     console.error("Architecture boundary check failed:");
-    for (const v of result.violations) {
+    for (const v of archResult.violations) {
       console.error("  -", v);
     }
+    hasFailure = true;
+  }
+
+  const pkgEdgesResult = checkWorkspacePackageEdges(repoRoot);
+  if (!pkgEdgesResult.ok) {
+    console.error("Workspace package edges check failed:");
+    for (const v of pkgEdgesResult.violations) {
+      console.error("  -", v);
+    }
+    hasFailure = true;
+  }
+
+  const govResult = checkOpenSourceGovernanceFiles(repoRoot);
+  if (!govResult.ok) {
+    console.error("Open-source governance check failed:");
+    for (const v of govResult.violations) {
+      console.error("  -", v);
+    }
+    hasFailure = true;
+  }
+
+  if (hasFailure) {
     process.exit(1);
   }
+
   console.log(
-    "Architecture boundary rules passed cleanly (packages/contracts, packages/client, apps/backend, apps/engine-host).",
+    "Architecture boundary rules, workspace package edges, and open-source governance passed cleanly.",
   );
 }
