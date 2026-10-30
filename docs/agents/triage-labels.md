@@ -16,8 +16,12 @@ When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the 
 
 Runtime intake uses canonical labels exclusively:
 
-- `ready-for-agent`: Admits otherwise eligible open work when prerequisites are closed and no active claims exist.
+- `ready-for-agent`: Admits otherwise eligible open work when prerequisites are closed and no active claims exist. Must only be applied to fully specified, unambiguous tickets.
 - `needs-info`, `ready-for-human`, `needs-triage`: Hold work from execution.
 - `wontfix`: Excludes work with absolute precedence.
 - Unlabeled issues or issues with unknown labels only are held awaiting triage.
 - Legacy `factory:` prefixed labels (`factory:ready`, `factory:hold`, `factory:exclude`) have no triage or admission authority.
+
+## Taxonomy & Spec Labels
+
+- `spec`: Identifies a parent specification planning record delivered via child tickets. Parent specs are planning-only records and must be paired with `ready-for-human` (or `needs-info` when incomplete) to prevent direct autonomous loop intake. Parent specs and ambiguous subtickets must **never** be labeled `ready-for-agent`.
