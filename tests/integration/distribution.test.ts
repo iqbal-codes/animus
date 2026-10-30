@@ -11,6 +11,7 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
+import { execFileSync } from "node:child_process";
 
 describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollback (Issue #65)", () => {
   let tempDir: string;
@@ -1814,6 +1815,246 @@ Depends on: None
         ),
       );
       expect(checkOpenSourceGovernanceFiles(d15ValidSeqDir).ok).toBe(true);
+    });
+
+    test("AC4 / Review Dispositions (D16-D18): checkOpenSourceGovernanceFiles enforces directory-scoped nested gitattributes, quoted and POSIX bracket Git patterns, and strict YAML flow sequence syntax against probes R19-R22", async () => {
+      const { checkOpenSourceGovernanceFiles } = await import(
+        // @ts-expect-error dynamic mjs import
+        "../../scripts/health/check-architecture.mjs"
+      );
+
+      function createValidGovDir(dir: string) {
+        mkdirSync(join(dir, ".github/ISSUE_TEMPLATE"), { recursive: true });
+        writeFileSync(
+          join(dir, "LICENSE"),
+          'MIT License\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the "Software"), to deal\nin the Software without restriction...\nTHE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND...\n',
+        );
+        writeFileSync(
+          join(dir, "CONTRIBUTING.md"),
+          "# Contributing\n\nNode 26.8.1\nBun 1.4.2\nlabq-factory setup --local-only\nbun run check\nbun run test\nbun run verify\n@labq/contracts\n@labq/client\napps/backend\napps/engine-host\n",
+        );
+        writeFileSync(join(dir, "SECURITY.md"), "# Security Policy\n");
+        writeFileSync(join(dir, "CHANGELOG.md"), "# Changelog\n");
+        writeFileSync(
+          join(dir, ".gitattributes"),
+          "* text=auto eol=lf\n*.sh text eol=lf\n*.ts text eol=lf\n*.js text eol=lf\n*.json text eol=lf\n*.md text eol=lf\n*.yml text eol=lf\n",
+        );
+        writeFileSync(
+          join(dir, "renovate.json"),
+          JSON.stringify({
+            lockFileMaintenance: { enabled: true },
+            osvVulnerabilityAlerts: true,
+            packageRules: [
+              {
+                matchDepTypes: ["overrides"],
+                matchPackageNames: ["*"],
+                major: { enabled: false },
+              },
+            ],
+          }),
+        );
+        writeFileSync(join(dir, ".github/pull_request_template.md"), "# PR\n");
+        const tmpl = `---\nname: Bug\nlabels: needs-triage\n---\n## Source and problem\n## Outcome\n## Invariants\n## Acceptance criteria\n- [ ] AC1:\n## Boundary\nDepends on: None\n`;
+        writeFileSync(join(dir, ".github/ISSUE_TEMPLATE/bug_report.md"), tmpl);
+        writeFileSync(join(dir, ".github/ISSUE_TEMPLATE/feature_request.md"), tmpl);
+      }
+
+      const d16BugTmpl = `---\nname: Bug\nlabels: needs-triage\n---\n## Source and problem\n## Outcome\n## Invariants\n## Acceptance criteria\n- [ ] AC1:\n## Boundary\nDepends on: None\n`;
+
+      // --- D16: Directory-scoped nested .gitattributes evaluation (Probe R19) ---
+      // D16.1: Probe R19 - nested apps/backend/.gitattributes containing '*.ts -text' unsets text
+      const d16R19Dir = join(tempDir, "probe-r19-nested-gitattributes");
+      createValidGovDir(d16R19Dir);
+      writeFileSync(join(d16R19Dir, ".gitattributes"), "* text=auto eol=lf\n");
+      mkdirSync(join(d16R19Dir, "apps/backend/src"), { recursive: true });
+      writeFileSync(join(d16R19Dir, "apps/backend/.gitattributes"), "*.ts -text\n");
+      writeFileSync(join(d16R19Dir, "apps/backend/src/main.ts"), "const x = 1;\r\n");
+
+      // Verify with real Git attributes that text is unset
+      try {
+        execFileSync("git", ["init", "-q"], { cwd: d16R19Dir });
+        execFileSync("git", ["config", "core.autocrlf", "false"], { cwd: d16R19Dir });
+        const gitAttr = execFileSync(
+          "git",
+          ["check-attr", "text", "eol", "--", "apps/backend/src/main.ts"],
+          { cwd: d16R19Dir, encoding: "utf8" },
+        );
+        expect(gitAttr).toContain("apps/backend/src/main.ts: text: unset");
+      } catch {}
+
+      const d16R19Res = checkOpenSourceGovernanceFiles(d16R19Dir);
+      expect(d16R19Res.ok).toBe(false);
+      expect(
+        d16R19Res.violations.some(
+          (v: string) =>
+            v.includes("does not effectively enforce eol=lf for required file classes") &&
+            v.includes("apps/backend/src/main.ts"),
+        ),
+      ).toBe(true);
+
+      // D16.2: Nested .gitattributes with conflicting rule fails closed
+      const d16ConflictDir = join(tempDir, "probe-d16-nested-conflict");
+      createValidGovDir(d16ConflictDir);
+      mkdirSync(join(d16ConflictDir, "apps/backend"), { recursive: true });
+      writeFileSync(join(d16ConflictDir, "apps/backend/.gitattributes"), "*.ts eol=crlf\n");
+      const d16ConflictRes = checkOpenSourceGovernanceFiles(d16ConflictDir);
+      expect(d16ConflictRes.ok).toBe(false);
+      expect(
+        d16ConflictRes.violations.some((v: string) =>
+          v.includes(
+            "apps/backend/.gitattributes contains conflicting non-LF line ending rule: '*.ts eol=crlf'",
+          ),
+        ),
+      ).toBe(true);
+
+      // D16.3: Positive control - nested .gitattributes enforcing LF
+      const d16PositiveDir = join(tempDir, "probe-d16-positive-nested");
+      createValidGovDir(d16PositiveDir);
+      mkdirSync(join(d16PositiveDir, "apps/backend/src"), { recursive: true });
+      writeFileSync(join(d16PositiveDir, "apps/backend/.gitattributes"), "*.ts text eol=lf\n");
+      writeFileSync(join(d16PositiveDir, "apps/backend/src/main.ts"), "const x = 1;\n");
+      expect(checkOpenSourceGovernanceFiles(d16PositiveDir).ok).toBe(true);
+
+      // --- D17: Git pattern grammar: quoted patterns and POSIX bracket classes (Probes R20 & R21) ---
+      // D17.1: Probe R20 - quoted glob '"*.ts" -text' unsets text
+      const d17R20Dir = join(tempDir, "probe-r20-quoted-glob");
+      createValidGovDir(d17R20Dir);
+      writeFileSync(join(d17R20Dir, ".gitattributes"), '* text=auto eol=lf\n"*.ts" -text\n');
+      mkdirSync(join(d17R20Dir, "apps/backend/src"), { recursive: true });
+      writeFileSync(join(d17R20Dir, "apps/backend/src/main.ts"), "const x = 1;\r\n");
+
+      try {
+        execFileSync("git", ["init", "-q"], { cwd: d17R20Dir });
+        execFileSync("git", ["config", "core.autocrlf", "false"], { cwd: d17R20Dir });
+        const gitAttr = execFileSync(
+          "git",
+          ["check-attr", "text", "eol", "--", "apps/backend/src/main.ts"],
+          { cwd: d17R20Dir, encoding: "utf8" },
+        );
+        expect(gitAttr).toContain("apps/backend/src/main.ts: text: unset");
+      } catch {}
+
+      const d17R20Res = checkOpenSourceGovernanceFiles(d17R20Dir);
+      expect(d17R20Res.ok).toBe(false);
+      expect(
+        d17R20Res.violations.some((v: string) =>
+          v.includes("does not effectively enforce eol=lf for required file classes"),
+        ),
+      ).toBe(true);
+
+      // D17.2: Probe R21 - POSIX bracket class '*.[[:alpha:]][[:alpha:]] -text' unsets text for two-letter extensions
+      const d17R21Dir = join(tempDir, "probe-r21-posix-bracket-class");
+      createValidGovDir(d17R21Dir);
+      writeFileSync(
+        join(d17R21Dir, ".gitattributes"),
+        "* text=auto eol=lf\n*.[[:alpha:]][[:alpha:]] -text\n",
+      );
+      mkdirSync(join(d17R21Dir, "apps/backend/src"), { recursive: true });
+      writeFileSync(join(d17R21Dir, "apps/backend/src/main.ts"), "const x = 1;\r\n");
+
+      try {
+        execFileSync("git", ["init", "-q"], { cwd: d17R21Dir });
+        execFileSync("git", ["config", "core.autocrlf", "false"], { cwd: d17R21Dir });
+        const gitAttr = execFileSync(
+          "git",
+          ["check-attr", "text", "eol", "--", "apps/backend/src/main.ts"],
+          { cwd: d17R21Dir, encoding: "utf8" },
+        );
+        expect(gitAttr).toContain("apps/backend/src/main.ts: text: unset");
+      } catch {}
+
+      const d17R21Res = checkOpenSourceGovernanceFiles(d17R21Dir);
+      expect(d17R21Res.ok).toBe(false);
+      expect(
+        d17R21Res.violations.some(
+          (v: string) =>
+            v.includes("does not effectively enforce eol=lf for required file classes") &&
+            v.includes("source.ts"),
+        ),
+      ).toBe(true);
+
+      // D17.3: Positive controls with quoted globs and POSIX bracket classes enforcing LF
+      const d17PositiveDir = join(tempDir, "probe-d17-positive-patterns");
+      createValidGovDir(d17PositiveDir);
+      writeFileSync(
+        join(d17PositiveDir, ".gitattributes"),
+        '* text=auto eol=lf\n"*.ts" text eol=lf\n*.[[:alpha:]][[:alpha:]] text eol=lf\n',
+      );
+      expect(checkOpenSourceGovernanceFiles(d17PositiveDir).ok).toBe(true);
+
+      // --- D18: YAML flow sequence parsing and rejection of malformed trailing content (Probe R22) ---
+      // D18.1: Probe R22 - trailing content after flow sequence closing bracket 'labels: [needs-triage]garbage'
+      const d18R22Dir = join(tempDir, "probe-r22-invalid-flow-suffix");
+      createValidGovDir(d18R22Dir);
+      writeFileSync(
+        join(d18R22Dir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        d16BugTmpl.replace("labels: needs-triage", "labels: [needs-triage]garbage"),
+      );
+      const d18R22Res = checkOpenSourceGovernanceFiles(d18R22Dir);
+      expect(d18R22Res.ok).toBe(false);
+      expect(
+        d18R22Res.violations.some((v: string) =>
+          v.includes(".github/ISSUE_TEMPLATE/bug_report.md must default labels to 'needs-triage'"),
+        ),
+      ).toBe(true);
+
+      // D18.2: Quoted item with trailing content 'labels: ["needs-triage"]extra'
+      const d18QuotedTrailingDir = join(tempDir, "probe-d18-quoted-trailing");
+      createValidGovDir(d18QuotedTrailingDir);
+      writeFileSync(
+        join(d18QuotedTrailingDir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        d16BugTmpl.replace("labels: needs-triage", 'labels: ["needs-triage"]extra'),
+      );
+      const d18QuotedRes = checkOpenSourceGovernanceFiles(d18QuotedTrailingDir);
+      expect(d18QuotedRes.ok).toBe(false);
+      expect(
+        d18QuotedRes.violations.some((v: string) =>
+          v.includes(".github/ISSUE_TEMPLATE/bug_report.md must default labels to 'needs-triage'"),
+        ),
+      ).toBe(true);
+
+      // D18.3: Malformed empty item / consecutive commas 'labels: [needs-triage,,bug]'
+      const d18CommaDir = join(tempDir, "probe-d18-consecutive-commas");
+      createValidGovDir(d18CommaDir);
+      writeFileSync(
+        join(d18CommaDir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        d16BugTmpl.replace("labels: needs-triage", "labels: [needs-triage,,bug]"),
+      );
+      const d18CommaRes = checkOpenSourceGovernanceFiles(d18CommaDir);
+      expect(d18CommaRes.ok).toBe(false);
+
+      // D18.4: Positive controls: valid flow sequences and multiline flow sequence
+      const d18ValidSingleDir = join(tempDir, "probe-d18-valid-single-flow");
+      createValidGovDir(d18ValidSingleDir);
+      writeFileSync(
+        join(d18ValidSingleDir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        d16BugTmpl.replace("labels: needs-triage", "labels: [needs-triage]"),
+      );
+      expect(checkOpenSourceGovernanceFiles(d18ValidSingleDir).ok).toBe(true);
+
+      const d18ValidCommentDir = join(tempDir, "probe-d18-valid-flow-comment");
+      createValidGovDir(d18ValidCommentDir);
+      writeFileSync(
+        join(d18ValidCommentDir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        d16BugTmpl.replace("labels: needs-triage", "labels: [needs-triage] # valid flow comment"),
+      );
+      expect(checkOpenSourceGovernanceFiles(d18ValidCommentDir).ok).toBe(true);
+
+      const d18ValidMultiDir = join(tempDir, "probe-d18-valid-multi-flow");
+      createValidGovDir(d18ValidMultiDir);
+      writeFileSync(
+        join(d18ValidMultiDir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        d16BugTmpl.replace("labels: needs-triage", 'labels: [ "needs-triage", "bug" ]'),
+      );
+      expect(checkOpenSourceGovernanceFiles(d18ValidMultiDir).ok).toBe(true);
+
+      const d18ValidMultilineDir = join(tempDir, "probe-d18-valid-multiline-flow");
+      createValidGovDir(d18ValidMultilineDir);
+      writeFileSync(
+        join(d18ValidMultilineDir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        d16BugTmpl.replace("labels: needs-triage", "labels: [\n  needs-triage,\n  bug\n]"),
+      );
+      expect(checkOpenSourceGovernanceFiles(d18ValidMultilineDir).ok).toBe(true);
     });
   });
 });

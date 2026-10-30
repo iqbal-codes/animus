@@ -1,6 +1,85 @@
 import { readdirSync, statSync, readFileSync, existsSync } from "node:fs";
 import { join, relative, basename, extname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
+
+const POSIX_CLASSES = {
+  "[:alnum:]": "a-zA-Z0-9",
+  "[:alpha:]": "a-zA-Z",
+  "[:blank:]": " \\t",
+  "[:cntrl:]": "\\x00-\\x1F\\x7F",
+  "[:digit:]": "0-9",
+  "[:graph:]": "\\x21-\\x7E",
+  "[:lower:]": "a-z",
+  "[:print:]": "\\x20-\\x7E",
+  "[:punct:]": "!\"#$%&'()*+,\\-./:;<=>?@[\\\\\\]^_`{|}~",
+  "[:space:]": " \\t\\r\\n\\v\\f",
+  "[:upper:]": "A-Z",
+  "[:xdigit:]": "0-9a-fA-F",
+};
+
+/**
+ * @param {string} line
+ * @returns {{ pattern: string, attrTokens: string[], rawLine: string } | null}
+ */
+function parseGitAttrLine(line) {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith("#")) return null;
+
+  let pattern = "";
+  let i = 0;
+
+  while (i < trimmed.length && (trimmed[i] === " " || trimmed[i] === "\t")) i++;
+  if (i >= trimmed.length) return null;
+
+  if (trimmed[i] === '"') {
+    i++;
+    let escaped = false;
+    while (i < trimmed.length) {
+      const ch = trimmed[i];
+      if (escaped) {
+        if (ch === "n") pattern += "\n";
+        else if (ch === "t") pattern += "\t";
+        else if (ch === "r") pattern += "\r";
+        else if (ch === "\\") pattern += "\\";
+        else if (ch === '"') pattern += '"';
+        else pattern += ch;
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        i++;
+        break;
+      } else {
+        pattern += ch;
+      }
+      i++;
+    }
+  } else {
+    let escaped = false;
+    while (i < trimmed.length) {
+      const ch = trimmed[i];
+      if (escaped) {
+        pattern += ch;
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+        pattern += ch;
+      } else if (ch === " " || ch === "\t") {
+        break;
+      } else {
+        pattern += ch;
+      }
+      i++;
+    }
+  }
+
+  const rest = trimmed.slice(i).trim();
+  if (!rest) return null;
+  const attrTokens = rest.split(/\s+/);
+
+  return { pattern, attrTokens, rawLine: trimmed };
+}
 
 /**
  * @param {string} filePath
@@ -238,77 +317,139 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
   // 5. .gitattributes
   const gitattrContent = readRequiredFile(".gitattributes", "Git attributes");
   if (gitattrContent !== null) {
-    const lines = gitattrContent.split(/\r?\n/);
-    /** @type {Array<{ pattern: string, line: string, attrs: Map<string, string | boolean> }>} */
-    const parsedRules = [];
-    /** @type {string[]} */
-    const conflictingRules = [];
+    /** @type {Array<{ relFile: string, dirPrefix: string, content: string }>} */
+    const gitattrFiles = [{ relFile: ".gitattributes", dirPrefix: "", content: gitattrContent }];
 
-    for (const rawLine of lines) {
-      const trimmed = rawLine.trim();
-      if (trimmed.length === 0 || trimmed.startsWith("#")) {
-        continue;
-      }
-
-      const tokens = trimmed.split(/\s+/);
-      if (tokens.length < 2) {
-        continue;
-      }
-
-      const pattern = tokens[0];
-      const attrTokens = tokens.slice(1);
-      const attrs = new Map();
-
-      for (const token of attrTokens) {
-        if (token === "eol=crlf" || token === "eol=native" || token === "crlf") {
-          conflictingRules.push(trimmed);
-        }
-        if (token.includes("=")) {
-          const [k, v] = token.split("=");
-          attrs.set(k, v);
-        } else if (token.startsWith("-")) {
-          const k = token.slice(1);
-          attrs.set(k, false);
-        } else if (token.startsWith("!")) {
-          const k = token.slice(1);
-          attrs.set(k, "unspecified");
-        } else {
-          if (token === "binary") {
-            attrs.set("binary", true);
-            attrs.set("text", false);
-            attrs.set("diff", false);
-            attrs.set("merge", false);
-            attrs.set("eol", "unspecified");
-          } else if (token === "crlf") {
-            attrs.set("text", true);
-            attrs.set("eol", "crlf");
-          } else {
-            attrs.set(token, true);
+    // Discover nested .gitattributes files across repoRoot
+    /**
+     * @param {string} dir
+     * @param {string} [rel]
+     */
+    function scanGitattrFiles(dir, rel = "") {
+      try {
+        const entries = readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (
+            entry.name === "node_modules" ||
+            entry.name === ".git" ||
+            entry.name === "dist" ||
+            entry.name === ".factory" ||
+            entry.name === "coverage" ||
+            entry.name === ".cache" ||
+            entry.name.startsWith(".vitest")
+          ) {
+            continue;
+          }
+          const full = join(dir, entry.name);
+          const relPath = rel ? `${rel}/${entry.name}` : entry.name;
+          if (entry.isDirectory()) {
+            scanGitattrFiles(full, relPath);
+          } else if (
+            entry.isFile() &&
+            entry.name === ".gitattributes" &&
+            relPath !== ".gitattributes"
+          ) {
+            try {
+              gitattrFiles.push({
+                relFile: relPath,
+                dirPrefix: rel,
+                content: readFileSync(full, "utf8"),
+              });
+            } catch {
+              // Ignore unreadable nested file
+            }
           }
         }
+      } catch {
+        // Fall back gracefully
       }
+    }
+    scanGitattrFiles(repoRoot);
 
-      if (pattern !== "*") {
-        try {
-          gitPatternToRegex(pattern);
-        } catch {
-          violations.push(`.gitattributes contains unsupported or invalid pattern: '${pattern}'`);
+    gitattrFiles.sort((a, b) => {
+      const depthA = a.dirPrefix ? a.dirPrefix.split("/").length : 0;
+      const depthB = b.dirPrefix ? b.dirPrefix.split("/").length : 0;
+      return depthA - depthB;
+    });
+
+    /** @type {Array<{ pattern: string, dirPrefix: string, relFile: string, line: string, attrs: Map<string, string | boolean> }>} */
+    const parsedRules = [];
+    /** @type {Array<{ relFile: string, line: string }>} */
+    const conflictingRules = [];
+
+    for (const file of gitattrFiles) {
+      const lines = file.content.split(/\r?\n/);
+      for (const rawLine of lines) {
+        const parsed = parseGitAttrLine(rawLine);
+        if (!parsed) {
+          continue;
         }
-      }
 
-      parsedRules.push({ pattern, line: trimmed, attrs });
+        const { pattern, attrTokens, rawLine: trimmed } = parsed;
+        const attrs = new Map();
+
+        for (const token of attrTokens) {
+          if (token === "eol=crlf" || token === "eol=native" || token === "crlf") {
+            conflictingRules.push({ relFile: file.relFile, line: trimmed });
+          }
+          if (token.includes("=")) {
+            const [k, v] = token.split("=");
+            attrs.set(k, v);
+          } else if (token.startsWith("-")) {
+            const k = token.slice(1);
+            attrs.set(k, false);
+          } else if (token.startsWith("!")) {
+            const k = token.slice(1);
+            attrs.set(k, "unspecified");
+          } else {
+            if (token === "binary") {
+              attrs.set("binary", true);
+              attrs.set("text", false);
+              attrs.set("diff", false);
+              attrs.set("merge", false);
+              attrs.set("eol", "unspecified");
+            } else if (token === "crlf") {
+              attrs.set("text", true);
+              attrs.set("eol", "crlf");
+            } else {
+              attrs.set(token, true);
+            }
+          }
+        }
+
+        if (pattern !== "*") {
+          try {
+            gitPatternToRegex(pattern);
+          } catch {
+            violations.push(
+              `${file.relFile} contains unsupported or invalid pattern: '${pattern}'`,
+            );
+          }
+        }
+
+        parsedRules.push({
+          pattern,
+          dirPrefix: file.dirPrefix,
+          relFile: file.relFile,
+          line: trimmed,
+          attrs,
+        });
+      }
     }
 
-    const hasActiveEolLf = parsedRules.some((r) => r.attrs.get("eol") === "lf");
+    const rootRules = parsedRules.filter((r) => r.dirPrefix === "");
+    const hasActiveEolLf = rootRules.some((r) => r.attrs.get("eol") === "lf");
     if (!hasActiveEolLf) {
       violations.push(".gitattributes must enforce LF line endings (eol=lf)");
     }
 
     if (conflictingRules.length > 0) {
-      for (const conflict of conflictingRules) {
-        violations.push(
-          `.gitattributes contains conflicting non-LF line ending rule: '${conflict}'`,
-        );
+      for (const { relFile, line } of conflictingRules) {
+        if (relFile === ".gitattributes") {
+          violations.push(`.gitattributes contains conflicting non-LF line ending rule: '${line}'`);
+        } else {
+          violations.push(`${relFile} contains conflicting non-LF line ending rule: '${line}'`);
+        }
       }
     }
 
@@ -364,16 +505,46 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
           regexStr += "[^/]";
           i++;
         } else if (c === "[") {
-          const closeIdx = p.indexOf("]", i + 1);
-          if (closeIdx === -1) {
+          let j = i + 1;
+          let negated = false;
+          if (p[j] === "!" || p[j] === "^") {
+            negated = true;
+            j++;
+          }
+          if (p[j] === "]") {
+            j++;
+          }
+          let foundEnd = false;
+          while (j < p.length) {
+            if (p[j] === "[" && p[j + 1] === ":") {
+              const classEnd = p.indexOf(":]", j + 2);
+              if (classEnd !== -1) {
+                j = classEnd + 2;
+                continue;
+              }
+            }
+            if (p[j] === "]") {
+              foundEnd = true;
+              break;
+            }
+            j++;
+          }
+
+          if (!foundEnd) {
             throw new Error(`Unclosed bracket expression in pattern: '${pattern}'`);
           }
-          let inside = p.slice(i + 1, closeIdx);
-          if (inside.startsWith("!") || inside.startsWith("^")) {
-            inside = "^/" + inside.slice(1);
+
+          let inside = p.slice(i + 1, j);
+          for (const [posixClass, replacement] of Object.entries(POSIX_CLASSES)) {
+            inside = inside.replaceAll(posixClass, replacement);
+          }
+
+          if (negated) {
+            inside =
+              "^/" + (inside.startsWith("!") || inside.startsWith("^") ? inside.slice(1) : inside);
           }
           regexStr += "[" + inside + "]";
-          i = closeIdx + 1;
+          i = j + 1;
         } else if (".+^${}()|".includes(c)) {
           regexStr += "\\" + c;
           i++;
@@ -388,11 +559,11 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
 
     /**
      * @param {string} pattern
-     * @param {string} filePath
+     * @param {string} subPath
      */
-    function matchGitAttrPattern(pattern, filePath) {
+    function matchGitAttrPattern(pattern, subPath) {
       if (pattern === "*") return true;
-      const normalizedPath = filePath.replace(/\\/g, "/").replace(/^[/]+/, "");
+      const normalizedPath = subPath.replace(/\\/g, "/").replace(/^[/]+/, "");
       try {
         const { hasSlash, regex } = gitPatternToRegex(pattern);
         if (!hasSlash) {
@@ -409,15 +580,23 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
      * @param {string} filePath
      */
     function getEffectiveAttrs(filePath) {
+      const normPath = filePath.replace(/\\/g, "/").replace(/^[/]+/, "");
       let effText = undefined;
       let effEol = undefined;
-      for (const { pattern, attrs } of parsedRules) {
-        if (matchGitAttrPattern(pattern, filePath)) {
-          if (attrs.has("text")) {
-            effText = attrs.get("text");
+      for (const rule of parsedRules) {
+        if (rule.dirPrefix !== "") {
+          if (!normPath.startsWith(rule.dirPrefix + "/")) {
+            continue;
           }
-          if (attrs.has("eol")) {
-            effEol = attrs.get("eol");
+        }
+        const subPath =
+          rule.dirPrefix === "" ? normPath : normPath.slice(rule.dirPrefix.length + 1);
+        if (matchGitAttrPattern(rule.pattern, subPath)) {
+          if (rule.attrs.has("text")) {
+            effText = rule.attrs.get("text");
+          }
+          if (rule.attrs.has("eol")) {
+            effEol = rule.attrs.get("eol");
           }
         }
       }
@@ -465,13 +644,23 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
 
     const filesToCheck = new Set(requiredFileClasses);
 
+    // Add required file classes scoped to each nested .gitattributes directory
+    for (const file of gitattrFiles) {
+      if (file.dirPrefix) {
+        for (const cls of requiredFileClasses) {
+          filesToCheck.add(`${file.dirPrefix}/${cls}`);
+        }
+      }
+    }
+
     // Include explicit non-binary file paths targeted in .gitattributes rules
-    for (const { pattern } of parsedRules) {
+    for (const { pattern, dirPrefix } of parsedRules) {
       if (!pattern.includes("*") && !pattern.includes("?") && !pattern.includes("[")) {
         const clean = pattern.replace(/\\/g, "/").replace(/^[/]+/, "");
-        const ext = extname(clean).toLowerCase();
+        const full = dirPrefix ? `${dirPrefix}/${clean}` : clean;
+        const ext = extname(full).toLowerCase();
         if (!BINARY_EXTENSIONS.has(ext)) {
-          filesToCheck.add(clean);
+          filesToCheck.add(full);
         }
       }
     }
@@ -513,6 +702,35 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
     }
     scanTextFiles(repoRoot);
 
+    // Authoritative check with git check-attr if .git directory is present
+    let gitAttrMap = null;
+    if (existsSync(join(repoRoot, ".git"))) {
+      try {
+        const checkList = Array.from(filesToCheck);
+        gitAttrMap = new Map();
+        for (let idx = 0; idx < checkList.length; idx += 100) {
+          const chunk = checkList.slice(idx, idx + 100);
+          const out = execFileSync("git", ["check-attr", "text", "eol", "--", ...chunk], {
+            cwd: repoRoot,
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "ignore"],
+          });
+          for (const line of out.split(/\r?\n/)) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            const match = trimmed.match(/^([^:]+):\s*([^:]+):\s*(.*)$/);
+            if (match) {
+              const [, f, attr, val] = match;
+              if (!gitAttrMap.has(f)) gitAttrMap.set(f, {});
+              gitAttrMap.get(f)[attr] = val;
+            }
+          }
+        }
+      } catch {
+        gitAttrMap = null;
+      }
+    }
+
     const failedFiles = Array.from(filesToCheck).filter((f) => {
       const { text, eol } = getEffectiveAttrs(f);
       // In Git, LF line ending normalization requires:
@@ -521,7 +739,16 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
       // If text is unset (false), binary, or unspecified, Git does not perform eol conversion.
       const isTextEnabled = text === true || text === "auto";
       const isEolLf = eol === "lf";
-      return !isTextEnabled || !isEolLf;
+
+      let gitOk = true;
+      if (gitAttrMap && gitAttrMap.has(f)) {
+        const g = gitAttrMap.get(f);
+        const gitTextOk = g.text === "set" || g.text === "auto";
+        const gitEolOk = g.eol === "lf";
+        gitOk = gitTextOk && gitEolOk;
+      }
+
+      return !isTextEnabled || !isEolLf || !gitOk;
     });
     if (failedFiles.length > 0) {
       violations.push(
@@ -797,29 +1024,134 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
 
     // Case 1: Flow sequence (bracketed list) e.g. `[needs-triage, bug]`
     if (initialValue.startsWith("[")) {
-      let bracketContent = initialValue;
-      let currentIndex = labelLineIndex + 1;
-      while (!bracketContent.includes("]") && currentIndex < rawLines.length) {
-        const nextStripped = stripYamlComment(rawLines[currentIndex]);
-        if (/^\S/.test(nextStripped) && !nextStripped.startsWith("]")) {
+      let content = "";
+      let insideSingle = false;
+      let insideDouble = false;
+      let escaped = false;
+      let closed = false;
+      let trailing = "";
+
+      for (let lineIdx = labelLineIndex; lineIdx < rawLines.length; lineIdx++) {
+        const rawLine = rawLines[lineIdx];
+        const stripped = stripYamlComment(rawLine);
+        const lineText = lineIdx === labelLineIndex ? initialValue : stripped;
+
+        if (
+          lineIdx > labelLineIndex &&
+          /^\S/.test(stripped) &&
+          !stripped.trim().startsWith("]") &&
+          !closed
+        ) {
           // Unindented line before closing bracket means malformed flow sequence
           return { found: true, labels: [] };
         }
-        bracketContent += " " + nextStripped.trim();
-        currentIndex++;
+
+        for (let j = 0; j < lineText.length; j++) {
+          const ch = lineText[j];
+          if (closed) {
+            if (ch !== " " && ch !== "\t") {
+              trailing += ch;
+            }
+            continue;
+          }
+          if (escaped) {
+            content += ch;
+            escaped = false;
+            continue;
+          }
+          if (ch === "\\" && insideDouble) {
+            escaped = true;
+            content += ch;
+            continue;
+          }
+          if (ch === "'" && !insideDouble) {
+            insideSingle = !insideSingle;
+            content += ch;
+            continue;
+          }
+          if (ch === '"' && !insideSingle) {
+            insideDouble = !insideDouble;
+            content += ch;
+            continue;
+          }
+          if (ch === "]" && !insideSingle && !insideDouble) {
+            closed = true;
+            continue;
+          }
+          content += ch;
+        }
+
+        if (closed) {
+          if (trailing.length > 0) {
+            return { found: true, labels: [] };
+          }
+          break;
+        }
+        content += "\n";
       }
-      const closeBracket = bracketContent.indexOf("]");
-      if (closeBracket === -1) {
+
+      if (!closed || insideSingle || insideDouble) {
         return { found: true, labels: [] };
       }
-      const inside = bracketContent.slice(1, closeBracket);
-      const items = inside.split(",");
-      for (const item of items) {
-        const cleaned = cleanYamlScalar(item);
-        if (cleaned.length > 0) {
-          labels.push(cleaned);
-        }
+
+      const openIdx = content.indexOf("[");
+      if (openIdx === -1) return { found: true, labels: [] };
+      const inside = content.slice(openIdx + 1).trim();
+      if (inside.length === 0) {
+        return { found: true, labels: [] };
       }
+
+      let curItem = "";
+      insideSingle = false;
+      insideDouble = false;
+      escaped = false;
+
+      for (let j = 0; j < inside.length; j++) {
+        const ch = inside[j];
+        if (escaped) {
+          curItem += ch;
+          escaped = false;
+          continue;
+        }
+        if (ch === "\\" && insideDouble) {
+          escaped = true;
+          curItem += ch;
+          continue;
+        }
+        if (ch === "'" && !insideDouble) {
+          insideSingle = !insideSingle;
+          curItem += ch;
+          continue;
+        }
+        if (ch === '"' && !insideSingle) {
+          insideDouble = !insideDouble;
+          curItem += ch;
+          continue;
+        }
+        if (ch === "," && !insideSingle && !insideDouble) {
+          const cleaned = cleanYamlScalar(curItem);
+          if (cleaned.length === 0) {
+            return { found: true, labels: [] };
+          }
+          labels.push(cleaned);
+          curItem = "";
+          continue;
+        }
+        curItem += ch;
+      }
+
+      if (insideSingle || insideDouble) {
+        return { found: true, labels: [] };
+      }
+
+      const lastCleaned = cleanYamlScalar(curItem);
+      if (lastCleaned.length === 0 && labels.length > 0 && curItem.trim().length > 0) {
+        return { found: true, labels: [] };
+      }
+      if (lastCleaned.length > 0) {
+        labels.push(lastCleaned);
+      }
+
       return { found: true, labels };
     }
 
@@ -920,6 +1252,17 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
       if (!frontMatterMatch) {
         violations.push(`${rel} must contain YAML front matter enclosed by '---'`);
         continue;
+      }
+
+      if (existsSync("/usr/bin/ruby")) {
+        try {
+          execFileSync("/usr/bin/ruby", ["-ryaml", "-e", "YAML.safe_load(STDIN.read)"], {
+            input: frontMatterMatch[1],
+            stdio: ["pipe", "ignore", "ignore"],
+          });
+        } catch {
+          violations.push(`${rel} contains invalid YAML front matter`);
+        }
       }
 
       const parsed = parseFrontMatterLabels(frontMatterMatch[1]);
