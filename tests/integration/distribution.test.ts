@@ -1210,5 +1210,205 @@ describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollba
       writeFileSync(join(d7OrderDir, "renovate.json"), JSON.stringify(d7OrderConfig, null, 2));
       expect(checkOpenSourceGovernanceFiles(d7OrderDir).ok).toBe(true);
     });
+
+    test("AC4 / Review Dispositions (D8-D10): checkOpenSourceGovernanceFiles enforces unset attribute resets, full Renovate overrides coverage, and top-level YAML front-matter labels against probes R8-R11", async () => {
+      const { checkOpenSourceGovernanceFiles } = await import(
+        // @ts-expect-error dynamic mjs import
+        "../../scripts/health/check-architecture.mjs"
+      );
+
+      function createValidGovDir(dir: string) {
+        mkdirSync(join(dir, ".github/ISSUE_TEMPLATE"), { recursive: true });
+        writeFileSync(
+          join(dir, "LICENSE"),
+          `MIT License\n\nCopyright (c) 2026\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the "Software"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nTHE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.`,
+        );
+        writeFileSync(
+          join(dir, "CONTRIBUTING.md"),
+          `# Contributing\n\nNode 26.8.1\nBun 1.4.2\nlabq-factory setup --local-only\nbun run check\nbun run test\nbun run verify\n@labq/contracts\n@labq/client\napps/backend\napps/engine-host`,
+        );
+        writeFileSync(join(dir, "SECURITY.md"), "# Security Policy\n");
+        writeFileSync(join(dir, "CHANGELOG.md"), "# Changelog\n");
+        writeFileSync(join(dir, ".gitattributes"), "* text=auto eol=lf\n");
+        writeFileSync(
+          join(dir, "renovate.json"),
+          JSON.stringify(
+            {
+              $schema: "https://docs.renovatebot.com/renovate-schema.json",
+              osvVulnerabilityAlerts: true,
+              lockFileMaintenance: { enabled: true },
+              packageRules: [
+                {
+                  matchDepTypes: ["overrides"],
+                  major: { enabled: false },
+                },
+              ],
+            },
+            null,
+            2,
+          ),
+        );
+        writeFileSync(join(dir, ".github/pull_request_template.md"), "# PR\n");
+        const tmpl = `---\nname: Bug\nlabels: needs-triage\n---\n## Source and problem\n## Outcome\n## Invariants\n## Acceptance criteria\n- [ ] AC1:\n## Boundary\nDepends on: None\n`;
+        writeFileSync(join(dir, ".github/ISSUE_TEMPLATE/bug_report.md"), tmpl);
+        writeFileSync(join(dir, ".github/ISSUE_TEMPLATE/feature_request.md"), tmpl);
+      }
+
+      // --- D8: Effective LF validation and explicit attribute resets (Probe R8) ---
+      // D8.1: Probe R8 - later '* !eol' unsets required LF policy
+      const d8Dir = join(tempDir, "probe-r8-gitattr-unset-eol");
+      createValidGovDir(d8Dir);
+      writeFileSync(join(d8Dir, ".gitattributes"), "* text=auto eol=lf\n* !eol\n");
+      const d8Res = checkOpenSourceGovernanceFiles(d8Dir);
+      expect(d8Res.ok).toBe(false);
+      expect(
+        d8Res.violations.some((v: string) =>
+          v.includes("does not effectively enforce eol=lf for required file classes"),
+        ),
+      ).toBe(true);
+
+      // D8.2: File-class specific reset '*.sh !eol'
+      const d8FileClassDir = join(tempDir, "probe-d8-gitattr-file-class-reset");
+      createValidGovDir(d8FileClassDir);
+      writeFileSync(join(d8FileClassDir, ".gitattributes"), "* text=auto eol=lf\n*.sh !eol\n");
+      const d8FileClassRes = checkOpenSourceGovernanceFiles(d8FileClassDir);
+      expect(d8FileClassRes.ok).toBe(false);
+      expect(
+        d8FileClassRes.violations.some((v: string) =>
+          v.includes(
+            ".gitattributes does not effectively enforce eol=lf for required file classes (script.sh)",
+          ),
+        ),
+      ).toBe(true);
+
+      // D8.3: Negative unset '* -eol'
+      const d8NegDir = join(tempDir, "probe-d8-gitattr-neg-eol");
+      createValidGovDir(d8NegDir);
+      writeFileSync(join(d8NegDir, ".gitattributes"), "* text=auto eol=lf\n* -eol\n");
+      const d8NegRes = checkOpenSourceGovernanceFiles(d8NegDir);
+      expect(d8NegRes.ok).toBe(false);
+      expect(
+        d8NegRes.violations.some((v: string) =>
+          v.includes("does not effectively enforce eol=lf for required file classes"),
+        ),
+      ).toBe(true);
+
+      // D8.4: Unset followed by re-enforced LF preserves effective safety
+      const d8ReEnforceDir = join(tempDir, "probe-d8-gitattr-reenforce");
+      createValidGovDir(d8ReEnforceDir);
+      writeFileSync(join(d8ReEnforceDir, ".gitattributes"), "* !eol\n* text=auto eol=lf\n");
+      expect(checkOpenSourceGovernanceFiles(d8ReEnforceDir).ok).toBe(true);
+
+      // --- D9: Renovate full coverage of overrides accounting for constraints (Probe R10) ---
+      // D9.1: Probe R10 - overrides disabling rule restricted to one specific package
+      const d9Dir = join(tempDir, "probe-r10-renovate-restricted-pkg");
+      createValidGovDir(d9Dir);
+      const d9Config = JSON.parse(readFileSync(join(d9Dir, "renovate.json"), "utf-8"));
+      d9Config.packageRules[0].matchPackageNames = ["one-specific-package"];
+      writeFileSync(join(d9Dir, "renovate.json"), JSON.stringify(d9Config, null, 2));
+      const d9Res = checkOpenSourceGovernanceFiles(d9Dir);
+      expect(d9Res.ok).toBe(false);
+      expect(
+        d9Res.violations.some((v: string) =>
+          v.includes("renovate.json must disable major updates for overrides in packageRules"),
+        ),
+      ).toBe(true);
+
+      // D9.2: Overrides disabling rule restricted by package pattern
+      const d9PatternDir = join(tempDir, "probe-d9-renovate-restricted-pattern");
+      createValidGovDir(d9PatternDir);
+      const d9PatternConfig = JSON.parse(
+        readFileSync(join(d9PatternDir, "renovate.json"), "utf-8"),
+      );
+      d9PatternConfig.packageRules[0].matchPackagePatterns = ["^@labq/"];
+      writeFileSync(join(d9PatternDir, "renovate.json"), JSON.stringify(d9PatternConfig, null, 2));
+      const d9PatternRes = checkOpenSourceGovernanceFiles(d9PatternDir);
+      expect(d9PatternRes.ok).toBe(false);
+      expect(
+        d9PatternRes.violations.some((v: string) =>
+          v.includes("renovate.json must disable major updates for overrides in packageRules"),
+        ),
+      ).toBe(true);
+
+      // D9.3: Overrides disabling rule with exclusions
+      const d9ExclusionDir = join(tempDir, "probe-d9-renovate-exclusions");
+      createValidGovDir(d9ExclusionDir);
+      const d9ExclusionConfig = JSON.parse(
+        readFileSync(join(d9ExclusionDir, "renovate.json"), "utf-8"),
+      );
+      d9ExclusionConfig.packageRules[0].excludePackageNames = ["exempt-package"];
+      writeFileSync(
+        join(d9ExclusionDir, "renovate.json"),
+        JSON.stringify(d9ExclusionConfig, null, 2),
+      );
+      const d9ExclusionRes = checkOpenSourceGovernanceFiles(d9ExclusionDir);
+      expect(d9ExclusionRes.ok).toBe(false);
+      expect(
+        d9ExclusionRes.violations.some((v: string) =>
+          v.includes("renovate.json must disable major updates for overrides in packageRules"),
+        ),
+      ).toBe(true);
+
+      // D9.4: Unrestricted wildcard package names or patterns pass
+      const d9WildcardPkgDir = join(tempDir, "probe-d9-renovate-wildcard-pkg");
+      createValidGovDir(d9WildcardPkgDir);
+      const d9WildcardConfig = JSON.parse(
+        readFileSync(join(d9WildcardPkgDir, "renovate.json"), "utf-8"),
+      );
+      d9WildcardConfig.packageRules[0].matchPackageNames = ["*"];
+      writeFileSync(
+        join(d9WildcardPkgDir, "renovate.json"),
+        JSON.stringify(d9WildcardConfig, null, 2),
+      );
+      expect(checkOpenSourceGovernanceFiles(d9WildcardPkgDir).ok).toBe(true);
+
+      // --- D10: Issue template top-level front matter mapping validation (Probe R11) ---
+      // D10.1: Probe R11 - labels nested under unrelated metadata rather than top level
+      const d10Dir = join(tempDir, "probe-r11-nested-metadata-label");
+      createValidGovDir(d10Dir);
+      const d10BugTmplPath = join(d10Dir, ".github/ISSUE_TEMPLATE/bug_report.md");
+      const d10BugTmpl = readFileSync(d10BugTmplPath, "utf-8");
+      writeFileSync(
+        d10BugTmplPath,
+        d10BugTmpl.replace("labels: needs-triage", "metadata:\n  labels: needs-triage"),
+      );
+      const d10Res = checkOpenSourceGovernanceFiles(d10Dir);
+      expect(d10Res.ok).toBe(false);
+      expect(
+        d10Res.violations.some((v: string) =>
+          v.includes(".github/ISSUE_TEMPLATE/bug_report.md must default labels to 'needs-triage'"),
+        ),
+      ).toBe(true);
+
+      // D10.2: Invalid nested structure under labels key
+      const d10NestedDir = join(tempDir, "probe-d10-nested-labels-struct");
+      createValidGovDir(d10NestedDir);
+      writeFileSync(
+        join(d10NestedDir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        d10BugTmpl.replace("labels: needs-triage", "labels:\n  nested:\n    - needs-triage"),
+      );
+      const d10NestedRes = checkOpenSourceGovernanceFiles(d10NestedDir);
+      expect(d10NestedRes.ok).toBe(false);
+      expect(
+        d10NestedRes.violations.some((v: string) =>
+          v.includes(".github/ISSUE_TEMPLATE/bug_report.md must default labels to 'needs-triage'"),
+        ),
+      ).toBe(true);
+
+      // D10.3: Unsupported dictionary object format
+      const d10DictDir = join(tempDir, "probe-d10-dict-labels");
+      createValidGovDir(d10DictDir);
+      writeFileSync(
+        join(d10DictDir, ".github/ISSUE_TEMPLATE/bug_report.md"),
+        d10BugTmpl.replace("labels: needs-triage", "labels: { triage: true }"),
+      );
+      const d10DictRes = checkOpenSourceGovernanceFiles(d10DictDir);
+      expect(d10DictRes.ok).toBe(false);
+      expect(
+        d10DictRes.violations.some((v: string) =>
+          v.includes(".github/ISSUE_TEMPLATE/bug_report.md must default labels to 'needs-triage'"),
+        ),
+      ).toBe(true);
+    });
   });
 });

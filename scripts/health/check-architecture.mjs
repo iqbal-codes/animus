@@ -271,12 +271,14 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
           attrs.set(k, false);
         } else if (token.startsWith("!")) {
           const k = token.slice(1);
-          attrs.delete(k);
+          attrs.set(k, "unspecified");
         } else {
           if (token === "binary") {
             attrs.set("binary", true);
             attrs.set("text", false);
-            attrs.delete("eol");
+            attrs.set("diff", false);
+            attrs.set("merge", false);
+            attrs.set("eol", "unspecified");
           } else if (token === "crlf") {
             attrs.set("text", true);
             attrs.set("eol", "crlf");
@@ -371,6 +373,59 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
         return types.includes("overrides") || types.includes("*");
       }
 
+      /**
+       * @param {any} rule
+       * @returns {boolean}
+       */
+      function isUnrestrictedPackageMatch(rule) {
+        if (rule.matchPackageNames !== undefined && rule.matchPackageNames !== null) {
+          const names = Array.isArray(rule.matchPackageNames)
+            ? rule.matchPackageNames
+            : [rule.matchPackageNames];
+          if (names.length === 0) return false;
+          for (const n of names) {
+            if (n !== "*" && n !== ".*") return false;
+          }
+        }
+        if (rule.matchPackagePatterns !== undefined && rule.matchPackagePatterns !== null) {
+          const patterns = Array.isArray(rule.matchPackagePatterns)
+            ? rule.matchPackagePatterns
+            : [rule.matchPackagePatterns];
+          if (patterns.length === 0) return false;
+          for (const p of patterns) {
+            if (p !== ".*" && p !== "*") return false;
+          }
+        }
+        if (rule.matchPackagePrefixes !== undefined && rule.matchPackagePrefixes !== null) {
+          const prefixes = Array.isArray(rule.matchPackagePrefixes)
+            ? rule.matchPackagePrefixes
+            : [rule.matchPackagePrefixes];
+          if (prefixes.length === 0) return false;
+          for (const p of prefixes) {
+            if (p !== "*") return false;
+          }
+        }
+        if (
+          rule.excludePackageNames &&
+          (!Array.isArray(rule.excludePackageNames) || rule.excludePackageNames.length > 0)
+        ) {
+          return false;
+        }
+        if (
+          rule.excludePackagePatterns &&
+          (!Array.isArray(rule.excludePackagePatterns) || rule.excludePackagePatterns.length > 0)
+        ) {
+          return false;
+        }
+        if (
+          rule.excludePackagePrefixes &&
+          (!Array.isArray(rule.excludePackagePrefixes) || rule.excludePackagePrefixes.length > 0)
+        ) {
+          return false;
+        }
+        return true;
+      }
+
       let effectiveOverridesMajorDisabled = false;
       let hasContradictoryOverridesRule = false;
 
@@ -391,7 +446,11 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
           const explicitlyMatchesOverrides =
             matchTypes.includes("overrides") || matchTypes.includes("*");
 
-          if (explicitlyMatchesOverrides && rule.major?.enabled === false) {
+          if (
+            explicitlyMatchesOverrides &&
+            isUnrestrictedPackageMatch(rule) &&
+            rule.major?.enabled === false
+          ) {
             effectiveOverridesMajorDisabled = true;
             hasContradictoryOverridesRule = false;
           } else if (rule.major?.enabled === true) {
@@ -477,7 +536,8 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
 
     for (let i = 0; i < rawLines.length; i++) {
       const stripped = stripYamlComment(rawLines[i]);
-      const match = stripped.match(/^\s*labels:\s*(.*)$/i);
+      // Top-level YAML mapping key must start at column 0 (no leading whitespace)
+      const match = stripped.match(/^labels\s*:\s*(.*)$/i);
       if (match) {
         labelLineIndex = i;
         rawValue = match[1].trim();
@@ -493,6 +553,10 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
     const labels = [];
 
     if (rawValue.length > 0) {
+      if (rawValue.startsWith("{") && rawValue.endsWith("}")) {
+        // Mapping/dictionary is an invalid/unsupported form for labels
+        return { found: true, labels: [] };
+      }
       if (rawValue.startsWith("[") && rawValue.endsWith("]")) {
         const items = rawValue.slice(1, -1).split(",");
         for (const item of items) {
@@ -514,6 +578,7 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
       for (let i = labelLineIndex + 1; i < rawLines.length; i++) {
         const stripped = stripYamlComment(rawLines[i]);
         if (stripped.trim().length === 0) continue;
+        // Non-indented line is the next top-level mapping key
         if (/^\S/.test(stripped)) {
           break;
         }
@@ -524,6 +589,7 @@ export function checkOpenSourceGovernanceFiles(repoRoot) {
             labels.push(cleaned);
           }
         } else {
+          // Indented line that is not a list item indicates unsupported/invalid structure
           break;
         }
       }
