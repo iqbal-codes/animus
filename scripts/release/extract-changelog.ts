@@ -1,14 +1,20 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
+export interface ExtractChangelogNotesOptions {
+  appendVerification?: boolean;
+  appendInstallInstructions?: boolean;
+  repo?: string;
+}
+
 /**
  * Extracts release notes for a specified version from CHANGELOG.md text.
- * Optionally appends SHA-256 checksum verification instructions.
+ * Optionally appends multi-channel installation instructions and SHA-256 checksum verification instructions.
  */
 export function extractChangelogNotes(
   changelogText: string,
   version: string,
-  options: { appendVerification?: boolean } = {},
+  options: ExtractChangelogNotesOptions = {},
 ): string {
   const cleanVersion = version.replace(/^v/, "").trim();
   const escaped = cleanVersion.replace(/\./g, "\\.");
@@ -28,6 +34,26 @@ export function extractChangelogNotes(
         ? changelogText.slice(startIndex, startIndex + match[0].length + nextIndex)
         : changelogText.slice(startIndex);
     body = section.trim();
+  }
+
+  const repo = (options.repo ?? "iqbal-codes/labq-software-factory").trim();
+
+  if (options.appendInstallInstructions !== false) {
+    const installBlock = [
+      "",
+      "### Installation",
+      "```sh",
+      "# POSIX Shell Installer (macOS & Linux)",
+      `curl -fsSL https://github.com/${repo}/releases/latest/download/install.sh | sh`,
+      "",
+      "# Bun Global Package",
+      `bun add -g github:${repo}`,
+      "",
+      "# Homebrew Tap (macOS & Linux)",
+      "brew install iqbal-codes/tap/labq-factory",
+      "```",
+    ].join("\n");
+    body = `${body}\n${installBlock}\n`;
   }
 
   if (options.appendVerification !== false) {

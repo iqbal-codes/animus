@@ -19,7 +19,7 @@
     "persistence": "Execute database and external storage operations through repository/service abstractions and transactional migration helpers.",
     "release_engineering": {
       "file_glob": "{scripts/release/**/*.ts,install.sh}",
-      "guidance": "Stage POSIX install.sh with fail-closed SHA-256 verification into dist/releases/install.sh, bundle standalone JS CLI via buildBundledCliScript, package extractable .tar.gz archives via packageCliDistributionTarball, compute deterministic SHA-256 digests in checksums.txt, verify binaries and bundled scripts with verifyCliBinarySmoke, and enforce unprivileged build / write-privileged publication separation in release.yml."
+      "guidance": "Stage POSIX install.sh with fail-closed SHA-256 verification into dist/releases/install.sh, generate Homebrew Formula labq-factory.rb via generateHomebrewFormula with fail-closed 64-hex SHA-256 validation, bundle standalone JS CLI via buildBundledCliScript, package extractable .tar.gz archives via packageCliDistributionTarball, compute deterministic SHA-256 digests in checksums.txt, verify binaries and bundled scripts with verifyCliBinarySmoke, and enforce unprivileged build / write-privileged publication separation in release.yml."
     },
     "error_handling": "Return typed domain errors and structured status codes rather than silent catch blocks or raw exception strings.",
     "ui_primitives": "Reuse canonical shared UI primitives (e.g. DataTable/SimpleTable, FormField/form hooks) when building frontend or mobile views.",

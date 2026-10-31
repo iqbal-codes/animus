@@ -16,8 +16,9 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { extractChangelogNotes } from "./extract-changelog";
+import { generateHomebrewFormula, stageReleaseHomebrewFormula } from "./homebrew-formula";
 
-export { extractChangelogNotes };
+export { extractChangelogNotes, generateHomebrewFormula, stageReleaseHomebrewFormula };
 
 export interface ReleasePackageOptions {
   version: string;
@@ -487,6 +488,21 @@ if (isMain) {
   if (staging.staged) {
     console.log(`Staged install.sh to ${staging.destinationPath}`);
   }
+
+  const formulaResult = stageReleaseHomebrewFormula({
+    version,
+    outDir,
+    sha256: tarballs.reduce(
+      (acc, t) => {
+        acc[`${t.platform}-${t.arch}`] = t.sha256;
+        return acc;
+      },
+      {} as Record<string, string>,
+    ),
+  });
+  console.log(
+    `Generated Homebrew formula to ${formulaResult.formulaPath} (${formulaResult.sha256.slice(0, 12)}...)`,
+  );
 
   const checksums = await generateReleaseChecksums(outDir);
   console.log(

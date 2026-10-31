@@ -2,6 +2,28 @@
 
 Repository configuration, factory enrollment, and issue admission are distinct states. A successful local configuration is not proof that the factory is reachable or that a job has started.
 
+## CLI Installation
+
+Install the `labq-factory` command-line interface (and its `factory` and `labq` symlinks) through one of three zero-server channels:
+
+- **POSIX Shell Installer (macOS & Linux)**:
+  ```sh
+  curl -fsSL https://github.com/iqbal-codes/labq-software-factory/releases/latest/download/install.sh | sh
+  ```
+  Enforces fail-closed SHA-256 integrity verification against `checksums.txt` before linking binaries into `$HOME/.labq/bin`.
+
+- **Bun Global Install**:
+  ```sh
+  bun add -g github:iqbal-codes/labq-software-factory
+  ```
+  Installs the bundled standalone JavaScript CLI (`dist/cli.js`) directly with Bun.
+
+- **Homebrew Tap (macOS & Linux)**:
+  ```sh
+  brew install iqbal-codes/tap/labq-factory
+  ```
+  Installs the checksum-pinned binary release using the Homebrew formula.
+
 ## Configure and enroll a local checkout
 
 Start the factory on the machine that holds the checkout, then run:
