@@ -13,6 +13,34 @@ durable persistence, and private engine-host coordination on Bun/Vite+.
 - The web console provides the unified operator dashboard, multi-repo project registry,
   and spec coordination interface on `127.0.0.1:3000`.
 
+## Installation
+
+Install `labq-factory` (and its CLI symlinks `factory` and `labq`) across three zero-server distribution channels:
+
+### 1. POSIX Shell Installer (macOS & Linux)
+
+Download prebuilt binaries into `~/.labq/bin` with fail-closed SHA-256 integrity verification:
+
+```sh
+curl -fsSL https://github.com/iqbal-codes/labq-software-factory/releases/latest/download/install.sh | sh
+```
+
+### 2. Bun Global Package
+
+Install the bundled standalone CLI script globally using Bun:
+
+```sh
+bun add -g github:iqbal-codes/labq-software-factory
+```
+
+### 3. Homebrew Tap (macOS & Linux)
+
+Install deterministic prebuilt binaries via the Homebrew formula:
+
+```sh
+brew install iqbal-codes/tap/labq-factory
+```
+
 ## Run an issue through the local loop
 
 ```sh

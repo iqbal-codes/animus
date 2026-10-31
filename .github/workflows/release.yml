@@ -88,6 +88,8 @@ jobs:
       - name: Verify SHA-256 checksums
         run: |
           cd dist/releases
+          test -f labq-factory.rb
+          test -f install.sh
           sha256sum -c checksums.txt
 
       - name: Upload release artifacts

@@ -4029,4 +4029,295 @@ Depends on: None
       expect(verification.verified).toContain("install.sh");
     });
   });
+
+  describe("Issue #99: Homebrew Tap Formula Generator, Release Workflow Integration, and Multi-Channel Install Docs", () => {
+    const validDigests = {
+      "darwin-arm64": "1111111111111111111111111111111111111111111111111111111111111111",
+      "darwin-x64": "2222222222222222222222222222222222222222222222222222222222222222",
+      "linux-arm64": "3333333333333333333333333333333333333333333333333333333333333333",
+      "linux-x64": "4444444444444444444444444444444444444444444444444444444444444444",
+    };
+
+    describe("AC1: Homebrew Formula Definition Generation (generateHomebrewFormula)", () => {
+      test("generates valid Ruby Formula definition with on_macos and on_linux arm/intel blocks, symlinks, and test assertion", async () => {
+        const { generateHomebrewFormula } = await import("../../scripts/release/homebrew-formula");
+
+        const formula = generateHomebrewFormula({
+          version: "0.2.0",
+          repo: "iqbal-codes/labq-software-factory",
+          sha256: validDigests,
+        });
+
+        // Verify class header
+        expect(formula).toContain("class LabqFactory < Formula");
+        expect(formula).toContain('version "0.2.0"');
+        expect(formula).toContain('license "MIT"');
+        expect(formula).toContain(
+          'homepage "https://github.com/iqbal-codes/labq-software-factory"',
+        );
+
+        // Verify macOS block and target URLs
+        expect(formula).toContain("on_macos do");
+        expect(formula).toContain("on_arm do");
+        expect(formula).toContain(
+          'url "https://github.com/iqbal-codes/labq-software-factory/releases/download/v0.2.0/labq-factory-v0.2.0-darwin-arm64.tar.gz"',
+        );
+        expect(formula).toContain(`sha256 "${validDigests["darwin-arm64"]}"`);
+        expect(formula).toContain("on_intel do");
+        expect(formula).toContain(
+          'url "https://github.com/iqbal-codes/labq-software-factory/releases/download/v0.2.0/labq-factory-v0.2.0-darwin-x64.tar.gz"',
+        );
+        expect(formula).toContain(`sha256 "${validDigests["darwin-x64"]}"`);
+
+        // Verify Linux block and target URLs
+        expect(formula).toContain("on_linux do");
+        expect(formula).toContain(
+          'url "https://github.com/iqbal-codes/labq-software-factory/releases/download/v0.2.0/labq-factory-v0.2.0-linux-arm64.tar.gz"',
+        );
+        expect(formula).toContain(`sha256 "${validDigests["linux-arm64"]}"`);
+        expect(formula).toContain(
+          'url "https://github.com/iqbal-codes/labq-software-factory/releases/download/v0.2.0/labq-factory-v0.2.0-linux-x64.tar.gz"',
+        );
+        expect(formula).toContain(`sha256 "${validDigests["linux-x64"]}"`);
+
+        // Verify install and symlink instructions
+        expect(formula).toContain('bin.install "labq-factory"');
+        expect(formula).toContain('bin.install_symlink "labq-factory" => "factory"');
+        expect(formula).toContain('bin.install_symlink "labq-factory" => "labq"');
+
+        // Verify test block asserting CLI output
+        expect(formula).toContain("test do");
+        expect(formula).toContain('shell_output("#{bin}/labq-factory version")');
+
+        // Authoritative platform syntax check via ruby -c if available
+        try {
+          const res = execFileSync("ruby", ["-c"], {
+            input: formula,
+            encoding: "utf-8",
+          });
+          expect(res).toContain("Syntax OK");
+        } catch (err: any) {
+          if (err.code !== "ENOENT") {
+            throw err;
+          }
+        }
+      });
+
+      test("handles version with leading 'v' cleanly", async () => {
+        const { generateHomebrewFormula } = await import("../../scripts/release/homebrew-formula");
+
+        const formula = generateHomebrewFormula({
+          version: "v0.2.0",
+          sha256: validDigests,
+        });
+
+        expect(formula).toContain('version "0.2.0"');
+        expect(formula).not.toContain('version "v0.2.0"');
+        expect(formula).toContain("/download/v0.2.0/labq-factory-v0.2.0-darwin-arm64.tar.gz");
+      });
+    });
+
+    describe("AC2: Fail-Closed SHA-256 Digest Validation", () => {
+      test("fails closed when any required platform target SHA-256 digest is missing", async () => {
+        const { generateHomebrewFormula } = await import("../../scripts/release/homebrew-formula");
+
+        const targets = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"] as const;
+
+        for (const missingTarget of targets) {
+          const incompleteDigests = { ...validDigests };
+          delete (incompleteDigests as any)[missingTarget];
+
+          expect(() =>
+            generateHomebrewFormula({
+              version: "0.2.0",
+              sha256: incompleteDigests,
+            }),
+          ).toThrow(new RegExp(`Missing SHA-256 digest for target "${missingTarget}"`));
+        }
+      });
+
+      test("fails closed when any target SHA-256 digest is empty or whitespace", async () => {
+        const { generateHomebrewFormula } = await import("../../scripts/release/homebrew-formula");
+
+        expect(() =>
+          generateHomebrewFormula({
+            version: "0.2.0",
+            sha256: {
+              ...validDigests,
+              "darwin-arm64": "",
+            },
+          }),
+        ).toThrow(/Missing SHA-256 digest for target "darwin-arm64"/);
+
+        expect(() =>
+          generateHomebrewFormula({
+            version: "0.2.0",
+            sha256: {
+              ...validDigests,
+              "linux-x64": "   ",
+            },
+          }),
+        ).toThrow(/Missing SHA-256 digest for target "linux-x64"/);
+      });
+
+      test("fails closed when any target SHA-256 digest is malformed or not 64 hex characters", async () => {
+        const { generateHomebrewFormula } = await import("../../scripts/release/homebrew-formula");
+
+        const invalidCases = [
+          "a".repeat(63),
+          "a".repeat(65),
+          "g".repeat(64),
+          "111111111111111111111111111111111111111111111111111111111111111z",
+          "1111 1111111111111111111111111111111111111111111111111111111111",
+        ];
+
+        for (const invalidSha of invalidCases) {
+          expect(() =>
+            generateHomebrewFormula({
+              version: "0.2.0",
+              sha256: {
+                ...validDigests,
+                "darwin-x64": invalidSha,
+              },
+            }),
+          ).toThrow(/Invalid SHA-256 digest for target "darwin-x64"/);
+        }
+      });
+
+      test("fails closed when options or version are missing or empty", async () => {
+        const { generateHomebrewFormula } = await import("../../scripts/release/homebrew-formula");
+
+        expect(() => generateHomebrewFormula(null as any)).toThrow(/Missing options/);
+        expect(() => generateHomebrewFormula({ version: "" } as any)).toThrow(
+          /Missing or empty version/,
+        );
+        expect(() => generateHomebrewFormula({ version: "   " } as any)).toThrow(
+          /Missing or empty version/,
+        );
+      });
+    });
+
+    describe("AC3: Release Workflow, Packaging Integration, and Changelog Notes", () => {
+      test("package.ts re-exports generateHomebrewFormula and stageReleaseHomebrewFormula", async () => {
+        const pkg = await import("../../scripts/release/package");
+        expect(typeof pkg.generateHomebrewFormula).toBe("function");
+        expect(typeof pkg.stageReleaseHomebrewFormula).toBe("function");
+      });
+
+      test("stageReleaseHomebrewFormula writes labq-factory.rb and computes checksums", async () => {
+        const { stageReleaseHomebrewFormula, generateReleaseChecksums, verifyReleaseChecksums } =
+          await import("../../scripts/release/package");
+        const outDir = join(tempDir, "releases-formula-staging");
+        mkdirSync(outDir, { recursive: true });
+
+        const result = stageReleaseHomebrewFormula({
+          version: "0.2.0",
+          outDir,
+          sha256: validDigests,
+        });
+
+        expect(existsSync(result.formulaPath)).toBe(true);
+        expect(result.formulaPath.endsWith("labq-factory.rb")).toBe(true);
+        expect(result.content).toContain("class LabqFactory < Formula");
+        expect(result.sha256).toBeDefined();
+
+        const checksums = await generateReleaseChecksums(outDir);
+        expect(checksums.entries.some((e) => e.filename === "labq-factory.rb")).toBe(true);
+
+        const verification = verifyReleaseChecksums(outDir);
+        expect(verification.ok).toBe(true);
+        expect(verification.verified).toContain("labq-factory.rb");
+      });
+
+      test("extractChangelogNotes includes multi-channel installation instructions and preserves verification block", async () => {
+        const { extractChangelogNotes } = await import("../../scripts/release/extract-changelog");
+        const changelogPath = join(process.cwd(), "CHANGELOG.md");
+        const changelogText = readFileSync(changelogPath, "utf-8");
+
+        const notes = extractChangelogNotes(changelogText, "0.2.0");
+
+        // Multi-channel install instructions
+        expect(notes).toContain("### Installation");
+        expect(notes).toContain(
+          "curl -fsSL https://github.com/iqbal-codes/labq-software-factory/releases/latest/download/install.sh | sh",
+        );
+        expect(notes).toContain("bun add -g github:iqbal-codes/labq-software-factory");
+        expect(notes).toContain("brew install iqbal-codes/tap/labq-factory");
+
+        // Preserves verification block
+        expect(notes).toContain("### Verification");
+        expect(notes).toContain("sha256sum -c checksums.txt");
+      });
+
+      test(".github/workflows/release.yml verifies labq-factory.rb before checksum validation", () => {
+        const workflowPath = join(process.cwd(), ".github/workflows/release.yml");
+        expect(existsSync(workflowPath)).toBe(true);
+        const content = readFileSync(workflowPath, "utf-8");
+        const doc = parseYaml(content);
+
+        const buildSteps = doc.jobs.build.steps;
+        const verifyStep = buildSteps.find((s: any) => s.run?.includes("test -f labq-factory.rb"));
+
+        expect(verifyStep).toBeDefined();
+        expect(verifyStep.run).toContain("sha256sum -c checksums.txt");
+        expect(verifyStep.run).toContain("test -f install.sh");
+      });
+
+      test("homebrew-formula.ts CLI entrypoint generates labq-factory.rb from checksums.txt", () => {
+        const outDir = join(tempDir, "cli-homebrew-test");
+        mkdirSync(outDir, { recursive: true });
+
+        const checksums =
+          [
+            `1111111111111111111111111111111111111111111111111111111111111111  labq-factory-v0.2.0-darwin-arm64.tar.gz`,
+            `2222222222222222222222222222222222222222222222222222222222222222  labq-factory-v0.2.0-darwin-x64.tar.gz`,
+            `3333333333333333333333333333333333333333333333333333333333333333  labq-factory-v0.2.0-linux-arm64.tar.gz`,
+            `4444444444444444444444444444444444444444444444444444444444444444  labq-factory-v0.2.0-linux-x64.tar.gz`,
+          ].join("\n") + "\n";
+        writeFileSync(join(outDir, "checksums.txt"), checksums);
+
+        const scriptPath = join(process.cwd(), "scripts/release/homebrew-formula.ts");
+        const res = execFileSync("bun", [scriptPath, "--version", "0.2.0", "--outDir", outDir], {
+          encoding: "utf-8",
+        });
+
+        expect(res).toContain("Generated Homebrew formula");
+        const formulaPath = join(outDir, "labq-factory.rb");
+        expect(existsSync(formulaPath)).toBe(true);
+        const formulaContent = readFileSync(formulaPath, "utf-8");
+        expect(formulaContent).toContain("class LabqFactory < Formula");
+        expect(formulaContent).toContain(
+          "1111111111111111111111111111111111111111111111111111111111111111",
+        );
+      });
+    });
+
+    describe("AC4: Multi-Channel Installation Documentation Coverage", () => {
+      test("README.md documents curl|sh, bun add -g, and brew install channels", () => {
+        const readmePath = join(process.cwd(), "README.md");
+        expect(existsSync(readmePath)).toBe(true);
+        const content = readFileSync(readmePath, "utf-8");
+
+        expect(content).toContain("## Installation");
+        expect(content).toContain(
+          "curl -fsSL https://github.com/iqbal-codes/labq-software-factory/releases/latest/download/install.sh | sh",
+        );
+        expect(content).toContain("bun add -g github:iqbal-codes/labq-software-factory");
+        expect(content).toContain("brew install iqbal-codes/tap/labq-factory");
+      });
+
+      test("docs/onboarding.md documents curl|sh, bun add -g, and brew install channels", () => {
+        const onboardingPath = join(process.cwd(), "docs/onboarding.md");
+        expect(existsSync(onboardingPath)).toBe(true);
+        const content = readFileSync(onboardingPath, "utf-8");
+
+        expect(content).toContain("## CLI Installation");
+        expect(content).toContain(
+          "curl -fsSL https://github.com/iqbal-codes/labq-software-factory/releases/latest/download/install.sh | sh",
+        );
+        expect(content).toContain("bun add -g github:iqbal-codes/labq-software-factory");
+        expect(content).toContain("brew install iqbal-codes/tap/labq-factory");
+      });
+    });
+  });
 });
