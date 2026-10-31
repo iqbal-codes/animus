@@ -1,0 +1,155 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version override (e.g. 0.2.0 or v0.2.0)"
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: "Build, Package & Smoke Verify"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".node-version"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Frozen dependency install
+        run: bun install --frozen-lockfile
+
+      - name: Resolve release version
+        id: resolve-version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            RAW_VER="${{ github.event.inputs.version }}"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            RAW_VER="${GITHUB_REF_NAME#v}"
+          else
+            RAW_VER=$(node -p "require('./package.json').version")
+          fi
+          CLEAN_VER="${RAW_VER#v}"
+          echo "version=${CLEAN_VER}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${CLEAN_VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Build standalone CLI binary
+        run: bun run build:cli
+        env:
+          RELEASE_VERSION: ${{ steps.resolve-version.outputs.version }}
+
+      - name: Package release bundles & compute SHA-256 checksums
+        run: bun run package:release
+        env:
+          RELEASE_VERSION: ${{ steps.resolve-version.outputs.version }}
+
+      - name: Verify CLI binary smoke
+        run: |
+          bun -e "
+            import { verifyCliBinarySmoke } from './scripts/release/build-cli.ts';
+            await verifyCliBinarySmoke({
+              binaryPath: './dist/bin/labq-factory',
+              expectedVersion: '${{ steps.resolve-version.outputs.version }}',
+            });
+            console.log('CLI binary smoke verification passed');
+          "
+
+      - name: Verify SHA-256 checksums
+        run: |
+          cd dist/releases
+          sha256sum -c checksums.txt
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts
+          path: dist/releases/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: "Publish GitHub Release"
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".node-version"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Frozen dependency install
+        run: bun install --frozen-lockfile
+
+      - name: Resolve release version
+        id: resolve-version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            RAW_VER="${{ github.event.inputs.version }}"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            RAW_VER="${GITHUB_REF_NAME#v}"
+          else
+            RAW_VER=$(node -p "require('./package.json').version")
+          fi
+          CLEAN_VER="${RAW_VER#v}"
+          echo "version=${CLEAN_VER}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${CLEAN_VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-artifacts
+          path: dist/releases
+
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          bun scripts/release/extract-changelog.ts \
+            --version "${{ steps.resolve-version.outputs.version }}" \
+            --output dist/RELEASE_NOTES.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.resolve-version.outputs.tag }}"
+          TITLE="Release ${TAG}"
+          gh release create "$TAG" \
+            dist/releases/* \
+            --title "$TITLE" \
+            --notes-file dist/RELEASE_NOTES.md \
+            --draft=false \
+            --prerelease=false
