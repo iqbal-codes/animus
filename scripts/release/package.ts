@@ -1,7 +1,19 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { extractChangelogNotes } from "./extract-changelog";
 
 export { extractChangelogNotes };
@@ -38,6 +50,48 @@ export interface ReleaseBundleResult {
 export interface ChecksumEntry {
   filename: string;
   sha256: string;
+}
+
+export interface CliDistributionPackageOptions {
+  version: string;
+  platform: "darwin" | "linux";
+  arch: "arm64" | "x64";
+  outDir: string;
+  gitSha?: string;
+  repoRoot?: string;
+  binaryPath?: string;
+  binaryContent?: Buffer | string;
+  binaries?: {
+    "labq-factory"?: Buffer | string;
+    factory?: Buffer | string;
+    labq?: Buffer | string;
+  };
+  buildTimestamp?: string;
+}
+
+export interface CliDistributionTarballResult {
+  tarballPath: string;
+  bundlePath: string;
+  filename: string;
+  version: string;
+  platform: "darwin" | "linux";
+  arch: "arm64" | "x64";
+  sha256: string;
+  executables: string[];
+}
+
+export interface PackageAllCliDistributionTarballsOptions {
+  version: string;
+  outDir: string;
+  repoRoot?: string;
+  binaryPath?: string;
+  binaryContent?: Buffer | string;
+  binaries?: {
+    "labq-factory"?: Buffer | string;
+    factory?: Buffer | string;
+    labq?: Buffer | string;
+  };
+  buildTimestamp?: string;
 }
 
 export interface ReleaseChecksumsResult {
@@ -233,6 +287,144 @@ export async function packageAllReleaseBundles(opts: {
   return { bundles, checksums };
 }
 
+export async function packageCliDistributionTarball(
+  opts: CliDistributionPackageOptions,
+): Promise<CliDistributionTarballResult> {
+  const { version, platform, arch, outDir } = opts;
+  const repoRoot = resolve(opts.repoRoot ?? process.cwd());
+
+  if (!existsSync(outDir)) {
+    mkdirSync(outDir, { recursive: true });
+  }
+
+  const filename = `labq-factory-v${version}-${platform}-${arch}.tar.gz`;
+  const tarballPath = join(outDir, filename);
+
+  const stageDir = mkdtempSync(join(tmpdir(), `labq-dist-${platform}-${arch}-`));
+  const executables = ["labq-factory", "factory", "labq"];
+
+  try {
+    const resolveBinaryData = (binName: string): Buffer => {
+      if (opts.binaries && opts.binaries[binName as keyof typeof opts.binaries]) {
+        const val = opts.binaries[binName as keyof typeof opts.binaries]!;
+        return Buffer.isBuffer(val) ? val : Buffer.from(val);
+      }
+
+      if (opts.binaryContent) {
+        return Buffer.isBuffer(opts.binaryContent)
+          ? opts.binaryContent
+          : Buffer.from(opts.binaryContent);
+      }
+
+      if (opts.binaryPath) {
+        const directPath = resolve(opts.binaryPath);
+        if (existsSync(directPath)) {
+          if (statSync(directPath).isDirectory()) {
+            const nested = join(directPath, binName);
+            if (existsSync(nested)) return readFileSync(nested);
+          } else {
+            const sibling = join(dirname(directPath), binName);
+            if (existsSync(sibling)) return readFileSync(sibling);
+            return readFileSync(directPath);
+          }
+        }
+      }
+
+      const candidateBin = join(repoRoot, "dist/bin", binName);
+      if (existsSync(candidateBin)) {
+        return readFileSync(candidateBin);
+      }
+      const candidateMainBin = join(repoRoot, "dist/bin/labq-factory");
+      if (existsSync(candidateMainBin)) {
+        return readFileSync(candidateMainBin);
+      }
+
+      const candidateCliJs = join(repoRoot, "dist/cli.js");
+      if (existsSync(candidateCliJs)) {
+        return readFileSync(candidateCliJs);
+      }
+
+      return Buffer.from(
+        ["#!/usr/bin/env bun", `console.log("labq-factory v${version}");`, ""].join("\n"),
+        "utf-8",
+      );
+    };
+
+    for (const binName of executables) {
+      const targetFile = join(stageDir, binName);
+      const data = resolveBinaryData(binName);
+      writeFileSync(targetFile, data, { mode: 0o755 });
+      try {
+        chmodSync(targetFile, 0o755);
+      } catch {}
+
+      if (opts.buildTimestamp) {
+        try {
+          const date = new Date(opts.buildTimestamp);
+          utimesSync(targetFile, date, date);
+        } catch {}
+      }
+    }
+
+    rmSync(tarballPath, { force: true });
+    const tarRes = spawnSync("tar", ["-czf", tarballPath, "-C", stageDir, ...executables], {
+      cwd: stageDir,
+      env: { ...process.env, COPYFILE_DISABLE: "1" },
+      encoding: "utf-8",
+    });
+
+    if (tarRes.status !== 0 || !existsSync(tarballPath)) {
+      throw new Error(
+        `Failed to create distribution tarball at ${tarballPath}: ${tarRes.stderr || tarRes.stdout}`,
+      );
+    }
+
+    const archiveBytes = readFileSync(tarballPath);
+    const sha256 = createHash("sha256").update(archiveBytes).digest("hex");
+
+    return {
+      tarballPath,
+      bundlePath: tarballPath,
+      filename,
+      version,
+      platform,
+      arch,
+      sha256,
+      executables,
+    };
+  } finally {
+    try {
+      rmSync(stageDir, { recursive: true, force: true });
+    } catch {}
+  }
+}
+
+export async function packageAllCliDistributionTarballs(
+  opts: PackageAllCliDistributionTarballsOptions,
+): Promise<{
+  tarballs: CliDistributionTarballResult[];
+  checksums: ReleaseChecksumsResult;
+}> {
+  const tarballs: CliDistributionTarballResult[] = [];
+  for (const t of RELEASE_TARGETS) {
+    const tarball = await packageCliDistributionTarball({
+      version: opts.version,
+      platform: t.platform,
+      arch: t.arch,
+      outDir: opts.outDir,
+      repoRoot: opts.repoRoot,
+      binaryPath: opts.binaryPath,
+      binaryContent: opts.binaryContent,
+      binaries: opts.binaries,
+      buildTimestamp: opts.buildTimestamp,
+    });
+    tarballs.push(tarball);
+  }
+
+  const checksums = await generateReleaseChecksums(opts.outDir);
+  return { tarballs, checksums };
+}
+
 const isMain =
   (typeof Bun !== "undefined" && Boolean(import.meta.main)) ||
   (process.argv[1] !== undefined && process.argv[1].endsWith("package.ts"));
@@ -245,16 +437,28 @@ if (isMain) {
     if (res.status === 0 && res.stdout) gitSha = res.stdout.trim();
   } catch {}
   const outDir = join(process.cwd(), "dist/releases");
-  const { bundles, checksums } = await packageAllReleaseBundles({
+  const { bundles } = await packageAllReleaseBundles({
     version,
     gitSha,
     outDir,
   });
   for (const b of bundles) {
     console.log(
-      `Packaged ${b.manifest.platform}-${b.manifest.arch}: ${b.bundlePath} (${b.sha256.slice(0, 12)}...)`,
+      `Packaged bundle ${b.manifest.platform}-${b.manifest.arch}: ${b.bundlePath} (${b.sha256.slice(0, 12)}...)`,
     );
   }
+
+  const { tarballs } = await packageAllCliDistributionTarballs({
+    version,
+    outDir,
+  });
+  for (const t of tarballs) {
+    console.log(
+      `Packaged CLI tarball ${t.platform}-${t.arch}: ${t.tarballPath} (${t.sha256.slice(0, 12)}...)`,
+    );
+  }
+
+  const checksums = await generateReleaseChecksums(outDir);
   console.log(
     `Generated checksums for ${checksums.entries.length} release artifacts at ${checksums.checksumsPath}`,
   );
