@@ -10,7 +10,7 @@ import {
   type FactoryConnectionOptions,
 } from "./onboarding-registration";
 import { CommandService } from "../../../apps/backend/src/command";
-import type { ControlAction } from "@labq/contracts/operator";
+import type { ControlAction } from "@animus/contracts/operator";
 
 export async function runControlCommand(opts: {
   subcommand?: string;

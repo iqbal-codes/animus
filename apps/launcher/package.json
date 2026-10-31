@@ -1,5 +1,5 @@
 {
-  "name": "@labq/launcher",
+  "name": "@animus/launcher",
   "version": "0.2.0",
   "private": true,
   "type": "module",
@@ -8,6 +8,6 @@
     "start": "bun src/main.ts"
   },
   "dependencies": {
-    "@labq/contracts": "workspace:*"
+    "@animus/contracts": "workspace:*"
   }
 }

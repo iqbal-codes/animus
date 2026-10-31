@@ -737,7 +737,7 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
       [
         "# Factory Operations",
         "",
-        "Managed by LabQ Software Factory CLI (`labq-factory`).",
+        "Managed by Animus CLI (`animus`).",
         "- Holdout scenarios: `.factory/holdout/HOLDOUT.md`",
         "- Ordinary checks: `bun harness/ci.ts`",
         "",

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyRepositorySetup, runConfigCliCommand } from "../../scripts/cli/commands/setup";
-import { readArchonConfig, writeArchonConfig } from "../../scripts/loop/config";
+import { readAnimusConfig, writeAnimusConfig } from "../../scripts/loop/config";
 import {
   OnboardingCancelled,
   type WizardChoice,
@@ -76,12 +76,12 @@ describe("onboarding wizard setup", () => {
       },
       offline,
     );
-    expect(result.archonConfig.tiers?.small).toEqual({
+    expect(result.animusConfig.tiers?.small).toEqual({
       provider: "codex",
       model: "private/model",
       effort: "low",
     });
-    expect(Object.keys(result.archonConfig.assistants!)).toEqual(["claude", "codex"]);
+    expect(Object.keys(result.animusConfig.assistants!)).toEqual(["claude", "codex"]);
     expect(result.scheduleConfig.max_laps).toBe(5);
   });
 
@@ -92,7 +92,7 @@ describe("onboarding wizard setup", () => {
       await expect(
         applyRepositorySetup({ repoRoot: root, nonInteractive: true, parallel: value }, offline),
       ).rejects.toThrow("positive safe integer");
-      expect(existsSync(join(root, ".archon"))).toBe(false);
+      expect(existsSync(join(root, ".animus"))).toBe(false);
     },
   );
 
@@ -120,7 +120,7 @@ describe("onboarding wizard setup", () => {
     await expect(
       applyRepositorySetup({ repoRoot: root, nonInteractive: true, ...options }, offline),
     ).rejects.toThrow();
-    expect(existsSync(join(root, ".archon"))).toBe(false);
+    expect(existsSync(join(root, ".animus"))).toBe(false);
   });
 
   test("config tier rejects effort unsupported by its harness and does not write", async () => {
@@ -133,7 +133,7 @@ describe("onboarding wizard setup", () => {
       json: true,
     });
     expect(code).toBe(1);
-    expect(existsSync(join(root, ".archon"))).toBe(false);
+    expect(existsSync(join(root, ".animus"))).toBe(false);
   });
 
   test("tier editing searches only selected harnesses, uses a real catalog and limits effort to harness vocabulary", async () => {
@@ -153,7 +153,7 @@ describe("onboarding wizard setup", () => {
         },
       },
     );
-    expect(result.archonConfig.tiers?.large).toEqual({
+    expect(result.animusConfig.tiers?.large).toEqual({
       provider: "opencode",
       model: "vendor/reasoner",
       effort: "high",
@@ -180,7 +180,7 @@ describe("onboarding wizard setup", () => {
         }),
       },
     );
-    expect(result.archonConfig.tiers?.small).toEqual({ provider: "pi", model: "vendor/plain" });
+    expect(result.animusConfig.tiers?.small).toEqual({ provider: "pi", model: "vendor/plain" });
     expect(prompts.selections.some((selection) => selection.message === "Reasoning effort")).toBe(
       false,
     );
@@ -205,7 +205,7 @@ describe("onboarding wizard setup", () => {
         }),
       },
     );
-    expect(result.archonConfig.tiers?.medium).toEqual({
+    expect(result.animusConfig.tiers?.medium).toEqual({
       provider: "codex",
       model: "private:model-v2",
     });
@@ -214,8 +214,8 @@ describe("onboarding wizard setup", () => {
 
   test("cancellation during tier editing leaves existing config byte-for-byte unchanged", async () => {
     const root = repo();
-    writeArchonConfig(root, { assistant: "codex", assistants: { codex: { model: "existing" } } });
-    const before = readFileSync(join(root, ".archon/config.yaml"), "utf-8");
+    writeAnimusConfig(root, { assistant: "codex", assistants: { codex: { model: "existing" } } });
+    const before = readFileSync(join(root, ".animus/config.yaml"), "utf-8");
     const prompts = new Answers(["codex"]);
     prompts.select = async () => {
       throw new OnboardingCancelled();
@@ -224,18 +224,18 @@ describe("onboarding wizard setup", () => {
       "cancelled",
     );
     expect(prompts.closed).toBe(true);
-    expect(readFileSync(join(root, ".archon/config.yaml"), "utf-8")).toBe(before);
+    expect(readFileSync(join(root, ".animus/config.yaml"), "utf-8")).toBe(before);
     expect(existsSync(join(root, ".factory"))).toBe(false);
   });
 
   test("legacy noninteractive setup keeps configured mixed-provider tiers", async () => {
     const root = repo();
-    writeArchonConfig(root, {
+    writeAnimusConfig(root, {
       assistant: "pi",
       tiers: { large: { provider: "codex", model: "existing-codex", effort: "xhigh" } },
     });
     const result = await applyRepositorySetup({ repoRoot: root, nonInteractive: true }, offline);
-    expect(result.archonConfig.tiers?.large).toEqual({
+    expect(result.animusConfig.tiers?.large).toEqual({
       provider: "codex",
       model: "existing-codex",
       effort: "xhigh",
@@ -244,7 +244,7 @@ describe("onboarding wizard setup", () => {
 
   test("deselected aliases cannot route a role outside the selected subset, default effort stays unset", async () => {
     const root = repo();
-    writeArchonConfig(root, {
+    writeAnimusConfig(root, {
       assistant: "claude",
       assistants: { claude: { model: "old" } },
       aliases: { "@old": { provider: "claude", model: "old" } },
@@ -254,20 +254,20 @@ describe("onboarding wizard setup", () => {
       { repoRoot: root },
       { ...offline, prompts, catalog: async () => ({ models: [] }) },
     );
-    expect(result.archonConfig.aliases?.["@old"]).toBeUndefined();
-    expect(result.archonConfig.aliases?.["@reasoning"]?.effort).toBeUndefined();
+    expect(result.animusConfig.aliases?.["@old"]).toBeUndefined();
+    expect(result.animusConfig.aliases?.["@reasoning"]?.effort).toBeUndefined();
   });
 
   test("persists exactly checked harnesses and moves every tier off deselected harnesses", async () => {
     const root = repo();
-    writeArchonConfig(root, {
+    writeAnimusConfig(root, {
       assistant: "claude",
       assistants: { claude: { model: "old" }, codex: { model: "configured-codex" } },
       tiers: { small: { provider: "claude", model: "old" } },
     });
     const prompts = new Answers(["codex"]);
     const result = await applyRepositorySetup({ repoRoot: root }, { ...offline, prompts });
-    const config = readArchonConfig(root);
+    const config = readAnimusConfig(root);
     expect(Object.keys(config.assistants!)).toEqual(["codex"]);
     expect(Object.values(config.tiers!).map((b) => b.provider)).toEqual([
       "codex",
@@ -275,7 +275,7 @@ describe("onboarding wizard setup", () => {
       "codex",
     ]);
     expect(config.assistant).toBe("codex");
-    expect(result.archonConfig.tiers?.medium?.model).toBe("configured-codex");
+    expect(result.animusConfig.tiers?.medium?.model).toBe("configured-codex");
     expect(prompts.closed).toBe(true);
     expect(prompts.initiallyChecked).toEqual(["claude", "codex"]);
   });

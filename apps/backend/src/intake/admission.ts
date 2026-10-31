@@ -1,4 +1,4 @@
-import type { EvaluatedIssue } from "@labq/contracts/operator";
+import type { EvaluatedIssue } from "@animus/contracts/operator";
 import { parseDependencies, isActiveClaim } from "./parser";
 
 export interface RawIssue {
@@ -97,7 +97,7 @@ export async function runJevAdvisory(
         headers: {
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
-          "User-Agent": "LabQ-Software-Factory/1.0",
+          "User-Agent": "Animus/1.0",
         },
         body: JSON.stringify(payload),
         signal: AbortSignal.timeout(5000),

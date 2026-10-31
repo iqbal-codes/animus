@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import type { Health, GlobalBrakeState, LapList } from "@labq/contracts/operator";
+import type { Health, GlobalBrakeState, LapList } from "@animus/contracts/operator";
 import { client } from "@/lib/factory-client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -48,7 +48,7 @@ export function OperationsView() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-base font-semibold text-[var(--foreground)]">
-            Factory System Operations
+            Animus System Operations
           </h2>
           <p className="text-xs text-[var(--muted-foreground)]">
             Status of host bridge, execution brakes, and native workflow history

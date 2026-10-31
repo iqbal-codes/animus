@@ -8,8 +8,12 @@ import {
   ProjectRegistryService,
   SyntheticForgeAdapter,
 } from "../../apps/backend/src/registry";
-import { createFactoryClient } from "@labq/client";
-import { projectSchema, projectListSchema, deregisterResultSchema } from "@labq/contracts/operator";
+import { createFactoryClient } from "@animus/client";
+import {
+  projectSchema,
+  projectListSchema,
+  deregisterResultSchema,
+} from "@animus/contracts/operator";
 
 type DatabaseInstance = ReturnType<typeof initializeDatabase>;
 
@@ -21,7 +25,7 @@ describe("Project Registry & Persistence (Issue #59)", () => {
   let service: ProjectRegistryService;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "labq-registry-test-"));
+    tempDir = mkdtempSync(join(tmpdir(), "animus-registry-test-"));
     dbPath = join(tempDir, "state", "console.db");
     db = initializeDatabase(dbPath);
     forge = new SyntheticForgeAdapter({
@@ -450,7 +454,7 @@ describe("Project Registry & Persistence (Issue #59)", () => {
     });
   });
 
-  describe("AC6: Client SDK Integration via @labq/client", () => {
+  describe("AC6: Client SDK Integration via @animus/client", () => {
     test("client handles projects, registration, retargeting, and project-scoped calls", async () => {
       const mockProject = {
         id: "proj_mock_123",

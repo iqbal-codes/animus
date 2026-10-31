@@ -3,7 +3,7 @@ import {
   candidateVerificationRecordSchema,
   type CandidateVerificationRecord,
   type CandidateVerificationSubmission,
-} from "@labq/contracts/operator";
+} from "@animus/contracts/operator";
 import { EvidenceError } from "./errors";
 
 export class CandidateVerificationEngine {

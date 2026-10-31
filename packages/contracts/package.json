@@ -1,5 +1,5 @@
 {
-  "name": "@labq/contracts",
+  "name": "@animus/contracts",
   "private": true,
   "type": "module",
   "exports": {

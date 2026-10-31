@@ -345,7 +345,7 @@ describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollba
       // Catalog check
       const catalog = adapter.getCatalog();
       expect(catalog.workflows.length).toBeGreaterThan(0);
-      expect(catalog.workflows.some((w) => w.name === "archon-loop")).toBe(true);
+      expect(catalog.workflows.some((w) => w.name === "animus-loop")).toBe(true);
 
       // Launch simulated lap
       const ack = adapter.launchLap({ specification: "Test offline specification" });
@@ -378,7 +378,7 @@ describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollba
       expect(result.violations.length).toBe(0);
 
       // Deliberate forbidden import in contracts must fail closed
-      const illegalCode = 'import { initializeDatabase } from "@labq/backend";';
+      const illegalCode = 'import { initializeDatabase } from "@animus/backend";';
       const contractViolations = checkArchitectureRules.scanSnippet(
         "packages/contracts/src/fake.ts",
         illegalCode,
@@ -629,102 +629,102 @@ describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollba
         }
       };
 
-      // 1. contracts -> @labq/backend
+      // 1. contracts -> @animus/backend
       {
         const caseDir = join(tempDir, "case-contracts-backend");
         initCleanWorkspace(caseDir);
         writeFileSync(
           join(caseDir, "packages/contracts/package.json"),
           JSON.stringify({
-            name: "@labq/contracts",
-            dependencies: { "@labq/backend": "workspace:*" },
+            name: "@animus/contracts",
+            dependencies: { "@animus/backend": "workspace:*" },
           }),
         );
         const res = checkWorkspacePackageEdges(caseDir);
         expect(res.ok).toBe(false);
         expect(
           res.violations.some(
-            (v: string) => v.includes("packages/contracts") && v.includes("@labq/backend"),
+            (v: string) => v.includes("packages/contracts") && v.includes("@animus/backend"),
           ),
         ).toBe(true);
       }
 
-      // 2. contracts -> @labq/client in devDependencies
+      // 2. contracts -> @animus/client in devDependencies
       {
         const caseDir = join(tempDir, "case-contracts-client");
         initCleanWorkspace(caseDir);
         writeFileSync(
           join(caseDir, "packages/contracts/package.json"),
           JSON.stringify({
-            name: "@labq/contracts",
-            devDependencies: { "@labq/client": "workspace:*" },
+            name: "@animus/contracts",
+            devDependencies: { "@animus/client": "workspace:*" },
           }),
         );
         const res = checkWorkspacePackageEdges(caseDir);
         expect(res.ok).toBe(false);
         expect(
           res.violations.some(
-            (v: string) => v.includes("packages/contracts") && v.includes("@labq/client"),
+            (v: string) => v.includes("packages/contracts") && v.includes("@animus/client"),
           ),
         ).toBe(true);
       }
 
-      // 3. client -> @labq/launcher in peerDependencies
+      // 3. client -> @animus/launcher in peerDependencies
       {
         const caseDir = join(tempDir, "case-client-launcher");
         initCleanWorkspace(caseDir);
         writeFileSync(
           join(caseDir, "packages/client/package.json"),
           JSON.stringify({
-            name: "@labq/client",
-            peerDependencies: { "@labq/launcher": "workspace:*" },
+            name: "@animus/client",
+            peerDependencies: { "@animus/launcher": "workspace:*" },
           }),
         );
         const res = checkWorkspacePackageEdges(caseDir);
         expect(res.ok).toBe(false);
         expect(
           res.violations.some(
-            (v: string) => v.includes("packages/client") && v.includes("@labq/launcher"),
+            (v: string) => v.includes("packages/client") && v.includes("@animus/launcher"),
           ),
         ).toBe(true);
       }
 
-      // 4. backend -> @labq/engine-host in optionalDependencies
+      // 4. backend -> @animus/engine-host in optionalDependencies
       {
         const caseDir = join(tempDir, "case-backend-engine");
         initCleanWorkspace(caseDir);
         writeFileSync(
           join(caseDir, "apps/backend/package.json"),
           JSON.stringify({
-            name: "@labq/backend",
-            optionalDependencies: { "@labq/engine-host": "workspace:*" },
+            name: "@animus/backend",
+            optionalDependencies: { "@animus/engine-host": "workspace:*" },
           }),
         );
         const res = checkWorkspacePackageEdges(caseDir);
         expect(res.ok).toBe(false);
         expect(
           res.violations.some(
-            (v: string) => v.includes("apps/backend") && v.includes("@labq/engine-host"),
+            (v: string) => v.includes("apps/backend") && v.includes("@animus/engine-host"),
           ),
         ).toBe(true);
       }
 
-      // 5. engine-host -> @labq/backend in dependencies
+      // 5. engine-host -> @animus/backend in dependencies
       {
         const caseDir = join(tempDir, "case-engine-backend");
         initCleanWorkspace(caseDir);
         writeFileSync(
           join(caseDir, "apps/engine-host/package.json"),
           JSON.stringify({
-            name: "@labq/engine-host",
-            dependencies: { "@labq/backend": "workspace:*" },
+            name: "@animus/engine-host",
+            dependencies: { "@animus/backend": "workspace:*" },
           }),
         );
         const res = checkWorkspacePackageEdges(caseDir);
         expect(res.ok).toBe(false);
         expect(
           res.violations.some(
-            (v: string) => v.includes("apps/engine-host") && v.includes("@labq/backend"),
+            (v: string) => v.includes("apps/engine-host") && v.includes("@animus/backend"),
           ),
         ).toBe(true);
       }
@@ -770,12 +770,12 @@ describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollba
       const contributing = readFileSync(join(process.cwd(), "CONTRIBUTING.md"), "utf-8");
       expect(contributing).toContain("26.8.1");
       expect(contributing).toContain("1.4.2");
-      expect(contributing).toContain("labq-factory setup --local-only");
+      expect(contributing).toContain("animus setup --local-only");
       expect(contributing).toContain("bun run check");
       expect(contributing).toContain("bun run test");
       expect(contributing).toContain("bun run verify");
-      expect(contributing).toContain("@labq/contracts");
-      expect(contributing).toContain("@labq/client");
+      expect(contributing).toContain("@animus/contracts");
+      expect(contributing).toContain("@animus/client");
       expect(contributing).toContain("apps/backend");
       expect(contributing).toContain("apps/engine-host");
 
@@ -1231,7 +1231,7 @@ describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollba
         );
         writeFileSync(
           join(dir, "CONTRIBUTING.md"),
-          `# Contributing\n\nNode 26.8.1\nBun 1.4.2\nlabq-factory setup --local-only\nbun run check\nbun run test\nbun run verify\n@labq/contracts\n@labq/client\napps/backend\napps/engine-host`,
+          `# Contributing\n\nNode 26.8.1\nBun 1.4.2\nanimus setup --local-only\nbun run check\nbun run test\nbun run verify\n@animus/contracts\n@animus/client\napps/backend\napps/engine-host`,
         );
         writeFileSync(join(dir, "SECURITY.md"), "# Security Policy\n");
         writeFileSync(join(dir, "CHANGELOG.md"), "# Changelog\n");
@@ -1326,7 +1326,7 @@ describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollba
       const d9PatternConfig = JSON.parse(
         readFileSync(join(d9PatternDir, "renovate.json"), "utf-8"),
       );
-      d9PatternConfig.packageRules[0].matchPackagePatterns = ["^@labq/"];
+      d9PatternConfig.packageRules[0].matchPackagePatterns = ["^@animus/"];
       writeFileSync(join(d9PatternDir, "renovate.json"), JSON.stringify(d9PatternConfig, null, 2));
       const d9PatternRes = checkOpenSourceGovernanceFiles(d9PatternDir);
       expect(d9PatternRes.ok).toBe(false);
@@ -1431,7 +1431,7 @@ describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollba
         );
         writeFileSync(
           join(dir, "CONTRIBUTING.md"),
-          `# Contributing\n\nNode 26.8.1\nBun 1.4.2\nlabq-factory setup --local-only\nbun run check\nbun run test\nbun run verify\n@labq/contracts\n@labq/client\napps/backend\napps/engine-host`,
+          `# Contributing\n\nNode 26.8.1\nBun 1.4.2\nanimus setup --local-only\nbun run check\nbun run test\nbun run verify\n@animus/contracts\n@animus/client\napps/backend\napps/engine-host`,
         );
         writeFileSync(join(dir, "SECURITY.md"), "# Security Policy\n");
         writeFileSync(join(dir, "CHANGELOG.md"), "# Changelog\n");
@@ -1682,7 +1682,7 @@ Depends on: None
         );
         writeFileSync(
           join(dir, "CONTRIBUTING.md"),
-          "# Contributing\n\nNode 26.8.1\nBun 1.4.2\nlabq-factory setup --local-only\nbun run check\nbun run test\nbun run verify\n@labq/contracts\n@labq/client\napps/backend\napps/engine-host\n",
+          "# Contributing\n\nNode 26.8.1\nBun 1.4.2\nanimus setup --local-only\nbun run check\nbun run test\nbun run verify\n@animus/contracts\n@animus/client\napps/backend\napps/engine-host\n",
         );
         writeFileSync(join(dir, "SECURITY.md"), "# Security Policy\n");
         writeFileSync(join(dir, "CHANGELOG.md"), "# Changelog\n");
@@ -1836,7 +1836,7 @@ Depends on: None
         );
         writeFileSync(
           join(dir, "CONTRIBUTING.md"),
-          "# Contributing\n\nNode 26.8.1\nBun 1.4.2\nlabq-factory setup --local-only\nbun run check\nbun run test\nbun run verify\n@labq/contracts\n@labq/client\napps/backend\napps/engine-host\n",
+          "# Contributing\n\nNode 26.8.1\nBun 1.4.2\nanimus setup --local-only\nbun run check\nbun run test\nbun run verify\n@animus/contracts\n@animus/client\napps/backend\napps/engine-host\n",
         );
         writeFileSync(join(dir, "SECURITY.md"), "# Security Policy\n");
         writeFileSync(join(dir, "CHANGELOG.md"), "# Changelog\n");
@@ -2069,7 +2069,7 @@ Depends on: None
         );
         writeFileSync(
           join(dir, "CONTRIBUTING.md"),
-          "# Contributing\n\nNode: 26.8.1\nBun: 1.4.2\n\nSetup:\nlabq-factory setup --local-only\n\nCheck commands:\nbun run check\nbun run test\nbun run verify\n\nBoundaries: @labq/contracts, @labq/client, apps/backend, apps/engine-host\n",
+          "# Contributing\n\nNode: 26.8.1\nBun: 1.4.2\n\nSetup:\nanimus setup --local-only\n\nCheck commands:\nbun run check\nbun run test\nbun run verify\n\nBoundaries: @animus/contracts, @animus/client, apps/backend, apps/engine-host\n",
         );
         writeFileSync(join(dir, "SECURITY.md"), "# Security Policy\n");
         writeFileSync(join(dir, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n");
@@ -2231,7 +2231,7 @@ Depends on: None
         );
         writeFileSync(
           join(dir, "CONTRIBUTING.md"),
-          "# Contributing\n\nNode: 26.8.1\nBun: 1.4.2\n\nSetup:\nlabq-factory setup --local-only\n\nCheck commands:\nbun run check\nbun run test\nbun run verify\n\nBoundaries: @labq/contracts, @labq/client, apps/backend, apps/engine-host\n",
+          "# Contributing\n\nNode: 26.8.1\nBun: 1.4.2\n\nSetup:\nanimus setup --local-only\n\nCheck commands:\nbun run check\nbun run test\nbun run verify\n\nBoundaries: @animus/contracts, @animus/client, apps/backend, apps/engine-host\n",
         );
         writeFileSync(join(dir, "SECURITY.md"), "# Security Policy\n");
         writeFileSync(join(dir, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n");
@@ -2355,7 +2355,7 @@ Depends on: None
         );
         writeFileSync(
           join(dir, "CONTRIBUTING.md"),
-          "# Contributing\n\nNode: 26.8.1\nBun: 1.4.2\n\nSetup:\nlabq-factory setup --local-only\n\nCheck commands:\nbun run check\nbun run test\nbun run verify\n\nBoundaries: @labq/contracts, @labq/client, apps/backend, apps/engine-host\n",
+          "# Contributing\n\nNode: 26.8.1\nBun: 1.4.2\n\nSetup:\nanimus setup --local-only\n\nCheck commands:\nbun run check\nbun run test\nbun run verify\n\nBoundaries: @animus/contracts, @animus/client, apps/backend, apps/engine-host\n",
         );
         writeFileSync(join(dir, "SECURITY.md"), "# Security Policy\n");
         writeFileSync(join(dir, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n");
@@ -2770,11 +2770,11 @@ Depends on: None
           `
           const args = process.argv.slice(2);
           if (args[0] === "version") {
-            console.log("labq-factory v0.2.0 (source, commit: dev, Bun 1.4.2)");
+            console.log("animus v0.2.0 (source, commit: dev, Bun 1.4.2)");
             process.exit(0);
           }
           if (args[0] === "--help") {
-            console.log("Usage: labq-factory <command>\\nCommands:\\n  other-cmd  Does something else");
+            console.log("Usage: animus <command>\\nCommands:\\n  other-cmd  Does something else");
             process.exit(0);
           }
           process.exit(1);
@@ -2816,7 +2816,7 @@ Depends on: None
 
       test("verifyCliBinarySmoke executes built standalone binary when available", async () => {
         const { verifyCliBinarySmoke } = await import("../../scripts/release/build-cli");
-        const binPath = join(process.cwd(), "dist/bin/labq-factory");
+        const binPath = join(process.cwd(), "dist/bin/animus");
         if (existsSync(binPath)) {
           const result = await verifyCliBinarySmoke({
             binaryPath: binPath,
@@ -3441,9 +3441,8 @@ Depends on: None
 
         expect(pkg.version).toBe("0.2.0");
         expect(pkg.bin).toBeDefined();
-        expect(pkg.bin["labq-factory"]).toBe("./dist/cli.js");
+        expect(pkg.bin["animus"]).toBe("./dist/cli.js");
         expect(pkg.bin["factory"]).toBe("./dist/cli.js");
-        expect(pkg.bin["labq"]).toBe("./dist/cli.js");
 
         expect(pkg.scripts["build:cli"]).toBe("bun scripts/release/build-cli.ts");
         expect(pkg.scripts["build:cli:bundle"]).toBe(
@@ -3453,13 +3452,13 @@ Depends on: None
     });
 
     describe("AC3 & AC4: Cross-Platform CLI Distribution Tarballs & Checksums Integrity", () => {
-      test("packageCliDistributionTarball creates a valid .tar.gz archive extractable via tar -xzf containing labq-factory, factory, and labq", async () => {
+      test("packageCliDistributionTarball creates a valid .tar.gz archive extractable via tar -xzf containing animus and factory", async () => {
         const { packageCliDistributionTarball } = await import("../../scripts/release/package");
         const outDir = join(tempDir, "releases-cli-single");
         mkdirSync(outDir, { recursive: true });
 
         const mockBinaryPath = join(tempDir, "mock-binary");
-        writeFileSync(mockBinaryPath, "#!/bin/sh\necho 'labq-factory v0.2.0'\n", { mode: 0o755 });
+        writeFileSync(mockBinaryPath, "#!/bin/sh\necho 'animus v0.2.0'\n", { mode: 0o755 });
         chmodSync(mockBinaryPath, 0o755);
 
         const result = await packageCliDistributionTarball({
@@ -3470,17 +3469,17 @@ Depends on: None
           binaryPath: mockBinaryPath,
         });
 
-        expect(result.tarballPath).toBe(join(outDir, "labq-factory-v0.2.0-darwin-arm64.tar.gz"));
+        expect(result.tarballPath).toBe(join(outDir, "animus-v0.2.0-darwin-arm64.tar.gz"));
         expect(existsSync(result.tarballPath)).toBe(true);
         expect(result.sha256).toMatch(/^[a-f0-9]{64}$/);
-        expect(result.executables).toEqual(["labq-factory", "factory", "labq"]);
+        expect(result.executables).toEqual(["animus", "factory"]);
 
         // Verify extraction using platform tar -xzf
         const extractDir = join(tempDir, "extract-single");
         mkdirSync(extractDir, { recursive: true });
         execFileSync("tar", ["-xzf", result.tarballPath, "-C", extractDir]);
 
-        for (const name of ["labq-factory", "factory", "labq"]) {
+        for (const name of ["animus", "factory"]) {
           const extractedFile = join(extractDir, name);
           expect(existsSync(extractedFile)).toBe(true);
           const stat = statSync(extractedFile);
@@ -3495,7 +3494,7 @@ Depends on: None
         mkdirSync(outDir, { recursive: true });
 
         const mockBinaryPath = join(tempDir, "mock-binary-all");
-        writeFileSync(mockBinaryPath, "#!/bin/sh\necho 'labq-factory v0.2.0'\n", { mode: 0o755 });
+        writeFileSync(mockBinaryPath, "#!/bin/sh\necho 'animus v0.2.0'\n", { mode: 0o755 });
         chmodSync(mockBinaryPath, 0o755);
 
         const { tarballs, checksums } = await packageAllCliDistributionTarballs({
@@ -3509,10 +3508,10 @@ Depends on: None
         expect(existsSync(checksums.checksumsPath)).toBe(true);
 
         const expectedNames = [
-          "labq-factory-v0.2.0-darwin-arm64.tar.gz",
-          "labq-factory-v0.2.0-darwin-x64.tar.gz",
-          "labq-factory-v0.2.0-linux-x64.tar.gz",
-          "labq-factory-v0.2.0-linux-arm64.tar.gz",
+          "animus-v0.2.0-darwin-arm64.tar.gz",
+          "animus-v0.2.0-darwin-x64.tar.gz",
+          "animus-v0.2.0-linux-x64.tar.gz",
+          "animus-v0.2.0-linux-arm64.tar.gz",
         ];
 
         for (const name of expectedNames) {
@@ -3534,7 +3533,7 @@ Depends on: None
         mkdirSync(outDir, { recursive: true });
 
         const mockBinaryPath = join(tempDir, "mock-binary-corrupt");
-        writeFileSync(mockBinaryPath, "#!/bin/sh\necho 'labq-factory v0.2.0'\n", { mode: 0o755 });
+        writeFileSync(mockBinaryPath, "#!/bin/sh\necho 'animus v0.2.0'\n", { mode: 0o755 });
         chmodSync(mockBinaryPath, 0o755);
 
         const res = await packageCliDistributionTarball({
@@ -3570,7 +3569,7 @@ Depends on: None
 
         expect(existsSync(res.bundlePath)).toBe(true);
         expect(existsSync(res.manifestPath)).toBe(true);
-        expect(res.bundlePath).toContain("labq-factory-v0.2.0-abcd1234-darwin-arm64.tar.gz");
+        expect(res.bundlePath).toContain("animus-v0.2.0-abcd1234-darwin-arm64.tar.gz");
 
         // Parse JSON content from legacy bundle
         const rawBundle = readFileSync(res.bundlePath, "utf-8");
@@ -3611,10 +3610,10 @@ Depends on: None
         execFileSync("sh", [installScript], {
           env: {
             ...process.env,
-            LABQ_OS: "solaris",
-            LABQ_ARCH: "x64",
-            LABQ_INSTALL_DIR: installDir,
-            LABQ_VERSION: "0.2.0",
+            ANIMUS_OS: "solaris",
+            ANIMUS_ARCH: "x64",
+            ANIMUS_INSTALL_DIR: installDir,
+            ANIMUS_VERSION: "0.2.0",
           },
           encoding: "utf-8",
           stdio: ["pipe", "pipe", "pipe"],
@@ -3627,7 +3626,7 @@ Depends on: None
       expect(osError.status).not.toBe(0);
       const osStderr = osError.stderr?.toString() ?? "";
       expect(osStderr).toContain("Unsupported operating system");
-      expect(existsSync(join(installDir, "labq-factory"))).toBe(false);
+      expect(existsSync(join(installDir, "animus"))).toBe(false);
 
       // Unsupported Architecture
       let archError: any;
@@ -3635,10 +3634,10 @@ Depends on: None
         execFileSync("sh", [installScript], {
           env: {
             ...process.env,
-            LABQ_OS: "linux",
-            LABQ_ARCH: "mips",
-            LABQ_INSTALL_DIR: installDir,
-            LABQ_VERSION: "0.2.0",
+            ANIMUS_OS: "linux",
+            ANIMUS_ARCH: "mips",
+            ANIMUS_INSTALL_DIR: installDir,
+            ANIMUS_VERSION: "0.2.0",
           },
           encoding: "utf-8",
           stdio: ["pipe", "pipe", "pipe"],
@@ -3651,10 +3650,10 @@ Depends on: None
       expect(archError.status).not.toBe(0);
       const archStderr = archError.stderr?.toString() ?? "";
       expect(archStderr).toContain("Unsupported architecture");
-      expect(existsSync(join(installDir, "labq-factory"))).toBe(false);
+      expect(existsSync(join(installDir, "animus"))).toBe(false);
     });
 
-    test("AC2, AC3 & AC5a: executes sh ./install.sh against local file:// release URL and verifies labq-factory version and factory --help", async () => {
+    test("AC2, AC3 & AC5a: executes sh ./install.sh against local file:// release URL and verifies animus version and factory --help", async () => {
       const { packageCliDistributionTarball, generateReleaseChecksums } =
         await import("../../scripts/release/package");
       const releaseDir = join(tempDir, "release-happy");
@@ -3668,13 +3667,13 @@ Depends on: None
       const mockCliScript = [
         "#!/bin/sh",
         'if [ "$1" = "version" ]; then',
-        '  echo "labq-factory v0.2.0 (rev test-rev-happy)"; exit 0',
+        '  echo "animus v0.2.0 (rev test-rev-happy)"; exit 0',
         "fi",
         'if [ "$1" = "--help" ] || [ "$1" = "help" ]; then',
-        '  echo "labq-factory CLI: setup, project, serve"',
+        '  echo "animus CLI: setup, project, serve"',
         "  exit 0",
         "fi",
-        'echo "labq-factory v0.2.0"',
+        'echo "animus v0.2.0"',
         "exit 0",
       ].join("\n");
 
@@ -3694,45 +3693,39 @@ Depends on: None
       const stdout = execFileSync("sh", [installScript], {
         env: {
           ...process.env,
-          LABQ_RELEASE_BASE_URL: releaseBaseUrl,
-          LABQ_VERSION: "0.2.0",
-          LABQ_INSTALL_DIR: installDir,
-          LABQ_OS: platform,
-          LABQ_ARCH: arch,
+          ANIMUS_RELEASE_BASE_URL: releaseBaseUrl,
+          ANIMUS_VERSION: "0.2.0",
+          ANIMUS_INSTALL_DIR: installDir,
+          ANIMUS_OS: platform,
+          ANIMUS_ARCH: arch,
         },
         encoding: "utf-8",
       });
 
       expect(stdout).toContain("Checksum verified");
-      expect(stdout).toContain("Successfully installed labq-factory");
+      expect(stdout).toContain("Successfully installed animus");
 
-      // Verify labq-factory, factory, and labq executables exist with 0755
-      for (const name of ["labq-factory", "factory", "labq"]) {
+      // Verify animus and factory executables exist with 0755
+      for (const name of ["animus", "factory"]) {
         const binPath = join(installDir, name);
         expect(existsSync(binPath)).toBe(true);
         const stat = statSync(binPath);
         expect((stat.mode & 0o111) !== 0).toBe(true);
       }
 
-      // Verify execution of labq-factory version
-      const verOut = execFileSync(join(installDir, "labq-factory"), ["version"], {
+      // Verify execution of animus version
+      const verOut = execFileSync(join(installDir, "animus"), ["version"], {
         encoding: "utf-8",
       });
-      expect(verOut).toContain("labq-factory v0.2.0");
+      expect(verOut).toContain("animus v0.2.0");
       expect(verOut).toContain("test-rev-happy");
 
       // Verify execution of factory --help
       const helpOut = execFileSync(join(installDir, "factory"), ["--help"], {
         encoding: "utf-8",
       });
-      expect(helpOut).toContain("labq-factory CLI");
+      expect(helpOut).toContain("animus CLI");
       expect(helpOut).toContain("setup");
-
-      // Verify execution of labq version
-      const labqOut = execFileSync(join(installDir, "labq"), ["version"], {
-        encoding: "utf-8",
-      });
-      expect(labqOut).toContain("labq-factory v0.2.0");
     });
 
     test("AC2 & AC5b: fail-closed rejection with non-zero exit when tarball bytes are tampered, leaving no installed binary", async () => {
@@ -3765,11 +3758,11 @@ Depends on: None
         execFileSync("sh", [installScript], {
           env: {
             ...process.env,
-            LABQ_RELEASE_BASE_URL: `file://${releaseDir}`,
-            LABQ_VERSION: "0.2.0",
-            LABQ_INSTALL_DIR: installDir,
-            LABQ_OS: platform,
-            LABQ_ARCH: arch,
+            ANIMUS_RELEASE_BASE_URL: `file://${releaseDir}`,
+            ANIMUS_VERSION: "0.2.0",
+            ANIMUS_INSTALL_DIR: installDir,
+            ANIMUS_OS: platform,
+            ANIMUS_ARCH: arch,
           },
           encoding: "utf-8",
           stdio: ["pipe", "pipe", "pipe"],
@@ -3783,10 +3776,9 @@ Depends on: None
       const stderr = caughtError.stderr?.toString() ?? "";
       expect(stderr).toContain("SHA-256 digest verification failed");
 
-      // Fail-closed invariant: no binary installed in LABQ_INSTALL_DIR
-      expect(existsSync(join(installDir, "labq-factory"))).toBe(false);
+      // Fail-closed invariant: no binary installed in ANIMUS_INSTALL_DIR
+      expect(existsSync(join(installDir, "animus"))).toBe(false);
       expect(existsSync(join(installDir, "factory"))).toBe(false);
-      expect(existsSync(join(installDir, "labq"))).toBe(false);
     });
 
     test("AC2 & AC5c: fail-closed rejection when target tarball entry is missing from checksums.txt", async () => {
@@ -3820,11 +3812,11 @@ Depends on: None
         execFileSync("sh", [installScript], {
           env: {
             ...process.env,
-            LABQ_RELEASE_BASE_URL: `file://${releaseDir}`,
-            LABQ_VERSION: "0.2.0",
-            LABQ_INSTALL_DIR: installDir,
-            LABQ_OS: platform,
-            LABQ_ARCH: arch,
+            ANIMUS_RELEASE_BASE_URL: `file://${releaseDir}`,
+            ANIMUS_VERSION: "0.2.0",
+            ANIMUS_INSTALL_DIR: installDir,
+            ANIMUS_OS: platform,
+            ANIMUS_ARCH: arch,
           },
           encoding: "utf-8",
           stdio: ["pipe", "pipe", "pipe"],
@@ -3837,7 +3829,7 @@ Depends on: None
       expect(caughtError.status).not.toBe(0);
       const stderr = caughtError.stderr?.toString() ?? "";
       expect(stderr).toContain("not found in checksums.txt");
-      expect(existsSync(join(installDir, "labq-factory"))).toBe(false);
+      expect(existsSync(join(installDir, "animus"))).toBe(false);
     });
 
     test("AC2: fail-closed rejection when checksums.txt is completely missing from release base URL", async () => {
@@ -3865,11 +3857,11 @@ Depends on: None
         execFileSync("sh", [installScript], {
           env: {
             ...process.env,
-            LABQ_RELEASE_BASE_URL: `file://${releaseDir}`,
-            LABQ_VERSION: "0.2.0",
-            LABQ_INSTALL_DIR: installDir,
-            LABQ_OS: platform,
-            LABQ_ARCH: arch,
+            ANIMUS_RELEASE_BASE_URL: `file://${releaseDir}`,
+            ANIMUS_VERSION: "0.2.0",
+            ANIMUS_INSTALL_DIR: installDir,
+            ANIMUS_OS: platform,
+            ANIMUS_ARCH: arch,
           },
           encoding: "utf-8",
           stdio: ["pipe", "pipe", "pipe"],
@@ -3880,10 +3872,10 @@ Depends on: None
 
       expect(caughtError).toBeDefined();
       expect(caughtError.status).not.toBe(0);
-      expect(existsSync(join(installDir, "labq-factory"))).toBe(false);
+      expect(existsSync(join(installDir, "animus"))).toBe(false);
     });
 
-    test("AC2: resolves release version stripping leading 'v' prefix from LABQ_VERSION", async () => {
+    test("AC2: resolves release version stripping leading 'v' prefix from ANIMUS_VERSION", async () => {
       const { packageCliDistributionTarball, generateReleaseChecksums } =
         await import("../../scripts/release/package");
       const releaseDir = join(tempDir, "release-version-v");
@@ -3899,7 +3891,7 @@ Depends on: None
         platform,
         arch,
         outDir: releaseDir,
-        binaryContent: "#!/bin/sh\necho 'labq-factory v0.2.0'\n",
+        binaryContent: "#!/bin/sh\necho 'animus v0.2.0'\n",
       });
 
       await generateReleaseChecksums(releaseDir);
@@ -3908,21 +3900,21 @@ Depends on: None
       const stdout = execFileSync("sh", [installScript], {
         env: {
           ...process.env,
-          LABQ_RELEASE_BASE_URL: `file://${releaseDir}`,
-          LABQ_VERSION: "v0.2.0", // Leading 'v'
-          LABQ_INSTALL_DIR: installDir,
-          LABQ_OS: platform,
-          LABQ_ARCH: arch,
+          ANIMUS_RELEASE_BASE_URL: `file://${releaseDir}`,
+          ANIMUS_VERSION: "v0.2.0", // Leading 'v'
+          ANIMUS_INSTALL_DIR: installDir,
+          ANIMUS_OS: platform,
+          ANIMUS_ARCH: arch,
         },
         encoding: "utf-8",
       });
 
       expect(stdout).toContain("Checksum verified");
-      expect(stdout).toContain("Successfully installed labq-factory");
-      expect(existsSync(join(installDir, "labq-factory"))).toBe(true);
+      expect(stdout).toContain("Successfully installed animus");
+      expect(existsSync(join(installDir, "animus"))).toBe(true);
     });
 
-    test("AC3: prints PATH configuration instructions when LABQ_INSTALL_DIR is not on PATH and omits them when present", async () => {
+    test("AC3: prints PATH configuration instructions when ANIMUS_INSTALL_DIR is not on PATH and omits them when present", async () => {
       const { packageCliDistributionTarball, generateReleaseChecksums } =
         await import("../../scripts/release/package");
       const releaseDir = join(tempDir, "release-path-check");
@@ -3938,7 +3930,7 @@ Depends on: None
         platform,
         arch,
         outDir: releaseDir,
-        binaryContent: "#!/bin/sh\necho 'labq-factory v0.2.0'\n",
+        binaryContent: "#!/bin/sh\necho 'animus v0.2.0'\n",
       });
 
       await generateReleaseChecksums(releaseDir);
@@ -3949,11 +3941,11 @@ Depends on: None
         env: {
           ...process.env,
           PATH: "/usr/bin:/bin",
-          LABQ_RELEASE_BASE_URL: `file://${releaseDir}`,
-          LABQ_VERSION: "0.2.0",
-          LABQ_INSTALL_DIR: installDir,
-          LABQ_OS: platform,
-          LABQ_ARCH: arch,
+          ANIMUS_RELEASE_BASE_URL: `file://${releaseDir}`,
+          ANIMUS_VERSION: "0.2.0",
+          ANIMUS_INSTALL_DIR: installDir,
+          ANIMUS_OS: platform,
+          ANIMUS_ARCH: arch,
         },
         encoding: "utf-8",
       });
@@ -3966,11 +3958,11 @@ Depends on: None
         env: {
           ...process.env,
           PATH: `${installDir}:/usr/bin:/bin`,
-          LABQ_RELEASE_BASE_URL: `file://${releaseDir}`,
-          LABQ_VERSION: "0.2.0",
-          LABQ_INSTALL_DIR: installDir,
-          LABQ_OS: platform,
-          LABQ_ARCH: arch,
+          ANIMUS_RELEASE_BASE_URL: `file://${releaseDir}`,
+          ANIMUS_VERSION: "0.2.0",
+          ANIMUS_INSTALL_DIR: installDir,
+          ANIMUS_OS: platform,
+          ANIMUS_ARCH: arch,
         },
         encoding: "utf-8",
       });
@@ -4044,50 +4036,47 @@ Depends on: None
 
         const formula = generateHomebrewFormula({
           version: "0.2.0",
-          repo: "iqbal-codes/labq-software-factory",
+          repo: "iqbal-codes/animus",
           sha256: validDigests,
         });
 
         // Verify class header
-        expect(formula).toContain("class LabqFactory < Formula");
+        expect(formula).toContain("class Animus < Formula");
         expect(formula).toContain('version "0.2.0"');
         expect(formula).toContain('license "MIT"');
-        expect(formula).toContain(
-          'homepage "https://github.com/iqbal-codes/labq-software-factory"',
-        );
+        expect(formula).toContain('homepage "https://github.com/iqbal-codes/animus"');
 
         // Verify macOS block and target URLs
         expect(formula).toContain("on_macos do");
         expect(formula).toContain("on_arm do");
         expect(formula).toContain(
-          'url "https://github.com/iqbal-codes/labq-software-factory/releases/download/v0.2.0/labq-factory-v0.2.0-darwin-arm64.tar.gz"',
+          'url "https://github.com/iqbal-codes/animus/releases/download/v0.2.0/animus-v0.2.0-darwin-arm64.tar.gz"',
         );
         expect(formula).toContain(`sha256 "${validDigests["darwin-arm64"]}"`);
         expect(formula).toContain("on_intel do");
         expect(formula).toContain(
-          'url "https://github.com/iqbal-codes/labq-software-factory/releases/download/v0.2.0/labq-factory-v0.2.0-darwin-x64.tar.gz"',
+          'url "https://github.com/iqbal-codes/animus/releases/download/v0.2.0/animus-v0.2.0-darwin-x64.tar.gz"',
         );
         expect(formula).toContain(`sha256 "${validDigests["darwin-x64"]}"`);
 
         // Verify Linux block and target URLs
         expect(formula).toContain("on_linux do");
         expect(formula).toContain(
-          'url "https://github.com/iqbal-codes/labq-software-factory/releases/download/v0.2.0/labq-factory-v0.2.0-linux-arm64.tar.gz"',
+          'url "https://github.com/iqbal-codes/animus/releases/download/v0.2.0/animus-v0.2.0-linux-arm64.tar.gz"',
         );
         expect(formula).toContain(`sha256 "${validDigests["linux-arm64"]}"`);
         expect(formula).toContain(
-          'url "https://github.com/iqbal-codes/labq-software-factory/releases/download/v0.2.0/labq-factory-v0.2.0-linux-x64.tar.gz"',
+          'url "https://github.com/iqbal-codes/animus/releases/download/v0.2.0/animus-v0.2.0-linux-x64.tar.gz"',
         );
         expect(formula).toContain(`sha256 "${validDigests["linux-x64"]}"`);
 
         // Verify install and symlink instructions
-        expect(formula).toContain('bin.install "labq-factory"');
-        expect(formula).toContain('bin.install_symlink "labq-factory" => "factory"');
-        expect(formula).toContain('bin.install_symlink "labq-factory" => "labq"');
+        expect(formula).toContain('bin.install "animus"');
+        expect(formula).toContain('bin.install_symlink "animus" => "factory"');
 
         // Verify test block asserting CLI output
         expect(formula).toContain("test do");
-        expect(formula).toContain('shell_output("#{bin}/labq-factory version")');
+        expect(formula).toContain('shell_output("#{bin}/animus version")');
 
         // Authoritative platform syntax check via ruby -c if available
         try {
@@ -4113,7 +4102,7 @@ Depends on: None
 
         expect(formula).toContain('version "0.2.0"');
         expect(formula).not.toContain('version "v0.2.0"');
-        expect(formula).toContain("/download/v0.2.0/labq-factory-v0.2.0-darwin-arm64.tar.gz");
+        expect(formula).toContain("/download/v0.2.0/animus-v0.2.0-darwin-arm64.tar.gz");
       });
     });
 
@@ -4204,7 +4193,7 @@ Depends on: None
         expect(typeof pkg.stageReleaseHomebrewFormula).toBe("function");
       });
 
-      test("stageReleaseHomebrewFormula writes labq-factory.rb and computes checksums", async () => {
+      test("stageReleaseHomebrewFormula writes animus.rb and computes checksums", async () => {
         const { stageReleaseHomebrewFormula, generateReleaseChecksums, verifyReleaseChecksums } =
           await import("../../scripts/release/package");
         const outDir = join(tempDir, "releases-formula-staging");
@@ -4217,16 +4206,16 @@ Depends on: None
         });
 
         expect(existsSync(result.formulaPath)).toBe(true);
-        expect(result.formulaPath.endsWith("labq-factory.rb")).toBe(true);
-        expect(result.content).toContain("class LabqFactory < Formula");
+        expect(result.formulaPath.endsWith("animus.rb")).toBe(true);
+        expect(result.content).toContain("class Animus < Formula");
         expect(result.sha256).toBeDefined();
 
         const checksums = await generateReleaseChecksums(outDir);
-        expect(checksums.entries.some((e) => e.filename === "labq-factory.rb")).toBe(true);
+        expect(checksums.entries.some((e) => e.filename === "animus.rb")).toBe(true);
 
         const verification = verifyReleaseChecksums(outDir);
         expect(verification.ok).toBe(true);
-        expect(verification.verified).toContain("labq-factory.rb");
+        expect(verification.verified).toContain("animus.rb");
       });
 
       test("extractChangelogNotes includes multi-channel installation instructions and preserves verification block", async () => {
@@ -4239,40 +4228,40 @@ Depends on: None
         // Multi-channel install instructions
         expect(notes).toContain("### Installation");
         expect(notes).toContain(
-          "curl -fsSL https://github.com/iqbal-codes/labq-software-factory/releases/latest/download/install.sh | sh",
+          "curl -fsSL https://github.com/iqbal-codes/animus/releases/latest/download/install.sh | sh",
         );
-        expect(notes).toContain("bun add -g github:iqbal-codes/labq-software-factory");
-        expect(notes).toContain("brew install iqbal-codes/tap/labq-factory");
+        expect(notes).toContain("bun add -g github:iqbal-codes/animus");
+        expect(notes).toContain("brew install iqbal-codes/tap/animus");
 
         // Preserves verification block
         expect(notes).toContain("### Verification");
         expect(notes).toContain("sha256sum -c checksums.txt");
       });
 
-      test(".github/workflows/release.yml verifies labq-factory.rb before checksum validation", () => {
+      test(".github/workflows/release.yml verifies animus.rb before checksum validation", () => {
         const workflowPath = join(process.cwd(), ".github/workflows/release.yml");
         expect(existsSync(workflowPath)).toBe(true);
         const content = readFileSync(workflowPath, "utf-8");
         const doc = parseYaml(content);
 
         const buildSteps = doc.jobs.build.steps;
-        const verifyStep = buildSteps.find((s: any) => s.run?.includes("test -f labq-factory.rb"));
+        const verifyStep = buildSteps.find((s: any) => s.run?.includes("test -f animus.rb"));
 
         expect(verifyStep).toBeDefined();
         expect(verifyStep.run).toContain("sha256sum -c checksums.txt");
         expect(verifyStep.run).toContain("test -f install.sh");
       });
 
-      test("homebrew-formula.ts CLI entrypoint generates labq-factory.rb from checksums.txt", () => {
+      test("homebrew-formula.ts CLI entrypoint generates animus.rb from checksums.txt", () => {
         const outDir = join(tempDir, "cli-homebrew-test");
         mkdirSync(outDir, { recursive: true });
 
         const checksums =
           [
-            `1111111111111111111111111111111111111111111111111111111111111111  labq-factory-v0.2.0-darwin-arm64.tar.gz`,
-            `2222222222222222222222222222222222222222222222222222222222222222  labq-factory-v0.2.0-darwin-x64.tar.gz`,
-            `3333333333333333333333333333333333333333333333333333333333333333  labq-factory-v0.2.0-linux-arm64.tar.gz`,
-            `4444444444444444444444444444444444444444444444444444444444444444  labq-factory-v0.2.0-linux-x64.tar.gz`,
+            `1111111111111111111111111111111111111111111111111111111111111111  animus-v0.2.0-darwin-arm64.tar.gz`,
+            `2222222222222222222222222222222222222222222222222222222222222222  animus-v0.2.0-darwin-x64.tar.gz`,
+            `3333333333333333333333333333333333333333333333333333333333333333  animus-v0.2.0-linux-arm64.tar.gz`,
+            `4444444444444444444444444444444444444444444444444444444444444444  animus-v0.2.0-linux-x64.tar.gz`,
           ].join("\n") + "\n";
         writeFileSync(join(outDir, "checksums.txt"), checksums);
 
@@ -4282,10 +4271,10 @@ Depends on: None
         });
 
         expect(res).toContain("Generated Homebrew formula");
-        const formulaPath = join(outDir, "labq-factory.rb");
+        const formulaPath = join(outDir, "animus.rb");
         expect(existsSync(formulaPath)).toBe(true);
         const formulaContent = readFileSync(formulaPath, "utf-8");
-        expect(formulaContent).toContain("class LabqFactory < Formula");
+        expect(formulaContent).toContain("class Animus < Formula");
         expect(formulaContent).toContain(
           "1111111111111111111111111111111111111111111111111111111111111111",
         );
@@ -4300,10 +4289,10 @@ Depends on: None
 
         expect(content).toContain("## Installation");
         expect(content).toContain(
-          "curl -fsSL https://github.com/iqbal-codes/labq-software-factory/releases/latest/download/install.sh | sh",
+          "curl -fsSL https://github.com/iqbal-codes/animus/releases/latest/download/install.sh | sh",
         );
-        expect(content).toContain("bun add -g github:iqbal-codes/labq-software-factory");
-        expect(content).toContain("brew install iqbal-codes/tap/labq-factory");
+        expect(content).toContain("bun add -g github:iqbal-codes/animus");
+        expect(content).toContain("brew install iqbal-codes/tap/animus");
       });
 
       test("docs/onboarding.md documents curl|sh, bun add -g, and brew install channels", () => {
@@ -4313,10 +4302,10 @@ Depends on: None
 
         expect(content).toContain("## CLI Installation");
         expect(content).toContain(
-          "curl -fsSL https://github.com/iqbal-codes/labq-software-factory/releases/latest/download/install.sh | sh",
+          "curl -fsSL https://github.com/iqbal-codes/animus/releases/latest/download/install.sh | sh",
         );
-        expect(content).toContain("bun add -g github:iqbal-codes/labq-software-factory");
-        expect(content).toContain("brew install iqbal-codes/tap/labq-factory");
+        expect(content).toContain("bun add -g github:iqbal-codes/animus");
+        expect(content).toContain("brew install iqbal-codes/tap/animus");
       });
     });
   });

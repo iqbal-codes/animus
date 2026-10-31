@@ -99,7 +99,7 @@ export async function runManagerPass(
     }
   }
 
-  // Canonical Archon loop metrics line
+  // Canonical Animus loop metrics line
   const metricsLine = `${timestamp} | merged since last pass: ${mergedCount} | waiting approval: ${waitingApprovalCount} | send-backs: ${sendBacksCount} | active: ${activeRunsCount} | stuck: ${stuckRunsCount} | health actions: ${actions.length}`;
 
   const promptTemplate = loadPrompt("manage", root);

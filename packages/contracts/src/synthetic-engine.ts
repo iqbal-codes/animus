@@ -46,11 +46,11 @@ export class SyntheticEngineAdapter {
     this.status = opts.status ?? "healthy";
     this.revision = opts.revision ?? "5c4f5e484262185926b37b070457fabb9bfedae0";
     this.digest = opts.digest ?? "synthetic-engine-digest-0000000000000000";
-    this.sourceDirectory = opts.sourceDirectory ?? ".archon/workflows/sdlc";
+    this.sourceDirectory = opts.sourceDirectory ?? ".animus/workflows/sdlc";
     this.workflows = opts.workflows ?? [
       {
-        name: "archon-loop",
-        description: "Synthetic Archon Loop workflow for offline tests",
+        name: "animus-loop",
+        description: "Synthetic Animus Loop workflow for offline tests",
         default_inputs: { merge: "approve" },
       },
     ];
@@ -95,7 +95,7 @@ export class SyntheticEngineAdapter {
       source_commit: lap.candidate_head,
       session: {
         conversation_id: `session-synthetic-${lap.id}`,
-        working_path: `/tmp/archon-worktree-${lap.id}`,
+        working_path: `/tmp/animus-worktree-${lap.id}`,
         agents: [
           { node_name: "builder", session_id: `agent-builder-${lap.id}` },
           { node_name: "reviewer", session_id: `agent-reviewer-${lap.id}` },
@@ -156,7 +156,7 @@ export class SyntheticEngineAdapter {
     const now = new Date().toISOString();
     const summary: LapSummary = {
       id: lapId,
-      workflow_name: "archon-loop",
+      workflow_name: "animus-loop",
       native_status: "running",
       product_status: "running",
       started_at: now,

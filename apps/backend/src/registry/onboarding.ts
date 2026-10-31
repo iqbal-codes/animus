@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, realpathSync, rmdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { type Project, type ProjectRegistration } from "@labq/contracts/operator";
+import { type Project, type ProjectRegistration } from "@animus/contracts/operator";
 import { ProjectRegistryError, ProjectRegistryService } from "./service";
 import { resolveStateDir } from "./db";
 import { resolveGitConfigPath, type ForgeRepoInfo } from "./forge";

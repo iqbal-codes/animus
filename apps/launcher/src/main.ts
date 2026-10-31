@@ -17,19 +17,19 @@ const launcher = new FactoryLauncher({
   remoteAccess: values["remote-access"],
 });
 
-console.log(`Starting Software Factory Console on ${values.host}:${values.port}...`);
+console.log(`Starting Animus Console on ${values.host}:${values.port}...`);
 const result = await launcher.start();
 
 if (result.status === "partial_startup_failure") {
-  console.error("Factory startup failed:", result.error);
+  console.error("Animus startup failed:", result.error);
   process.exit(1);
 }
 
-console.log(`Software Factory Console running at ${result.backendUrl}`);
+console.log(`Animus Console running at ${result.backendUrl}`);
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, async () => {
-    console.log(`\nStopping Software Factory Console...`);
+    console.log(`\nStopping Animus Console...`);
     const stopResult = await launcher.stop();
     if (stopResult.status === "partial_shutdown_failure") {
       console.error("Factory shutdown partial failure:", stopResult.failed);

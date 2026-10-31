@@ -16,14 +16,14 @@ import {
   ProjectRegistryService,
   SyntheticForgeAdapter,
 } from "../../apps/backend/src/registry";
-import { createFactoryClient } from "@labq/client";
+import { createFactoryClient } from "@animus/client";
 import {
   commandRecordSchema,
   commandListSchema,
   globalBrakeStateSchema,
   projectBrakeStateSchema,
   commandReconciliationResultSchema,
-} from "@labq/contracts/operator";
+} from "@animus/contracts/operator";
 
 describe("Durable Command Ledger, Reconciliation, & Scoped Brakes (Issue #60)", () => {
   let tempDir: string;
@@ -34,7 +34,7 @@ describe("Durable Command Ledger, Reconciliation, & Scoped Brakes (Issue #60)", 
   let commandService: CommandService;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "labq-command-test-"));
+    tempDir = mkdtempSync(join(tmpdir(), "animus-command-test-"));
     dbPath = join(tempDir, "console.db");
     db = initializeDatabase(dbPath);
     ledger = new CommandLedger(db);
@@ -628,7 +628,7 @@ describe("Durable Command Ledger, Reconciliation, & Scoped Brakes (Issue #60)", 
     });
   });
 
-  describe("AC6: Client SDK Integration via @labq/client", () => {
+  describe("AC6: Client SDK Integration via @animus/client", () => {
     test("client handles command dispatch, queries, reconciliation, global brakes, and project brakes", async () => {
       const mockCommand = {
         requestId: "cmd_client_1",

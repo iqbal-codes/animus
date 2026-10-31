@@ -6,7 +6,7 @@ import type {
   CommandReconciliationResult,
   BackupResult,
   OperatorErrorCode,
-} from "@labq/contracts/operator";
+} from "@animus/contracts/operator";
 import { applyCommandMigrations } from "./db";
 import { CommandLedger, CommandStorageError } from "./ledger";
 import { BrakeService } from "./brakes";

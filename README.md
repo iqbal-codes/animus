@@ -1,8 +1,8 @@
 <img src="assets/icon.svg" width="64" height="64" alt="">
 
-# labq-software-factory
+# animus
 
-Autonomous software factory with unified launcher, local-first React web console,
+Autonomous self-improving software factory with unified launcher, React web console,
 durable persistence, and private engine-host coordination on Bun/Vite+.
 
 - Start operations: `bun apps/launcher/src/main.ts --port 3000`; see [runtime contract](docs/runtime.md).
@@ -15,14 +15,14 @@ durable persistence, and private engine-host coordination on Bun/Vite+.
 
 ## Installation
 
-Install `labq-factory` (and its CLI symlinks `factory` and `labq`) across three zero-server distribution channels:
+Install `animus` (and its CLI symlinks `factory` and `animus`) across three zero-server distribution channels:
 
 ### 1. POSIX Shell Installer (macOS & Linux)
 
-Download prebuilt binaries into `~/.labq/bin` with fail-closed SHA-256 integrity verification:
+Download prebuilt binaries into `~/.animus/bin` with fail-closed SHA-256 integrity verification:
 
 ```sh
-curl -fsSL https://github.com/iqbal-codes/labq-software-factory/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/iqbal-codes/animus/releases/latest/download/install.sh | sh
 ```
 
 ### 2. Bun Global Package
@@ -30,7 +30,7 @@ curl -fsSL https://github.com/iqbal-codes/labq-software-factory/releases/latest/
 Install the bundled standalone CLI script globally using Bun:
 
 ```sh
-bun add -g github:iqbal-codes/labq-software-factory
+bun add -g github:iqbal-codes/animus
 ```
 
 ### 3. Homebrew Tap (macOS & Linux)
@@ -38,7 +38,7 @@ bun add -g github:iqbal-codes/labq-software-factory
 Install deterministic prebuilt binaries via the Homebrew formula:
 
 ```sh
-brew install iqbal-codes/tap/labq-factory
+brew install iqbal-codes/tap/animus
 ```
 
 ## Run an issue through the local loop
@@ -49,7 +49,7 @@ bun run loop --issue 72           # Execute local builder, ordinary checks, QA a
 ```
 
 Requires Git, authenticated `gh`, installed/configured `pi`, and the project's
-ordinary check dependencies. No Archon installation, dashboard, or HTTP service is
+ordinary check dependencies. No external engine installation, dashboard, or HTTP service is
 required. Pi uses its configured default model; `FACTORY_LOOP_MODEL` optionally
 overrides it with a Pi model identifier. No fallback model is invented.
 

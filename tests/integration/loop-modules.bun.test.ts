@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 
 import {
-  readArchonConfig,
+  readAnimusConfig,
   resolveModelTier,
   resolveModelForRole,
   resolveProviderForRole,
@@ -65,7 +65,7 @@ test("1. Model Tiering: resolves roles to tiers and config models", async () => 
   expect(resolveModelTier("qa")).toBe("small");
   expect(resolveModelTier("manager")).toBe("large");
 
-  const cfg = readArchonConfig(root);
+  const cfg = readAnimusConfig(root);
   expect(cfg.assistant).toBe("pi");
   expect(cfg.tiers?.large?.model).toBeDefined();
 

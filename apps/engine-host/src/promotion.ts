@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { applyControlAction, resolveSharedRoot } from "./native";
-import type { PromotionStatus, PromotionResult } from "@labq/contracts/operator";
+import type { PromotionStatus, PromotionResult } from "@animus/contracts/operator";
 
 const TICKET_PATTERN = /#(\d+)/g;
 

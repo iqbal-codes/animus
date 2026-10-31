@@ -1,9 +1,9 @@
 {
-  "name": "@labq/client",
+  "name": "@animus/client",
   "private": true,
   "type": "module",
   "exports": "./src/index.ts",
   "dependencies": {
-    "@labq/contracts": "workspace:*"
+    "@animus/contracts": "workspace:*"
   }
 }

@@ -38,9 +38,9 @@ export const PROVIDER_EFFORT_VOCABULARIES: Record<SupportedProvider, readonly Ef
 };
 
 /**
- * Resolves an Archon rung into a provider vocabulary. Unsupported values clamp
+ * Resolves an Animus rung into a provider vocabulary. Unsupported values clamp
  * to a weaker rung first so a mapping never silently buys more reasoning,
- * matching Archon's @archon/provider-contract/src/effort.ts clampEffort.
+ * matching Animus's @animus/provider-contract/src/effort.ts clampEffort.
  */
 export function clampEffort<T extends EffortRung>(
   value: unknown,
@@ -181,7 +181,7 @@ export interface BuildProviderArgvOptions {
 
 /**
  * Builds standard CLI arguments for running an autonomous lap step across
- * any supported Archon SDLC provider harness with reasoning effort mapping.
+ * any supported Animus SDLC provider harness with reasoning effort mapping.
  */
 export function buildProviderArgv(
   provider: string,

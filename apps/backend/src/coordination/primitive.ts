@@ -5,7 +5,7 @@ import {
   type TargetedImplementResult,
   targetedImplementSubmissionSchema,
   targetedImplementResultSchema,
-} from "@labq/contracts/operator";
+} from "@animus/contracts/operator";
 import { parseTicketSections } from "../intake/parser";
 import { CoordinationError } from "./errors";
 
@@ -29,10 +29,10 @@ export function freezeContract(rawMarkdown: string): FrozenContract {
 }
 
 export function validateTargetedPrimitive(primitiveName: string): void {
-  if (primitiveName !== "archon-implement") {
+  if (primitiveName !== "animus-implement") {
     throw new CoordinationError(
       "invalid_primitive",
-      `Only targeted 'archon-implement' primitive is permitted. Unbound pickers ('${primitiveName}') are strictly prohibited by Invariant 1.`,
+      `Only targeted 'animus-implement' primitive is permitted. Unbound pickers ('${primitiveName}') are strictly prohibited by Invariant 1.`,
       { prohibitedPrimitive: primitiveName },
     );
   }
@@ -75,10 +75,10 @@ export async function executeTargetedImplement(
     const proc = Bun.spawnSync(
       [
         "bun",
-        "archon",
+        "animus",
         "workflow",
         "run",
-        "archon-implement",
+        "animus-implement",
         "--cwd",
         submission.worktreePath,
         "--branch",

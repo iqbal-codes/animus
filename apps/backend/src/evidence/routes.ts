@@ -12,7 +12,7 @@ import {
   releaseReadinessResultSchema,
   sanitizedReportSchema,
   landingGuardResultSchema,
-} from "@labq/contracts/operator";
+} from "@animus/contracts/operator";
 import type { EvidenceService } from "./service";
 import { EvidenceError } from "./errors";
 

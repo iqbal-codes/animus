@@ -3,10 +3,10 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "labq-software-factory",
+      "name": "animus",
       "devDependencies": {
-        "@labq/client": "workspace:*",
-        "@labq/contracts": "workspace:*",
+        "@animus/client": "workspace:*",
+        "@animus/contracts": "workspace:*",
         "@testing-library/dom": "^10.4.2",
         "@testing-library/react": "^16.3.3",
         "@types/bun": "1.4.2",
@@ -26,32 +26,32 @@
       },
     },
     "apps/backend": {
-      "name": "@labq/backend",
+      "name": "@animus/backend",
       "dependencies": {
-        "@labq/contracts": "workspace:*",
+        "@animus/contracts": "workspace:*",
       },
     },
     "apps/engine-host": {
-      "name": "@labq/engine-host",
+      "name": "@animus/engine-host",
       "dependencies": {
-        "@labq/contracts": "workspace:*",
+        "@animus/contracts": "workspace:*",
       },
     },
     "apps/launcher": {
-      "name": "@labq/launcher",
+      "name": "@animus/launcher",
       "version": "0.2.0",
       "dependencies": {
-        "@labq/contracts": "workspace:*",
+        "@animus/contracts": "workspace:*",
       },
     },
     "apps/web": {
-      "name": "@labq/web",
+      "name": "@animus/web",
       "version": "0.2.0",
       "dependencies": {
         "@base-ui/react": "^1.9.0",
         "@fontsource-variable/inter": "^5.3.0",
         "@fontsource-variable/noto-sans": "^5.3.0",
-        "@labq/client": "workspace:*",
+        "@animus/client": "workspace:*",
         "@tanstack/react-query": "^5.105.0",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
@@ -75,13 +75,13 @@
       },
     },
     "packages/client": {
-      "name": "@labq/client",
+      "name": "@animus/client",
       "dependencies": {
-        "@labq/contracts": "workspace:*",
+        "@animus/contracts": "workspace:*",
       },
     },
     "packages/contracts": {
-      "name": "@labq/contracts",
+      "name": "@animus/contracts",
       "dependencies": {
         "zod": "4.1.12",
       },
@@ -202,17 +202,17 @@
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
-    "@labq/backend": ["@labq/backend@workspace:apps/backend"],
+    "@animus/backend": ["@animus/backend@workspace:apps/backend"],
 
-    "@labq/client": ["@labq/client@workspace:packages/client"],
+    "@animus/client": ["@animus/client@workspace:packages/client"],
 
-    "@labq/contracts": ["@labq/contracts@workspace:packages/contracts"],
+    "@animus/contracts": ["@animus/contracts@workspace:packages/contracts"],
 
-    "@labq/engine-host": ["@labq/engine-host@workspace:apps/engine-host"],
+    "@animus/engine-host": ["@animus/engine-host@workspace:apps/engine-host"],
 
-    "@labq/launcher": ["@labq/launcher@workspace:apps/launcher"],
+    "@animus/launcher": ["@animus/launcher@workspace:apps/launcher"],
 
-    "@labq/web": ["@labq/web@workspace:apps/web"],
+    "@animus/web": ["@animus/web@workspace:apps/web"],
 
     "@modelcontextprotocol/core": ["@modelcontextprotocol/core@2.4.0", "", { "dependencies": { "zod": "^4.2.0" } }, "sha512-z8QBKqdfXLPzkLQuG4xp8hrVEMm1PZ1IgxMN2sMbJiFiAKOWXnAzogXn2W4aqIBlP1ea6U5yiqVquvUNM1Cj6Q=="],
 

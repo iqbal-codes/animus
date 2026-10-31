@@ -134,7 +134,7 @@ import {
   type TargetBindingResult,
   type BranchIntegrationSubmission,
   type BranchIntegrationResult,
-} from "@labq/contracts/operator";
+} from "@animus/contracts/operator";
 
 export {
   projectSchema,

@@ -1,4 +1,4 @@
-import type { WsEvent, WsSubscriptionMessage } from "@labq/contracts/operator";
+import type { WsEvent, WsSubscriptionMessage } from "@animus/contracts/operator";
 
 export class BoundedRingBuffer<T> {
   private buffer: Array<T | undefined>;

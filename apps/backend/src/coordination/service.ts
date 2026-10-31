@@ -6,7 +6,7 @@ import {
   type TargetedImplementResult,
   type CoordinationFinalPrResult,
   specCoordinationPlanSchema,
-} from "@labq/contracts/operator";
+} from "@animus/contracts/operator";
 import type { ForgeAdapter, IssueForgeAdapter } from "../registry/forge";
 import { assertIssueForge } from "../registry/forge";
 import { CommandLedger } from "../command/ledger";
@@ -376,7 +376,7 @@ export class SpecCoordinatorService {
       branch: childBranch,
       startSha,
       contract: child.contract,
-      primitive: "archon-implement",
+      primitive: "animus-implement",
     };
 
     // Durable pre-dispatch record
@@ -455,7 +455,7 @@ export class SpecCoordinatorService {
       this.ledger.updateOutcome(requestId, {
         state: "failed",
         provenance: {
-          source: "archon-implement",
+          source: "animus-implement",
           timestamp: new Date().toISOString(),
           details: crashMsg,
         },
@@ -490,7 +490,7 @@ export class SpecCoordinatorService {
       this.ledger.updateOutcome(requestId, {
         state: "failed",
         provenance: {
-          source: "archon-implement",
+          source: "animus-implement",
           timestamp: new Date().toISOString(),
           details: failureMsg,
         },

@@ -16,7 +16,7 @@ import {
   ReportSanitizer,
   handleProjectEvidenceRoute,
 } from "../../apps/backend/src/evidence";
-import { createFactoryClient } from "@labq/client";
+import { createFactoryClient } from "@animus/client";
 
 describe("Candidate-Bound Verification, Landing Guard & Tiered Action Freshness (Issue #63)", () => {
   let tempDir: string;
@@ -48,7 +48,7 @@ describe("Candidate-Bound Verification, Landing Guard & Tiered Action Freshness 
   }
 
   beforeEach(async () => {
-    tempDir = mkdtempSync(join(tmpdir(), "labq-evid-test-"));
+    tempDir = mkdtempSync(join(tmpdir(), "animus-evid-test-"));
     dbPath = join(tempDir, "state", "console.db");
     db = initializeDatabase(dbPath);
     forge = new SyntheticForgeAdapter({
@@ -649,8 +649,8 @@ describe("Candidate-Bound Verification, Landing Guard & Tiered Action Freshness 
     });
   });
 
-  describe("HTTP Routes & Scoped Client SDK Integration (@labq/client)", () => {
-    test("handles full verification, landing guard, and release readiness lifecycle via HTTP and @labq/client", async () => {
+  describe("HTTP Routes & Scoped Client SDK Integration (@animus/client)", () => {
+    test("handles full verification, landing guard, and release readiness lifecycle via HTTP and @animus/client", async () => {
       // Create custom transport routing identical to main.ts subPath splitting
       const client = createFactoryClient({
         baseUrl: "http://localhost:4000",

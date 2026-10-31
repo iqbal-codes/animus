@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { createFactoryClient, FactoryClientError } from "@labq/client";
+import { createFactoryClient, FactoryClientError } from "@animus/client";
 import { runProjectCommand } from "../../scripts/cli/commands/operations";
 
 const status = {

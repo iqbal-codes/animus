@@ -8,10 +8,10 @@ import {
   parseAgentReport,
   extractReport,
   renderPrompt,
-  resolveArchonCommandsDir,
-  ARCHON_BUILDER_PROMPT,
-  ARCHON_QA_PROMPT,
-  ARCHON_REVIEWER_PROMPT,
+  resolveAnimusCommandsDir,
+  ANIMUS_BUILDER_PROMPT,
+  ANIMUS_QA_PROMPT,
+  ANIMUS_REVIEWER_PROMPT,
   formatBuilderComment,
   formatEscalationHandoff,
   type LocalIssue,
@@ -29,7 +29,7 @@ test("accepts a single fenced JSON report without discarding findings and reject
   expect(() => parseAgentReport("```json\ninvalid\n```")).toThrow();
 });
 
-test("extractReport normalizes Canonical Archon check-app structured reports", () => {
+test("extractReport normalizes Canonical Animus check-app structured reports", () => {
   const canonicalCheckApp = {
     pr: "https://github.com/owner/repo/pull/1",
     head: "abc1234",
@@ -73,7 +73,7 @@ test("extractReport normalizes Canonical Archon check-app structured reports", (
   expect(report.noticed).toContain("minor deprecation warning");
 });
 
-test("extractReport normalizes Canonical Archon review structured reports", () => {
+test("extractReport normalizes Canonical Animus review structured reports", () => {
   const canonicalReview = {
     outcome: "merge",
     pr: "https://github.com/owner/repo/pull/1",
@@ -122,26 +122,26 @@ test("renderPrompt interpolates $INPUTS and $ARTIFACTS_DIR cleanly", () => {
   expect(rendered).toBe("Work on https://github.com/test/issues/1 with simple in /tmp/artifacts");
 });
 
-test("Archon prompt templates include canonical SDLC roles and strict contracts", () => {
+test("Animus prompt templates include canonical SDLC roles and strict contracts", () => {
   const root = resolve(import.meta.dir, "../..");
-  const dir = resolveArchonCommandsDir(root);
+  const dir = resolveAnimusCommandsDir(root);
   if (dir) {
     expect(existsSync(dir)).toBe(true);
   }
 
-  expect(ARCHON_BUILDER_PROMPT).toContain("# Make the move");
-  expect(ARCHON_BUILDER_PROMPT).toContain("Two reviewers check your work right after you.");
-  expect(ARCHON_BUILDER_PROMPT).toContain("Evidence");
+  expect(ANIMUS_BUILDER_PROMPT).toContain("# Make the move");
+  expect(ANIMUS_BUILDER_PROMPT).toContain("Two reviewers check your work right after you.");
+  expect(ANIMUS_BUILDER_PROMPT).toContain("Evidence");
 
-  expect(ARCHON_QA_PROMPT).toContain("# Check the app as a user would");
-  expect(ARCHON_QA_PROMPT).toContain("You are the black-box tester");
-  expect(ARCHON_QA_PROMPT).toContain("merged_with");
+  expect(ANIMUS_QA_PROMPT).toContain("# Check the app as a user would");
+  expect(ANIMUS_QA_PROMPT).toContain("You are the black-box tester");
+  expect(ANIMUS_QA_PROMPT).toContain("merged_with");
 
-  expect(ARCHON_REVIEWER_PROMPT).toContain(
+  expect(ANIMUS_REVIEWER_PROMPT).toContain(
     "# Review, then merge, send back, or return to the owner",
   );
-  expect(ARCHON_REVIEWER_PROMPT).toContain("dispositions");
-  expect(ARCHON_REVIEWER_PROMPT).toContain("Loop review:");
+  expect(ANIMUS_REVIEWER_PROMPT).toContain("dispositions");
+  expect(ANIMUS_REVIEWER_PROMPT).toContain("Loop review:");
 });
 
 const roots: string[] = [];
@@ -158,7 +158,7 @@ function git(root: string, ...args: string[]) {
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "local-loop-"));
   roots.push(root);
-  git(root, "init");
+  git(root, "init", "-b", "main");
   git(root, "config", "user.email", "test@example.invalid");
   git(root, "config", "user.name", "Offline Test");
   await mkdir(join(root, "harness"));
@@ -233,7 +233,7 @@ test("executes one clean lap: builder commits, checks run, QA silent, reviewer p
   expect(res.route).toBe("simple");
   expect(res.evidence.filter((e) => e.kind === "pi")).toHaveLength(3); // builder, qa, reviewer
 
-  // Verifies Archon 1:1 artifact and handoff structure
+  // Verifies Animus 1:1 artifact and handoff structure
   const handoffDir = join(res.runDirectory, "artifacts", "handoff");
   expect(existsSync(join(handoffDir, "builder.md"))).toBe(true);
   expect(existsSync(join(handoffDir, "app-check.json"))).toBe(true);
@@ -254,7 +254,7 @@ test("executes autonomous lap with alternative provider harness (e.g. claude)", 
   const root = await fixture();
   const issue: LocalIssue = {
     number: 73,
-    url: "https://github.com/labq/labq-software-factory/issues/73",
+    url: "https://github.com/animus/animus/issues/73",
     title: "Support Claude Harness",
     body: "AC1: claude harness runs cleanly",
     comments: [],
@@ -592,7 +592,7 @@ test("runLocalLoop transitions to needs_owner when lap count reaches max_laps on
   await mkdir(join(root, ".factory"), { recursive: true });
   await Bun.write(
     join(root, ".factory", "schedule.json"),
-    JSON.stringify({ workflow: "archon-loop", max_laps: 1 }),
+    JSON.stringify({ workflow: "animus-loop", max_laps: 1 }),
   );
 
   const issue: LocalIssue = {
@@ -658,4 +658,81 @@ test("runLocalLoop transitions to needs_owner when lap count reaches max_laps on
 
   const res = await runLocalLoop(root, issue, { pi: transport, push: false });
   expect(res.status).toBe("needs_owner");
+});
+test("fetches origin baseBranch, fast-forwards clean local branch, and bases new worktree on remote commit", async () => {
+  const origin = await mkdtemp(join(tmpdir(), "origin-"));
+  roots.push(origin);
+  git(origin, "init", "--bare", "-b", "main");
+
+  const root = await fixture();
+  git(root, "branch", "-M", "main");
+  git(root, "remote", "add", "origin", origin);
+  git(root, "push", "-u", "origin", "main");
+
+  const other = await mkdtemp(join(tmpdir(), "other-"));
+  roots.push(other);
+  git(other, "clone", "-b", "main", origin, ".");
+  git(other, "config", "user.email", "other@example.invalid");
+  git(other, "config", "user.name", "Other Dev");
+  await Bun.write(join(other, "merged-feature.txt"), "merged upstream");
+  git(other, "add", "merged-feature.txt");
+  git(other, "commit", "-m", "feat: merged PR from another issue");
+  git(other, "push", "origin", "main");
+  const remoteHeadSha = git(other, "rev-parse", "HEAD");
+
+  const rootHeadBefore = git(root, "rev-parse", "HEAD");
+  expect(rootHeadBefore).not.toBe(remoteHeadSha);
+
+  const issue: LocalIssue = {
+    number: 101,
+    url: "https://github.com/owner/repo/issues/101",
+    title: "test fetch origin base",
+    body: "test",
+    comments: [],
+    dependencies: [],
+    activeClaim: false,
+  };
+
+  let capturedWorktreeBaseParent = "";
+  const transport: PiTransport = async ({ cwd, role }) => {
+    if (role === "builder") {
+      expect(existsSync(join(cwd, "merged-feature.txt"))).toBe(true);
+      capturedWorktreeBaseParent = git(cwd, "rev-parse", "HEAD");
+      await Bun.write(join(cwd, "issue-101.txt"), "done");
+      git(cwd, "add", "issue-101.txt");
+      git(cwd, "commit", "-m", "feat: issue 101");
+    }
+    const head = git(cwd, "rev-parse", "HEAD");
+    return {
+      exitCode: 0,
+      stdout:
+        JSON.stringify({ type: "agent_settled", aborted: false }) +
+        "\n" +
+        JSON.stringify({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            stopReason: "stop",
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  candidate: head,
+                  verdict: "pass",
+                  checks: [{ criterion: "AC1", result: "pass", evidence: "test ok" }],
+                  findings: [],
+                }),
+              },
+            ],
+          },
+        }),
+      stderr: "",
+    };
+  };
+
+  const res = await runLocalLoop(root, issue, { pi: transport, push: false });
+  expect(res.status).toBe("waiting_approval");
+  expect(res.base).toBe(remoteHeadSha);
+  expect(capturedWorktreeBaseParent).toBe(remoteHeadSha);
+  expect(git(root, "rev-parse", "HEAD")).toBe(remoteHeadSha);
 });

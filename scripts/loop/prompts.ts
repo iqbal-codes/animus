@@ -1,17 +1,17 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-export function resolveArchonCommandsDir(root: string): string | null {
+export function resolveAnimusCommandsDir(root: string): string | null {
   const packPath = join(root, "factory/pack.json");
   if (!existsSync(packPath)) return null;
   try {
     const pack = JSON.parse(readFileSync(packPath, "utf-8"));
     const reqRev = pack.integration_revision_required;
-    const sourceDirRel = pack.source_directory || ".archon/workflows/sdlc";
+    const sourceDirRel = pack.source_directory || ".animus/workflows/sdlc";
     const candidates = [
       join(root, sourceDirRel, "loop/commands"),
-      join(process.env.HOME || "", ".cache/factory/archon", reqRev, sourceDirRel, "loop/commands"),
-      join(process.env.HOME || "", ".cache/factory/archon", reqRev, "loop/commands"),
+      join(process.env.HOME || "", ".cache/factory/animus", reqRev, sourceDirRel, "loop/commands"),
+      join(process.env.HOME || "", ".cache/factory/animus", reqRev, "loop/commands"),
     ];
     for (const c of candidates) {
       if (existsSync(c)) return c;
@@ -27,8 +27,8 @@ export function loadPrompt(promptName: string, root: string): string {
     return readFileSync(localPromptPath, "utf-8");
   }
 
-  // 2. Check pinned Archon pack commands
-  const commandsDir = resolveArchonCommandsDir(root);
+  // 2. Check pinned Animus pack commands
+  const commandsDir = resolveAnimusCommandsDir(root);
   if (commandsDir) {
     const pinnedPath = join(commandsDir, `${promptName}.md`);
     if (existsSync(pinnedPath)) {

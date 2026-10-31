@@ -61,6 +61,7 @@ export interface LocalLoopOptions {
   /** Additional attempts in the same role/worktree, 0..2 (default 1). */
   maxContinuations?: number;
   push?: boolean;
+  baseBranch?: string;
 }
 
 export interface LoopEvidence {

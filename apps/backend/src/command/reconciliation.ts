@@ -2,7 +2,7 @@ import type {
   CommandRecord,
   CommandOutcome,
   CommandReconciliationResult,
-} from "@labq/contracts/operator";
+} from "@animus/contracts/operator";
 import type { CommandLedger } from "./ledger";
 
 export interface LapReconciliationInfo {

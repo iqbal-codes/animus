@@ -1,4 +1,4 @@
-import type { LandingGuardResult, LandingExecutionResult } from "@labq/contracts/operator";
+import type { LandingGuardResult, LandingExecutionResult } from "@animus/contracts/operator";
 import type { DatabaseSync } from "node:sqlite";
 import type { CandidateVerificationEngine } from "./verification";
 import type { ForgeAdapter } from "../registry/forge";

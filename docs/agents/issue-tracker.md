@@ -2,7 +2,7 @@
 
 Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
 
-For the brainstorming → spec → tickets → implementation → review lifecycle, read `software-factory-workflow.md`. It defines executable ticket bodies, publication/admission labels, and the textual dependency line required by factory intake and archon-loop. Native edges alone are insufficient for those consumers.
+For the brainstorming → spec → tickets → implementation → review lifecycle, read `software-factory-workflow.md`. It defines executable ticket bodies, publication/admission labels, and the textual dependency line required by factory intake and animus-loop. Native edges alone are insufficient for those consumers.
 
 ## Conventions
 

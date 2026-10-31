@@ -3,7 +3,7 @@
 Upgrade an installed factory by pulling the factory repository and rerunning
 `python <factory>/bin/factory.py init` from the application repository.
 
-- `init` installs the files in `template/` and the Archon source pinned in
+- `init` installs the files in `template/` and the Animus source pinned in
   `factory/pack.json`, then validates that source.
 - Files you write for your project are never overwritten: `MISSION.md`,
   `harness/END-TO-END.md`, `harness/harness.config.json`,
@@ -13,13 +13,13 @@ Upgrade an installed factory by pulling the factory repository and rerunning
 - Run `python factory/consumer.py doctor` afterwards. It checks the pinned source
   and that every shared workflow validates.
 
-What the factory owns, and what Archon owns:
+What the factory owns, and what Animus owns:
 
-- **Archon** owns every workflow and agent: triage, delivery, review,
+- **Animus** owns every workflow and agent: triage, delivery, review,
   validation, runtime and holdout verification, repair, discoveries, merging,
   deployment, and scheduling through native triggers.
 - **The factory** owns your project's context files, the installation, and the
-  thin consumer that invokes Archon and shows its state.
+  thin consumer that invokes Animus and shows its state.
 - **Runtime scenarios** are project inputs, and must exercise fresh environments
   running the actual candidate.
 

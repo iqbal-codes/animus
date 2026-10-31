@@ -43,7 +43,7 @@ export function generateHomebrewFormula(opts: HomebrewFormulaOptions): string {
   }
 
   const resolveTargetSha = (target: HomebrewTarget): string => {
-    const tarballFilename = `labq-factory-v${cleanVersion}-${target}.tar.gz`;
+    const tarballFilename = `animus-v${cleanVersion}-${target}.tar.gz`;
     const altTargetUnder = target.replace("-", "_");
     const altTargetCamel = target.replace(/-([a-z0-9])/g, (_, c) => c.toUpperCase());
 
@@ -77,17 +77,17 @@ export function generateHomebrewFormula(opts: HomebrewFormulaOptions): string {
   const linuxArm64Sha = resolveTargetSha("linux-arm64");
   const linuxX64Sha = resolveTargetSha("linux-x64");
 
-  const repo = (opts.repo ?? "iqbal-codes/labq-software-factory").trim();
+  const repo = (opts.repo ?? "iqbal-codes/animus").trim();
   const desc = (
     opts.desc ??
-    "Autonomous software factory with unified launcher, local-first React web console, and private engine-host coordination"
+    "Autonomous self-improving software factory with unified launcher, React web console, and private engine-host coordination"
   ).trim();
   const homepage = (opts.homepage ?? `https://github.com/${repo}`).trim();
   const license = (opts.license ?? "MIT").trim();
 
   const baseUrl = `https://github.com/${repo}/releases/download/v${cleanVersion}`;
 
-  return `class LabqFactory < Formula
+  return `class Animus < Formula
   desc "${desc}"
   homepage "${homepage}"
   version "${cleanVersion}"
@@ -95,34 +95,33 @@ export function generateHomebrewFormula(opts: HomebrewFormulaOptions): string {
 
   on_macos do
     on_arm do
-      url "${baseUrl}/labq-factory-v${cleanVersion}-darwin-arm64.tar.gz"
+      url "${baseUrl}/animus-v${cleanVersion}-darwin-arm64.tar.gz"
       sha256 "${darwinArm64Sha}"
     end
     on_intel do
-      url "${baseUrl}/labq-factory-v${cleanVersion}-darwin-x64.tar.gz"
+      url "${baseUrl}/animus-v${cleanVersion}-darwin-x64.tar.gz"
       sha256 "${darwinX64Sha}"
     end
   end
 
   on_linux do
     on_arm do
-      url "${baseUrl}/labq-factory-v${cleanVersion}-linux-arm64.tar.gz"
+      url "${baseUrl}/animus-v${cleanVersion}-linux-arm64.tar.gz"
       sha256 "${linuxArm64Sha}"
     end
     on_intel do
-      url "${baseUrl}/labq-factory-v${cleanVersion}-linux-x64.tar.gz"
+      url "${baseUrl}/animus-v${cleanVersion}-linux-x64.tar.gz"
       sha256 "${linuxX64Sha}"
     end
   end
 
   def install
-    bin.install "labq-factory"
-    bin.install_symlink "labq-factory" => "factory"
-    bin.install_symlink "labq-factory" => "labq"
+    bin.install "animus"
+    bin.install_symlink "animus" => "factory"
   end
 
   test do
-    assert_match "labq-factory", shell_output("#{bin}/labq-factory version")
+    assert_match "animus", shell_output("#{bin}/animus version")
   end
 end
 `;
@@ -147,7 +146,7 @@ export function stageReleaseHomebrewFormula(opts: {
   if (!existsSync(outDir)) {
     mkdirSync(outDir, { recursive: true });
   }
-  const formulaPath = join(outDir, "labq-factory.rb");
+  const formulaPath = join(outDir, "animus.rb");
   writeFileSync(formulaPath, content, "utf-8");
   const sha256 = createHash("sha256").update(Buffer.from(content, "utf-8")).digest("hex");
   return { formulaPath, content, sha256 };

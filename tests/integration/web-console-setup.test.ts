@@ -39,9 +39,9 @@ describe("Web Console Setup: Architecture, Serving, and Visual Standard", () => 
     expect(existsSync(join(repoRoot, "apps/web/src/main.tsx"))).toBe(true);
 
     const pkg = JSON.parse(readFileSync(join(repoRoot, "apps/web/package.json"), "utf-8"));
-    expect(pkg.name).toBe("@labq/web");
+    expect(pkg.name).toBe("@animus/web");
     expect(pkg.private).toBe(true);
-    expect(pkg.dependencies["@labq/client"]).toBe("workspace:*");
+    expect(pkg.dependencies["@animus/client"]).toBe("workspace:*");
     expect(pkg.dependencies.react).toBeDefined();
     expect(pkg.dependencies["react-dom"]).toBeDefined();
   });
@@ -66,10 +66,10 @@ describe("Web Console Setup: Architecture, Serving, and Visual Standard", () => 
     expect(archResult.ok).toBe(true);
     expect(archResult.violations).toEqual([]);
 
-    // 2. Deliberate negative check: importing @labq/backend in apps/web fails
+    // 2. Deliberate negative check: importing @animus/backend in apps/web fails
     const backendImportViolation = scanSnippet(
       "apps/web/src/components/leak.tsx",
-      `import { configuration } from "@labq/backend/src/config";`,
+      `import { configuration } from "@animus/backend/src/config";`,
     );
     expect(backendImportViolation.length).toBeGreaterThan(0);
     expect(backendImportViolation[0]).toContain("apps/web cannot import server internals");
@@ -98,7 +98,7 @@ describe("Web Console Setup: Architecture, Serving, and Visual Standard", () => 
     expect(rootRes!.status).toBe(200);
     expect(rootRes!.headers.get("Content-Type")).toContain("text/html");
     const rootText = await rootRes!.text();
-    expect(rootText).toContain("Software Factory Console");
+    expect(rootText).toContain("Animus Console");
 
     // SPA client route serves index.html
     const spaReq = new Request("http://127.0.0.1:3000/projects/proj-alpha");

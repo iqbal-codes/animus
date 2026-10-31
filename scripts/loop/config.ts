@@ -9,7 +9,7 @@ export interface TierBinding {
   effort?: EffortRung;
 }
 
-export interface ArchonConfig {
+export interface AnimusConfig {
   assistant?: string;
   assistants?: Record<string, { model: string }>;
   tiers?: Partial<Record<ModelTier, TierBinding>>;
@@ -68,8 +68,8 @@ export function parseYamlSimple(text: string): Record<string, any> {
   return result;
 }
 
-export function serializeArchonConfigYaml(config: ArchonConfig): string {
-  const lines: string[] = ["# Archon Repository Configuration for labq-software-factory"];
+export function serializeAnimusConfigYaml(config: AnimusConfig): string {
+  const lines: string[] = ["# Animus Repository Configuration for animus"];
   if (config.assistant) {
     lines.push(`assistant: ${config.assistant}`, "");
   }
@@ -121,8 +121,8 @@ export function serializeArchonConfigYaml(config: ArchonConfig): string {
   return lines.join("\n");
 }
 
-export function readArchonConfig(root: string): ArchonConfig {
-  const configPath = join(root, ".archon/config.yaml");
+export function readAnimusConfig(root: string): AnimusConfig {
+  const configPath = join(root, ".animus/config.yaml");
   if (!existsSync(configPath)) return {};
   try {
     const content = readFileSync(configPath, "utf-8");
@@ -132,10 +132,10 @@ export function readArchonConfig(root: string): ArchonConfig {
   }
 }
 
-export function writeArchonConfig(root: string, config: ArchonConfig): string {
-  const configPath = join(root, ".archon/config.yaml");
+export function writeAnimusConfig(root: string, config: AnimusConfig): string {
+  const configPath = join(root, ".animus/config.yaml");
   mkdirSync(dirname(configPath), { recursive: true });
-  writeFileSync(configPath, serializeArchonConfigYaml(config), "utf-8");
+  writeFileSync(configPath, serializeAnimusConfigYaml(config), "utf-8");
   return configPath;
 }
 
@@ -159,7 +159,7 @@ export function resolveModelTier(role: LoopRole): ModelTier {
 
 export function resolveModelForRole(root: string, role: LoopRole): string | undefined {
   if (process.env.FACTORY_LOOP_MODEL) return process.env.FACTORY_LOOP_MODEL;
-  const config = readArchonConfig(root);
+  const config = readAnimusConfig(root);
   const tier = resolveModelTier(role);
 
   if ((role === "reviewer" || role === "reflector") && config.aliases?.["@reasoning"]?.model) {
@@ -179,7 +179,7 @@ export function resolveModelForRole(root: string, role: LoopRole): string | unde
 
 export function resolveProviderForRole(root: string, role: LoopRole): string {
   if (process.env.FACTORY_LOOP_PROVIDER) return process.env.FACTORY_LOOP_PROVIDER;
-  const config = readArchonConfig(root);
+  const config = readAnimusConfig(root);
   const tier = resolveModelTier(role);
 
   if ((role === "reviewer" || role === "reflector") && config.aliases?.["@reasoning"]?.provider) {
@@ -201,7 +201,7 @@ export function resolveEffortForRole(root: string, role: LoopRole): EffortRung |
   if (process.env.FACTORY_LOOP_EFFORT && isEffortRung(process.env.FACTORY_LOOP_EFFORT)) {
     return process.env.FACTORY_LOOP_EFFORT;
   }
-  const config = readArchonConfig(root);
+  const config = readAnimusConfig(root);
   const tier = resolveModelTier(role);
 
   if (

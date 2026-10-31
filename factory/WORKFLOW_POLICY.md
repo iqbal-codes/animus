@@ -1,6 +1,6 @@
 # Factory workflow policy
 
-This project uses Archon's shared SDLC workflows. The requirements below are
+This project uses Animus's shared SDLC workflows. The requirements below are
 project guidance for those workflows; they do not replace workflow gates or grant
 permission to publish, comment, merge, deploy, or change schedules.
 
@@ -22,9 +22,9 @@ first story.
 
 ## Factory-owned workflow inputs
 
-Factory supplies `holdout=.factory/holdout/HOLDOUT.md` to `archon-loop`, `archon-manager` and
-`archon-holdouts`, and the project's `protected_paths` (from `harness/harness.config.json`) to
-`archon-loop` and `archon-merge-queue`, unless the caller supplies them. The holdout scenarios are
+Factory supplies `holdout=.factory/holdout/HOLDOUT.md` to `animus-loop`, `animus-manager` and
+`animus-holdouts`, and the project's `protected_paths` (from `harness/harness.config.json`) to
+`animus-loop` and `animus-merge-queue`, unless the caller supplies them. The holdout scenarios are
 read only by the `holdout-verifier` and `holdout-writer` agents; `.factory/hooks/holdout_fence.py`
 refuses every other agent.
 
@@ -37,7 +37,7 @@ expected revision, require the configured health and build-identity checks, use
 fresh state for each attempt, and preserve the typed result as evidence. Ordinary
 checks do not substitute for required runtime or holdout evidence.
 
-Independent review evidence may be Archon's canonical current-head report, a
+Independent review evidence may be Animus's canonical current-head report, a
 genuine review by an independent human, or an external independent report format
 that project guidance accepts. In every case it must identify the PR's current head,
 be credible and independent of the implementer, state a ready verdict, and contain

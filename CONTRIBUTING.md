@@ -1,6 +1,6 @@
-# Contributing to labq-software-factory
+# Contributing to animus
 
-Thank you for contributing to `labq-software-factory`! This repository operates an autonomous, contract-driven software factory. We welcome issues, bug reports, and pull requests that adhere to the standards outlined below.
+Thank you for contributing to `animus`! This repository operates an autonomous, self-improving, contract-driven software factory. We welcome issues, bug reports, and pull requests that adhere to the standards outlined below.
 
 ## Qualified Toolchain
 
@@ -24,13 +24,13 @@ Do not upgrade pinned toolchain versions without prior maintainer approval.
 To configure a repository for the factory without network enrollment:
 
 ```sh
-labq-factory setup --local-only
+animus setup --local-only
 ```
 
 For interactive setup and enrollment into a running factory instance:
 
 ```sh
-labq-factory setup
+animus setup
 ```
 
 Consult `docs/onboarding.md` for full details on multi-harness selection, tier configuration, and repository monitoring registration.
@@ -52,11 +52,11 @@ The repository is structured as a Bun workspace with strict unidirectional layer
 
 | Package / App | Purpose | Layering Invariants |
 | --- | --- | --- |
-| `packages/contracts` (`@labq/contracts`) | Pure schemas and domain types | Declares zero dependencies on `@labq/client`, `@labq/backend`, `@labq/engine-host`, or `@labq/launcher`. |
-| `packages/client` (`@labq/client`) | Operator Fetch client and API helpers | Depends only on `@labq/contracts`. Declares zero dependencies on `@labq/backend`, `@labq/engine-host`, or `@labq/launcher`. Imports zero Node/Bun built-ins (`node:*`). |
-| `apps/backend` (`@labq/backend`) | Control plane, project monitor, and API server | May depend on `@labq/contracts` and `@labq/client`. Never depends on or imports from `apps/engine-host`. |
-| `apps/engine-host` (`@labq/engine-host`) | Authenticated private execution worker | May depend on `@labq/contracts`. Never depends on or imports from `apps/backend`. |
-| `apps/launcher` (`@labq/launcher`) | Multi-process supervisor | Spawns backend and engine-host as isolated child processes; declares zero library dependencies on their internals. |
+| `packages/contracts` (`@animus/contracts`) | Pure schemas and domain types | Declares zero dependencies on `@animus/client`, `@animus/backend`, `@animus/engine-host`, or `@animus/launcher`. |
+| `packages/client` (`@animus/client`) | Operator Fetch client and API helpers | Depends only on `@animus/contracts`. Declares zero dependencies on `@animus/backend`, `@animus/engine-host`, or `@animus/launcher`. Imports zero Node/Bun built-ins (`node:*`). |
+| `apps/backend` (`@animus/backend`) | Control plane, project monitor, and API server | May depend on `@animus/contracts` and `@animus/client`. Never depends on or imports from `apps/engine-host`. |
+| `apps/engine-host` (`@animus/engine-host`) | Authenticated private execution worker | May depend on `@animus/contracts`. Never depends on or imports from `apps/backend`. |
+| `apps/launcher` (`@animus/launcher`) | Multi-process supervisor | Spawns backend and engine-host as isolated child processes; declares zero library dependencies on their internals. |
 
 These boundaries are checked statically across source imports and declared in `package.json` dependencies via `scripts/health/check-architecture.mjs`.
 

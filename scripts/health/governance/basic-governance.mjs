@@ -30,8 +30,8 @@ function validateBasicGovernance(repoRoot, readRequiredFile, violations) {
     if (!contributingContent.includes("1.4.2")) {
       violations.push("CONTRIBUTING.md must document pinned Bun version 1.4.2");
     }
-    if (!contributingContent.includes("labq-factory setup --local-only")) {
-      violations.push("CONTRIBUTING.md must document 'labq-factory setup --local-only'");
+    if (!contributingContent.includes("animus setup --local-only")) {
+      violations.push("CONTRIBUTING.md must document 'animus setup --local-only'");
     }
     if (!contributingContent.includes("bun run check")) {
       violations.push("CONTRIBUTING.md must document 'bun run check'");
@@ -43,13 +43,13 @@ function validateBasicGovernance(repoRoot, readRequiredFile, violations) {
       violations.push("CONTRIBUTING.md must document 'bun run verify'");
     }
     if (
-      !contributingContent.includes("@labq/contracts") ||
-      !contributingContent.includes("@labq/client") ||
+      !contributingContent.includes("@animus/contracts") ||
+      !contributingContent.includes("@animus/client") ||
       !contributingContent.includes("apps/backend") ||
       !contributingContent.includes("apps/engine-host")
     ) {
       violations.push(
-        "CONTRIBUTING.md must document architecture boundaries (@labq/contracts, @labq/client, apps/backend, apps/engine-host)",
+        "CONTRIBUTING.md must document architecture boundaries (@animus/contracts, @animus/client, apps/backend, apps/engine-host)",
       );
     }
   }

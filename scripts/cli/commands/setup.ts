@@ -8,9 +8,9 @@ import { join, resolve } from "node:path";
 import { TerminalWizardPrompts, type WizardPrompts } from "./onboarding-prompts";
 import { createModelCatalogLoader, type ModelCatalogLoader } from "./onboarding-model-catalog";
 import {
-  readArchonConfig,
-  writeArchonConfig,
-  type ArchonConfig,
+  readAnimusConfig,
+  writeAnimusConfig,
+  type AnimusConfig,
   type TierBinding,
 } from "../../loop/config";
 import {
@@ -70,11 +70,11 @@ export interface HarnessConfigFile {
 export interface SetupConfigSummary {
   repoRoot: string;
   detectedHarnesses: DetectedHarnessProvider[];
-  archonConfigPath: string;
+  animusConfigPath: string;
   scheduleConfigPath: string;
   harnessConfigPath: string;
   toolGuidancePath: string;
-  archonConfig: ArchonConfig;
+  animusConfig: AnimusConfig;
   scheduleConfig: ScheduleConfig;
   harnessConfig: HarnessConfigFile;
   scaffoldResult: ScaffoldHarnessResult;
@@ -283,7 +283,7 @@ export function detectRepoCheckCommands(repoRoot: string): DetectedRepoCommands 
 }
 
 export function detectBaseBranch(repoRoot: string): string {
-  const existing = readArchonConfig(repoRoot);
+  const existing = readAnimusConfig(repoRoot);
   if (existing.worktree?.baseBranch) return existing.worktree.baseBranch;
   try {
     const res = spawnSync("git", ["symbolic-ref", "--short", "HEAD"], {
@@ -387,7 +387,7 @@ export async function applyRepositorySetup(
   const repoRoot = resolve(opts.repoRoot);
   const detectedHarnesses = (interaction.detectHarnesses ?? detectAvailableHarnesses)();
   const detectedCommands = detectRepoCheckCommands(repoRoot);
-  const existingArchon = readArchonConfig(repoRoot);
+  const existingAnimus = readAnimusConfig(repoRoot);
   const existingSchedule = loadScheduleConfig(repoRoot);
   const harnessAudit: HarnessAuditReport = auditRepositoryHarness(repoRoot);
 
@@ -395,22 +395,22 @@ export async function applyRepositorySetup(
   const defaultProvider: SupportedProvider =
     opts.provider && isSupportedProvider(opts.provider)
       ? opts.provider
-      : existingArchon.assistant && isSupportedProvider(existingArchon.assistant)
-        ? existingArchon.assistant
+      : existingAnimus.assistant && isSupportedProvider(existingAnimus.assistant)
+        ? existingAnimus.assistant
         : firstInstalled;
 
   const providerDefaults = DEFAULT_PROVIDER_MODELS[defaultProvider];
 
   let selectedProviders: SupportedProvider[] = opts.provider
     ? [defaultProvider]
-    : Object.keys(existingArchon.assistants ?? {}).filter(isSupportedProvider);
+    : Object.keys(existingAnimus.assistants ?? {}).filter(isSupportedProvider);
   if (!selectedProviders.length)
     selectedProviders = opts.provider
       ? [defaultProvider]
       : [
           ...new Set([
             defaultProvider,
-            ...Object.values(existingArchon.tiers ?? {})
+            ...Object.values(existingAnimus.tiers ?? {})
               .map((binding) => binding.provider)
               .filter(isSupportedProvider),
           ]),
@@ -418,17 +418,17 @@ export async function applyRepositorySetup(
   let selectedProvider = selectedProviders.includes(defaultProvider)
     ? defaultProvider
     : selectedProviders[0]!;
-  let smallBinding: TierBinding = existingArchon.tiers?.small ?? {
+  let smallBinding: TierBinding = existingAnimus.tiers?.small ?? {
     provider: defaultProvider,
     model: providerDefaults.small,
     effort: "medium",
   };
-  let mediumBinding: TierBinding = existingArchon.tiers?.medium ?? {
+  let mediumBinding: TierBinding = existingAnimus.tiers?.medium ?? {
     provider: defaultProvider,
     model: providerDefaults.medium,
     effort: "high",
   };
-  let largeBinding: TierBinding = existingArchon.tiers?.large ?? {
+  let largeBinding: TierBinding = existingAnimus.tiers?.large ?? {
     provider: defaultProvider,
     model: providerDefaults.large,
     effort: "high",
@@ -503,7 +503,7 @@ export async function applyRepositorySetup(
     return {
       provider: selectedProvider,
       model:
-        existingArchon.assistants?.[selectedProvider]?.model ??
+        existingAnimus.assistants?.[selectedProvider]?.model ??
         DEFAULT_PROVIDER_MODELS[selectedProvider][tier],
       effort: tier === "small" ? "medium" : "high",
     };
@@ -514,7 +514,7 @@ export async function applyRepositorySetup(
     const prompts = interaction.prompts ?? new TerminalWizardPrompts();
     const ask = (message: string, initial: string) => prompts.text(message, initial);
     try {
-      prompts.note(`LabQ Software Factory — Repository Setup
+      prompts.note(`Animus — Repository Setup
 Target: ${repoRoot}`);
       const choices = SUPPORTED_PROVIDERS.map((id) => {
         const detected = detectedHarnesses.find((h) => h.id === id);
@@ -569,7 +569,7 @@ Target: ${repoRoot}`);
         const initialModel =
           bindings[tier].provider === provider
             ? bindings[tier].model
-            : (existingArchon.assistants?.[provider]?.model ??
+            : (existingAnimus.assistants?.[provider]?.model ??
               DEFAULT_PROVIDER_MODELS[provider][tier]);
         const catalog = await (interaction.catalog ?? createModelCatalogLoader())(provider);
         let model: string;
@@ -669,8 +669,8 @@ Target: ${repoRoot}`);
     agentsMdAction,
   });
 
-  // Persist 1: .archon/config.yaml
-  const archonConfig: ArchonConfig = {
+  // Persist 1: .animus/config.yaml
+  const animusConfig: AnimusConfig = {
     assistant: selectedProvider,
     assistants: Object.fromEntries(
       selectedProviders.map((provider) => {
@@ -682,7 +682,7 @@ Target: ${repoRoot}`);
           {
             model:
               binding?.model ??
-              existingArchon.assistants?.[provider]?.model ??
+              existingAnimus.assistants?.[provider]?.model ??
               DEFAULT_PROVIDER_MODELS[provider].medium,
           },
         ];
@@ -695,7 +695,7 @@ Target: ${repoRoot}`);
     },
     aliases: {
       ...Object.fromEntries(
-        Object.entries(existingArchon.aliases ?? {}).filter(([, binding]) =>
+        Object.entries(existingAnimus.aliases ?? {}).filter(([, binding]) =>
           selectedProviders.includes(binding.provider as SupportedProvider),
         ),
       ),
@@ -707,11 +707,11 @@ Target: ${repoRoot}`);
       baseBranch,
     },
   };
-  const archonConfigPath = writeArchonConfig(repoRoot, archonConfig);
+  const animusConfigPath = writeAnimusConfig(repoRoot, animusConfig);
 
   // Persist 2: .factory/schedule.json
   const scheduleConfig: ScheduleConfig = {
-    workflow: existingSchedule.workflow || "archon-loop",
+    workflow: existingSchedule.workflow || "animus-loop",
     parallel,
     max_laps: maxLaps,
     interval_seconds: intervalSeconds,
@@ -734,7 +734,7 @@ Target: ${repoRoot}`);
     unit_count_pattern: detectedCommands.unitCountPattern,
     required_checks: "none",
     protected_paths: detectedCommands.protectedPaths,
-    description: `Ordinary project checks configured by labq-factory setup (${detectedCommands.projectType}).`,
+    description: `Ordinary project checks configured by animus setup (${detectedCommands.projectType}).`,
   };
   const harnessConfigPath = join(repoRoot, "harness/harness.config.json");
   mkdirSync(join(repoRoot, "harness"), { recursive: true });
@@ -772,11 +772,11 @@ Target: ${repoRoot}`);
   return {
     repoRoot,
     detectedHarnesses,
-    archonConfigPath,
+    animusConfigPath,
     scheduleConfigPath,
     harnessConfigPath,
     toolGuidancePath,
-    archonConfig,
+    animusConfig,
     scheduleConfig,
     harnessConfig,
     scaffoldResult,
@@ -801,7 +801,7 @@ export async function runSetupCommand(
     if (opts.json) return await finish();
 
     if (opts.nonInteractive || !process.stdin.isTTY) {
-      console.log("LabQ Software Factory — Repository Setup Complete\n");
+      console.log("Animus — Repository Setup Complete\n");
       console.log("Detected Agent Harnesses:");
       for (const h of summary.detectedHarnesses) {
         const badge = h.installed ? "[INSTALLED]" : "[MISSING]  ";
@@ -829,24 +829,24 @@ export async function runSetupCommand(
     }
 
     console.log("\nActive Repository Configuration:");
-    console.log(`  Default Harness:  ${summary.archonConfig.assistant}`);
+    console.log(`  Default Harness:  ${summary.animusConfig.assistant}`);
     console.log(
-      `  Small Tier (QA):  ${summary.archonConfig.tiers?.small?.provider}/${summary.archonConfig.tiers?.small?.model} (effort: ${summary.archonConfig.tiers?.small?.effort ?? "default"})`,
+      `  Small Tier (QA):  ${summary.animusConfig.tiers?.small?.provider}/${summary.animusConfig.tiers?.small?.model} (effort: ${summary.animusConfig.tiers?.small?.effort ?? "default"})`,
     );
     console.log(
-      `  Medium (Builder): ${summary.archonConfig.tiers?.medium?.provider}/${summary.archonConfig.tiers?.medium?.model} (effort: ${summary.archonConfig.tiers?.medium?.effort ?? "default"})`,
+      `  Medium (Builder): ${summary.animusConfig.tiers?.medium?.provider}/${summary.animusConfig.tiers?.medium?.model} (effort: ${summary.animusConfig.tiers?.medium?.effort ?? "default"})`,
     );
     console.log(
-      `  Large (Reviewer): ${summary.archonConfig.tiers?.large?.provider}/${summary.archonConfig.tiers?.large?.model} (effort: ${summary.archonConfig.tiers?.large?.effort ?? "default"})`,
+      `  Large (Reviewer): ${summary.animusConfig.tiers?.large?.provider}/${summary.animusConfig.tiers?.large?.model} (effort: ${summary.animusConfig.tiers?.large?.effort ?? "default"})`,
     );
     console.log(
       `  Laps & Capacity:  max_laps=${summary.scheduleConfig.max_laps}, parallel=${summary.scheduleConfig.parallel}, interval=${summary.scheduleConfig.interval_seconds}s`,
     );
-    console.log(`  Base Branch:      ${summary.archonConfig.worktree?.baseBranch ?? "main"}`);
+    console.log(`  Base Branch:      ${summary.animusConfig.worktree?.baseBranch ?? "main"}`);
     console.log(`  Static Check:     ${summary.harnessConfig.static}`);
     console.log(`  Unit Test:        ${summary.harnessConfig.unit}`);
     console.log("\nWritten / Verified Files:");
-    console.log(`  - ${summary.archonConfigPath}`);
+    console.log(`  - ${summary.animusConfigPath}`);
     console.log(`  - ${summary.scheduleConfigPath}`);
     console.log(`  - ${summary.harnessConfigPath}`);
     console.log(`  - ${summary.toolGuidancePath}`);
@@ -916,7 +916,7 @@ export async function runConfigCliCommand(opts: {
     }
 
     if (sub === "show" || sub === "list") {
-      const archonConfig = readArchonConfig(repoRoot);
+      const animusConfig = readAnimusConfig(repoRoot);
       const scheduleConfig = loadScheduleConfig(repoRoot);
       const harnessPath = join(repoRoot, "harness/harness.config.json");
       const harnessConfig = existsSync(harnessPath)
@@ -929,7 +929,7 @@ export async function runConfigCliCommand(opts: {
         repoRoot,
         detectedHarnesses,
         harnessAudit,
-        archonConfig,
+        animusConfig,
         scheduleConfig,
         harnessConfig,
       };
@@ -954,16 +954,16 @@ export async function runConfigCliCommand(opts: {
       );
       console.log(`  Skills Installed:  ${harnessAudit.skillsInstalled.length}/10`);
 
-      console.log("\nModel Tiers (.archon/config.yaml):");
-      console.log(`  Default Assistant: ${archonConfig.assistant ?? "pi"}`);
+      console.log("\nModel Tiers (.animus/config.yaml):");
+      console.log(`  Default Assistant: ${animusConfig.assistant ?? "pi"}`);
       for (const t of ["small", "medium", "large"] as const) {
-        const b = archonConfig.tiers?.[t];
+        const b = animusConfig.tiers?.[t];
         console.log(
           `  ${t.padEnd(8)} -> ${b ? `${b.provider}/${b.model} (effort: ${b.effort ?? "default"})` : "not set"}`,
         );
       }
-      if (archonConfig.aliases && Object.keys(archonConfig.aliases).length > 0) {
-        for (const [alias, b] of Object.entries(archonConfig.aliases)) {
+      if (animusConfig.aliases && Object.keys(animusConfig.aliases).length > 0) {
+        for (const [alias, b] of Object.entries(animusConfig.aliases)) {
           console.log(
             `  ${alias.padEnd(8)} -> ${b.provider}/${b.model} (effort: ${b.effort ?? "default"})`,
           );
@@ -978,7 +978,7 @@ export async function runConfigCliCommand(opts: {
       console.log(
         `  Work Window:       ${scheduleConfig.work_window?.enabled ? `${scheduleConfig.work_window.start_time}-${scheduleConfig.work_window.end_time} (${scheduleConfig.work_window.timezone})` : "disabled (24/7)"}`,
       );
-      console.log(`  Base Branch:       ${archonConfig.worktree?.baseBranch ?? "main"}`);
+      console.log(`  Base Branch:       ${animusConfig.worktree?.baseBranch ?? "main"}`);
 
       console.log("\nVerification Harness (harness/harness.config.json):");
       console.log(`  Static Check:      ${harnessConfig.static ?? harnessConfig.staticCheck}`);
@@ -1015,7 +1015,7 @@ export async function runConfigCliCommand(opts: {
         !modelArg
       ) {
         throw new Error(
-          "Usage: labq-factory config tier <small|medium|large> <provider> <model> [--effort <minimal|low|medium|high|xhigh|max|ultra>]",
+          "Usage: animus config tier <small|medium|large> <provider> <model> [--effort <minimal|low|medium|high|xhigh|max|ultra>]",
         );
       }
       if (!isSupportedProvider(providerArg)) {
@@ -1033,8 +1033,8 @@ export async function runConfigCliCommand(opts: {
         model: modelArg,
         ...(effortVal ? { effort: effortVal as EffortRung } : {}),
       });
-      const cfg = readArchonConfig(repoRoot);
-      const updated: ArchonConfig = {
+      const cfg = readAnimusConfig(repoRoot);
+      const updated: AnimusConfig = {
         ...cfg,
         assistants: { ...cfg.assistants, [providerArg]: { model: modelArg } },
         assistant: cfg.assistant ?? providerArg,
@@ -1057,7 +1057,7 @@ export async function runConfigCliCommand(opts: {
           },
         };
       }
-      const path = writeArchonConfig(repoRoot, updated);
+      const path = writeAnimusConfig(repoRoot, updated);
       if (opts.json) {
         console.log(
           JSON.stringify(
@@ -1111,7 +1111,7 @@ export async function runConfigCliCommand(opts: {
         console.log(
           JSON.stringify(
             {
-              assistant: summary.archonConfig.assistant,
+              assistant: summary.animusConfig.assistant,
               harnessConfig: summary.harnessConfig,
               scaffoldResult: summary.scaffoldResult,
             },
@@ -1121,14 +1121,14 @@ export async function runConfigCliCommand(opts: {
         );
       } else {
         console.log(
-          `Updated harness config: assistant=${summary.archonConfig.assistant}, static="${summary.harnessConfig.static}", unit="${summary.harnessConfig.unit}"`,
+          `Updated harness config: assistant=${summary.animusConfig.assistant}, static="${summary.harnessConfig.static}", unit="${summary.harnessConfig.unit}"`,
         );
       }
       return 0;
     }
 
     if (sub === "pattern" || sub === "patterns" || sub === "component" || sub === "components") {
-      // Usage: labq-factory config pattern <domain> "<guidance>"
+      // Usage: animus config pattern <domain> "<guidance>"
       const domainKey = opts.positionals[2];
       const guidanceText = opts.positionals.slice(3).join(" ").trim();
       const { persistCodebaseRulesUpdates } = await import("../../loop/reflector");
@@ -1151,7 +1151,7 @@ export async function runConfigCliCommand(opts: {
       }
 
       if (!guidanceText) {
-        throw new Error('Usage: labq-factory config pattern <domain> "<guidance>"');
+        throw new Error('Usage: animus config pattern <domain> "<guidance>"');
       }
 
       const res = persistCodebaseRulesUpdates(repoRoot, { [domainKey]: guidanceText });
@@ -1164,7 +1164,7 @@ export async function runConfigCliCommand(opts: {
     }
 
     if (sub === "rule" || sub === "rules") {
-      // Usage: labq-factory config rule <id> --glob "<glob>" --forbid "<regex>" --hint "<hint>" [--mode warn|block]
+      // Usage: animus config rule <id> --glob "<glob>" --forbid "<regex>" --hint "<hint>" [--mode warn|block]
       const ruleId = opts.positionals[2];
       const { persistCodebaseRulesUpdates } = await import("../../loop/reflector");
       const rulesPath = join(repoRoot, ".factory/codebase-rules.json");
@@ -1188,7 +1188,7 @@ export async function runConfigCliCommand(opts: {
 
       if (!opts.fileGlob || !opts.hint || (!opts.forbidRegex && !opts.requireRegex)) {
         throw new Error(
-          'Usage: labq-factory config rule <id> --glob "<glob>" --forbid "<regex>" --hint "<replacement hint>" [--mode warn|block]',
+          'Usage: animus config rule <id> --glob "<glob>" --forbid "<regex>" --hint "<replacement hint>" [--mode warn|block]',
         );
       }
 

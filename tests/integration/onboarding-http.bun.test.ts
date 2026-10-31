@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createFactoryClient } from "@labq/client";
+import { createFactoryClient } from "@animus/client";
 
 test("real backend enrolls a checkout, provisions labels, reports held setup, and preserves admission", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "factory-onboarding-http-")));

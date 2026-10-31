@@ -84,9 +84,9 @@ describe("registered project monitoring", () => {
         join(checkout, "harness/harness.config.json"),
         JSON.stringify({ static: "bun run check", unit: "bun test" }),
       );
-      mkdirSync(join(checkout, ".archon"));
+      mkdirSync(join(checkout, ".animus"));
       writeFileSync(
-        join(checkout, ".archon/config.yaml"),
+        join(checkout, ".animus/config.yaml"),
         "tiers:\n  small:\n    provider: pi\n    model: test-small\n  medium:\n    provider: pi\n    model: test-medium\n  large:\n    provider: pi\n    model: test-large\n",
       );
     }

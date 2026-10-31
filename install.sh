@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-# install.sh - Fail-closed curl|sh installer for labq-factory
-# Installs labq-factory, factory, and labq into LABQ_INSTALL_DIR ($HOME/.labq/bin by default)
+# install.sh - Fail-closed curl|sh installer for animus
+# Installs animus and factory into ANIMUS_INSTALL_DIR ($HOME/.animus/bin by default)
 #
 # Supported operating systems: Darwin (macOS), Linux
 # Supported architectures: arm64 (aarch64), x64 (x86_64)
@@ -16,7 +16,7 @@ cleanup() {
 trap cleanup EXIT INT TERM HUP
 
 # 1. Detect and validate Operating System
-DETECTED_OS="${LABQ_OS:-}"
+DETECTED_OS="${ANIMUS_OS:-}"
 if [ -z "$DETECTED_OS" ]; then
   UNAME_S=$(uname -s 2>/dev/null || echo "Unknown")
   case "$UNAME_S" in
@@ -27,7 +27,7 @@ if [ -z "$DETECTED_OS" ]; then
       DETECTED_OS="linux"
       ;;
     *)
-      echo "Error: Unsupported operating system '$UNAME_S'. labq-factory supports Darwin (macOS) and Linux." >&2
+      echo "Error: Unsupported operating system '$UNAME_S'. animus supports Darwin (macOS) and Linux." >&2
       exit 1
       ;;
   esac
@@ -40,14 +40,14 @@ else
       DETECTED_OS="linux"
       ;;
     *)
-      echo "Error: Unsupported operating system '$DETECTED_OS'. labq-factory supports Darwin (macOS) and Linux." >&2
+      echo "Error: Unsupported operating system '$DETECTED_OS'. animus supports Darwin (macOS) and Linux." >&2
       exit 1
       ;;
   esac
 fi
 
 # 2. Detect and validate Architecture
-DETECTED_ARCH="${LABQ_ARCH:-}"
+DETECTED_ARCH="${ANIMUS_ARCH:-}"
 if [ -z "$DETECTED_ARCH" ]; then
   UNAME_M=$(uname -m 2>/dev/null || echo "Unknown")
   case "$UNAME_M" in
@@ -58,7 +58,7 @@ if [ -z "$DETECTED_ARCH" ]; then
       DETECTED_ARCH="x64"
       ;;
     *)
-      echo "Error: Unsupported architecture '$UNAME_M'. labq-factory supports arm64 (aarch64) and x64 (x86_64)." >&2
+      echo "Error: Unsupported architecture '$UNAME_M'. animus supports arm64 (aarch64) and x64 (x86_64)." >&2
       exit 1
       ;;
   esac
@@ -71,21 +71,21 @@ else
       DETECTED_ARCH="x64"
       ;;
     *)
-      echo "Error: Unsupported architecture '$DETECTED_ARCH'. labq-factory supports arm64 (aarch64) and x64 (x86_64)." >&2
+      echo "Error: Unsupported architecture '$DETECTED_ARCH'. animus supports arm64 (aarch64) and x64 (x86_64)." >&2
       exit 1
       ;;
   esac
 fi
 
 # 3. Resolve target release version
-LABQ_REPO="${LABQ_REPO:-iqbal-codes/labq-software-factory}"
-VERSION="${LABQ_VERSION:-}"
+ANIMUS_REPO="${ANIMUS_REPO:-iqbal-codes/animus}"
+VERSION="${ANIMUS_VERSION:-}"
 if [ -n "$VERSION" ]; then
   VERSION="${VERSION#v}"
 fi
 
 if [ -z "$VERSION" ]; then
-  LATEST_URL="https://api.github.com/repos/${LABQ_REPO}/releases/latest"
+  LATEST_URL="https://api.github.com/repos/${ANIMUS_REPO}/releases/latest"
   echo "Resolving latest release version from ${LATEST_URL}..."
   LATEST_JSON=$(curl -fsSL "${LATEST_URL}" 2>/dev/null || true)
   if [ -n "$LATEST_JSON" ]; then
@@ -95,24 +95,24 @@ if [ -z "$VERSION" ]; then
 fi
 
 if [ -z "$VERSION" ]; then
-  echo "Error: Could not resolve target release version. Please specify LABQ_VERSION (e.g. LABQ_VERSION=0.2.0)." >&2
+  echo "Error: Could not resolve target release version. Please specify ANIMUS_VERSION (e.g. ANIMUS_VERSION=0.2.0)." >&2
   exit 1
 fi
 
 # 4. Resolve download URLs and filenames
-RELEASE_BASE_URL="${LABQ_RELEASE_BASE_URL:-https://github.com/${LABQ_REPO}/releases/download/v${VERSION}}"
+RELEASE_BASE_URL="${ANIMUS_RELEASE_BASE_URL:-https://github.com/${ANIMUS_REPO}/releases/download/v${VERSION}}"
 RELEASE_BASE_URL="${RELEASE_BASE_URL%/}"
 
-TARBALL_NAME="labq-factory-v${VERSION}-${DETECTED_OS}-${DETECTED_ARCH}.tar.gz"
+TARBALL_NAME="animus-v${VERSION}-${DETECTED_OS}-${DETECTED_ARCH}.tar.gz"
 TARBALL_URL="${RELEASE_BASE_URL}/${TARBALL_NAME}"
 CHECKSUMS_URL="${RELEASE_BASE_URL}/checksums.txt"
 
 # 5. Resolve target install directory
-LABQ_INSTALL_DIR="${LABQ_INSTALL_DIR:-${HOME}/.labq/bin}"
-LABQ_INSTALL_DIR="${LABQ_INSTALL_DIR%/}"
+ANIMUS_INSTALL_DIR="${ANIMUS_INSTALL_DIR:-${HOME}/.animus/bin}"
+ANIMUS_INSTALL_DIR="${ANIMUS_INSTALL_DIR%/}"
 
 # 6. Setup temporary directory for download & verification
-TMP_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t 'labq-install')
+TMP_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t 'animus-install')
 if [ -z "$TMP_DIR" ] || [ ! -d "$TMP_DIR" ]; then
   echo "Error: Failed to create temporary directory for installation." >&2
   exit 1
@@ -191,28 +191,28 @@ if ! tar -xzf "$TMP_DIR/${TARBALL_NAME}" -C "$EXTRACT_DIR"; then
   exit 1
 fi
 
-if [ ! -f "$EXTRACT_DIR/labq-factory" ]; then
-  echo "Error: Tarball does not contain labq-factory binary." >&2
+if [ ! -f "$EXTRACT_DIR/animus" ]; then
+  echo "Error: Tarball does not contain animus binary." >&2
   exit 1
 fi
 
-mkdir -p "$LABQ_INSTALL_DIR"
-cp -f "$EXTRACT_DIR/labq-factory" "$LABQ_INSTALL_DIR/labq-factory"
-chmod 0755 "$LABQ_INSTALL_DIR/labq-factory"
+mkdir -p "$ANIMUS_INSTALL_DIR"
+cp -f "$EXTRACT_DIR/animus" "$ANIMUS_INSTALL_DIR/animus"
+chmod 0755 "$ANIMUS_INSTALL_DIR/animus"
 
-# Ensure factory and labq aliases exist
-for alias_name in factory labq; do
+# Ensure factory and animus aliases exist
+for alias_name in factory; do
   if [ -f "$EXTRACT_DIR/$alias_name" ]; then
-    cp -f "$EXTRACT_DIR/$alias_name" "$LABQ_INSTALL_DIR/$alias_name"
-    chmod 0755 "$LABQ_INSTALL_DIR/$alias_name"
+    cp -f "$EXTRACT_DIR/$alias_name" "$ANIMUS_INSTALL_DIR/$alias_name"
+    chmod 0755 "$ANIMUS_INSTALL_DIR/$alias_name"
   else
-    (cd "$LABQ_INSTALL_DIR" && ln -sf "labq-factory" "$alias_name")
+    (cd "$ANIMUS_INSTALL_DIR" && ln -sf "animus" "$alias_name")
   fi
 done
 
 # 9. Verify installed binary
-if [ -x "$LABQ_INSTALL_DIR/labq-factory" ]; then
-  VER_OUT=$("$LABQ_INSTALL_DIR/labq-factory" version 2>/dev/null || true)
+if [ -x "$ANIMUS_INSTALL_DIR/animus" ]; then
+  VER_OUT=$("$ANIMUS_INSTALL_DIR/animus" version 2>/dev/null || true)
   if [ -n "$VER_OUT" ]; then
     echo "Verified installation: ${VER_OUT}"
   fi
@@ -220,15 +220,15 @@ fi
 
 # 10. Check PATH and print instructions if needed
 case ":${PATH:-}:" in
-  *":${LABQ_INSTALL_DIR}:"*)
+  *":${ANIMUS_INSTALL_DIR}:"*)
     ;;
   *)
     echo ""
-    echo "Notice: ${LABQ_INSTALL_DIR} is not in your PATH."
-    echo "To use 'labq-factory', 'factory', and 'labq' from your terminal, add it to your PATH:"
-    echo "  export PATH=\"${LABQ_INSTALL_DIR}:\$PATH\""
+    echo "Notice: ${ANIMUS_INSTALL_DIR} is not in your PATH."
+    echo "To use 'animus' and 'factory' from your terminal, add it to your PATH:"
+    echo "  export PATH=\"${ANIMUS_INSTALL_DIR}:\$PATH\""
     echo ""
     ;;
 esac
 
-echo "Successfully installed labq-factory into ${LABQ_INSTALL_DIR}."
+echo "Successfully installed animus into ${ANIMUS_INSTALL_DIR}."

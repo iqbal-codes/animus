@@ -3,7 +3,7 @@ import type {
   TargetBindingSubmission,
   TargetBindingResult,
   OperatorErrorCode,
-} from "@labq/contracts/operator";
+} from "@animus/contracts/operator";
 import type { ForgeAdapter, ForgeIssue } from "../registry/forge";
 import { assertIssueForge } from "../registry/forge";
 import { evaluateIssueAdmission, type RawIssue } from "./admission";

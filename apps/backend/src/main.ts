@@ -1,4 +1,4 @@
-import { hostHealthSchema } from "@labq/contracts/host";
+import { hostHealthSchema } from "@animus/contracts/host";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
@@ -36,7 +36,7 @@ import {
   backupSubmissionSchema,
   backupResultSchema,
   type OperatorErrorCode,
-} from "@labq/contracts/operator";
+} from "@animus/contracts/operator";
 import { configuration, hostOrigin } from "./config";
 import { IntakeService, handleProjectIntakeRoute } from "./intake";
 import { initializeDatabase, ProjectRegistryService, ProjectRegistryError } from "./registry";

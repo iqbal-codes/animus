@@ -1,5 +1,5 @@
 import React from "react";
-import type { Project } from "@labq/contracts/operator";
+import type { Project } from "@animus/contracts/operator";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -68,7 +68,7 @@ export function ProjectList({
         <p className="text-xs text-[var(--muted-foreground)] max-w-md mt-1 mb-4">
           The registry contains no active repositories. Enroll a project using the CLI command:
           <code className="block mt-2 font-mono text-[var(--accent)] bg-[#0A0A0A] p-2 rounded border border-[var(--border)]">
-            factory setup
+            animus setup
           </code>
         </p>
         <Button variant="outline" size="sm" onClick={onRefresh}>

@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
-import { createFactoryClient, FactoryClientError } from "@labq/client";
-import type { Project } from "@labq/contracts/operator";
+import { createFactoryClient, FactoryClientError } from "@animus/client";
+import type { Project } from "@animus/contracts/operator";
 
 export interface FactoryConnectionOptions {
   factoryUrl?: string;

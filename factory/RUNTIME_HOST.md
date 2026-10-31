@@ -1,13 +1,13 @@
 # Project runtime host
 
-Factory can own ordinary application environments while Archon owns every workflow
+Factory can own ordinary application environments while Animus owns every workflow
 and coding agent. It never chooses a stage, retries an agent, evaluates a scenario,
 interprets workflow output to dispatch more work, or authorizes a merge.
 
 ## Foreground lifetime
 
 ```text
-factory run archon-verify-runtime --runtime-host /private/runtime.json --input scenario=/private/baseline.json
+factory run animus-verify-runtime --runtime-host /private/runtime.json --input scenario=/private/baseline.json
 ```
 
 The consumer starts a separate local owner, passes its connection through
@@ -30,7 +30,7 @@ Manual standalone usage keeps the same lifetime rule:
 python factory/runtime_host.py serve --config /private/runtime.json --connection-file /private/connection.json
 ```
 
-Keep that process foreground while invoking native Archon separately. Project
+Keep that process foreground while invoking native Animus separately. Project
 commands use `--connection-file /private/connection.json` instead of the inherited
 environment. Ctrl+C or termination cleans owned apps and removes the connection
 file. Abrupt parent death also cleans apps; a leftover connection file then holds
@@ -69,14 +69,14 @@ Configuration is operator-owned JSON, loaded once by the owner. Example:
 List only files/directories the app needs. Paths resolve under exactly the named
 roots; callers cannot submit arbitrary paths or commands. Windows roots use
 absolute drive paths. Relative, rooted-drive-relative, escaping and linked source
-paths fail. `.factory`, `.git`, `.archon`, `.claude`, `.env`, `HOLDOUT.md`, virtual
+paths fail. `.factory`, `.git`, `.animus`, `.claude`, `.env`, `HOLDOUT.md`, virtual
 environments, node_modules and bytecode caches are refused in included paths.
 An included directory containing these fails explicitly. Do not list the whole
 checkout. Other private evaluator filenames must also be excluded by the operator.
 
 ### Bind the candidate root to the delivered revision
 
-Run preparation from the checkout Archon is delivering. Pass the trusted full
+Run preparation from the checkout Animus is delivering. Pass the trusted full
 revision selected by that delivery; do not obtain it from the old candidate root:
 
 ```text
@@ -122,7 +122,7 @@ expected revision, or changed prepared bytes fail before behavioral verification
 `setup` is optional and runs inside the new snapshot. `command` is required.
 Both accept argv arrays only, with literal `{python}`, `{source}`, `{state}` and
 `{port}` substitution. Only Python/Node executables are supported; shell commands,
-batch files, provider CLIs and ambient Archon commands fail. A project script can
+batch files, provider CLIs and ambient Animus commands fail. A project script can
 prepare ordinary data/dependencies under its snapshot/state. Configuration and
 scripts are trusted code, and must never wrap a provider or launch workflows.
 Source inclusion must cover all application code; mutable code loaded from outside
@@ -178,7 +178,7 @@ The control URL is IPv4 loopback only. Requests are bounded; redirects are refus
 For PR3227's external environment contract, set `environment.ownership` to
 `external`, map setup/start/teardown to the commands above, and set
 `candidate_command` to `identity --slot <case>`. Use absolute, correctly Bash-quoted
-executable/script paths when Archon changes working directory. Commands are fixed
+executable/script paths when Animus changes working directory. Commands are fixed
 trusted project strings; never interpolate caller-provided text into shell syntax.
 Bound results also map the input through `source_revision`, `source_tree` and
 `resource_digest`. The producer's current start node logs command output rather than returning target
@@ -216,7 +216,7 @@ For example, adapt this to the product's public interface in both controls:
 ```
 
 Start stable baseline and mutation slots, record their exact host identities, and
-write a caller-owned suite manifest accepted by `archon-verify-runtime-suite`:
+write a caller-owned suite manifest accepted by `animus-verify-runtime-suite`:
 
 ```json
 {
@@ -232,11 +232,11 @@ The two scenarios probe those already-running slots and apply the same behaviora
 expectations; the fault description identifies it as a deliberate control. Run:
 
 ```text
-python factory/consumer.py run archon-verify-runtime-suite --input manifest=/private/calibration/manifest.json
+python factory/consumer.py run animus-verify-runtime-suite --input manifest=/private/calibration/manifest.json
 ```
 
 Require `expectations_passed: true` and `baseline_verified: true`. Do not create
-native return files yourself. Separately run `archon-verify-runtime` with the
+native return files yourself. Separately run `animus-verify-runtime` with the
 baseline scenario and a deliberately different `candidate` input; require its
 native verdict to be `inconclusive`. The pinned suite manifest schema permits only
 `verified` and `failed` expectations, so the identity/infrastructure control

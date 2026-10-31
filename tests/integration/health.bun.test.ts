@@ -5,7 +5,7 @@ import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "node:net";
-import { createFactoryClient } from "@labq/client";
+import { createFactoryClient } from "@animus/client";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const token = randomBytes(32).toString("hex");
@@ -449,11 +449,11 @@ test("backend forwards diagnostics, catalog, and lap history from authenticated 
   expect(["healthy", "unavailable"]).toContain(diagnostics.status);
   expect(typeof diagnostics.revision_required).toBe("string");
   expect(typeof diagnostics.digest).toBe("string");
-  expect(diagnostics.source_directory).toBe(".archon/workflows/sdlc");
+  expect(diagnostics.source_directory).toBe(".animus/workflows/sdlc");
 
   const catalog = await client.catalog();
   expect(Array.isArray(catalog.workflows)).toBe(true);
-  expect(catalog.workflows.some((w) => w.name === "archon-loop")).toBe(true);
+  expect(catalog.workflows.some((w) => w.name === "animus-loop")).toBe(true);
 
   const laps = await client.laps();
   expect(Array.isArray(laps)).toBe(true);

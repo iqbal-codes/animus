@@ -10,7 +10,7 @@ export default defineConfig({
       "**/node_modules/**",
       "**/dist/**",
       "assets/**",
-      ".archon/**",
+      ".animus/**",
       ".factory/**",
       "harness/**",
     ],
@@ -24,10 +24,10 @@ export default defineConfig({
             "error",
             {
               patterns: [
-                "@labq/backend",
-                "@labq/backend/*",
-                "@labq/engine-host",
-                "@labq/engine-host/*",
+                "@animus/backend",
+                "@animus/backend/*",
+                "@animus/engine-host",
+                "@animus/engine-host/*",
                 "**/apps/**",
                 "**/packages/**",
                 "../../*",
@@ -48,13 +48,13 @@ export default defineConfig({
           "no-restricted-imports": [
             "error",
             {
-              paths: [...builtinModules, "@labq/contracts/host"],
+              paths: [...builtinModules, "@animus/contracts/host"],
               patterns: [
                 "node:*",
                 "bun",
                 "bun:*",
-                "@labq/backend*",
-                "@labq/engine-host*",
+                "@animus/backend*",
+                "@animus/engine-host*",
                 "**/apps/**",
                 "**/packages/**",
                 "**/config",

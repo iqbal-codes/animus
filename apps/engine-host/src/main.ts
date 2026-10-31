@@ -4,7 +4,7 @@ import {
   hostLaunchSubmissionSchema,
   hostControlSubmissionSchema,
   hostPromotionSubmissionSchema,
-} from "@labq/contracts/host";
+} from "@animus/contracts/host";
 import { configuration } from "./config";
 import {
   readDiagnostics,

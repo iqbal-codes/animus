@@ -45,9 +45,9 @@ all network interfaces. When `FACTORY_REMOTE_ACCESS=true`, private IP binding an
 | `GET /api/promotion/status` | 200 | `application/json` | Unpromoted commit count, delivered ticket list, candidate freeze flag, and open PR status |
 | `POST /api/promotion/prepare` | 201 | `application/json` | Creates batch promotion PR develop → main and activates Candidate Freeze (`.factory/PAUSE`) |
 | `GET /api/config/schedule` | 200 | `application/json` | Active schedule settings (`parallel`, `work_window`, `base_branch`, etc.) |
-| `GET /api/config/models` | 200 | `application/json` | Configured AI provider model tiers and aliases from `.archon/config.yaml` |
+| `GET /api/config/models` | 200 | `application/json` | Configured AI provider model tiers and aliases from `.animus/config.yaml` |
 | `POST /api/laps` | 202 | `application/json` | `{"id": "<run-id>", "status": "<status>"}` |
-| `GET /api/laps` | 200 | `application/json` | Array of native `archon-loop` lap projections, or `[]` when no laps exist |
+| `GET /api/laps` | 200 | `application/json` | Array of native `animus-loop` lap projections, or `[]` when no laps exist |
 | `GET /api/laps/:id` | 200 | `application/json` | One lap projection for the exact native ID |
 | `GET /api/laps/:id/evidence` | 200 | `application/json` | Candidate head binding, runtime verification verdicts, holdout verdict metadata, and peer-review evaluation |
 | `GET /api/laps/:id/evidence/report` | 200 | `text/markdown; charset=utf-8` | Plain text peer-review markdown report (`reviewer/report.md` or `review/report.md`) |
@@ -119,8 +119,8 @@ schedules.
 Both endpoints read the repository's shared `.factory/consumer.json` through
 `factory/consumer.py`. The configured source must be a clean, complete immutable
 installation in a directory named with its full 40-character revision, with locked
-Archon dependencies installed. They use the configured Bun executable and pinned
-CLI entry point, never an ambient `archon` executable or an HTTP-supplied override.
+Animus dependencies installed. They use the configured Bun executable and pinned
+CLI entry point, never an ambient `animus` executable or an HTTP-supplied override.
 
 `EngineDiagnostics` calls the consumer's `doctor` boundary for verified pin,
 CLI capabilities, native discovery, pack completeness and native workflow
@@ -156,7 +156,7 @@ Lap requests use the same repository's consumer pin (`read_settings`,
 `verify_source`, `native_json` in `factory/consumer.py`). Install the consumer's
 pinned engine and its locked dependencies using the existing factory setup; no
 ambient CLI or HTTP-supplied executable is used. The engine must be available to
-read laps, but health and build identity do not depend on it. `ARCHON_HOME`, when
+read laps, but health and build identity do not depend on it. `ANIMUS_HOME`, when
 set, selects native engine storage exactly as it does for the consumer CLI.
 `FACTORY_RUNTIME_STATE` does not replace native storage or create a second store.
 
@@ -227,10 +227,10 @@ verbatim. As with build identity, do not deliberately use secrets as identifiers
   the shared repository root). If present, submission returns HTTP 409
   `{"error": "launch_brake_set"}` and creates zero runs. Application code never
   removes the STOP file.
-- Valid submissions generate an isolated Git worktree branch (`archon/lap-...`)
+- Valid submissions generate an isolated Git worktree branch (`animus/lap-...`)
   and unique session identifier (`session-...`), carry default holdout and protected
-  paths unchanged, and invoke the pinned Archon engine detached:
-  `workflow run archon-loop --detach --json --branch <branch> --conversation-id <id> --input merge=approve -- <specification>`.
+  paths unchanged, and invoke the pinned Animus engine detached:
+  `workflow run animus-loop --detach --json --branch <branch> --conversation-id <id> --input merge=approve -- <specification>`.
 - Successful launches return HTTP 202 `{"id": "<run-id>", "status": "<status>"}`
   with the genuine native run ID and initial status (e.g. `pending`).
 - Non-zero native process exit, execution errors, or malformed launch output return
@@ -240,7 +240,7 @@ verbatim. As with build identity, do not deliberately use secrets as identifiers
 
 ### Evidence and report inspection
 
-Operators can inspect candidate-bound runtime verification evidence and peer-review reports for any native `archon-loop` run:
+Operators can inspect candidate-bound runtime verification evidence and peer-review reports for any native `animus-loop` run:
 
 - `GET /api/laps/:id/evidence` returns an allowlisted JSON projection of native runtime/holdout verdict metadata and independent review status:
   - `id`, `workflow_name`, and `candidate_head`: verified Git commit observed in native invocation/attempt checkouts or structured subject head.

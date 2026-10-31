@@ -7,7 +7,7 @@ import type {
   CommandState,
   CommandOutcome,
   CommandProvenance,
-} from "@labq/contracts/operator";
+} from "@animus/contracts/operator";
 
 export class CommandStorageError extends Error {
   constructor(message: string) {

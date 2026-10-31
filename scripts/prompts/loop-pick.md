@@ -21,7 +21,7 @@ Read current state directly from GitHub:
 ## 2. Priority Order
 
 Choose the single most valuable work item following this strict precedence:
-1. **Continue an open PR owned by this loop:** Select an existing PR (`archon/` or `local-loop/` branch, or bearing loop review comments) that has unaddressed review findings, failing CI, merge conflicts, draft status, or a `Loop review: not merged` gate refusal.
+1. **Continue an open PR owned by this loop:** Select an existing PR (`animus/` or `local-loop/` branch, or bearing loop review comments) that has unaddressed review findings, failing CI, merge conflicts, draft status, or a `Loop review: not merged` gate refusal.
 2. **Start the highest-leverage open issue:** Select an open issue whose dependencies are closed:
    - First, issues labeled `priority` in ascending number order.
    - Second, issues that unblock the greatest number of downstream open tickets.

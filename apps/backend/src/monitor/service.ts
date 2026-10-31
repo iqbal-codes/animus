@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { BrakeService } from "../command/brakes";
 import { ProjectRegistryService } from "../registry/service";
 import { ProjectOnboardingService, verifyRepositoryIdentity } from "../registry/onboarding";
-import type { Project, ProjectMonitorStatus, MonitoringStatus } from "@labq/contracts/operator";
+import type { Project, ProjectMonitorStatus, MonitoringStatus } from "@animus/contracts/operator";
 import type { MonitorRuntime } from "./runtime";
 
 export class RegisteredProjectMonitor {

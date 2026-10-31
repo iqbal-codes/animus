@@ -99,7 +99,7 @@ export async function generateMergePlan(
   }
 
   const plan = assessMergeBatchDeterministic(
-    "labq-software-factory",
+    "animus",
     options.base ?? "main",
     "HEAD",
     candidates,

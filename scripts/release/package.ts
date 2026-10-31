@@ -64,9 +64,8 @@ export interface CliDistributionPackageOptions {
   binaryPath?: string;
   binaryContent?: Buffer | string;
   binaries?: {
-    "labq-factory"?: Buffer | string;
+    animus?: Buffer | string;
     factory?: Buffer | string;
-    labq?: Buffer | string;
   };
   buildTimestamp?: string;
 }
@@ -89,9 +88,8 @@ export interface PackageAllCliDistributionTarballsOptions {
   binaryPath?: string;
   binaryContent?: Buffer | string;
   binaries?: {
-    "labq-factory"?: Buffer | string;
+    animus?: Buffer | string;
     factory?: Buffer | string;
-    labq?: Buffer | string;
   };
   buildTimestamp?: string;
 }
@@ -135,7 +133,7 @@ export async function packageReleaseBundle(
   };
 
   const shortSha = gitSha.slice(0, 8);
-  const bundleFilename = `labq-factory-v${version}-${shortSha}-${platform}-${arch}.tar.gz`;
+  const bundleFilename = `animus-v${version}-${shortSha}-${platform}-${arch}.tar.gz`;
   const bundlePath = join(outDir, bundleFilename);
   const manifestPath = join(outDir, `manifest-v${version}-${platform}-${arch}.json`);
 
@@ -299,11 +297,11 @@ export async function packageCliDistributionTarball(
     mkdirSync(outDir, { recursive: true });
   }
 
-  const filename = `labq-factory-v${version}-${platform}-${arch}.tar.gz`;
+  const filename = `animus-v${version}-${platform}-${arch}.tar.gz`;
   const tarballPath = join(outDir, filename);
 
-  const stageDir = mkdtempSync(join(tmpdir(), `labq-dist-${platform}-${arch}-`));
-  const executables = ["labq-factory", "factory", "labq"];
+  const stageDir = mkdtempSync(join(tmpdir(), `animus-dist-${platform}-${arch}-`));
+  const executables = ["animus", "factory"];
 
   try {
     const resolveBinaryData = (binName: string): Buffer => {
@@ -336,7 +334,7 @@ export async function packageCliDistributionTarball(
       if (existsSync(candidateBin)) {
         return readFileSync(candidateBin);
       }
-      const candidateMainBin = join(repoRoot, "dist/bin/labq-factory");
+      const candidateMainBin = join(repoRoot, "dist/bin/animus");
       if (existsSync(candidateMainBin)) {
         return readFileSync(candidateMainBin);
       }
@@ -347,7 +345,7 @@ export async function packageCliDistributionTarball(
       }
 
       return Buffer.from(
-        ["#!/usr/bin/env bun", `console.log("labq-factory v${version}");`, ""].join("\n"),
+        ["#!/usr/bin/env bun", `console.log("animus v${version}");`, ""].join("\n"),
         "utf-8",
       );
     };

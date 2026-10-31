@@ -1,11 +1,11 @@
 {
-  "name": "@labq/backend",
+  "name": "@animus/backend",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "bun src/main.ts"
   },
   "dependencies": {
-    "@labq/contracts": "workspace:*"
+    "@animus/contracts": "workspace:*"
   }
 }

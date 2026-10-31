@@ -29,7 +29,7 @@ The autonomous software factory faces reliability, predictability, and cost chal
 
 ### Non-Goals
 - **No Direct Commits to `develop`**: This phase does not commit or push to remote branches from background hooks.
-- **No Autonomous Workflow Mutation**: Archon SDLC workflows and model configurations remain strictly immutable.
+- **No Autonomous Workflow Mutation**: Animus SDLC workflows and model configurations remain strictly immutable.
 - **No Unmanaged Consumer Subagents**: No LLM prompt choreography or reflection subagents run inside `factory/consumer.py`. (Deferred to Phase 2).
 - **No Dashboard Memory UI Extensions**: Changes to `app.py` are limited to exposing the updated intake admission status contract. (Deferred to Phase 3).
 
@@ -228,9 +228,9 @@ When `IntakeService.poll()` fetches issues:
 
 ## Out of Scope
 
-- Synchronous post-lap reflection agent in consumer (Deferred to Phase 2 as an Archon SDLC workflow step).
+- Synchronous post-lap reflection agent in consumer (Deferred to Phase 2 as an Animus SDLC workflow step).
 - Autonomous git commits directly to remote branches.
-- Dynamic prompt modification of Archon workflow definitions.
+- Dynamic prompt modification of Animus workflow definitions.
 - Web dashboard memory management tabs (Deferred to Phase 3).
 - Third-party issue trackers (Jira, Linear).
 
