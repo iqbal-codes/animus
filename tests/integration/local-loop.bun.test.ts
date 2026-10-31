@@ -158,7 +158,7 @@ function git(root: string, ...args: string[]) {
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "local-loop-"));
   roots.push(root);
-  git(root, "init");
+  git(root, "init", "-b", "main");
   git(root, "config", "user.email", "test@example.invalid");
   git(root, "config", "user.name", "Offline Test");
   await mkdir(join(root, "harness"));
@@ -662,7 +662,7 @@ test("runLocalLoop transitions to needs_owner when lap count reaches max_laps on
 test("fetches origin baseBranch, fast-forwards clean local branch, and bases new worktree on remote commit", async () => {
   const origin = await mkdtemp(join(tmpdir(), "origin-"));
   roots.push(origin);
-  git(origin, "init", "--bare");
+  git(origin, "init", "--bare", "-b", "main");
 
   const root = await fixture();
   git(root, "branch", "-M", "main");
@@ -671,7 +671,7 @@ test("fetches origin baseBranch, fast-forwards clean local branch, and bases new
 
   const other = await mkdtemp(join(tmpdir(), "other-"));
   roots.push(other);
-  git(other, "clone", origin, ".");
+  git(other, "clone", "-b", "main", origin, ".");
   git(other, "config", "user.email", "other@example.invalid");
   git(other, "config", "user.name", "Other Dev");
   await Bun.write(join(other, "merged-feature.txt"), "merged upstream");
