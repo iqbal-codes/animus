@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -399,6 +400,30 @@ export async function packageCliDistributionTarball(
   }
 }
 
+export function stageReleaseInstallerScript(opts: { repoRoot?: string; outDir: string }): {
+  staged: boolean;
+  destinationPath: string;
+} {
+  const repoRoot = resolve(opts.repoRoot ?? process.cwd());
+  const installShPath = join(repoRoot, "install.sh");
+  const destDir = resolve(opts.outDir);
+  const destinationPath = join(destDir, "install.sh");
+
+  if (!existsSync(destDir)) {
+    mkdirSync(destDir, { recursive: true });
+  }
+
+  if (existsSync(installShPath)) {
+    copyFileSync(installShPath, destinationPath);
+    try {
+      chmodSync(destinationPath, 0o755);
+    } catch {}
+    return { staged: true, destinationPath };
+  }
+
+  return { staged: false, destinationPath };
+}
+
 export async function packageAllCliDistributionTarballs(
   opts: PackageAllCliDistributionTarballsOptions,
 ): Promise<{
@@ -456,6 +481,11 @@ if (isMain) {
     console.log(
       `Packaged CLI tarball ${t.platform}-${t.arch}: ${t.tarballPath} (${t.sha256.slice(0, 12)}...)`,
     );
+  }
+
+  const staging = stageReleaseInstallerScript({ outDir });
+  if (staging.staged) {
+    console.log(`Staged install.sh to ${staging.destinationPath}`);
   }
 
   const checksums = await generateReleaseChecksums(outDir);
