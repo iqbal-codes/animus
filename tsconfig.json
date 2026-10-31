@@ -1,6 +1,7 @@
 {
   "files": [],
   "references": [
+    { "path": "apps/web" },
     { "path": "apps/backend" },
     { "path": "apps/engine-host" },
     { "path": "apps/launcher" },
