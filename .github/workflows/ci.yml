@@ -18,7 +18,9 @@ permissions:
 jobs:
   gate-static:
     name: "Gate 1: Static Lint, Format & Architecture Check"
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -48,7 +50,9 @@ jobs:
   gate-verify:
     name: "Gate 2: Typecheck, Unit & Offline Integration Verification"
     needs: [gate-static]
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -80,7 +84,9 @@ jobs:
   gate-build:
     name: "Gate 3: Release Packaging Validation"
     needs: [gate-verify]
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -98,5 +104,43 @@ jobs:
       - name: Frozen dependency install
         run: bun install --frozen-lockfile
 
-      - name: Verify release packaging
+      - name: Build standalone CLI binary
+        run: bun run build:cli
+
+      - name: Verify release packaging and checksum generation
         run: bun run package:release
+
+      - name: Verify CLI binary smoke
+        run: |
+          bun -e "
+            import { verifyCliBinarySmoke } from './scripts/release/build-cli.ts';
+            await verifyCliBinarySmoke({
+              binaryPath: './dist/bin/labq-factory',
+            });
+            console.log('CLI binary smoke verification passed');
+          "
+
+      - name: Verify SHA-256 checksums
+        run: |
+          cd dist/releases
+          sha256sum -c checksums.txt
+
+  ci-gate:
+    name: "Gate Aggregate: CI Pass/Fail Evaluator"
+    needs: [gate-static, gate-verify, gate-build]
+    if: ${{ always() && !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".node-version"
+
+      - name: Evaluate Aggregate CI Gate Outcome
+        run: node scripts/health/check-ci-gate.mjs
+        env:
+          NEEDS_CONTEXT: ${{ toJson(needs) }}

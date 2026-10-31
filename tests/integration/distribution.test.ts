@@ -2929,4 +2929,450 @@ Depends on: None
       });
     });
   });
+
+  describe("Issue #87: Fail-Closed Aggregate CI Gate Evaluator, Complete Bun Suite Execution, and Release Smoke Integration", () => {
+    describe("AC1: evaluateCiGateOutcome Pure Evaluator & Permutations", () => {
+      test("evaluates upstream job results: returns ok=true when all required jobs succeed", async () => {
+        const { evaluateCiGateOutcome } = await import(
+          // @ts-expect-error dynamic mjs import
+          "../../scripts/health/check-ci-gate.mjs"
+        );
+
+        const needsSuccess = {
+          "gate-static": { result: "success" },
+          "gate-verify": { result: "success" },
+          "gate-build": { result: "success" },
+        };
+
+        const res = evaluateCiGateOutcome(needsSuccess);
+        expect(res.ok).toBe(true);
+        expect(res.failures).toHaveLength(0);
+
+        // Also accepts string status shorthand
+        const stringNeeds = {
+          "gate-static": "success",
+          "gate-verify": "success",
+          "gate-build": "success",
+        };
+        const stringRes = evaluateCiGateOutcome(stringNeeds);
+        expect(stringRes.ok).toBe(true);
+        expect(stringRes.failures).toHaveLength(0);
+
+        // Accepts JSON stringified needs
+        const jsonRes = evaluateCiGateOutcome(JSON.stringify(needsSuccess));
+        expect(jsonRes.ok).toBe(true);
+        expect(jsonRes.failures).toHaveLength(0);
+      });
+
+      test("fails closed when any required job reports failure", async () => {
+        const { evaluateCiGateOutcome } = await import(
+          // @ts-expect-error dynamic mjs import
+          "../../scripts/health/check-ci-gate.mjs"
+        );
+
+        // Single failure
+        const staticFail = {
+          "gate-static": { result: "failure" },
+          "gate-verify": { result: "success" },
+          "gate-build": { result: "success" },
+        };
+        const resStatic = evaluateCiGateOutcome(staticFail);
+        expect(resStatic.ok).toBe(false);
+        expect(
+          resStatic.failures.some(
+            (f: string) => f.includes("gate-static") && f.includes("failure"),
+          ),
+        ).toBe(true);
+
+        const verifyFail = {
+          "gate-static": { result: "success" },
+          "gate-verify": { result: "failure" },
+          "gate-build": { result: "success" },
+        };
+        const resVerify = evaluateCiGateOutcome(verifyFail);
+        expect(resVerify.ok).toBe(false);
+        expect(
+          resVerify.failures.some(
+            (f: string) => f.includes("gate-verify") && f.includes("failure"),
+          ),
+        ).toBe(true);
+
+        const buildFail = {
+          "gate-static": { result: "success" },
+          "gate-verify": { result: "success" },
+          "gate-build": { result: "failure" },
+        };
+        const resBuild = evaluateCiGateOutcome(buildFail);
+        expect(resBuild.ok).toBe(false);
+        expect(
+          resBuild.failures.some((f: string) => f.includes("gate-build") && f.includes("failure")),
+        ).toBe(true);
+
+        // Multiple failures
+        const multiFail = {
+          "gate-static": { result: "failure" },
+          "gate-verify": { result: "failure" },
+          "gate-build": { result: "success" },
+        };
+        const resMulti = evaluateCiGateOutcome(multiFail);
+        expect(resMulti.ok).toBe(false);
+        expect(resMulti.failures).toHaveLength(2);
+      });
+
+      test("fails closed when any required job is cancelled", async () => {
+        const { evaluateCiGateOutcome } = await import(
+          // @ts-expect-error dynamic mjs import
+          "../../scripts/health/check-ci-gate.mjs"
+        );
+
+        const cancelNeeds = {
+          "gate-static": { result: "success" },
+          "gate-verify": { result: "cancelled" },
+          "gate-build": { result: "success" },
+        };
+        const res = evaluateCiGateOutcome(cancelNeeds);
+        expect(res.ok).toBe(false);
+        expect(
+          res.failures.some((f: string) => f.includes("gate-verify") && f.includes("cancelled")),
+        ).toBe(true);
+      });
+
+      test("fails closed on unauthorized skipped jobs (no explicit false gate output)", async () => {
+        const { evaluateCiGateOutcome } = await import(
+          // @ts-expect-error dynamic mjs import
+          "../../scripts/health/check-ci-gate.mjs"
+        );
+
+        // Skipped without gates
+        const skipNoGates = {
+          "gate-static": { result: "success" },
+          "gate-verify": { result: "success" },
+          "gate-build": { result: "skipped" },
+        };
+        const resNoGates = evaluateCiGateOutcome(skipNoGates);
+        expect(resNoGates.ok).toBe(false);
+        expect(
+          resNoGates.failures.some(
+            (f: string) => f.includes("gate-build") && f.includes("skipped"),
+          ),
+        ).toBe(true);
+
+        // Skipped with positive/empty gate (unauthorized)
+        const resPosGate = evaluateCiGateOutcome(skipNoGates, { "gate-build": "true" });
+        expect(resPosGate.ok).toBe(false);
+        expect(
+          resPosGate.failures.some(
+            (f: string) => f.includes("gate-build") && f.includes("skipped"),
+          ),
+        ).toBe(true);
+      });
+
+      test("permits authorized skip when an explicit false gate output is provided", async () => {
+        const { evaluateCiGateOutcome } = await import(
+          // @ts-expect-error dynamic mjs import
+          "../../scripts/health/check-ci-gate.mjs"
+        );
+
+        const skipNeeds = {
+          "gate-static": { result: "success" },
+          "gate-verify": { result: "success" },
+          "gate-build": { result: "skipped" },
+        };
+
+        // Explicit "false" string gate
+        const resStr = evaluateCiGateOutcome(skipNeeds, { "gate-build": "false" });
+        expect(resStr.ok).toBe(true);
+        expect(resStr.failures).toHaveLength(0);
+
+        // Explicit boolean false gate
+        const resBool = evaluateCiGateOutcome(skipNeeds, { "gate-build": false });
+        expect(resBool.ok).toBe(true);
+        expect(resBool.failures).toHaveLength(0);
+
+        // Normalized key gate (e.g. run_gate_build = "false")
+        const resNorm = evaluateCiGateOutcome(skipNeeds, { run_gate_build: "false" });
+        expect(resNorm.ok).toBe(true);
+        expect(resNorm.failures).toHaveLength(0);
+
+        // Structured gate decision object (shouldRun: "false")
+        const resStruct = evaluateCiGateOutcome(skipNeeds, {
+          "gate-build": { shouldRun: "false" },
+        });
+        expect(resStruct.ok).toBe(true);
+        expect(resStruct.failures).toHaveLength(0);
+
+        // Job output with gate: "false"
+        const jobOutputNeeds = {
+          "gate-static": { result: "success" },
+          "gate-verify": { result: "success" },
+          "gate-build": { result: "skipped", outputs: { gate: "false" } },
+        };
+        const resJobOut = evaluateCiGateOutcome(jobOutputNeeds);
+        expect(resJobOut.ok).toBe(true);
+        expect(resJobOut.failures).toHaveLength(0);
+
+        // Draft PR authorized skip
+        const draftNeeds = {
+          "gate-static": { result: "skipped" },
+          "gate-verify": { result: "skipped" },
+          "gate-build": { result: "skipped" },
+        };
+        const resDraft = evaluateCiGateOutcome(draftNeeds, { isDraft: true });
+        expect(resDraft.ok).toBe(true);
+        expect(resDraft.failures).toHaveLength(0);
+      });
+
+      test("fails closed when required jobs are missing or needs context is invalid", async () => {
+        const { evaluateCiGateOutcome } = await import(
+          // @ts-expect-error dynamic mjs import
+          "../../scripts/health/check-ci-gate.mjs"
+        );
+
+        // Missing gate-build
+        const missingBuild = {
+          "gate-static": { result: "success" },
+          "gate-verify": { result: "success" },
+        };
+        const resMissing = evaluateCiGateOutcome(missingBuild);
+        expect(resMissing.ok).toBe(false);
+        expect(
+          resMissing.failures.some(
+            (f: string) => f.includes("gate-build") && f.includes("missing"),
+          ),
+        ).toBe(true);
+
+        // Empty needs
+        const resEmpty = evaluateCiGateOutcome({});
+        expect(resEmpty.ok).toBe(false);
+        expect(resEmpty.failures).toHaveLength(3);
+
+        // Invalid needs
+        const resNull = evaluateCiGateOutcome(null);
+        expect(resNull.ok).toBe(false);
+        expect(resNull.failures.some((f: string) => f.includes("missing or invalid"))).toBe(true);
+
+        const resUndef = evaluateCiGateOutcome(undefined);
+        expect(resUndef.ok).toBe(false);
+        expect(resUndef.failures.some((f: string) => f.includes("missing or invalid"))).toBe(true);
+
+        const resBadJson = evaluateCiGateOutcome("{invalid json");
+        expect(resBadJson.ok).toBe(false);
+        expect(resBadJson.failures.some((f: string) => f.includes("Invalid JSON"))).toBe(true);
+      });
+
+      test("supports custom required jobs override via gates array or config", async () => {
+        const { evaluateCiGateOutcome } = await import(
+          // @ts-expect-error dynamic mjs import
+          "../../scripts/health/check-ci-gate.mjs"
+        );
+
+        const partialNeeds = {
+          "gate-static": { result: "success" },
+          "gate-verify": { result: "success" },
+        };
+
+        // Custom array of required jobs
+        const resArray = evaluateCiGateOutcome(partialNeeds, ["gate-static", "gate-verify"]);
+        expect(resArray.ok).toBe(true);
+
+        // Custom requiredJobs in config object
+        const resConfig = evaluateCiGateOutcome(partialNeeds, {
+          requiredJobs: ["gate-static"],
+        });
+        expect(resConfig.ok).toBe(true);
+      });
+
+      test("CLI invocation of check-ci-gate.mjs passes and fails according to upstream outcomes", () => {
+        const scriptPath = join(process.cwd(), "scripts/health/check-ci-gate.mjs");
+
+        // Success case via NEEDS_CONTEXT
+        const successNeeds = JSON.stringify({
+          "gate-static": { result: "success" },
+          "gate-verify": { result: "success" },
+          "gate-build": { result: "success" },
+        });
+        const outSuccess = execFileSync("node", [scriptPath], {
+          env: { ...process.env, NEEDS_CONTEXT: successNeeds },
+          encoding: "utf-8",
+        });
+        expect(outSuccess).toContain("passed");
+
+        // Success case via CLI argument --needs
+        const outArg = execFileSync("node", [scriptPath, "--needs", successNeeds], {
+          encoding: "utf-8",
+        });
+        expect(outArg).toContain("passed");
+
+        // Failure case via NEEDS_CONTEXT
+        const failNeeds = JSON.stringify({
+          "gate-static": { result: "failure" },
+          "gate-verify": { result: "success" },
+          "gate-build": { result: "success" },
+        });
+        expect(() => {
+          execFileSync("node", [scriptPath], {
+            env: { ...process.env, NEEDS_CONTEXT: failNeeds },
+            encoding: "utf-8",
+          });
+        }).toThrow();
+
+        // Cancelled case via NEEDS_CONTEXT
+        const cancelNeeds = JSON.stringify({
+          "gate-static": { result: "success" },
+          "gate-verify": { result: "cancelled" },
+          "gate-build": { result: "success" },
+        });
+        expect(() => {
+          execFileSync("node", [scriptPath], {
+            env: { ...process.env, NEEDS_CONTEXT: cancelNeeds },
+            encoding: "utf-8",
+          });
+        }).toThrow();
+
+        // Unauthorized skip via NEEDS_CONTEXT
+        const skipNeeds = JSON.stringify({
+          "gate-static": { result: "success" },
+          "gate-verify": { result: "success" },
+          "gate-build": { result: "skipped" },
+        });
+        expect(() => {
+          execFileSync("node", [scriptPath], {
+            env: { ...process.env, NEEDS_CONTEXT: skipNeeds },
+            encoding: "utf-8",
+          });
+        }).toThrow();
+
+        // Authorized skip via GATES_CONTEXT
+        const gatesContext = JSON.stringify({ "gate-build": "false" });
+        const outAuthSkip = execFileSync("node", [scriptPath], {
+          env: {
+            ...process.env,
+            NEEDS_CONTEXT: skipNeeds,
+            GATES_CONTEXT: gatesContext,
+          },
+          encoding: "utf-8",
+        });
+        expect(outAuthSkip).toContain("passed");
+
+        // Help flag
+        const outHelp = execFileSync("node", [scriptPath, "--help"], {
+          encoding: "utf-8",
+        });
+        expect(outHelp).toContain("Usage:");
+      });
+    });
+
+    describe("AC2: CI Workflow (.github/workflows/ci.yml) Contract", () => {
+      test("defines explicit timeout-minutes on every CI job", () => {
+        const ciPath = join(process.cwd(), ".github/workflows/ci.yml");
+        const content = readFileSync(ciPath, "utf-8");
+        const doc = parseYaml(content);
+
+        expect(doc.jobs).toBeDefined();
+        const jobKeys = Object.keys(doc.jobs);
+        expect(jobKeys).toContain("gate-static");
+        expect(jobKeys).toContain("gate-verify");
+        expect(jobKeys).toContain("gate-build");
+        expect(jobKeys).toContain("ci-gate");
+
+        for (const jobKey of jobKeys) {
+          const job = doc.jobs[jobKey];
+          expect(job["timeout-minutes"]).toBeDefined();
+          expect(typeof job["timeout-minutes"]).toBe("number");
+          expect(job["timeout-minutes"]).toBeGreaterThan(0);
+        }
+      });
+
+      test("gate-build runs CLI binary smoke verification and checksum generation", () => {
+        const ciPath = join(process.cwd(), ".github/workflows/ci.yml");
+        const content = readFileSync(ciPath, "utf-8");
+        const doc = parseYaml(content);
+
+        const buildJob = doc.jobs["gate-build"];
+        expect(buildJob).toBeDefined();
+        expect(buildJob.needs).toContain("gate-verify");
+
+        const steps = buildJob.steps.map((s: any) => s.run ?? s.name ?? "");
+        const allStepContent = steps.join("\n");
+
+        expect(allStepContent).toContain("bun run build:cli");
+        expect(allStepContent).toContain("bun run package:release");
+        expect(allStepContent).toContain("verifyCliBinarySmoke");
+        expect(allStepContent).toContain("checksums.txt");
+      });
+
+      test("defines aggregate ci-gate job with fail-closed dependencies and draft PR gating", () => {
+        const ciPath = join(process.cwd(), ".github/workflows/ci.yml");
+        const content = readFileSync(ciPath, "utf-8");
+        const doc = parseYaml(content);
+
+        const ciGate = doc.jobs["ci-gate"];
+        expect(ciGate).toBeDefined();
+
+        // Needs all 3 upstream gates
+        expect(ciGate.needs).toEqual(
+          expect.arrayContaining(["gate-static", "gate-verify", "gate-build"]),
+        );
+
+        // Executes always() and skips draft pull requests
+        expect(ciGate.if).toBeDefined();
+        expect(ciGate.if).toContain("always()");
+        expect(ciGate.if).toContain("!github.event.pull_request.draft");
+
+        // Invokes check-ci-gate.mjs with NEEDS_CONTEXT
+        const stepRuns = ciGate.steps.map((s: any) => s.run ?? "");
+        expect(
+          stepRuns.some((r: string) => r.includes("node scripts/health/check-ci-gate.mjs")),
+        ).toBe(true);
+
+        const evalStep = ciGate.steps.find((s: any) =>
+          (s.run ?? "").includes("node scripts/health/check-ci-gate.mjs"),
+        );
+        expect(evalStep?.env?.NEEDS_CONTEXT).toBeDefined();
+        expect(evalStep.env.NEEDS_CONTEXT).toContain("toJson(needs)");
+      });
+
+      test("upstream CI jobs enforce draft pull request skipping", () => {
+        const ciPath = join(process.cwd(), ".github/workflows/ci.yml");
+        const content = readFileSync(ciPath, "utf-8");
+        const doc = parseYaml(content);
+
+        for (const jobKey of ["gate-static", "gate-verify", "gate-build"]) {
+          const job = doc.jobs[jobKey];
+          expect(job.if).toBeDefined();
+          expect(job.if).toContain("!github.event.pull_request.draft");
+        }
+      });
+    });
+
+    describe("AC3: Complete Bun Suite Execution in vite.config.ts", () => {
+      test("bun-suite task executes all tests/integration/*.bun.test.ts files", () => {
+        const configPath = join(process.cwd(), "vite.config.ts");
+        const content = readFileSync(configPath, "utf-8");
+
+        expect(content).toContain("bun-suite");
+
+        // Asserts every *.bun.test.ts suite is included in bun-suite
+        const expectedBunSuites = [
+          "tests/integration/health.bun.test.ts",
+          "tests/integration/onboarding-http.bun.test.ts",
+          "tests/integration/onboarding-monitor.bun.test.ts",
+          "tests/integration/local-loop.bun.test.ts",
+          "tests/integration/local-loop-deadlines.bun.test.ts",
+          "tests/integration/loop-script.bun.test.ts",
+          "tests/integration/loop-watch.bun.test.ts",
+          "tests/integration/loop-modules.bun.test.ts",
+          "tests/integration/scheduler-discovery.bun.test.ts",
+        ];
+
+        for (const suite of expectedBunSuites) {
+          expect(content).toContain(suite);
+        }
+
+        // test-all depends on both neutral-suite and bun-suite
+        expect(content).toContain('"neutral-suite"');
+        expect(content).toContain('"bun-suite"');
+      });
+    });
+  });
 });

@@ -12,6 +12,10 @@
       "guidance": "Use SystemForgeAdapter paginated listIssues and getIssueStates batches; resolve only referenced dependencies and keep cached discovery separate from fresh target binding."
     },
     "contracts": "Define shared schemas, DTOs, and domain types in dedicated contract/type modules with zero explicit 'any'.",
+    "ci_gate_evaluation": {
+      "file_glob": "scripts/health/check-ci-gate.mjs",
+      "guidance": "Evaluate upstream CI job outcomes in evaluateCiGateOutcome, failing closed on failure, cancelled, missing, or unauthorized skipped results."
+    },
     "persistence": "Execute database and external storage operations through repository/service abstractions and transactional migration helpers.",
     "release_engineering": {
       "file_glob": "scripts/release/**/*.ts",
