@@ -63,6 +63,12 @@ jobs:
         env:
           RELEASE_VERSION: ${{ steps.resolve-version.outputs.version }}
 
+      - name: Stage installer script
+        run: |
+          mkdir -p dist/releases
+          cp install.sh dist/releases/install.sh
+          chmod 0755 dist/releases/install.sh
+
       - name: Package release bundles & compute SHA-256 checksums
         run: bun run package:release
         env:

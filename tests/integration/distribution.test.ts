@@ -3580,4 +3580,453 @@ Depends on: None
       });
     });
   });
+
+  describe("Issue #98: Fail-Closed POSIX curl|sh Installer Script with SHA-256 Verification", () => {
+    test("AC1 & Invariant: install.sh is strictly POSIX compliant with LF line endings", () => {
+      const installPath = join(process.cwd(), "install.sh");
+      expect(existsSync(installPath)).toBe(true);
+
+      const content = readFileSync(installPath, "utf-8");
+      // Must start with POSIX shebang
+      expect(content.startsWith("#!/bin/sh\n")).toBe(true);
+      // No CRLF line endings
+      expect(content).not.toContain("\r\n");
+      // Executable mode 0755
+      const stat = statSync(installPath);
+      expect((stat.mode & 0o111) !== 0).toBe(true);
+
+      // Verify POSIX syntax check using platform /bin/sh -n
+      const syntaxCheck = execFileSync("sh", ["-n", installPath], { encoding: "utf-8" });
+      expect(syntaxCheck).toBe("");
+    });
+
+    test("AC1 & AC5d: install.sh fails closed with non-zero exit and clear error on unsupported OS or architecture", () => {
+      const installScript = join(process.cwd(), "install.sh");
+      const installDir = join(tempDir, "install-unsupported");
+      mkdirSync(installDir, { recursive: true });
+
+      // Unsupported OS
+      let osError: any;
+      try {
+        execFileSync("sh", [installScript], {
+          env: {
+            ...process.env,
+            LABQ_OS: "solaris",
+            LABQ_ARCH: "x64",
+            LABQ_INSTALL_DIR: installDir,
+            LABQ_VERSION: "0.2.0",
+          },
+          encoding: "utf-8",
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+      } catch (err: any) {
+        osError = err;
+      }
+
+      expect(osError).toBeDefined();
+      expect(osError.status).not.toBe(0);
+      const osStderr = osError.stderr?.toString() ?? "";
+      expect(osStderr).toContain("Unsupported operating system");
+      expect(existsSync(join(installDir, "labq-factory"))).toBe(false);
+
+      // Unsupported Architecture
+      let archError: any;
+      try {
+        execFileSync("sh", [installScript], {
+          env: {
+            ...process.env,
+            LABQ_OS: "linux",
+            LABQ_ARCH: "mips",
+            LABQ_INSTALL_DIR: installDir,
+            LABQ_VERSION: "0.2.0",
+          },
+          encoding: "utf-8",
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+      } catch (err: any) {
+        archError = err;
+      }
+
+      expect(archError).toBeDefined();
+      expect(archError.status).not.toBe(0);
+      const archStderr = archError.stderr?.toString() ?? "";
+      expect(archStderr).toContain("Unsupported architecture");
+      expect(existsSync(join(installDir, "labq-factory"))).toBe(false);
+    });
+
+    test("AC2, AC3 & AC5a: executes sh ./install.sh against local file:// release URL and verifies labq-factory version and factory --help", async () => {
+      const { packageCliDistributionTarball, generateReleaseChecksums } =
+        await import("../../scripts/release/package");
+      const releaseDir = join(tempDir, "release-happy");
+      const installDir = join(tempDir, "install-happy");
+      mkdirSync(releaseDir, { recursive: true });
+      mkdirSync(installDir, { recursive: true });
+
+      const platform = process.platform === "darwin" ? "darwin" : "linux";
+      const arch = process.arch === "arm64" ? "arm64" : "x64";
+
+      const mockCliScript = [
+        "#!/bin/sh",
+        'if [ "$1" = "version" ]; then',
+        '  echo "labq-factory v0.2.0 (rev test-rev-happy)"; exit 0',
+        "fi",
+        'if [ "$1" = "--help" ] || [ "$1" = "help" ]; then',
+        '  echo "labq-factory CLI: setup, project, serve"',
+        "  exit 0",
+        "fi",
+        'echo "labq-factory v0.2.0"',
+        "exit 0",
+      ].join("\n");
+
+      await packageCliDistributionTarball({
+        version: "0.2.0",
+        platform,
+        arch,
+        outDir: releaseDir,
+        binaryContent: mockCliScript,
+      });
+
+      await generateReleaseChecksums(releaseDir);
+
+      const installScript = join(process.cwd(), "install.sh");
+      const releaseBaseUrl = `file://${releaseDir}`;
+
+      const stdout = execFileSync("sh", [installScript], {
+        env: {
+          ...process.env,
+          LABQ_RELEASE_BASE_URL: releaseBaseUrl,
+          LABQ_VERSION: "0.2.0",
+          LABQ_INSTALL_DIR: installDir,
+          LABQ_OS: platform,
+          LABQ_ARCH: arch,
+        },
+        encoding: "utf-8",
+      });
+
+      expect(stdout).toContain("Checksum verified");
+      expect(stdout).toContain("Successfully installed labq-factory");
+
+      // Verify labq-factory, factory, and labq executables exist with 0755
+      for (const name of ["labq-factory", "factory", "labq"]) {
+        const binPath = join(installDir, name);
+        expect(existsSync(binPath)).toBe(true);
+        const stat = statSync(binPath);
+        expect((stat.mode & 0o111) !== 0).toBe(true);
+      }
+
+      // Verify execution of labq-factory version
+      const verOut = execFileSync(join(installDir, "labq-factory"), ["version"], {
+        encoding: "utf-8",
+      });
+      expect(verOut).toContain("labq-factory v0.2.0");
+      expect(verOut).toContain("test-rev-happy");
+
+      // Verify execution of factory --help
+      const helpOut = execFileSync(join(installDir, "factory"), ["--help"], {
+        encoding: "utf-8",
+      });
+      expect(helpOut).toContain("labq-factory CLI");
+      expect(helpOut).toContain("setup");
+
+      // Verify execution of labq version
+      const labqOut = execFileSync(join(installDir, "labq"), ["version"], {
+        encoding: "utf-8",
+      });
+      expect(labqOut).toContain("labq-factory v0.2.0");
+    });
+
+    test("AC2 & AC5b: fail-closed rejection with non-zero exit when tarball bytes are tampered, leaving no installed binary", async () => {
+      const { packageCliDistributionTarball, generateReleaseChecksums } =
+        await import("../../scripts/release/package");
+      const releaseDir = join(tempDir, "release-tampered");
+      const installDir = join(tempDir, "install-tampered");
+      mkdirSync(releaseDir, { recursive: true });
+      mkdirSync(installDir, { recursive: true });
+
+      const platform = process.platform === "darwin" ? "darwin" : "linux";
+      const arch = process.arch === "arm64" ? "arm64" : "x64";
+
+      const res = await packageCliDistributionTarball({
+        version: "0.2.0",
+        platform,
+        arch,
+        outDir: releaseDir,
+        binaryContent: "#!/bin/sh\necho ok\n",
+      });
+
+      await generateReleaseChecksums(releaseDir);
+
+      // Deliberately tamper archive bytes
+      writeFileSync(res.tarballPath, Buffer.from("tampered-corrupted-archive-content"));
+
+      const installScript = join(process.cwd(), "install.sh");
+      let caughtError: any;
+      try {
+        execFileSync("sh", [installScript], {
+          env: {
+            ...process.env,
+            LABQ_RELEASE_BASE_URL: `file://${releaseDir}`,
+            LABQ_VERSION: "0.2.0",
+            LABQ_INSTALL_DIR: installDir,
+            LABQ_OS: platform,
+            LABQ_ARCH: arch,
+          },
+          encoding: "utf-8",
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+      } catch (err: any) {
+        caughtError = err;
+      }
+
+      expect(caughtError).toBeDefined();
+      expect(caughtError.status).not.toBe(0);
+      const stderr = caughtError.stderr?.toString() ?? "";
+      expect(stderr).toContain("SHA-256 digest verification failed");
+
+      // Fail-closed invariant: no binary installed in LABQ_INSTALL_DIR
+      expect(existsSync(join(installDir, "labq-factory"))).toBe(false);
+      expect(existsSync(join(installDir, "factory"))).toBe(false);
+      expect(existsSync(join(installDir, "labq"))).toBe(false);
+    });
+
+    test("AC2 & AC5c: fail-closed rejection when target tarball entry is missing from checksums.txt", async () => {
+      const { packageCliDistributionTarball } = await import("../../scripts/release/package");
+      const releaseDir = join(tempDir, "release-missing-entry");
+      const installDir = join(tempDir, "install-missing-entry");
+      mkdirSync(releaseDir, { recursive: true });
+      mkdirSync(installDir, { recursive: true });
+
+      const platform = process.platform === "darwin" ? "darwin" : "linux";
+      const arch = process.arch === "arm64" ? "arm64" : "x64";
+
+      await packageCliDistributionTarball({
+        version: "0.2.0",
+        platform,
+        arch,
+        outDir: releaseDir,
+        binaryContent: "#!/bin/sh\necho ok\n",
+      });
+
+      // Write checksums.txt with unrelated entry
+      writeFileSync(
+        join(releaseDir, "checksums.txt"),
+        "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890  some-other-file.tar.gz\n",
+        "utf-8",
+      );
+
+      const installScript = join(process.cwd(), "install.sh");
+      let caughtError: any;
+      try {
+        execFileSync("sh", [installScript], {
+          env: {
+            ...process.env,
+            LABQ_RELEASE_BASE_URL: `file://${releaseDir}`,
+            LABQ_VERSION: "0.2.0",
+            LABQ_INSTALL_DIR: installDir,
+            LABQ_OS: platform,
+            LABQ_ARCH: arch,
+          },
+          encoding: "utf-8",
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+      } catch (err: any) {
+        caughtError = err;
+      }
+
+      expect(caughtError).toBeDefined();
+      expect(caughtError.status).not.toBe(0);
+      const stderr = caughtError.stderr?.toString() ?? "";
+      expect(stderr).toContain("not found in checksums.txt");
+      expect(existsSync(join(installDir, "labq-factory"))).toBe(false);
+    });
+
+    test("AC2: fail-closed rejection when checksums.txt is completely missing from release base URL", async () => {
+      const { packageCliDistributionTarball } = await import("../../scripts/release/package");
+      const releaseDir = join(tempDir, "release-no-checksums");
+      const installDir = join(tempDir, "install-no-checksums");
+      mkdirSync(releaseDir, { recursive: true });
+      mkdirSync(installDir, { recursive: true });
+
+      const platform = process.platform === "darwin" ? "darwin" : "linux";
+      const arch = process.arch === "arm64" ? "arm64" : "x64";
+
+      await packageCliDistributionTarball({
+        version: "0.2.0",
+        platform,
+        arch,
+        outDir: releaseDir,
+        binaryContent: "#!/bin/sh\necho ok\n",
+      });
+
+      // Deliberately omit checksums.txt
+      const installScript = join(process.cwd(), "install.sh");
+      let caughtError: any;
+      try {
+        execFileSync("sh", [installScript], {
+          env: {
+            ...process.env,
+            LABQ_RELEASE_BASE_URL: `file://${releaseDir}`,
+            LABQ_VERSION: "0.2.0",
+            LABQ_INSTALL_DIR: installDir,
+            LABQ_OS: platform,
+            LABQ_ARCH: arch,
+          },
+          encoding: "utf-8",
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+      } catch (err: any) {
+        caughtError = err;
+      }
+
+      expect(caughtError).toBeDefined();
+      expect(caughtError.status).not.toBe(0);
+      expect(existsSync(join(installDir, "labq-factory"))).toBe(false);
+    });
+
+    test("AC2: resolves release version stripping leading 'v' prefix from LABQ_VERSION", async () => {
+      const { packageCliDistributionTarball, generateReleaseChecksums } =
+        await import("../../scripts/release/package");
+      const releaseDir = join(tempDir, "release-version-v");
+      const installDir = join(tempDir, "install-version-v");
+      mkdirSync(releaseDir, { recursive: true });
+      mkdirSync(installDir, { recursive: true });
+
+      const platform = process.platform === "darwin" ? "darwin" : "linux";
+      const arch = process.arch === "arm64" ? "arm64" : "x64";
+
+      await packageCliDistributionTarball({
+        version: "0.2.0",
+        platform,
+        arch,
+        outDir: releaseDir,
+        binaryContent: "#!/bin/sh\necho 'labq-factory v0.2.0'\n",
+      });
+
+      await generateReleaseChecksums(releaseDir);
+
+      const installScript = join(process.cwd(), "install.sh");
+      const stdout = execFileSync("sh", [installScript], {
+        env: {
+          ...process.env,
+          LABQ_RELEASE_BASE_URL: `file://${releaseDir}`,
+          LABQ_VERSION: "v0.2.0", // Leading 'v'
+          LABQ_INSTALL_DIR: installDir,
+          LABQ_OS: platform,
+          LABQ_ARCH: arch,
+        },
+        encoding: "utf-8",
+      });
+
+      expect(stdout).toContain("Checksum verified");
+      expect(stdout).toContain("Successfully installed labq-factory");
+      expect(existsSync(join(installDir, "labq-factory"))).toBe(true);
+    });
+
+    test("AC3: prints PATH configuration instructions when LABQ_INSTALL_DIR is not on PATH and omits them when present", async () => {
+      const { packageCliDistributionTarball, generateReleaseChecksums } =
+        await import("../../scripts/release/package");
+      const releaseDir = join(tempDir, "release-path-check");
+      const installDir = join(tempDir, "install-path-check");
+      mkdirSync(releaseDir, { recursive: true });
+      mkdirSync(installDir, { recursive: true });
+
+      const platform = process.platform === "darwin" ? "darwin" : "linux";
+      const arch = process.arch === "arm64" ? "arm64" : "x64";
+
+      await packageCliDistributionTarball({
+        version: "0.2.0",
+        platform,
+        arch,
+        outDir: releaseDir,
+        binaryContent: "#!/bin/sh\necho 'labq-factory v0.2.0'\n",
+      });
+
+      await generateReleaseChecksums(releaseDir);
+      const installScript = join(process.cwd(), "install.sh");
+
+      // 1. Not in PATH: should print notice
+      const outWithoutPath = execFileSync("sh", [installScript], {
+        env: {
+          ...process.env,
+          PATH: "/usr/bin:/bin",
+          LABQ_RELEASE_BASE_URL: `file://${releaseDir}`,
+          LABQ_VERSION: "0.2.0",
+          LABQ_INSTALL_DIR: installDir,
+          LABQ_OS: platform,
+          LABQ_ARCH: arch,
+        },
+        encoding: "utf-8",
+      });
+      expect(outWithoutPath).toContain("Notice: ");
+      expect(outWithoutPath).toContain("is not in your PATH");
+      expect(outWithoutPath).toContain("export PATH=");
+
+      // 2. In PATH: should NOT print notice
+      const outWithPath = execFileSync("sh", [installScript], {
+        env: {
+          ...process.env,
+          PATH: `${installDir}:/usr/bin:/bin`,
+          LABQ_RELEASE_BASE_URL: `file://${releaseDir}`,
+          LABQ_VERSION: "0.2.0",
+          LABQ_INSTALL_DIR: installDir,
+          LABQ_OS: platform,
+          LABQ_ARCH: arch,
+        },
+        encoding: "utf-8",
+      });
+      expect(outWithPath).not.toContain("is not in your PATH");
+    });
+
+    test("AC4: .github/workflows/release.yml stages install.sh into dist/releases/install.sh before checksum generation", () => {
+      const workflowPath = join(process.cwd(), ".github/workflows/release.yml");
+      expect(existsSync(workflowPath)).toBe(true);
+      const content = readFileSync(workflowPath, "utf-8");
+      const doc = parseYaml(content);
+
+      const buildSteps = doc.jobs.build.steps;
+      const stageStep = buildSteps.find((s: any) =>
+        s.run?.includes("cp install.sh dist/releases/install.sh"),
+      );
+
+      expect(stageStep).toBeDefined();
+      expect(stageStep.run).toContain("mkdir -p dist/releases");
+      expect(stageStep.run).toContain("chmod 0755 dist/releases/install.sh");
+
+      // Verify staging happens BEFORE package:release and checksum verification
+      const stageIdx = buildSteps.indexOf(stageStep);
+      const packageStep = buildSteps.find((s: any) => s.run?.includes("package:release"));
+      const packageIdx = buildSteps.indexOf(packageStep);
+      expect(stageIdx).toBeLessThan(packageIdx);
+
+      const checksumStep = buildSteps.find((s: any) =>
+        s.run?.includes("sha256sum -c checksums.txt"),
+      );
+      const checksumIdx = buildSteps.indexOf(checksumStep);
+      expect(stageIdx).toBeLessThan(checksumIdx);
+    });
+
+    test("AC4: stageReleaseInstallerScript stages install.sh with 0755 mode and updates checksums", async () => {
+      const { stageReleaseInstallerScript, generateReleaseChecksums, verifyReleaseChecksums } =
+        await import("../../scripts/release/package");
+      const outDir = join(tempDir, "releases-staging-helper");
+      mkdirSync(outDir, { recursive: true });
+
+      const result = stageReleaseInstallerScript({
+        repoRoot: process.cwd(),
+        outDir,
+      });
+
+      expect(result.staged).toBe(true);
+      expect(existsSync(result.destinationPath)).toBe(true);
+      const stat = statSync(result.destinationPath);
+      expect((stat.mode & 0o111) !== 0).toBe(true);
+
+      const checksums = await generateReleaseChecksums(outDir);
+      expect(checksums.entries.some((e) => e.filename === "install.sh")).toBe(true);
+
+      const verification = verifyReleaseChecksums(outDir);
+      expect(verification.ok).toBe(true);
+      expect(verification.verified).toContain("install.sh");
+    });
+  });
 });
