@@ -90,6 +90,8 @@ export async function verifyCliBinarySmoke(
   if (!isolatedDir) {
     isolatedDir = mkdtempSync(join(tmpdir(), "labq-cli-smoke-"));
     ownsTempDir = true;
+  } else if (!existsSync(isolatedDir)) {
+    mkdirSync(isolatedDir, { recursive: true });
   }
 
   try {
@@ -200,6 +202,7 @@ export async function verifyCliBinarySmoke(
 export async function buildStandaloneCli(opts: BuildCliOptions = {}): Promise<{
   outfile: string;
   aliasOutfile: string;
+  labqOutfile: string;
   version: string;
   gitCommit: string;
 }> {
@@ -216,9 +219,11 @@ export async function buildStandaloneCli(opts: BuildCliOptions = {}): Promise<{
 
   const outfile = resolve(opts.outfile ?? join(repoRoot, "dist/bin/labq-factory"));
   const aliasOutfile = join(dirname(outfile), "factory");
+  const labqOutfile = join(dirname(outfile), "labq");
   mkdirSync(dirname(outfile), { recursive: true });
   rmSync(outfile, { force: true });
   rmSync(aliasOutfile, { force: true });
+  rmSync(labqOutfile, { force: true });
 
   const bundledBuildPath = join(repoRoot, "scripts/cli/bundled-build.ts");
   const originalContent = readFileSync(bundledBuildPath, "utf-8");
@@ -267,6 +272,12 @@ export async function buildStandaloneCli(opts: BuildCliOptions = {}): Promise<{
       spawnSync("codesign", ["-s", "-", aliasOutfile]);
     }
 
+    copyFileSync(outfile, labqOutfile);
+    if (process.platform === "darwin") {
+      spawnSync("codesign", ["--remove-signature", labqOutfile]);
+      spawnSync("codesign", ["-s", "-", labqOutfile]);
+    }
+
     if (opts.smokeVerify) {
       await verifyCliBinarySmoke({
         binaryPath: outfile,
@@ -275,7 +286,88 @@ export async function buildStandaloneCli(opts: BuildCliOptions = {}): Promise<{
       });
     }
 
-    return { outfile, aliasOutfile, version, gitCommit };
+    return { outfile, aliasOutfile, labqOutfile, version, gitCommit };
+  } finally {
+    writeFileSync(bundledBuildPath, originalContent, "utf-8");
+  }
+}
+
+export async function buildBundledCliScript(opts: BuildCliOptions = {}): Promise<{
+  outfile: string;
+  version: string;
+  gitCommit: string;
+}> {
+  const repoRoot = resolve(opts.repoRoot ?? process.cwd());
+  const version = opts.version ?? process.env.RELEASE_VERSION ?? "0.2.0";
+  let gitCommit = opts.gitCommit;
+  if (!gitCommit) {
+    const gitRes = spawnSync("git", ["rev-parse", "--short", "HEAD"], {
+      cwd: repoRoot,
+      encoding: "utf-8",
+    });
+    gitCommit = gitRes.status === 0 && gitRes.stdout ? gitRes.stdout.trim() : "unknown";
+  }
+
+  const outfile = resolve(opts.outfile ?? join(repoRoot, "dist/cli.js"));
+  mkdirSync(dirname(outfile), { recursive: true });
+  rmSync(outfile, { force: true });
+
+  const bundledBuildPath = join(repoRoot, "scripts/cli/bundled-build.ts");
+  const originalContent = readFileSync(bundledBuildPath, "utf-8");
+
+  try {
+    writeFileSync(
+      bundledBuildPath,
+      [
+        "export const BUNDLED_IS_BINARY = false;",
+        `export const BUNDLED_VERSION = ${JSON.stringify(version)};`,
+        `export const BUNDLED_GIT_COMMIT = ${JSON.stringify(gitCommit)};`,
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const buildArgs = [
+      "build",
+      "--target=bun",
+      `--outfile=${outfile}`,
+      join(repoRoot, "scripts/cli/cli.ts"),
+    ];
+
+    const bunBin = typeof Bun !== "undefined" ? process.execPath : "bun";
+    const res = spawnSync(bunBin, buildArgs, {
+      cwd: repoRoot,
+      stdio: "pipe",
+    });
+
+    if (res.status !== 0 || !existsSync(outfile)) {
+      const errOut = (res.stderr?.toString() || "") + (res.stdout?.toString() || "");
+      throw new Error(`Failed to bundle CLI script at ${outfile}: ${errOut}`);
+    }
+
+    let content = readFileSync(outfile, "utf-8");
+    if (!content.startsWith("#!/usr/bin/env bun")) {
+      if (content.startsWith("#!")) {
+        content = content.replace(/^#![^\n]*\n/, "#!/usr/bin/env bun\n");
+      } else {
+        content = `#!/usr/bin/env bun\n${content}`;
+      }
+      writeFileSync(outfile, content, "utf-8");
+    }
+
+    try {
+      chmodSync(outfile, 0o755);
+    } catch {}
+
+    if (opts.smokeVerify) {
+      await verifyCliBinarySmoke({
+        binaryPath: outfile,
+        expectedVersion: version,
+        expectedGitSha: gitCommit,
+      });
+    }
+
+    return { outfile, version, gitCommit };
   } finally {
     writeFileSync(bundledBuildPath, originalContent, "utf-8");
   }
@@ -287,16 +379,25 @@ const isMain =
 
 if (isMain) {
   try {
-    const result = await buildStandaloneCli();
-    console.log(
-      `Built standalone LabQ Factory CLI v${result.version} (${result.gitCommit}) -> ${result.outfile} (alias: ${result.aliasOutfile})`,
-    );
-    await verifyCliBinarySmoke({
-      binaryPath: result.outfile,
-      expectedVersion: result.version,
-      expectedGitSha: result.gitCommit,
-    });
-    console.log(`Verified CLI binary smoke check for ${result.outfile}`);
+    const args = process.argv.slice(2);
+    const isBundleOnly = args.includes("--bundle-only") || args.includes("--bundle");
+    const isStandaloneOnly = args.includes("--standalone-only") || args.includes("--standalone");
+
+    if (!isStandaloneOnly) {
+      const bundleResult = await buildBundledCliScript({ smokeVerify: true });
+      console.log(
+        `Built bundled LabQ Factory CLI script v${bundleResult.version} (${bundleResult.gitCommit}) -> ${bundleResult.outfile}`,
+      );
+      console.log(`Verified CLI bundled script smoke check for ${bundleResult.outfile}`);
+    }
+
+    if (!isBundleOnly) {
+      const standaloneResult = await buildStandaloneCli({ smokeVerify: true });
+      console.log(
+        `Built standalone LabQ Factory CLI v${standaloneResult.version} (${standaloneResult.gitCommit}) -> ${standaloneResult.outfile} (aliases: ${standaloneResult.aliasOutfile}, ${standaloneResult.labqOutfile})`,
+      );
+      console.log(`Verified CLI binary smoke check for ${standaloneResult.outfile}`);
+    }
   } catch (err: any) {
     console.error(err?.message ?? String(err));
     process.exit(1);

@@ -3375,4 +3375,209 @@ Depends on: None
       });
     });
   });
+
+  describe("Issue #97: Cross-Platform CLI Distribution Tarballs and Bun Global Package Bundle", () => {
+    describe("AC1: Bundled JS CLI for Bun Global Install (buildBundledCliScript)", () => {
+      test("buildBundledCliScript creates executable dist/cli.js with shebang and 0755 mode, stamped with version and git commit", async () => {
+        const { buildBundledCliScript, verifyCliBinarySmoke } =
+          await import("../../scripts/release/build-cli");
+        const testOutfile = join(tempDir, "dist/cli.js");
+        const testVersion = "0.2.0";
+        const testSha = "1234567890abcdef1234567890abcdef12345678";
+
+        const result = await buildBundledCliScript({
+          repoRoot: process.cwd(),
+          outfile: testOutfile,
+          version: testVersion,
+          gitCommit: testSha,
+        });
+
+        expect(result.outfile).toBe(testOutfile);
+        expect(existsSync(testOutfile)).toBe(true);
+        expect(result.version).toBe(testVersion);
+        expect(result.gitCommit).toBe(testSha);
+
+        const content = readFileSync(testOutfile, "utf-8");
+        expect(content.startsWith("#!/usr/bin/env bun")).toBe(true);
+
+        const stat = statSync(testOutfile);
+        expect((stat.mode & 0o111) !== 0).toBe(true);
+
+        // Verify that bundled script inlines workspace dependencies and passes verifyCliBinarySmoke
+        const smoke = await verifyCliBinarySmoke({
+          binaryPath: testOutfile,
+          expectedVersion: testVersion,
+          expectedGitSha: testSha,
+          tempDir: join(tempDir, "smoke-bundled"),
+        });
+
+        expect(smoke.ok).toBe(true);
+        expect(smoke.commands).toContain("setup");
+        expect(smoke.commands).toContain("project");
+        expect(smoke.commands).toContain("serve");
+      });
+
+      test("buildBundledCliScript restores scripts/cli/bundled-build.ts in finally block even on failure", async () => {
+        const { buildBundledCliScript } = await import("../../scripts/release/build-cli");
+        const bundledBuildPath = join(process.cwd(), "scripts/cli/bundled-build.ts");
+        const beforeContent = readFileSync(bundledBuildPath, "utf-8");
+
+        // Invocation with invalid output directory path that cannot be written or triggers failure
+        await expect(
+          buildBundledCliScript({
+            repoRoot: join(tempDir, "nonexistent-repo-root-dir"),
+          }),
+        ).rejects.toThrow();
+
+        const afterContent = readFileSync(bundledBuildPath, "utf-8");
+        expect(afterContent).toBe(beforeContent);
+      });
+    });
+
+    describe("AC2: Root package.json Definition for Bun Global Installation", () => {
+      test("package.json defines version 0.2.0, bin pointing to dist/cli.js, and exposes build:cli / build:cli:bundle", () => {
+        const pkgPath = join(process.cwd(), "package.json");
+        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+
+        expect(pkg.version).toBe("0.2.0");
+        expect(pkg.bin).toBeDefined();
+        expect(pkg.bin["labq-factory"]).toBe("./dist/cli.js");
+        expect(pkg.bin["factory"]).toBe("./dist/cli.js");
+        expect(pkg.bin["labq"]).toBe("./dist/cli.js");
+
+        expect(pkg.scripts["build:cli"]).toBe("bun scripts/release/build-cli.ts");
+        expect(pkg.scripts["build:cli:bundle"]).toBe(
+          "bun scripts/release/build-cli.ts --bundle-only",
+        );
+      });
+    });
+
+    describe("AC3 & AC4: Cross-Platform CLI Distribution Tarballs & Checksums Integrity", () => {
+      test("packageCliDistributionTarball creates a valid .tar.gz archive extractable via tar -xzf containing labq-factory, factory, and labq", async () => {
+        const { packageCliDistributionTarball } = await import("../../scripts/release/package");
+        const outDir = join(tempDir, "releases-cli-single");
+        mkdirSync(outDir, { recursive: true });
+
+        const mockBinaryPath = join(tempDir, "mock-binary");
+        writeFileSync(mockBinaryPath, "#!/bin/sh\necho 'labq-factory v0.2.0'\n", { mode: 0o755 });
+        chmodSync(mockBinaryPath, 0o755);
+
+        const result = await packageCliDistributionTarball({
+          version: "0.2.0",
+          platform: "darwin",
+          arch: "arm64",
+          outDir,
+          binaryPath: mockBinaryPath,
+        });
+
+        expect(result.tarballPath).toBe(join(outDir, "labq-factory-v0.2.0-darwin-arm64.tar.gz"));
+        expect(existsSync(result.tarballPath)).toBe(true);
+        expect(result.sha256).toMatch(/^[a-f0-9]{64}$/);
+        expect(result.executables).toEqual(["labq-factory", "factory", "labq"]);
+
+        // Verify extraction using platform tar -xzf
+        const extractDir = join(tempDir, "extract-single");
+        mkdirSync(extractDir, { recursive: true });
+        execFileSync("tar", ["-xzf", result.tarballPath, "-C", extractDir]);
+
+        for (const name of ["labq-factory", "factory", "labq"]) {
+          const extractedFile = join(extractDir, name);
+          expect(existsSync(extractedFile)).toBe(true);
+          const stat = statSync(extractedFile);
+          expect((stat.mode & 0o111) !== 0).toBe(true);
+        }
+      });
+
+      test("packageAllCliDistributionTarballs creates archives for all 4 release targets and updates checksums.txt", async () => {
+        const { packageAllCliDistributionTarballs, verifyReleaseChecksums } =
+          await import("../../scripts/release/package");
+        const outDir = join(tempDir, "releases-cli-all");
+        mkdirSync(outDir, { recursive: true });
+
+        const mockBinaryPath = join(tempDir, "mock-binary-all");
+        writeFileSync(mockBinaryPath, "#!/bin/sh\necho 'labq-factory v0.2.0'\n", { mode: 0o755 });
+        chmodSync(mockBinaryPath, 0o755);
+
+        const { tarballs, checksums } = await packageAllCliDistributionTarballs({
+          version: "0.2.0",
+          outDir,
+          binaryPath: mockBinaryPath,
+        });
+
+        expect(tarballs).toHaveLength(4);
+        expect(checksums.entries).toHaveLength(4);
+        expect(existsSync(checksums.checksumsPath)).toBe(true);
+
+        const expectedNames = [
+          "labq-factory-v0.2.0-darwin-arm64.tar.gz",
+          "labq-factory-v0.2.0-darwin-x64.tar.gz",
+          "labq-factory-v0.2.0-linux-x64.tar.gz",
+          "labq-factory-v0.2.0-linux-arm64.tar.gz",
+        ];
+
+        for (const name of expectedNames) {
+          expect(tarballs.some((t) => t.filename === name)).toBe(true);
+          expect(checksums.checksums[name]).toBeDefined();
+        }
+
+        // Verify checksums.txt via verifyReleaseChecksums
+        const verification = verifyReleaseChecksums(outDir);
+        expect(verification.ok).toBe(true);
+        expect(verification.failures).toHaveLength(0);
+        expect(verification.verified).toHaveLength(4);
+      });
+
+      test("verifyReleaseChecksums fails closed when a distribution tarball is corrupted or tampered", async () => {
+        const { packageCliDistributionTarball, generateReleaseChecksums, verifyReleaseChecksums } =
+          await import("../../scripts/release/package");
+        const outDir = join(tempDir, "releases-cli-corrupt");
+        mkdirSync(outDir, { recursive: true });
+
+        const mockBinaryPath = join(tempDir, "mock-binary-corrupt");
+        writeFileSync(mockBinaryPath, "#!/bin/sh\necho 'labq-factory v0.2.0'\n", { mode: 0o755 });
+        chmodSync(mockBinaryPath, 0o755);
+
+        const res = await packageCliDistributionTarball({
+          version: "0.2.0",
+          platform: "linux",
+          arch: "x64",
+          outDir,
+          binaryPath: mockBinaryPath,
+        });
+
+        await generateReleaseChecksums(outDir);
+        expect(verifyReleaseChecksums(outDir).ok).toBe(true);
+
+        // Corrupt tarball bytes
+        writeFileSync(res.tarballPath, Buffer.from("corrupted-bytes"));
+        const tampered = verifyReleaseChecksums(outDir);
+        expect(tampered.ok).toBe(false);
+        expect(tampered.failures.some((f) => f.includes("SHA-256 mismatch"))).toBe(true);
+      });
+
+      test("backward compatibility invariant: packageReleaseBundle continues to produce valid JSON manifest and bundle", async () => {
+        const { packageReleaseBundle } = await import("../../scripts/release/package");
+        const outDir = join(tempDir, "releases-compat");
+        mkdirSync(outDir, { recursive: true });
+
+        const res = await packageReleaseBundle({
+          version: "0.2.0",
+          gitSha: "abcd1234ef567890",
+          platform: "darwin",
+          arch: "arm64",
+          outDir,
+        });
+
+        expect(existsSync(res.bundlePath)).toBe(true);
+        expect(existsSync(res.manifestPath)).toBe(true);
+        expect(res.bundlePath).toContain("labq-factory-v0.2.0-abcd1234-darwin-arm64.tar.gz");
+
+        // Parse JSON content from legacy bundle
+        const rawBundle = readFileSync(res.bundlePath, "utf-8");
+        const bundleJson = JSON.parse(rawBundle);
+        expect(bundleJson.components).toEqual(["backend", "engine-host", "launcher", "cli"]);
+        expect(bundleJson.manifest.version).toBe("0.2.0");
+      });
+    });
+  });
 });

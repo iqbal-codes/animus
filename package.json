@@ -1,10 +1,11 @@
 {
   "name": "labq-software-factory",
+  "version": "0.2.0",
   "private": true,
   "bin": {
-    "factory": "./scripts/cli/cli.ts",
-    "labq": "./scripts/cli/cli.ts",
-    "labq-factory": "./scripts/cli/cli.ts"
+    "factory": "./dist/cli.js",
+    "labq": "./dist/cli.js",
+    "labq-factory": "./dist/cli.js"
   },
   "workspaces": [
     "apps/*",
@@ -13,6 +14,7 @@
   "type": "module",
   "scripts": {
     "build:cli": "bun scripts/release/build-cli.ts",
+    "build:cli:bundle": "bun scripts/release/build-cli.ts --bundle-only",
     "check": "node scripts/health/check-architecture.mjs && bun run format && bun run lint && bun run typecheck",
     "check:architecture": "node scripts/health/check-architecture.mjs",
     "cli": "bun scripts/cli/cli.ts",
