@@ -15,6 +15,8 @@ import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
+import { createHash } from "node:crypto";
+import { parse as parseYaml } from "yaml";
 
 describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollback (Issue #65)", () => {
   let tempDir: string;
@@ -2565,6 +2567,366 @@ Depends on: None
       );
       writeFileSync(join(d23OrderDir, "renovate.json"), JSON.stringify(orderRenovate, null, 2));
       expect(isolatedChecker(d23OrderDir).ok).toBe(true);
+    });
+  });
+
+  describe("Issue #86: Deterministic Release Checksums, Standalone CLI Binary Smoke Verifier, and Privilege-Separated Release Workflow", () => {
+    describe("AC1: Deterministic Release Checksums & Manifest Digests", () => {
+      test("packageReleaseBundle and generateReleaseChecksums compute SHA-256 digests for all 4 matrix targets and write verifiable checksums.txt", async () => {
+        const { packageReleaseBundle, generateReleaseChecksums, verifyReleaseChecksums } =
+          await import("../../scripts/release/package");
+        const outDir = join(tempDir, "releases-ac1");
+        mkdirSync(outDir, { recursive: true });
+
+        const targets = [
+          { platform: "darwin", arch: "arm64" },
+          { platform: "darwin", arch: "x64" },
+          { platform: "linux", arch: "x64" },
+          { platform: "linux", arch: "arm64" },
+        ] as const;
+
+        const fixedTimestamp = "2026-10-31T00:00:00.000Z";
+        const testGitSha = "a7338e65fa30a37748d0acde86a6fc6c0fc3ba49";
+        const bundleResults = [];
+
+        for (const t of targets) {
+          const res = await packageReleaseBundle({
+            version: "0.2.0",
+            gitSha: testGitSha,
+            platform: t.platform,
+            arch: t.arch,
+            outDir,
+            buildTimestamp: fixedTimestamp,
+          });
+          expect(res.bundlePath).toBeDefined();
+          expect(existsSync(res.bundlePath)).toBe(true);
+          expect(res.manifestPath).toBeDefined();
+          expect(existsSync(res.manifestPath)).toBe(true);
+          expect(res.sha256).toMatch(/^[a-f0-9]{64}$/);
+          expect(res.manifest.sha256).toBe(res.sha256);
+          bundleResults.push(res);
+        }
+
+        const checksumsResult = await generateReleaseChecksums(outDir);
+        expect(checksumsResult.checksumsPath).toBe(join(outDir, "checksums.txt"));
+        expect(existsSync(checksumsResult.checksumsPath)).toBe(true);
+        expect(checksumsResult.entries).toHaveLength(8);
+
+        // Verify checksums.txt format: <sha256>  <filename>
+        const content = readFileSync(checksumsResult.checksumsPath, "utf-8");
+        const lines = content.trim().split("\n");
+        expect(lines).toHaveLength(8);
+
+        for (const line of lines) {
+          expect(line).toMatch(/^[a-f0-9]{64}  [\w.-]+$/);
+          const [sha, file] = line.split("  ");
+          const fileBytes = readFileSync(join(outDir, file));
+          const expectedSha = createHash("sha256").update(fileBytes).digest("hex");
+          expect(sha).toBe(expectedSha);
+        }
+
+        // Verify verifyReleaseChecksums helper reports clean pass
+        const verification = verifyReleaseChecksums(outDir);
+        expect(verification.ok).toBe(true);
+        expect(verification.failures).toHaveLength(0);
+        expect(verification.verified).toHaveLength(8);
+      });
+
+      test("generateReleaseChecksums produces deterministic digests across repeated runs with identical assets", async () => {
+        const { packageReleaseBundle, generateReleaseChecksums } =
+          await import("../../scripts/release/package");
+        const dir1 = join(tempDir, "releases-det-1");
+        const dir2 = join(tempDir, "releases-det-2");
+
+        const fixedTimestamp = "2026-10-31T12:00:00.000Z";
+        const gitSha = "b8449e75fa30a37748d0acde86a6fc6c0fc3bb50";
+
+        for (const outDir of [dir1, dir2]) {
+          await packageReleaseBundle({
+            version: "0.2.0",
+            gitSha,
+            platform: "linux",
+            arch: "x64",
+            outDir,
+            buildTimestamp: fixedTimestamp,
+          });
+        }
+
+        const res1 = await generateReleaseChecksums(dir1);
+        const res2 = await generateReleaseChecksums(dir2);
+
+        expect(res1.content).toBe(res2.content);
+        expect(res1.checksums).toEqual(res2.checksums);
+      });
+
+      test("verifyReleaseChecksums fails closed when an artifact is corrupted, missing, or has a tampered checksum", async () => {
+        const { packageReleaseBundle, generateReleaseChecksums, verifyReleaseChecksums } =
+          await import("../../scripts/release/package");
+        const outDir = join(tempDir, "releases-tamper");
+        mkdirSync(outDir, { recursive: true });
+
+        const bundle = await packageReleaseBundle({
+          version: "0.2.0",
+          gitSha: "c9550e85fa30a37748d0acde86a6fc6c0fc3bc61",
+          platform: "darwin",
+          arch: "arm64",
+          outDir,
+        });
+
+        await generateReleaseChecksums(outDir);
+        expect(verifyReleaseChecksums(outDir).ok).toBe(true);
+
+        // 1. Tampered file content fails closed
+        writeFileSync(bundle.bundlePath, Buffer.from("tampered-corrupted-bytes-content"));
+        const tamperRes = verifyReleaseChecksums(outDir);
+        expect(tamperRes.ok).toBe(false);
+        expect(
+          tamperRes.failures.some((f) => f.includes("SHA-256 mismatch") && f.includes(".tar.gz")),
+        ).toBe(true);
+
+        // 2. Missing target file fails closed
+        rmSync(bundle.manifestPath);
+        const missingRes = verifyReleaseChecksums(outDir);
+        expect(missingRes.ok).toBe(false);
+        expect(missingRes.failures.some((f) => f.includes("Target file missing"))).toBe(true);
+
+        // 3. Non-existent checksum file fails closed
+        const emptyDir = join(tempDir, "releases-empty");
+        mkdirSync(emptyDir, { recursive: true });
+        const noChecksumsRes = verifyReleaseChecksums(emptyDir);
+        expect(noChecksumsRes.ok).toBe(false);
+        expect(noChecksumsRes.failures[0]).toContain("Checksum file not found");
+      });
+    });
+
+    describe("AC2: Standalone CLI Binary Smoke Verifier", () => {
+      test("verifyCliBinarySmoke verifies version, commit, and core commands (setup, project, serve) on entrypoint", async () => {
+        const { verifyCliBinarySmoke } = await import("../../scripts/release/build-cli");
+
+        const result = await verifyCliBinarySmoke({
+          binaryPath: join(process.cwd(), "scripts/cli/cli.ts"),
+          expectedVersion: "0.2.0",
+        });
+
+        expect(result.ok).toBe(true);
+        expect(result.errors).toHaveLength(0);
+        expect(result.version).toBe("0.2.0");
+        expect(result.commands).toContain("setup");
+        expect(result.commands).toContain("project");
+        expect(result.commands).toContain("serve");
+        expect(result.versionOutput).toContain("0.2.0");
+        expect(result.helpOutput).toContain("setup");
+        expect(result.helpOutput).toContain("project");
+        expect(result.helpOutput).toContain("serve");
+      });
+
+      test("verifyCliBinarySmoke fails closed on deliberate version mismatch", async () => {
+        const { verifyCliBinarySmoke } = await import("../../scripts/release/build-cli");
+
+        // Throws by default
+        await expect(
+          verifyCliBinarySmoke({
+            binaryPath: join(process.cwd(), "scripts/cli/cli.ts"),
+            expectedVersion: "99.9.9",
+          }),
+        ).rejects.toThrow(/version mismatch/i);
+
+        // Returns ok: false when throwOnError is false
+        const nonThrowing = await verifyCliBinarySmoke({
+          binaryPath: join(process.cwd(), "scripts/cli/cli.ts"),
+          expectedVersion: "99.9.9",
+          throwOnError: false,
+        });
+        expect(nonThrowing.ok).toBe(false);
+        expect(nonThrowing.errors.some((e) => e.includes("Version mismatch"))).toBe(true);
+      });
+
+      test("verifyCliBinarySmoke fails closed on deliberate git commit SHA mismatch", async () => {
+        const { verifyCliBinarySmoke } = await import("../../scripts/release/build-cli");
+
+        await expect(
+          verifyCliBinarySmoke({
+            binaryPath: join(process.cwd(), "scripts/cli/cli.ts"),
+            expectedGitSha: "deadbeef00000000000000000000000000000000",
+          }),
+        ).rejects.toThrow(/git sha mismatch/i);
+
+        const nonThrowing = await verifyCliBinarySmoke({
+          binaryPath: join(process.cwd(), "scripts/cli/cli.ts"),
+          expectedGitSha: "deadbeef00000000000000000000000000000000",
+          throwOnError: false,
+        });
+        expect(nonThrowing.ok).toBe(false);
+        expect(nonThrowing.errors.some((e) => e.includes("Git SHA mismatch"))).toBe(true);
+      });
+
+      test("verifyCliBinarySmoke fails closed when core commands (setup, project, serve) are missing", async () => {
+        const { verifyCliBinarySmoke } = await import("../../scripts/release/build-cli");
+
+        // Create a dummy mock script missing core commands
+        const mockCliPath = join(tempDir, "mock-cli.ts");
+        writeFileSync(
+          mockCliPath,
+          `
+          const args = process.argv.slice(2);
+          if (args[0] === "version") {
+            console.log("labq-factory v0.2.0 (source, commit: dev, Bun 1.4.2)");
+            process.exit(0);
+          }
+          if (args[0] === "--help") {
+            console.log("Usage: labq-factory <command>\\nCommands:\\n  other-cmd  Does something else");
+            process.exit(0);
+          }
+          process.exit(1);
+        `,
+        );
+
+        const result = await verifyCliBinarySmoke({
+          binaryPath: mockCliPath,
+          expectedVersion: "0.2.0",
+          throwOnError: false,
+        });
+
+        expect(result.ok).toBe(false);
+        expect(
+          result.errors.some((e) => e.includes("Core command(s) missing from CLI help output")),
+        ).toBe(true);
+      });
+
+      test("verifyCliBinarySmoke fails closed when execution exits with non-zero status", async () => {
+        const { verifyCliBinarySmoke } = await import("../../scripts/release/build-cli");
+
+        const failingCliPath = join(tempDir, "failing-cli.ts");
+        writeFileSync(
+          failingCliPath,
+          `
+          console.error("fatal crash during execution");
+          process.exit(1);
+        `,
+        );
+
+        const result = await verifyCliBinarySmoke({
+          binaryPath: failingCliPath,
+          throwOnError: false,
+        });
+
+        expect(result.ok).toBe(false);
+        expect(result.errors.some((e) => e.includes("failed with exit code 1"))).toBe(true);
+      });
+
+      test("verifyCliBinarySmoke executes built standalone binary when available", async () => {
+        const { verifyCliBinarySmoke } = await import("../../scripts/release/build-cli");
+        const binPath = join(process.cwd(), "dist/bin/labq-factory");
+        if (existsSync(binPath)) {
+          const result = await verifyCliBinarySmoke({
+            binaryPath: binPath,
+            expectedVersion: "0.2.0",
+          });
+          expect(result.ok).toBe(true);
+          expect(result.version).toBe("0.2.0");
+          expect(result.versionOutput).toContain("binary");
+        }
+      });
+    });
+
+    describe("AC3: Privilege-Separated Release Workflow (.github/workflows/release.yml)", () => {
+      test("release workflow defines push tag and workflow_dispatch triggers with cancel-in-progress disabled", () => {
+        const workflowPath = join(process.cwd(), ".github/workflows/release.yml");
+        expect(existsSync(workflowPath)).toBe(true);
+        const content = readFileSync(workflowPath, "utf-8");
+        const doc = parseYaml(content);
+
+        expect(doc.name).toBe("Release");
+
+        // Trigger on push tags "v*"
+        expect(doc.on.push).toBeDefined();
+        expect(doc.on.push.tags).toContain("v*");
+
+        // Trigger on workflow_dispatch with version input
+        expect(doc.on.workflow_dispatch).toBeDefined();
+        expect(doc.on.workflow_dispatch.inputs).toBeDefined();
+        expect(doc.on.workflow_dispatch.inputs.version).toBeDefined();
+
+        // Concurrency prevents mid-flight cancellation
+        expect(doc.concurrency).toBeDefined();
+        expect(doc.concurrency["cancel-in-progress"]).toBe(false);
+      });
+
+      test("release workflow strictly isolates unprivileged build job (contents: read) from privileged release job (contents: write)", () => {
+        const workflowPath = join(process.cwd(), ".github/workflows/release.yml");
+        const content = readFileSync(workflowPath, "utf-8");
+        const doc = parseYaml(content);
+
+        const buildJob = doc.jobs.build;
+        expect(buildJob).toBeDefined();
+        expect(buildJob.permissions.contents).toBe("read");
+        expect(buildJob.permissions.contents).not.toBe("write");
+
+        const releaseJob = doc.jobs.release;
+        expect(releaseJob).toBeDefined();
+        expect(releaseJob.needs).toContain("build");
+        expect(releaseJob.permissions.contents).toBe("write");
+      });
+
+      test("build job steps execute frozen install, CLI build, release packaging, smoke verification, and checksums", () => {
+        const workflowPath = join(process.cwd(), ".github/workflows/release.yml");
+        const content = readFileSync(workflowPath, "utf-8");
+        const doc = parseYaml(content);
+
+        const buildSteps = doc.jobs.build.steps;
+        const runs = buildSteps.map((s: any) => s.run ?? s.uses ?? "");
+
+        expect(runs.some((r: string) => r.includes("bun install --frozen-lockfile"))).toBe(true);
+        expect(runs.some((r: string) => r.includes("build:cli"))).toBe(true);
+        expect(runs.some((r: string) => r.includes("package:release"))).toBe(true);
+        expect(runs.some((r: string) => r.includes("verifyCliBinarySmoke"))).toBe(true);
+        expect(runs.some((r: string) => r.includes("sha256sum -c checksums.txt"))).toBe(true);
+        expect(runs.some((r: string) => r.includes("upload-artifact"))).toBe(true);
+      });
+
+      test("release job steps download artifacts, extract changelog, and publish GitHub Release", () => {
+        const workflowPath = join(process.cwd(), ".github/workflows/release.yml");
+        const content = readFileSync(workflowPath, "utf-8");
+        const doc = parseYaml(content);
+
+        const releaseSteps = doc.jobs.release.steps;
+        const runs = releaseSteps.map((s: any) => s.run ?? s.uses ?? "");
+
+        expect(runs.some((r: string) => r.includes("download-artifact"))).toBe(true);
+        expect(runs.some((r: string) => r.includes("extract-changelog.ts"))).toBe(true);
+        expect(runs.some((r: string) => r.includes("gh release create"))).toBe(true);
+      });
+
+      test("extractChangelogNotes extracts matching version section and appends SHA-256 verification instructions", async () => {
+        const { extractChangelogNotes } = await import("../../scripts/release/extract-changelog");
+        const changelogPath = join(process.cwd(), "CHANGELOG.md");
+        const changelogText = readFileSync(changelogPath, "utf-8");
+
+        // Extract version 0.2.0
+        const notes020 = extractChangelogNotes(changelogText, "0.2.0");
+        expect(notes020).toContain("## [0.2.0] - 2026-10-30");
+        expect(notes020).toContain("Open-source governance baseline");
+        expect(notes020).not.toContain("## [0.1.0]");
+        expect(notes020).toContain("### Verification");
+        expect(notes020).toContain("sha256sum -c checksums.txt");
+
+        // Extract with leading 'v'
+        const notesV020 = extractChangelogNotes(changelogText, "v0.2.0");
+        expect(notesV020).toBe(notes020);
+
+        // Extract older version 0.1.0
+        const notes010 = extractChangelogNotes(changelogText, "0.1.0");
+        expect(notes010).toContain("## [0.1.0] - 2026-10-15");
+        expect(notes010).toContain("Initial Bun/Vite+ architecture migration");
+        expect(notes010).not.toContain("## [0.2.0]");
+        expect(notes010).toContain("sha256sum -c checksums.txt");
+
+        // Fallback for missing version
+        const missingNotes = extractChangelogNotes(changelogText, "9.9.9");
+        expect(missingNotes).toContain("## Release v9.9.9");
+        expect(missingNotes).toContain("Automated release build");
+        expect(missingNotes).toContain("sha256sum -c checksums.txt");
+      });
     });
   });
 });
