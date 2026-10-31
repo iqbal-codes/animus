@@ -12,11 +12,17 @@ export function checkWorkspacePackageEdges(repoRoot) {
   const workspaceRules = [
     {
       pkgRel: "packages/contracts/package.json",
-      forbidden: ["@labq/client", "@labq/backend", "@labq/engine-host", "@labq/launcher"],
+      forbidden: [
+        "@labq/client",
+        "@labq/backend",
+        "@labq/engine-host",
+        "@labq/launcher",
+        "@labq/web",
+      ],
     },
     {
       pkgRel: "packages/client/package.json",
-      forbidden: ["@labq/backend", "@labq/engine-host", "@labq/launcher"],
+      forbidden: ["@labq/backend", "@labq/engine-host", "@labq/launcher", "@labq/web"],
     },
     {
       pkgRel: "apps/backend/package.json",
@@ -29,6 +35,10 @@ export function checkWorkspacePackageEdges(repoRoot) {
     {
       pkgRel: "apps/launcher/package.json",
       forbidden: [],
+    },
+    {
+      pkgRel: "apps/web/package.json",
+      forbidden: ["@labq/backend", "@labq/engine-host", "@labq/launcher"],
     },
   ];
 

@@ -1,5 +1,6 @@
 import { defineConfig } from "vite-plus";
 import { builtinModules } from "node:module";
+import { fileURLToPath } from "node:url";
 
 if (process.versions.bun) throw new Error("Vite+ tooling requires Node");
 
@@ -38,6 +39,7 @@ export default defineConfig({
       },
       {
         files: [
+          "apps/web/src/**/*.{ts,tsx,js,jsx}",
           "packages/client/src/**/*.{ts,js}",
           "packages/contracts/src/operator.ts",
           "packages/contracts/src/health.ts",
@@ -69,8 +71,13 @@ export default defineConfig({
     ],
   },
   fmt: { ignorePatterns: ["**/node_modules/**", "**/dist/**"] },
+  resolve: {
+    alias: {
+      "@": fileURLToPath(new URL("./apps/web/src", import.meta.url)),
+    },
+  },
   test: {
-    include: ["tests/integration/*.test.ts"],
+    include: ["tests/integration/*.test.ts", "tests/integration/*.test.tsx"],
     exclude: ["**/*.bun.test.ts"],
   },
   run: {

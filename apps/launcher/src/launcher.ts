@@ -80,7 +80,7 @@ export class FactoryLauncher {
       port: opts.port ?? 3000,
       enginePort: opts.enginePort ?? 0,
       stateDir: opts.stateDir ?? join(defaultRoot, ".factory/state"),
-      webDir: opts.webDir,
+      webDir: opts.webDir ?? join(defaultRoot, "apps/web/dist"),
       remoteAccess: opts.remoteAccess ?? false,
       repoRoot: opts.repoRoot ?? defaultRoot,
       sessionSecretPath: opts.sessionSecretPath,
