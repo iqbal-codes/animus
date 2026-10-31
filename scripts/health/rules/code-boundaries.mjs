@@ -20,7 +20,8 @@ export function scanSnippet(filePath, content) {
     if (
       /@labq\/backend/i.test(content) ||
       /@labq\/engine-host/i.test(content) ||
-      /@labq\/launcher/i.test(content)
+      /@labq\/launcher/i.test(content) ||
+      /@labq\/web/i.test(content)
     ) {
       violations.push(`${filePath}: packages/contracts cannot import applications`);
     }
@@ -31,7 +32,11 @@ export function scanSnippet(filePath, content) {
     normalizedPath.startsWith("packages/client/") ||
     normalizedPath.includes("/packages/client/")
   ) {
-    if (/@labq\/backend/i.test(content) || /@labq\/engine-host/i.test(content)) {
+    if (
+      /@labq\/backend/i.test(content) ||
+      /@labq\/engine-host/i.test(content) ||
+      /@labq\/web/i.test(content)
+    ) {
       violations.push(`${filePath}: packages/client cannot import server internals`);
     }
     if (
@@ -59,6 +64,23 @@ export function scanSnippet(filePath, content) {
     }
   }
 
+  // Rule 5: apps/web cannot import server internals or Node builtins
+  if (normalizedPath.startsWith("apps/web/") || normalizedPath.includes("/apps/web/")) {
+    if (
+      /@labq\/backend/i.test(content) ||
+      /@labq\/engine-host/i.test(content) ||
+      /@labq\/launcher/i.test(content)
+    ) {
+      violations.push(`${filePath}: apps/web cannot import server internals`);
+    }
+    if (
+      /from\s+["']node:[^"']+["']/i.test(content) ||
+      /require\(["']node:[^"']+["']\)/i.test(content)
+    ) {
+      violations.push(`${filePath}: apps/web cannot import Node built-ins (node:*)`);
+    }
+  }
+
   return violations;
 }
 
@@ -77,6 +99,7 @@ export function checkArchitectureRules(repoRoot) {
     join(repoRoot, "packages/client/src"),
     join(repoRoot, "apps/backend/src"),
     join(repoRoot, "apps/engine-host/src"),
+    join(repoRoot, "apps/web/src"),
   ];
 
   /**

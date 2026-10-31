@@ -6,9 +6,10 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "types": ["node"],
-    "lib": ["ESNext", "DOM"],
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
     "skipLibCheck": true
   },
-  "include": ["*.ts"],
+  "include": ["*.ts", "*.tsx"],
   "exclude": ["*.bun.test.ts"]
 }
