@@ -59,7 +59,7 @@ export const BLOCKING_LABELS = new Set([
 export function loadScheduleConfig(root: string): ScheduleConfig {
   const schedulePath = join(root, ".factory/schedule.json");
   const defaults: ScheduleConfig = {
-    workflow: "archon-loop",
+    workflow: "animus-loop",
     parallel: 1,
     max_laps: 3,
     interval_seconds: 300,

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from "react";
-import type { ProjectList } from "@labq/contracts/operator";
+import type { ProjectList } from "@animus/contracts/operator";
 import { client } from "@/lib/factory-client";
 import { ProjectList as ProjectListView } from "@/features/projects/project-list";
 import { ProjectDetail } from "@/features/projects/project-detail";
@@ -54,7 +54,7 @@ export function App() {
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-2.5">
               <span className="font-mono text-base font-bold text-[var(--foreground)] tracking-tight">
-                labq<span className="text-[var(--accent)] font-normal">/</span>factory
+                animus<span className="text-[var(--accent)] font-normal">/</span>factory
               </span>
               <span className="text-xs px-2 py-0.5 rounded bg-[#1A1A1A] border border-[var(--border)] text-[var(--muted-foreground)] font-mono">
                 console
@@ -151,7 +151,7 @@ export function App() {
       {/* Footer Bar */}
       <footer className="border-t border-[var(--border)] bg-[#0E0F12] px-4 md:px-8 py-3 text-xs text-[var(--muted-foreground)] font-mono">
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-2">
-          <span>Software Factory local-first console</span>
+          <span>Animus local-first console</span>
           <span>Single-origin loopback: 127.0.0.1</span>
         </div>
       </footer>

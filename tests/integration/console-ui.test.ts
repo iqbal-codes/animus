@@ -3,7 +3,7 @@ import type {
   EvaluatedIssue,
   SpecCoordinationPlan,
   TieredActionSubmission,
-} from "@labq/contracts/operator";
+} from "@animus/contracts/operator";
 
 // Helper for calculating WCAG relative luminance & contrast ratio
 function relativeLuminance(hex: string): number {

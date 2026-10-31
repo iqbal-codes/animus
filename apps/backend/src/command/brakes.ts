@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import type { GlobalBrakeState, ProjectBrakeState } from "@labq/contracts/operator";
+import type { GlobalBrakeState, ProjectBrakeState } from "@animus/contracts/operator";
 
 interface BrakeRow {
   id: string;

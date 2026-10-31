@@ -3,13 +3,13 @@
 * **Status:** Ready for Implementation
 * **Date:** 2026-10-29
 * **Reference Architecture:** [Google Research Harness²](https://github.com/google-research/harness2) (arXiv:2610.14224), TypeSafe Jev System 1 (`typesafe/jev-1.14`), Pi Coding Agent Extensions & Skills
-* **Target Subsystems:** `scripts/local-loop.ts`, `scripts/loop/providers.ts`, `scripts/loop/config.ts`, `scripts/loop/types.ts`, `scripts/loop/scheduler.ts`, `.archon/config.yaml`, `.factory/`, `.agents/skills/`, `apps/backend/src/main.ts`
+* **Target Subsystems:** `scripts/local-loop.ts`, `scripts/loop/providers.ts`, `scripts/loop/config.ts`, `scripts/loop/types.ts`, `scripts/loop/scheduler.ts`, `.animus/config.yaml`, `.factory/`, `.agents/skills/`, `apps/backend/src/main.ts`
 
 ---
 
 ## 1. Executive Summary & Problem Statement
 
-An audit of the `labq-software-factory` repository shows that the current **Post-Loop Self-Learning Harness** mechanism consists only of document specifications, passive schemas (`.factory/lessons.jsonl`), and UI mockups (`web/app.js`), but **does not yet run automatically within the execution loop**.
+An audit of the `animus` repository shows that the current **Post-Loop Self-Learning Harness** mechanism consists only of document specifications, passive schemas (`.factory/lessons.jsonl`), and UI mockups (`web/app.js`), but **does not yet run automatically within the execution loop**.
 
 ### 5 Existing Gaps Identified:
 1. **No Reflection Trigger in `scripts/local-loop.ts`**: The lap cycle simply stops after review (`waiting_approval` or `sent_back`) or on failure (`failed`), without extracting lessons from the failures that occurred.
@@ -76,7 +76,7 @@ Adopt Google Research Harness²'s **Two-Level Recursion** approach, adapted to o
 
 #### 1.1. Create `scripts/loop/harness-memory.ts` & Update `scripts/loop/types.ts` + `scripts/loop/config.ts`
 1. Add `"reflector"` to the `LoopRole` union type in `scripts/loop/types.ts`.
-2. In `scripts/loop/config.ts`, map the `"reflector"` role to the `"large"` tier (or the `@reasoning` alias in `.archon/config.yaml`, i.e. `router/cx/gpt-6.1-sol` with `effort: high`) to give trajectory contrast analysis and skill authoring the highest reasoning power.
+2. In `scripts/loop/config.ts`, map the `"reflector"` role to the `"large"` tier (or the `@reasoning` alias in `.animus/config.yaml`, i.e. `router/cx/gpt-6.1-sol` with `effort: high`) to give trajectory contrast analysis and skill authoring the highest reasoning power.
 3. Prepare selective context injection in `scripts/loop/harness-memory.ts` before running the provider:
 - **`resolveAllowedSkills(root: string, role: LoopRole): string[]`**:
   - Return a list of absolute paths to repository-owned `.agents/skills/*` by role:
@@ -199,7 +199,7 @@ Run the curation and harness-change persistence process:
      - Add **1 context-pointer line** in `AGENTS.md` (one trigger per branch).
      - Keep `AGENTS.md` at **$\le 150$ lines** (*prune* *no-op* sentences when approaching the limit).
    - **Isolated PR Creation**:
-     - Create a new worktree/branch from `main` (`worktree.baseBranch` in `.archon/config.yaml`, e.g. `harness/skill-<skill-name>`).
+     - Create a new worktree/branch from `main` (`worktree.baseBranch` in `.animus/config.yaml`, e.g. `harness/skill-<skill-name>`).
      - Run integrity tests (`tests/integration/harness.test.ts`).
      - Create a separate Pull Request: `chore(harness): evolve <skill-name> skill from issue #<N> dossier`.
 

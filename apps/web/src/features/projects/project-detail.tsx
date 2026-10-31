@@ -1,5 +1,5 @@
 import React from "react";
-import type { Project } from "@labq/contracts/operator";
+import type { Project } from "@animus/contracts/operator";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { FolderGit2, X, Terminal } from "lucide-react";

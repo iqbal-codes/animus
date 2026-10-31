@@ -3,9 +3,9 @@
 **Derived from:** PRD.md
 **Last reconciled with it:** 2026-10-26
 
-## What LabQ Software Factory is
+## What Animus is
 
-LabQ Software Factory is an autonomous software delivery platform and factory coordinator that transforms specs, PRDs, and issues into verified, production-ready code. It automates triage, planning, multi-round implementation, black-box runtime verification, and peer code review using shared, pinned Archon SDLC workflows. Human engineers set the destination and inspect staging verification evidence, while the autonomous factory manages the delivery cycle.
+Animus is an autonomous, self-improving software delivery platform and factory coordinator that transforms specs, PRDs, and issues into verified, production-ready code. It automates triage, planning, multi-round implementation, black-box runtime verification, and peer code review using shared, pinned Animus SDLC workflows. Human engineers set the destination and inspect staging verification evidence, while the autonomous factory manages the delivery cycle.
 
 The factory operates single-tenant and deployment-focused, isolating all execution in clean, independent git worktrees with strict build-candidate attestation and immutable evaluation fences.
 
@@ -14,7 +14,7 @@ The factory operates single-tenant and deployment-focused, isolating all executi
 - **Software Engineers & Tech Leads:** Autonomous execution of defined backlog tickets with verified PRs and zero manual prompt babysitting.
 - **Factory Operators:** Managing parallel lap quotas, inspecting live verification runs, and governing merge gates.
 
-LabQ Software Factory is not an interactive chat assistant or an unverified code generation copilot.
+Animus is not an interactive chat assistant or an unverified code generation copilot.
 
 ## Core capabilities (in scope)
 
@@ -45,14 +45,14 @@ The factory may accept issues in these areas.
 - **Chatbot conversational UI:** Never add conversational chatbot widgets, natural-language chit-chat personas, or non-deterministic chat streams.
 - **Third-party plugin market:** Never build public unvetted plugin stores or download untrusted executable extensions at runtime.
 - **Interactive runtime shell access:** Never expose raw interactive bash terminals or reverse shells over web interfaces.
-- **Proprietary workflow bifurcations:** Never fork or maintain duplicate private copies of the Archon SDLC pack workflows inside this repository.
+- **Proprietary workflow bifurcations:** Never fork or maintain duplicate private copies of the Animus SDLC pack workflows inside this repository.
 - **Multi-tenant public hosting:** Never implement multi-tenant billing, organization tenancy, or public SaaS authentication.
 
 ## Hard invariants -- not tunable by any issue
 
-These are not features. They are properties that define what LabQ Software Factory is. Changing one requires a human commit.
+These are not features. They are properties that define what Animus is. Changing one requires a human commit.
 
-1. **Every AI step uses pinned shared Archon SDLC workflows.** Direct unmanaged subagent scripting or parallel workflow forks are prohibited.
+1. **Every AI step uses pinned shared Animus SDLC workflows.** Direct unmanaged subagent scripting or parallel workflow forks are prohibited.
 2. **The factory cannot modify governance files.** `MISSION.md`, `FACTORY_RULES.md`, `FACTORY.md`, `.claude/settings.json`, and `.ignore` are protected. A pull request modifying any of them must be rejected.
 3. **The factory cannot modify its own judge.** `harness/` and acceptance criteria define what "working" means. Loosening or removing an assertion is strictly a human decision.
 4. **Clean candidate identity.** HTTP applications must report their exact candidate hash or commit via `/build-id` and 200 via `/health`.

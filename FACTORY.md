@@ -1,6 +1,6 @@
 # Factory operations
 
-This application runs on a pinned Archon SDLC source. See
+This application runs on a pinned Animus SDLC source. See
 [factory/MIGRATION.md](factory/MIGRATION.md) for installing and upgrading it.
 
 Shared workflow gates own every decision. Inspect a run's identity and status

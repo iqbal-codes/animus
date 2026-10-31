@@ -20,7 +20,7 @@ import {
   type TargetBindingSubmission,
   type TargetBindingResult,
   type BranchIntegrationResult,
-} from "@labq/contracts/operator";
+} from "@animus/contracts/operator";
 import type { ForgeAdapter, IssueForgeAdapter } from "../registry/forge";
 import { SystemForgeAdapter, assertIssueForge } from "../registry/forge";
 import { ProjectRegistryError } from "../registry/service";
@@ -67,7 +67,7 @@ export class IntakeService {
     }
 
     this.forge = forge ?? new SystemForgeAdapter(resolvedOptions?.runner);
-    this.defaultRepo = resolvedOptions?.repo || "labq-software-factory";
+    this.defaultRepo = resolvedOptions?.repo || "animus";
     this.ttlSeconds = resolvedOptions?.ttlSeconds ?? 60.0;
     this.jevFetcher = resolvedOptions?.jevFetcher;
   }

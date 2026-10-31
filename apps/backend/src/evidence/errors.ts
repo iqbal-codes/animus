@@ -1,4 +1,4 @@
-import type { OperatorErrorCode } from "@labq/contracts/operator";
+import type { OperatorErrorCode } from "@animus/contracts/operator";
 
 export class EvidenceError extends Error {
   constructor(

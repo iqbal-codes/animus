@@ -2,7 +2,7 @@ import type {
   TieredActionSubmission,
   TieredActionResult,
   ConsequentialActionType,
-} from "@labq/contracts/operator";
+} from "@animus/contracts/operator";
 import { EvidenceError } from "./errors";
 
 export interface FreshnessResolver {

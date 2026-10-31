@@ -10,7 +10,7 @@ The operator wants a single app to configure, schedule, observe, and control aut
 
 - One backend and execution machine initially, running on the operator's current Mac. The backend should also be installable on a VPS or another machine as an alternative deployment. Fleet management is deferred.
 - Pi is the only harness in this release. Other harness adapters are deferred.
-- Existing pinned shared Archon workflows remain the execution engine. Do not introduce a competing private workflow copy or unmanaged Pi executor.
+- Existing pinned shared Animus workflows remain the execution engine. Do not introduce a competing private workflow copy or unmanaged Pi executor.
 - Skills and MCP connections have one shared factory-managed configuration, separate from personal harness settings. Model assignments are explicit per workflow role, such as dispatcher, implementer, runtime verifier, and reviewer. Do not silently inherit harness defaults or substitute models.
 - The operator controls factory activation, schedule activation, work windows (including overnight, such as 20:00-05:00), check intervals (such as five minutes), and the maximum number of active main-agent sessions. Child agents do not consume that limit. Idle or paused sessions do not consume active slots. Define mappings between delivery laps, workflow roles, and Pi sessions rather than assuming they are identical.
 - The factory only observes agents it launches. It should show active sessions, available live output, status, failures, issue/PR associations, and verification evidence. Complete raw logs are desired, but must not be falsely claimed if the integration drops or truncates output. Secret and private-evaluation content must not leak through logs.
@@ -39,19 +39,19 @@ Look for failures and unresolved decisions, including implementation feasibility
 
 ## Primary sources
 
-Project: `/Users/efishery/.t3/projects/labq-software-factory`.
+Project: `/Users/efishery/.t3/projects/animus`.
 
 - `docs/triage-intake-concept.md`: current intake and delivery boundary.
-- `factory/consumer.py`, `factory/pack.json`, `.factory/schedule.json`, `.archon/config.yaml`: current engine integration, scheduling, and model bindings.
+- `factory/consumer.py`, `factory/pack.json`, `.factory/schedule.json`, `.animus/config.yaml`: current engine integration, scheduling, and model bindings.
 - `MISSION.md`, `FACTORY_RULES.md`, `factory/WORKFLOW_POLICY.md`: constraints. Read these explicitly because reviewers do not inherit project instruction files.
 - `app.py`: actual HTTP application.
 - `docs/current-factory-analysis.md`: prior factual inspection, a secondary source to verify rather than accept as authority. Its in-app triage proposal is superseded.
 
-Installed pinned engine: `/Users/efishery/.cache/factory/archon/5c4f5e484262185926b37b070457fabb9bfedae0`.
+Installed pinned engine: `/Users/efishery/.cache/factory/animus/5c4f5e484262185926b37b070457fabb9bfedae0`.
 
-- `.archon/workflows/sdlc/loop/archon-loop.yaml`
-- `.archon/workflows/sdlc/loop/commands/loop-pick.md`
-- `.archon/workflows/sdlc/.shared/workable.ts`
+- `.animus/workflows/sdlc/loop/animus-loop.yaml`
+- `.animus/workflows/sdlc/loop/commands/loop-pick.md`
+- `.animus/workflows/sdlc/.shared/workable.ts`
 - `packages/providers/src/community/pi/resource-loader.ts`
 - `packages/providers/src/community/pi/config.ts`
 - `packages/providers/src/community/pi/provider.ts`

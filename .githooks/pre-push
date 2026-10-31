@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -e
+
+# Allow emergency bypass if explicitly requested
+if [ "$ALLOW_PROTECTED_PUSH" = "1" ] || [ "$ALLOW_DIRECT_PUSH" = "1" ]; then
+  exit 0
+fi
+
+PROTECTED_BRANCHES=("refs/heads/main" "refs/heads/development" "refs/heads/develop")
+
+has_protected=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  for protected in "${PROTECTED_BRANCHES[@]}"; do
+    if [ "$remote_ref" = "$protected" ]; then
+      branch_name="${remote_ref#refs/heads/}"
+      # Check if deleting
+      if [ "$local_sha" = "0000000000000000000000000000000000000000" ] || [ -z "$local_sha" ]; then
+        echo ""
+        echo "❌ [BLOCKED] Deleting protected branch '${branch_name}' is prohibited."
+        echo "   (Emergency bypass: ALLOW_PROTECTED_PUSH=1 git push ...)"
+        echo ""
+      else
+        echo ""
+        echo "❌ [BLOCKED] Direct push to protected branch '${branch_name}' is prohibited."
+        echo "   All changes must go through a feature branch and Pull Request."
+        echo "   (Emergency bypass: ALLOW_PROTECTED_PUSH=1 git push ...)"
+        echo ""
+      fi
+      has_protected=1
+    fi
+  done
+done
+
+if [ "$has_protected" -eq 1 ]; then
+  exit 1
+fi
+
+exit 0

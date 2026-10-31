@@ -5,7 +5,7 @@ import {
   coordinationFinalPrSubmissionSchema,
   planSubmissionSchema,
   dispatchSubmissionSchema,
-} from "@labq/contracts/operator";
+} from "@animus/contracts/operator";
 import { SpecCoordinatorService } from "./service";
 import { CoordinationError } from "./errors";
 

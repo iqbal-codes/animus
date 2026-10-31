@@ -148,7 +148,7 @@ export async function runServeCommand(
   });
 
   if (!opts.json) {
-    console.log(`Starting Software Factory Services (Backend + Engine-Host) on ${host}:${port}...`);
+    console.log(`Starting Animus Services (Backend + Engine-Host) on ${host}:${port}...`);
   }
 
   const result = await launcher.start();
@@ -198,7 +198,7 @@ export async function runServeCommand(
 
   return await new Promise<number>((resolveExit) => {
     const shutdown = async () => {
-      if (!opts.json) console.log("\nStopping Software Factory Services...");
+      if (!opts.json) console.log("\nStopping Animus Services...");
       clearRuntimeMetadata(stateDir);
       const stopResult = await launcher.stop();
       if (stopResult.status === "partial_shutdown_failure") {

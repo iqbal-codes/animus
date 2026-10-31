@@ -17,6 +17,7 @@ import type {
   LocalLoopStatus,
 } from "./loop/types";
 import {
+  readAnimusConfig,
   resolveModelForRole,
   resolveProviderForRole,
   resolveEffortForRole,
@@ -43,7 +44,7 @@ import { runPostIssueReflection } from "./loop/reflector";
 import {
   loadPrompt,
   renderPrompt,
-  resolveArchonCommandsDir,
+  resolveAnimusCommandsDir,
 } from "./loop/prompts";
 import {
   setupArtifactDirectories,
@@ -64,12 +65,12 @@ export type {
 };
 
 export {
-  resolveArchonCommandsDir,
+  resolveAnimusCommandsDir,
   renderPrompt,
   parseAgentReport,
   extractReport,
 };
-export const ARCHON_BUILDER_PROMPT = `# Make the move
+export const ANIMUS_BUILDER_PROMPT = `# Make the move
 
 You are the builder in an unattended development loop. The dispatcher has already chosen this
 run's move; you do it, then stop. Two reviewers check your work right after you. Nobody is
@@ -135,7 +136,7 @@ Return your final report in JSON (plain or within a single \`\`\`json code fence
 \`\`\`
 Or finish with: \`PR: <full pull request URL>\` or \`PR: none\` followed by the reason.`;
 
-export const ARCHON_QA_PROMPT = `# Check the app as a user would
+export const ANIMUS_QA_PROMPT = `# Check the app as a user would
 
 You are the black-box tester in an unattended development loop. You did not write this change, and
 you evaluate what the product does by running it—without reading its diff, its pull request description,
@@ -223,7 +224,7 @@ Return your structured report in JSON (plain or within a single \`\`\`json code 
 \`\`\`
 \`overall\` must be \`PASS\` only when every criterion passed and zero defect lines remain. Any caveat or unverified criterion mandates \`FAIL\`.`;
 
-export const ARCHON_REVIEWER_PROMPT = `# Review, then merge, send back, or return to the owner
+export const ANIMUS_REVIEWER_PROMPT = `# Review, then merge, send back, or return to the owner
 
 You are the reviewer in an unattended development loop. You did not write this change, and you judge
 it strictly on what it does, not on what anyone claims it does. Black-box QA has already tested the
@@ -444,7 +445,7 @@ export function formatEscalationHandoff(
 
 
 /**
- * Executes exactly ONE autonomous lap following the original Archon SDLC lifecycle:
+ * Executes exactly ONE autonomous lap following the Animus SDLC lifecycle:
  * pick/route -> claim -> build (loop-work) -> check-app (silent QA) -> handoff/evidence -> review (loop-review) -> land gate.
  */
 export async function runLocalLoop(
@@ -456,7 +457,42 @@ export async function runLocalLoop(
   const roleBudgets = resolveRoleBudgets(options);
   const timeout = options.timeoutMs ?? 20 * 60_000;
   const { common } = await inspectLocalLoop(root);
-  const base = await git(root, "rev-parse", "HEAD");
+  const animusConfig = readAnimusConfig(root);
+  const baseBranch = options.baseBranch ?? animusConfig.worktree?.baseBranch ?? "main";
+
+  let remotes: string[] = [];
+  try {
+    const remotesOut = await git(root, "remote");
+    remotes = remotesOut.split("\n").map((r) => r.trim()).filter(Boolean);
+  } catch {}
+  const hasOrigin = remotes.includes("origin");
+
+  let base = "";
+  if (hasOrigin) {
+    try {
+      await git(root, "fetch", "origin", baseBranch);
+      base = await git(root, "rev-parse", `origin/${baseBranch}`);
+
+      // Fast-forward root baseBranch if root is clean and on baseBranch
+      try {
+        const currentBranch = await git(root, "symbolic-ref", "--short", "HEAD");
+        if (currentBranch === baseBranch) {
+          const status = await git(root, "status", "--porcelain");
+          if (!status.trim()) {
+            await git(root, "merge", "--ff-only", `origin/${baseBranch}`);
+          }
+        }
+      } catch {}
+    } catch {}
+  }
+
+  if (!base) {
+    try {
+      base = await git(root, "rev-parse", baseBranch);
+    } catch {
+      base = await git(root, "rev-parse", "HEAD");
+    }
+  }
   const config = await Bun.file(join(root, "harness/harness.config.json")).json();
   const checks = [config.static, config.unit].filter(
     (s): s is string => typeof s === "string" && !!s.trim(),
@@ -497,6 +533,13 @@ export async function runLocalLoop(
   }
 
   const route: "simple" | "continue" = existingPr ? "continue" : "simple";
+  if (route === "continue" && hasOrigin && existingPr) {
+    try {
+      await git(root, "fetch", "origin", existingPr.headRefName);
+      base = await git(root, "merge-base", `origin/${baseBranch}`, `origin/${existingPr.headRefName}`);
+    } catch {}
+  }
+
   const runId = randomUUID();
   const stateRoot = join(common, "factory-local-loop");
   const runDirectory = join(stateRoot, "runs", runId);
@@ -632,21 +675,36 @@ export async function runLocalLoop(
 
     // 2. ISOLATED WORKTREE ALLOCATION / REUSE
     if (existingWorktree) {
-      await git(state.worktree, "fetch", "origin", branch);
-      await git(
-        state.worktree,
-        "checkout",
-        "-B",
-        branch,
-        `origin/${branch}`,
-        "--ignore-other-worktrees",
-      );
-      await git(state.worktree, "reset", "--hard", `origin/${branch}`);
+      if (hasOrigin) {
+        await git(state.worktree, "fetch", "origin", branch).catch(() => {});
+        await git(state.worktree, "fetch", "origin", baseBranch).catch(() => {});
+        await git(
+          state.worktree,
+          "checkout",
+          "-B",
+          branch,
+          `origin/${branch}`,
+          "--ignore-other-worktrees",
+        );
+        await git(state.worktree, "reset", "--hard", `origin/${branch}`);
+      } else {
+        await git(
+          state.worktree,
+          "checkout",
+          "-B",
+          branch,
+          branch,
+          "--ignore-other-worktrees",
+        ).catch(() => {});
+      }
       await git(state.worktree, "clean", "-fd");
     } else {
       await mkdir(dirname(state.worktree), { recursive: true });
       if (route === "continue") {
-        await git(root, "fetch", "origin", branch);
+        if (hasOrigin) {
+          await git(root, "fetch", "origin", branch);
+          await git(root, "fetch", "origin", baseBranch).catch(() => {});
+        }
         await git(root, "worktree", "add", "--no-checkout", state.worktree, `origin/${branch}`);
         await git(state.worktree, "sparse-checkout", "set", "--no-cone", "/*", "!/.factory/holdout/");
         await git(
@@ -707,9 +765,9 @@ export async function runLocalLoop(
       }
     };
 
-    const builderTemplate = getPromptTemplate("loop-work", ARCHON_BUILDER_PROMPT);
-    const qaTemplate = getPromptTemplate("loop-check-app", ARCHON_QA_PROMPT);
-    const reviewerTemplate = getPromptTemplate("loop-review", ARCHON_REVIEWER_PROMPT);
+    const builderTemplate = getPromptTemplate("loop-work", ANIMUS_BUILDER_PROMPT);
+    const qaTemplate = getPromptTemplate("loop-check-app", ANIMUS_QA_PROMPT);
+    const reviewerTemplate = getPromptTemplate("loop-review", ANIMUS_REVIEWER_PROMPT);
 
     const holdoutPath = existsSync(join(root, ".factory/holdout/HOLDOUT.md"))
       ? join(root, ".factory/holdout/HOLDOUT.md")
@@ -769,7 +827,7 @@ export async function runLocalLoop(
 
       const prompt = renderPrompt(template, promptVars, artifactsDir);
 
-      // Provider, Model, & Effort Tiering from .archon/config.yaml or option override
+      // Provider, Model, & Effort Tiering from .animus/config.yaml or option override
       const roleProvider = options.provider ?? resolveProviderForRole(root, role);
       const roleModel = options.model ?? resolveModelForRole(root, role);
       const roleEffort = options.effort ?? resolveEffortForRole(root, role);
@@ -894,7 +952,7 @@ export async function runLocalLoop(
               (c: any) => `- [x] **${c.criterion}**: \`${c.result}\` (${c.evidence})`,
             ) || ["- [x] Initial build & verification complete"]),
             "",
-            "> **Archon SDLC Note**: Black-box QA and Code Review run on this PR.",
+            "> **Animus SDLC Note**: Black-box QA and Code Review run on this PR.",
           ].join("\n");
 
           const prCreate = await processRun(

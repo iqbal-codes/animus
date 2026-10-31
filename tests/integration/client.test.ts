@@ -1,5 +1,5 @@
 import { expect, expectTypeOf, test } from "vitest";
-import { hostHealthSchema, type HostHealth } from "@labq/contracts/host";
+import { hostHealthSchema, type HostHealth } from "@animus/contracts/host";
 import {
   healthSchema,
   type Health,
@@ -11,8 +11,8 @@ import {
   type EvaluatedIssue,
   type ControlState,
   type LapEvidence,
-} from "@labq/contracts/operator";
-import { createFactoryClient, FactoryClientError } from "@labq/client";
+} from "@animus/contracts/operator";
+import { createFactoryClient, FactoryClientError } from "@animus/client";
 
 test("private host and public health values conform without propagating additive fields", () => {
   expectTypeOf<HostHealth>().toEqualTypeOf<Health["host"]>();
@@ -63,14 +63,14 @@ test("portable client reads diagnostics, catalog, and lap history cleanly", asyn
     revision_required: "5c4f5e484262185926b37b070457fabb9bfedae0",
     digest: "test-digest-sha256",
     captured_at: "2026-10-27T00:00:00Z",
-    source_directory: ".archon/workflows/sdlc",
+    source_directory: ".animus/workflows/sdlc",
     file_count: 444,
     default_workflows_loaded: true,
   };
   const catalogData: WorkflowCatalog = {
     workflows: [
       {
-        name: "archon-loop",
+        name: "animus-loop",
         description: "One move loop",
         default_inputs: { holdout: "holdout-path" },
       },
@@ -79,7 +79,7 @@ test("portable client reads diagnostics, catalog, and lap history cleanly", asyn
   const lapListData: LapList = [
     {
       id: "run-1",
-      workflow_name: "archon-loop",
+      workflow_name: "animus-loop",
       native_status: "completed",
       product_status: "completed",
       candidate_head: "c".repeat(40),
@@ -160,7 +160,7 @@ test("portable client reads backlog intake and individual evaluated issues", asy
     unsatisfied_dependencies: [],
   };
   const intakeData: IntakeResult = {
-    repo: "iqbal-codes/labq-software-factory",
+    repo: "iqbal-codes/animus",
     as_of: "2026-10-27T00:00:00Z",
     cached: false,
     total_count: 1,
@@ -233,7 +233,7 @@ test("portable client reads and applies controls consistently", async () => {
 test("portable client reads lap evidence and reports cleanly", async () => {
   const evidenceData: LapEvidence = {
     id: "run-1234",
-    workflow_name: "archon-loop",
+    workflow_name: "animus-loop",
     candidate_head: "a".repeat(40),
     runtime_verification: {
       status: "verified",

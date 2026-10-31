@@ -8,7 +8,7 @@ import {
   type ProjectRetarget,
   type DeregisterResult,
   type OperatorErrorCode,
-} from "@labq/contracts/operator";
+} from "@animus/contracts/operator";
 import { type ForgeAdapter, SystemForgeAdapter, resolveGitConfigPath } from "./forge";
 
 export class ProjectRegistryError extends Error {

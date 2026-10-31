@@ -1,4 +1,4 @@
-# Runtime Scenarios: LabQ Software Factory
+# Runtime Scenarios: Animus
 
 These journeys define the end-to-end user paths that verify the running factory service.
 Shared runtime verification owns execution and evidence collection.
@@ -16,7 +16,7 @@ Shared runtime verification owns execution and evidence collection.
 ## 2. Operator inspects workflow catalog and triggers doctor check
 
 1. Send `GET /api/workflows` to list all registered shared SDLC workflows.
-2. Assert that the returned list is non-empty and contains `archon-loop`, `archon-ship-block`, `archon-backlog`, and `archon-holdouts`.
+2. Assert that the returned list is non-empty and contains `animus-loop`, `animus-ship-block`, `animus-backlog`, and `animus-holdouts`.
 3. Send `POST /api/doctor` to verify toolchains, git integration, and provider bindings.
 4. Assert that the response reports `ok: true` and verifies the engine status.
 

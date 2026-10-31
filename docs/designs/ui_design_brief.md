@@ -1,8 +1,8 @@
-# UI/UX Design Brief: LabQ Software Factory Operator Console
+# UI/UX Design Brief: Animus Operator Console
 
 **Target Canvas**: `/Users/efishery/.pencil/documents/240767a8-5df0-413b-a5c3-3c5cb274b820/pabriq-software-factory.pen`  
 **Base Design System**: `xai-design-system`  
-**Purpose**: An operational control, supervision, and observability interface for an autonomous software factory based on the Archon SDLC engine (`archon-loop`) and Pi agent sessions.
+**Purpose**: An operational control, supervision, and observability interface for an autonomous software factory based on the Animus SDLC engine (`animus-loop`) and Pi agent sessions.
 
 ---
 
@@ -38,7 +38,7 @@ The screen is divided into 2 main areas: **Left Sidebar (280–300px)** and **Ma
 |   (spin) #42 webhook-verify|  SDLC: (✓ pick) -> (✓ claim) -> (● build) -> (check-app) -> (review) -> (land)|
 |   (•)    #43 rate-limit   |-----------------------------------------------------------------------------|
 |   (•)    #44 kafka-backoff|  +-----------------------------------------------------------------------+  |
-| > [labq-platform]         |  | (● ● ●) LIVE LOG STREAM · PID: 19482                           [Copy] |  |
+| > [animus-platform]         |  | (● ● ●) LIVE LOG STREAM · PID: 19482                           [Copy] |  |
 | > [pabriq-web]            |  | 20:15:02 [loop-pick] Admitted #42. Lock acquired.                     |  |
 |                           |  | 20:15:18 [loop-work] Created git worktree tree-42.                    |  |
 |                           |  | 20:18:22 [loop-work] Running test suite: 4 passed.                    |  |
@@ -64,7 +64,7 @@ The screen is divided into 2 main areas: **Left Sidebar (280–300px)** and **Ma
 3. **Filter / Search**:
    - A thin search input with softly rounded corners and a leading search icon inside.
 4. **Repository & Issue Tree List**:
-   - **Parent**: Repository name (e.g. `pabriq-app`, `labq-platform`, `pabriq-web`). Includes a git folder icon and a collapse/expand chevron.
+   - **Parent**: Repository name (e.g. `pabriq-app`, `animus-platform`, `pabriq-web`). Includes a git folder icon and a collapse/expand chevron.
    - **Issues Submenu**: List of issues in the selected repository:
      - **Active Issue Being Worked On (e.g. `#42`)**: Highlighted with the `$xai-action-secondary` background, a subtle `$xai-accent` border, runtime subtitle `lap-XXXXX · in progress`, and a **spinning arc indicator** (a rotating orange `$xai-accent` loading circle).
      - **Ready Issue (Admitted / Ready, e.g. `#43`)**: Green dot indicator (`$xai-success`) with a `Ready` badge/label.
@@ -102,7 +102,7 @@ The screen is divided into 2 main areas: **Left Sidebar (280–300px)** and **Ma
      - `PR & File Diffs`
      - `Token Economics & Stats`
 3. **SDLC Pipeline Breadcrumb Bar**:
-   - Archon loop workflow visualization:
+   - Animus loop workflow visualization:
      `pick` → `claim` → `build (loop-work)` → `check-app` → `review` → `land`
    - Completed stage: green checkmark (`✓`).
    - Active stage: orange-highlighted capsule with a pulsing dot (`●`).

@@ -29,7 +29,7 @@ Open Jev research and reproductions (such as [open-jev-typed-decision-engine](ht
 
 ## 2. Gaps in the Current Software Factory
 
-Based on an analysis of our factory architecture (`labq-software-factory`, `factory/consumer.py`, and `app.py`):
+Based on an analysis of our factory architecture (`animus`, `factory/consumer.py`, and `app.py`):
 1. **Intake Triage Is Too Slow or Too Permissive**:
    * Currently, the *workability gate* uses simple string rules (the `Depends on` regex), or requires calling a full reasoning LLM just to check whether a ticket has clear acceptance criteria.
 2. **Selecting Probing Winners (Harness² Task-Level)**:
@@ -59,7 +59,7 @@ The following 5 use cases offer the highest ROI for adopting TypeSafe Jev into t
     levels=["trivial", "single_file", "multi_file_feature", "architectural_refactor", "epic_needs_breakdown"]
   )
   ```
-* **Benefit:** Unready tickets are immediately labeled `needs-info` in milliseconds before wasting Archon/Pi lap execution quota.
+* **Benefit:** Unready tickets are immediately labeled `needs-info` in milliseconds before wasting Animus/Pi lap execution quota.
 
 ### Case 2: Candidate Arbitration in Harness² Probing (Task-Level Recursion)
 * **Jev Primitive:** `choice`
@@ -135,7 +135,7 @@ The most robust combination for the Software Factory is to separate the roles ex
 ┌────────────────────────────────────────────────────────────────────────┐
 │                   SOFTWARE FACTORY OPERATING SYSTEM                    │
 │                                                                        │
-│   [ SYSTEM 1: TypeSafe Jev ]            [ SYSTEM 2: Archon + Pi/Claude]│
+│   [ SYSTEM 1: TypeSafe Jev ]            [ SYSTEM 2: Animus + Pi/Claude]│
 │   - Sub-300ms Latency                   - Deep Reasoning               │
 │   - Non-autoregressive (Encoder)        - Autoregressive Generation    │
 │   - Pure Typed Decisions                - Code Writing & Architecture  │

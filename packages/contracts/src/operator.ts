@@ -701,7 +701,7 @@ export const targetedImplementSubmissionSchema = z.object({
   branch: z.string(),
   startSha: z.string(),
   contract: frozenContractSchema,
-  primitive: z.literal("archon-implement"),
+  primitive: z.literal("animus-implement"),
 });
 export type TargetedImplementSubmission = z.infer<typeof targetedImplementSubmissionSchema>;
 

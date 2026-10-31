@@ -18,7 +18,7 @@ import type {
   LaunchAck,
   ControlState,
   ControlAction,
-} from "@labq/contracts/operator";
+} from "@animus/contracts/operator";
 
 export function readDiagnostics(repoRoot: string): Diagnostics {
   const packPath = join(repoRoot, "factory/pack.json");
@@ -33,12 +33,12 @@ export function readDiagnostics(repoRoot: string): Diagnostics {
   }
 
   const reqRev = pack.integration_revision_required;
-  const sourceDirRel = pack.source_directory || ".archon/workflows/sdlc";
+  const sourceDirRel = pack.source_directory || ".animus/workflows/sdlc";
 
   const candidates = [
     join(repoRoot, sourceDirRel),
-    join(process.env.HOME || "", ".cache/factory/archon", reqRev, sourceDirRel),
-    join(process.env.HOME || "", ".cache/factory/archon", reqRev),
+    join(process.env.HOME || "", ".cache/factory/animus", reqRev, sourceDirRel),
+    join(process.env.HOME || "", ".cache/factory/animus", reqRev),
   ];
 
   let resolvedDir: string | null = null;
@@ -109,7 +109,7 @@ export function readCatalog(repoRoot: string): WorkflowCatalog {
 }
 
 export function readLaps(repoRoot: string): LapSummary[] {
-  // Execute native archon cli workflow runs --limit 2147483647
+  // Execute native animus cli workflow runs --limit 2147483647
   // Fall back cleanly if not available
   const settingsPath = join(repoRoot, ".factory/settings.json");
   let bunBin = "bun";
@@ -128,7 +128,7 @@ export function readLaps(repoRoot: string): LapSummary[] {
   const reqRev = pack.integration_revision_required;
   const cliPath = join(
     process.env.HOME || "",
-    ".cache/factory/archon",
+    ".cache/factory/animus",
     reqRev,
     "packages/cli/src/cli.ts",
   );
@@ -150,7 +150,7 @@ export function readLaps(repoRoot: string): LapSummary[] {
     const parsed = JSON.parse(result.stdout.toString());
     const runs = parsed.runs || [];
     return runs
-      .filter((r: any) => r.workflow_name === "archon-loop")
+      .filter((r: any) => r.workflow_name === "animus-loop")
       .map((r: any) => ({
         id: r.id,
         workflow_name: r.workflow_name,
@@ -231,9 +231,9 @@ export function readLapEvidence(repoRoot: string, lapId: string): LapEvidence {
 export function readLapReport(repoRoot: string, lapId: string): string {
   const detail = readLapDetail(repoRoot, lapId);
   const candidates = [
-    join(repoRoot, ".archon/runs", detail.id, "reviewer/report.md"),
-    join(repoRoot, ".archon/runs", detail.id, "review/report.md"),
-    join(process.env.HOME || "", ".cache/factory/archon/runs", detail.id, "reviewer/report.md"),
+    join(repoRoot, ".animus/runs", detail.id, "reviewer/report.md"),
+    join(repoRoot, ".animus/runs", detail.id, "review/report.md"),
+    join(process.env.HOME || "", ".cache/factory/animus/runs", detail.id, "reviewer/report.md"),
   ];
   for (const c of candidates) {
     if (existsSync(c)) {
@@ -266,21 +266,21 @@ export function launchNativeLap(repoRoot: string, specification: string): Launch
   }
   const pack = JSON.parse(readFileSync(packPath, "utf-8"));
   const reqRev = pack.integration_revision_required;
-  const sourceDir = join(process.env.HOME || "", ".cache/factory/archon", reqRev);
+  const sourceDir = join(process.env.HOME || "", ".cache/factory/animus", reqRev);
   const cliPath = join(sourceDir, "packages/cli/src/cli.ts");
 
   if (!existsSync(cliPath)) {
     throw new Error("native_source_unavailable");
   }
 
-  const defaultInputs = pack.default_inputs?.["archon-loop"] || {};
+  const defaultInputs = pack.default_inputs?.["animus-loop"] || {};
   const injectedInputs = Object.entries(defaultInputs).flatMap(([k, v]) => [
     "--input",
     `${k}=${String(v)}`,
   ]);
 
   const uniqueId = `${Date.now()}-${randomUUID().slice(0, 8)}`;
-  const branch = `archon/lap-${uniqueId}`;
+  const branch = `animus/lap-${uniqueId}`;
   const conversationId = `session-${randomUUID()}`;
 
   const argv = [
@@ -292,7 +292,7 @@ export function launchNativeLap(repoRoot: string, specification: string): Launch
     repoRoot,
     "--workflow-source",
     sourceDir,
-    "archon-loop",
+    "animus-loop",
     "--detach",
     "--json",
     "--branch",

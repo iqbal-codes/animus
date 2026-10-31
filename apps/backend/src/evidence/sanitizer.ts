@@ -1,4 +1,4 @@
-import type { SanitizedReport } from "@labq/contracts/operator";
+import type { SanitizedReport } from "@animus/contracts/operator";
 
 export interface SanitizationResult extends SanitizedReport {
   rawLength: number;

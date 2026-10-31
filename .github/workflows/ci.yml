@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, development]
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, development]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -115,7 +115,7 @@ jobs:
           bun -e "
             import { verifyCliBinarySmoke } from './scripts/release/build-cli.ts';
             await verifyCliBinarySmoke({
-              binaryPath: './dist/bin/labq-factory',
+              binaryPath: './dist/bin/animus',
             });
             console.log('CLI binary smoke verification passed');
           "

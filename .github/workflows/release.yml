@@ -79,7 +79,7 @@ jobs:
           bun -e "
             import { verifyCliBinarySmoke } from './scripts/release/build-cli.ts';
             await verifyCliBinarySmoke({
-              binaryPath: './dist/bin/labq-factory',
+              binaryPath: './dist/bin/animus',
               expectedVersion: '${{ steps.resolve-version.outputs.version }}',
             });
             console.log('CLI binary smoke verification passed');
@@ -88,7 +88,7 @@ jobs:
       - name: Verify SHA-256 checksums
         run: |
           cd dist/releases
-          test -f labq-factory.rb
+          test -f animus.rb
           test -f install.sh
           sha256sum -c checksums.txt
 

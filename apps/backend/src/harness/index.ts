@@ -10,7 +10,7 @@ import {
   type HarnessLessonsResponse,
   type HarnessToolsResponse,
   type HarnessVetoResult,
-} from "@labq/contracts/operator";
+} from "@animus/contracts/operator";
 
 export class HarnessService {
   private repoRoot: string;

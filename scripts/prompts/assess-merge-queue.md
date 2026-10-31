@@ -20,7 +20,7 @@ Evaluate each candidate pull request against the following rules:
 2. **Base Branch Freshness:** Query the live head of the base branch (`gh api repos/<owner>/<repo>/branches/<base> --jq .commit.sha`). Record this as `base_sha`. The downstream merge gate verifies that the base branch has not drifted between assessment and landing.
 3. **Protected Path Enforcement:** If any pull request modifies a protected path declared in project policy, mark `eligible: false` and assign `action: "hold"` with the reason naming the protected files.
 4. **CI & Status Checks:** Verify that required status checks on the PR's current head commit are clean and passing.
-5. **Independent Review Evidence:** Require verifiable independent review approval bound to the current head commit SHA (e.g. GitHub approving review or `<!-- archon-review-report -->`). Reject stale reviews from earlier commits.
+5. **Independent Review Evidence:** Require verifiable independent review approval bound to the current head commit SHA (e.g. GitHub approving review or `<!-- animus-review-report -->`). Reject stale reviews from earlier commits.
 6. **Conflict Resolution & Ordering:** Inspect dependencies between candidate PRs. If PRs conflict or have circular dependencies, place conflicting PRs on hold.
 
 ## 2. Produce Merge Plan
@@ -55,7 +55,7 @@ Write detailed hold explanations to `$ARTIFACTS_DIR/merge-plan.md` if any PR is 
 
 Specify hold comment changes only for actionable conditions that a subsequent commit can resolve:
 - `action: "hold"`: When acceptance criteria are unmet, CI failed, review is stale, or base conflicts exist. Include the concrete evidence-backed reason.
-- `action: "clear"`: When an existing hold comment (`<!-- archon-merge-hold -->`) is now resolved at the current head.
+- `action: "clear"`: When an existing hold comment (`<!-- animus-merge-hold -->`) is now resolved at the current head.
 - Omit entries for transient conditions (such as in-flight CI runs).
 
 ## 4. Boundaries & Invariants

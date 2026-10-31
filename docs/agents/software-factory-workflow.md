@@ -16,7 +16,7 @@ Publication, readiness labels, launching a lap, pushing a branch, merging, promo
 
 ## Work-item contract
 
-Existing factory tickets (for example, issues #1–#7) use this shape. It carries Archon's six semantic contract elements without prescribing implementation design:
+Existing factory tickets (for example, issues #1–#7) use this shape. It carries Animus's six semantic contract elements without prescribing implementation design:
 
 ```markdown
 ## Source and problem

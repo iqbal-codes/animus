@@ -2,11 +2,11 @@
 
 ## Reporting a Vulnerability
 
-We take the security of `labq-software-factory` seriously. If you discover or suspect a security vulnerability, please report it privately. **Do not create public GitHub issues or discussions for undisclosed security vulnerabilities.**
+We take the security of `animus` seriously. If you discover or suspect a security vulnerability, please report it privately. **Do not create public GitHub issues or discussions for undisclosed security vulnerabilities.**
 
 To report a vulnerability:
 1. Open a private security advisory through the repository's **Security > Advisories** tab on GitHub (preferred).
-2. If private advisories are unavailable, send an email to `security@labq.dev` detailing:
+2. If private advisories are unavailable, send an email to `security@animus.dev` detailing:
    - Affected component(s) and version/commit SHA
    - Step-by-step reproduction instructions or proof-of-concept
    - Impact assessment
@@ -31,7 +31,7 @@ Legacy or unmaintained branches do not receive backported security patches.
 
 ## Operator Security Best Practices
 
-When deploying and operating `labq-software-factory`, follow these core security practices:
+When deploying and operating `animus`, follow these core security practices:
 
 1. **Loopback Binding by Default**:
    - Both `apps/backend` and `apps/engine-host` default to loopback addresses (`127.0.0.1` or `::1`).

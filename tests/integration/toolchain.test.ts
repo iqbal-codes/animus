@@ -14,22 +14,22 @@ describe("Repository-wide Task, Checker, and Cache Correctness", () => {
     const contractsPkg = JSON.parse(
       readFileSync(join(root, "packages/contracts/package.json"), "utf-8"),
     );
-    expect(contractsPkg.name).toBe("@labq/contracts");
+    expect(contractsPkg.name).toBe("@animus/contracts");
 
     // Client package depends on contracts
     const clientPkg = JSON.parse(readFileSync(join(root, "packages/client/package.json"), "utf-8"));
-    expect(clientPkg.name).toBe("@labq/client");
-    expect(clientPkg.dependencies["@labq/contracts"]).toBe("workspace:*");
+    expect(clientPkg.name).toBe("@animus/client");
+    expect(clientPkg.dependencies["@animus/contracts"]).toBe("workspace:*");
 
     // Backend and host apps depend on contracts & client
     const backendPkg = JSON.parse(readFileSync(join(root, "apps/backend/package.json"), "utf-8"));
-    expect(backendPkg.dependencies["@labq/contracts"]).toBe("workspace:*");
+    expect(backendPkg.dependencies["@animus/contracts"]).toBe("workspace:*");
 
     const hostPkg = JSON.parse(readFileSync(join(root, "apps/engine-host/package.json"), "utf-8"));
-    expect(hostPkg.dependencies["@labq/contracts"]).toBe("workspace:*");
+    expect(hostPkg.dependencies["@animus/contracts"]).toBe("workspace:*");
 
     const launcherPkg = JSON.parse(readFileSync(join(root, "apps/launcher/package.json"), "utf-8"));
-    expect(launcherPkg.name).toBe("@labq/launcher");
+    expect(launcherPkg.name).toBe("@animus/launcher");
   });
 
   test("AC2: Toolchain check enforces Node 26.8.1, Bun 1.4.2, and local Vite+ 1.4.0", () => {

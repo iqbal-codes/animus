@@ -4,23 +4,23 @@ Repository configuration, factory enrollment, and issue admission are distinct s
 
 ## CLI Installation
 
-Install the `labq-factory` command-line interface (and its `factory` and `labq` symlinks) through one of three zero-server channels:
+Install the `animus` command-line interface (and its `factory` and `animus` symlinks) through one of three zero-server channels:
 
 - **POSIX Shell Installer (macOS & Linux)**:
   ```sh
-  curl -fsSL https://github.com/iqbal-codes/labq-software-factory/releases/latest/download/install.sh | sh
+  curl -fsSL https://github.com/iqbal-codes/animus/releases/latest/download/install.sh | sh
   ```
-  Enforces fail-closed SHA-256 integrity verification against `checksums.txt` before linking binaries into `$HOME/.labq/bin`.
+  Enforces fail-closed SHA-256 integrity verification against `checksums.txt` before linking binaries into `$HOME/.animus/bin`.
 
 - **Bun Global Install**:
   ```sh
-  bun add -g github:iqbal-codes/labq-software-factory
+  bun add -g github:iqbal-codes/animus
   ```
   Installs the bundled standalone JavaScript CLI (`dist/cli.js`) directly with Bun.
 
 - **Homebrew Tap (macOS & Linux)**:
   ```sh
-  brew install iqbal-codes/tap/labq-factory
+  brew install iqbal-codes/tap/animus
   ```
   Installs the checksum-pinned binary release using the Homebrew formula.
 
@@ -30,7 +30,7 @@ Start the factory on the machine that holds the checkout, then run:
 
 ```sh
 cd /absolute/path/to/product
-labq-factory setup
+animus setup
 ```
 
 Setup targets the current directory. It configures the repository, then enrolls that checkout through the factory API at `http://127.0.0.1:3000` by default. Registry commands do not create a database inside the managed repository.
@@ -48,13 +48,13 @@ Escape or Ctrl-C cancels an interactive prompt and restores terminal state. Conf
 For configuration without enrollment:
 
 ```sh
-labq-factory setup --local-only
+animus setup --local-only
 ```
 
 For noninteractive configuration and enrollment, use `--yes` and explicit settings as needed. `--yes` is not a verification of model availability or project checks.
 
 ```sh
-labq-factory setup --yes --provider claude \
+animus setup --yes --provider claude \
   --static-cmd "bun run check" --unit-cmd "bun test"
 ```
 
@@ -63,7 +63,7 @@ Inspect generated changes with `git status` and `git diff`. New delivery worktre
 ## Enroll an existing GitHub repository by cloning
 
 ```sh
-labq-factory project register --repo OWNER/REPOSITORY
+animus project register --repo OWNER/REPOSITORY
 ```
 
 The factory verifies the GitHub repository identity and clones it into its own managed storage. No laptop checkout path is sent. Repositories without usable checks and model configuration remain held by monitoring until their setup is completed. Enrollment alone does not manufacture working checks or credentials.
@@ -71,7 +71,7 @@ The factory verifies the GitHub repository identity and clones it into its own m
 For a checkout already on the factory machine:
 
 ```sh
-labq-factory project register --path /absolute/path/to/product
+animus project register --path /absolute/path/to/product
 ```
 
 Local-checkout registration requires a loopback factory URL. A laptop path cannot identify a checkout on a different machine. For a remote factory, register by GitHub repository instead. Local unpushed changes do not appear in a remote clone.
@@ -105,9 +105,9 @@ The backend owns registered-project monitoring for its lifetime. It enumerates t
 Inspect the registry and actual monitor state:
 
 ```sh
-labq-factory project list
-labq-factory project monitoring
-labq-factory project monitoring --json
+animus project list
+animus project monitoring
+animus project monitoring --json
 ```
 
 The corresponding read endpoint is `GET /api/v1/monitoring`. States distinguish idle, running, held, skipped, completed, and error. `setup_incomplete`, checkout mismatch, label failures, capacity, work-window restrictions, and brakes are not presented as successful execution. A project can be enrolled while held from execution.

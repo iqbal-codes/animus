@@ -4,7 +4,7 @@ import {
   WebSocketConnectionManager,
   type WebSocketLike,
   type WsEvent,
-} from "@labq/client";
+} from "@animus/client";
 
 class MockWebSocket implements WebSocketLike {
   readyState = 1;

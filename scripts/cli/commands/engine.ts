@@ -104,9 +104,9 @@ export async function runLapCommand(opts: {
       if (opts.json) {
         console.log(JSON.stringify(laps, null, 2));
       } else if (laps.length === 0) {
-        console.log("No Archon engine laps found.");
+        console.log("No Animus engine laps found.");
       } else {
-        console.log(`Archon Engine Laps (${laps.length}):`);
+        console.log(`Animus Engine Laps (${laps.length}):`);
         for (const lap of laps) {
           console.log(`  ${lap.id}  [${lap.product_status}]  ${lap.started_at ?? "unknown"}`);
         }

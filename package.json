@@ -1,11 +1,10 @@
 {
-  "name": "labq-software-factory",
+  "name": "animus",
   "version": "0.2.0",
   "private": true,
   "bin": {
-    "factory": "./dist/cli.js",
-    "labq": "./dist/cli.js",
-    "labq-factory": "./dist/cli.js"
+    "animus": "./dist/cli.js",
+    "factory": "./dist/cli.js"
   },
   "workspaces": [
     "apps/*",
@@ -33,8 +32,8 @@
     "verify": "vp run verify-all"
   },
   "devDependencies": {
-    "@labq/client": "workspace:*",
-    "@labq/contracts": "workspace:*",
+    "@animus/client": "workspace:*",
+    "@animus/contracts": "workspace:*",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",
     "@types/bun": "1.4.2",

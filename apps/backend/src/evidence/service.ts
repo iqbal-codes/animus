@@ -14,7 +14,7 @@ import type {
   GateApprovalRecord,
   ReleaseReadinessResult,
   SanitizedReport,
-} from "@labq/contracts/operator";
+} from "@animus/contracts/operator";
 import type { ForgeAdapter } from "../registry/forge";
 import type { CommandLedger } from "../command/ledger";
 import { CandidateVerificationEngine } from "./verification";

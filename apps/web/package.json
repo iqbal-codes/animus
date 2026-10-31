@@ -1,5 +1,5 @@
 {
-  "name": "@labq/web",
+  "name": "@animus/web",
   "version": "0.2.0",
   "private": true,
   "type": "module",
@@ -9,10 +9,10 @@
     "preview": "vp preview"
   },
   "dependencies": {
+    "@animus/client": "workspace:*",
     "@base-ui/react": "^1.9.0",
     "@fontsource-variable/inter": "^5.3.0",
     "@fontsource-variable/noto-sans": "^5.3.0",
-    "@labq/client": "workspace:*",
     "@tanstack/react-query": "^5.105.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

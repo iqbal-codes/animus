@@ -20,7 +20,7 @@ export const MARKER = ".factory-resource.json";
 export const FORBIDDEN_SUBSTRINGS = [
   ".git",
   ".factory",
-  ".archon",
+  ".animus",
   ".claude",
   ".env",
   MARKER,

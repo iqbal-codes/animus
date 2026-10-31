@@ -16,14 +16,14 @@ import {
   computeDiff,
   computeLabelEffects,
 } from "../../apps/backend/src/intake";
-import { createFactoryClient } from "@labq/client";
+import { createFactoryClient } from "@animus/client";
 import {
   intakePreviewResultSchema,
   intakePublishResultSchema,
   evaluatedIssueSchema,
   targetBindingResultSchema,
   branchIntegrationResultSchema,
-} from "@labq/contracts/operator";
+} from "@animus/contracts/operator";
 
 type DatabaseInstance = ReturnType<typeof initializeDatabase>;
 
@@ -36,7 +36,7 @@ describe("Structured Intake, Admission Gate & Exact-Target Enforcement (Issue #6
   let intake: IntakeService;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "labq-intake-test-"));
+    tempDir = mkdtempSync(join(tmpdir(), "animus-intake-test-"));
     dbPath = join(tempDir, "state", "console.db");
     db = initializeDatabase(dbPath);
     forge = new SyntheticForgeAdapter({
@@ -67,7 +67,7 @@ describe("Structured Intake, Admission Gate & Exact-Target Enforcement (Issue #6
   }
 
   describe("AC1 (Parent AC07): Structured Intake, Parser & Diff Previews", () => {
-    test("parser extracts Archon / Software Factory contract sections and formats markdown cleanly", () => {
+    test("parser extracts Animus contract sections and formats markdown cleanly", () => {
       const markdown = `Part of #58
 
 ## Source and problem
@@ -638,7 +638,7 @@ Depends on: #59, #60
     });
   });
 
-  describe("Client SDK Integration (@labq/client)", () => {
+  describe("Client SDK Integration (@animus/client)", () => {
     test("client scoped project handles preview, publish, update, binding, and branch integration", async () => {
       const mockEvaluated = {
         number: 77,

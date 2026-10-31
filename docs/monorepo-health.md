@@ -21,17 +21,17 @@ bun run toolchain
 
 Root Bun workspaces and the single `bun.lock` own all dependencies. Workspace
 references use `workspace:*`; library exports are TypeScript source, not published
-build artifacts. External Archon remains pinned by `factory/pack.json` and located
+build artifacts. External Animus remains pinned by `factory/pack.json` and located
 by the existing consumer settings; it is **not** a workspace dependency. Bun 1.4.2
 matches that engine revision's requirement. CLI boot compatibility is not native
 workflow/recovery qualification (#29 and later slices own that evidence).
 
 | Workspace | Ownership / dependencies |
 | --- | --- |
-| `@labq/contracts` | Runtime-neutral Zod schemas/types; explicit `/operator` and private `/host` exports, no root barrel |
-| `@labq/client` | Operator-only Fetch client and classified errors; imports only `/operator` |
-| `@labq/backend` | Bun public health HTTP and authenticated host request; imports contracts, no other app |
-| `@labq/engine-host` | Bun authenticated private process health HTTP; imports private contract, no other app |
+| `@animus/contracts` | Runtime-neutral Zod schemas/types; explicit `/operator` and private `/host` exports, no root barrel |
+| `@animus/client` | Operator-only Fetch client and classified errors; imports only `/operator` |
+| `@animus/backend` | Bun public health HTTP and authenticated host request; imports contracts, no other app |
+| `@animus/engine-host` | Bun authenticated private process health HTTP; imports private contract, no other app |
 
 ## Start three independent processes
 
@@ -73,7 +73,7 @@ with explicit nonzero ports: no DNS, userinfo, paths, queries or fragments.
 
 Stopping the host must produce unavailable,
 not stale healthy; restarting the same candidate restores healthy. Host health
-means **the host process answered**, not that Archon or a provider is healthy.
+means **the host process answered**, not that Animus or a provider is healthy.
 SIGTERM/SIGINT stop Bun services and release listeners; backend lifetime does not
 own the independently launched host.
 
@@ -101,7 +101,7 @@ Unknown service paths return 404; unsupported methods on declared paths return
 | `invalid_host_response` (invalid JSON/schema) | 502 |
 | `candidate_mismatch` | 503 |
 
-`createFactoryClient({baseUrl, fetch?}).health()` from `@labq/client` resolves only
+`createFactoryClient({baseUrl, fetch?}).health()` from `@animus/client` resolves only
 validated success. It throws `FactoryClientError` with a typed operator code or
 `transport_unavailable` / `invalid_operator_response`. Standard Fetch and injectable
 transports work under browser/Node; there are no env defaults, tokens, Bun imports,
@@ -164,7 +164,7 @@ controls a failing positive check.
 
 The unchanged Python aggregate still includes a historical-run evidence test
 (`tests/test_app.py:HealthIdentityTests.test_evidence_and_report_against_real_app`)
-that requires operator-owned native history. A clean `ARCHON_HOME` lacks that
+that requires operator-owned native history. A clean `ANIMUS_HOME` lacks that
 prerequisite; do not fabricate history, skip the assertion or claim portable clean
 Python success. The new health slice needs no such history. Full native process-tree,
 parent-death, provider, OS portability, later migration and task-cache qualification

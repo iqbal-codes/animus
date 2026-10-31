@@ -19,10 +19,10 @@ import {
   SerializedIntegrationManager,
   handleProjectCoordinationRoute,
 } from "../../apps/backend/src/coordination";
-import { createFactoryClient } from "@labq/client";
-import { specCoordinationPlanSchema } from "@labq/contracts/operator";
+import { createFactoryClient } from "@animus/client";
+import { specCoordinationPlanSchema } from "@animus/contracts/operator";
 
-describe("Spec Coordination via Targeted archon-implement, Worktree Isolation & Single Final PR (Issue #62)", () => {
+describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & Single Final PR (Issue #62)", () => {
   let tempDir: string;
   let dbPath: string;
   let db: DatabaseSync;
@@ -52,7 +52,7 @@ describe("Spec Coordination via Targeted archon-implement, Worktree Isolation & 
   }
 
   beforeEach(async () => {
-    tempDir = mkdtempSync(join(tmpdir(), "labq-coord-test-"));
+    tempDir = mkdtempSync(join(tmpdir(), "animus-coord-test-"));
     dbPath = join(tempDir, "state", "console.db");
     db = initializeDatabase(dbPath);
     forge = new SyntheticForgeAdapter({
@@ -83,7 +83,7 @@ describe("Spec Coordination via Targeted archon-implement, Worktree Isolation & 
     } catch {}
   });
 
-  describe("AC1 (Parent AC09, P2): Spec Coordinator Snapshot & Targeted archon-implement Primitive", () => {
+  describe("AC1 (Parent AC09, P2): Spec Coordinator Snapshot & Targeted animus-implement Primitive", () => {
     test("coordinator snapshots admitted child tickets, dependency DAG, and frozen contracts", async () => {
       // Setup spec parent and child tickets on forge
       forge.addIssue("owner/repo-spec", {
@@ -136,7 +136,7 @@ describe("Spec Coordination via Targeted archon-implement, Worktree Isolation & 
       expect(specCoordinationPlanSchema.parse(plan)).toEqual(plan);
     });
 
-    test("dispatches execution via targeted engine-host primitive archon-implement bound to exact contract", async () => {
+    test("dispatches execution via targeted engine-host primitive animus-implement bound to exact contract", async () => {
       forge.addIssue("owner/repo-spec", {
         number: 58,
         title: "Spec: Coordination",
@@ -182,7 +182,7 @@ describe("Spec Coordination via Targeted archon-implement, Worktree Isolation & 
       });
 
       expect(result.success).toBe(true);
-      expect(capturedSubmission.primitive).toBe("archon-implement");
+      expect(capturedSubmission.primitive).toBe("animus-implement");
       expect(capturedSubmission.childIssueNumber).toBe(60);
       expect(capturedSubmission.contract.digest).toMatch(/^[0-9a-f]{64}$/);
 
@@ -195,9 +195,9 @@ describe("Spec Coordination via Targeted archon-implement, Worktree Isolation & 
     });
 
     test("strictly rejects general unbound loop pickers (Invariant 1)", () => {
-      expect(() => validateTargetedPrimitive("archon-loop")).toThrow(CoordinationError);
+      expect(() => validateTargetedPrimitive("animus-loop")).toThrow(CoordinationError);
       expect(() => validateTargetedPrimitive("unbound-picker")).toThrow(CoordinationError);
-      expect(() => validateTargetedPrimitive("archon-implement")).not.toThrow();
+      expect(() => validateTargetedPrimitive("animus-implement")).not.toThrow();
     });
 
     test("detects and rejects dependency cycles in child tickets", () => {
@@ -723,8 +723,8 @@ describe("Spec Coordination via Targeted archon-implement, Worktree Isolation & 
     });
   });
 
-  describe("HTTP Routes & Scoped Client SDK Integration (@labq/client)", () => {
-    test("handles full coordination lifecycle via HTTP and @labq/client", async () => {
+  describe("HTTP Routes & Scoped Client SDK Integration (@animus/client)", () => {
+    test("handles full coordination lifecycle via HTTP and @animus/client", async () => {
       forge.addIssue("owner/repo-spec", {
         number: 58,
         title: "Spec: API Coordination",

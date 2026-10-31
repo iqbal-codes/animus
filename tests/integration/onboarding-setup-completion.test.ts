@@ -39,7 +39,7 @@ describe("setup enrollment completion", () => {
           if (typeof init?.body !== "string") throw new Error("Expected a JSON request body");
           const body = JSON.parse(init.body);
           expect(body).toEqual({ method: "local_checkout", name: "product", checkout_path: root });
-          expect(existsSync(join(root, ".archon/config.yaml"))).toBe(true);
+          expect(existsSync(join(root, ".animus/config.yaml"))).toBe(true);
           return Response.json({
             id: "proj_test",
             name: "product",
@@ -77,7 +77,7 @@ describe("setup enrollment completion", () => {
     const result = JSON.parse(String(output.mock.calls[0]![0]));
     expect(result.registration.status).toBe("failed");
     expect(result.error).toContain("Local setup complete");
-    expect(existsSync(join(root, ".archon/config.yaml"))).toBe(true);
+    expect(existsSync(join(root, ".animus/config.yaml"))).toBe(true);
   });
 
   test("explicit local-only setup does not attempt enrollment", async () => {

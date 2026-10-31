@@ -49,7 +49,7 @@ export async function verifyCliBinarySmoke(
       : { ...targetOrOpts };
 
   const repoRoot = resolve(process.cwd());
-  const defaultBin = join(repoRoot, "dist/bin/labq-factory");
+  const defaultBin = join(repoRoot, "dist/bin/animus");
   const defaultEntry = join(repoRoot, "scripts/cli/cli.ts");
   const binaryPath = resolve(
     opts.binaryPath ?? (existsSync(defaultBin) ? defaultBin : defaultEntry),
@@ -88,7 +88,7 @@ export async function verifyCliBinarySmoke(
   let isolatedDir = opts.tempDir;
   let ownsTempDir = false;
   if (!isolatedDir) {
-    isolatedDir = mkdtempSync(join(tmpdir(), "labq-cli-smoke-"));
+    isolatedDir = mkdtempSync(join(tmpdir(), "animus-cli-smoke-"));
     ownsTempDir = true;
   } else if (!existsSync(isolatedDir)) {
     mkdirSync(isolatedDir, { recursive: true });
@@ -202,7 +202,6 @@ export async function verifyCliBinarySmoke(
 export async function buildStandaloneCli(opts: BuildCliOptions = {}): Promise<{
   outfile: string;
   aliasOutfile: string;
-  labqOutfile: string;
   version: string;
   gitCommit: string;
 }> {
@@ -217,13 +216,11 @@ export async function buildStandaloneCli(opts: BuildCliOptions = {}): Promise<{
     gitCommit = gitRes.status === 0 && gitRes.stdout ? gitRes.stdout.trim() : "unknown";
   }
 
-  const outfile = resolve(opts.outfile ?? join(repoRoot, "dist/bin/labq-factory"));
+  const outfile = resolve(opts.outfile ?? join(repoRoot, "dist/bin/animus"));
   const aliasOutfile = join(dirname(outfile), "factory");
-  const labqOutfile = join(dirname(outfile), "labq");
   mkdirSync(dirname(outfile), { recursive: true });
   rmSync(outfile, { force: true });
   rmSync(aliasOutfile, { force: true });
-  rmSync(labqOutfile, { force: true });
 
   const bundledBuildPath = join(repoRoot, "scripts/cli/bundled-build.ts");
   const originalContent = readFileSync(bundledBuildPath, "utf-8");
@@ -272,12 +269,6 @@ export async function buildStandaloneCli(opts: BuildCliOptions = {}): Promise<{
       spawnSync("codesign", ["-s", "-", aliasOutfile]);
     }
 
-    copyFileSync(outfile, labqOutfile);
-    if (process.platform === "darwin") {
-      spawnSync("codesign", ["--remove-signature", labqOutfile]);
-      spawnSync("codesign", ["-s", "-", labqOutfile]);
-    }
-
     if (opts.smokeVerify) {
       await verifyCliBinarySmoke({
         binaryPath: outfile,
@@ -286,7 +277,7 @@ export async function buildStandaloneCli(opts: BuildCliOptions = {}): Promise<{
       });
     }
 
-    return { outfile, aliasOutfile, labqOutfile, version, gitCommit };
+    return { outfile, aliasOutfile, version, gitCommit };
   } finally {
     writeFileSync(bundledBuildPath, originalContent, "utf-8");
   }
@@ -386,7 +377,7 @@ if (isMain) {
     if (!isStandaloneOnly) {
       const bundleResult = await buildBundledCliScript({ smokeVerify: true });
       console.log(
-        `Built bundled LabQ Factory CLI script v${bundleResult.version} (${bundleResult.gitCommit}) -> ${bundleResult.outfile}`,
+        `Built bundled Animus CLI script v${bundleResult.version} (${bundleResult.gitCommit}) -> ${bundleResult.outfile}`,
       );
       console.log(`Verified CLI bundled script smoke check for ${bundleResult.outfile}`);
     }
@@ -394,7 +385,7 @@ if (isMain) {
     if (!isBundleOnly) {
       const standaloneResult = await buildStandaloneCli({ smokeVerify: true });
       console.log(
-        `Built standalone LabQ Factory CLI v${standaloneResult.version} (${standaloneResult.gitCommit}) -> ${standaloneResult.outfile} (aliases: ${standaloneResult.aliasOutfile}, ${standaloneResult.labqOutfile})`,
+        `Built standalone Animus CLI v${standaloneResult.version} (${standaloneResult.gitCommit}) -> ${standaloneResult.outfile} (alias: ${standaloneResult.aliasOutfile})`,
       );
       console.log(`Verified CLI binary smoke check for ${standaloneResult.outfile}`);
     }

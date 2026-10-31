@@ -18,10 +18,10 @@ export function scanSnippet(filePath, content) {
     normalizedPath.includes("/packages/contracts/")
   ) {
     if (
-      /@labq\/backend/i.test(content) ||
-      /@labq\/engine-host/i.test(content) ||
-      /@labq\/launcher/i.test(content) ||
-      /@labq\/web/i.test(content)
+      /@animus\/backend/i.test(content) ||
+      /@animus\/engine-host/i.test(content) ||
+      /@animus\/launcher/i.test(content) ||
+      /@animus\/web/i.test(content)
     ) {
       violations.push(`${filePath}: packages/contracts cannot import applications`);
     }
@@ -33,9 +33,9 @@ export function scanSnippet(filePath, content) {
     normalizedPath.includes("/packages/client/")
   ) {
     if (
-      /@labq\/backend/i.test(content) ||
-      /@labq\/engine-host/i.test(content) ||
-      /@labq\/web/i.test(content)
+      /@animus\/backend/i.test(content) ||
+      /@animus\/engine-host/i.test(content) ||
+      /@animus\/web/i.test(content)
     ) {
       violations.push(`${filePath}: packages/client cannot import server internals`);
     }
@@ -49,7 +49,7 @@ export function scanSnippet(filePath, content) {
 
   // Rule 3: apps/backend cannot import engine-host internals
   if (normalizedPath.startsWith("apps/backend/") || normalizedPath.includes("/apps/backend/")) {
-    if (/@labq\/engine-host/i.test(content)) {
+    if (/@animus\/engine-host/i.test(content)) {
       violations.push(`${filePath}: apps/backend cannot import engine-host internals`);
     }
   }
@@ -59,7 +59,7 @@ export function scanSnippet(filePath, content) {
     normalizedPath.startsWith("apps/engine-host/") ||
     normalizedPath.includes("/apps/engine-host/")
   ) {
-    if (/@labq\/backend/i.test(content)) {
+    if (/@animus\/backend/i.test(content)) {
       violations.push(`${filePath}: apps/engine-host cannot import backend internals`);
     }
   }
@@ -67,9 +67,9 @@ export function scanSnippet(filePath, content) {
   // Rule 5: apps/web cannot import server internals or Node builtins
   if (normalizedPath.startsWith("apps/web/") || normalizedPath.includes("/apps/web/")) {
     if (
-      /@labq\/backend/i.test(content) ||
-      /@labq\/engine-host/i.test(content) ||
-      /@labq\/launcher/i.test(content)
+      /@animus\/backend/i.test(content) ||
+      /@animus\/engine-host/i.test(content) ||
+      /@animus\/launcher/i.test(content)
     ) {
       violations.push(`${filePath}: apps/web cannot import server internals`);
     }

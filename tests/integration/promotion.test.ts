@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { createFactoryClient } from "@labq/client";
-import type { PromotionStatus, PromotionResult } from "@labq/contracts/operator";
+import { createFactoryClient } from "@animus/client";
+import type { PromotionStatus, PromotionResult } from "@animus/contracts/operator";
 import { PromotionService } from "../../apps/engine-host/src/promotion";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

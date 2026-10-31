@@ -24,7 +24,7 @@ An executable issue needs:
 
 A substantial feature may link a repository PRD or specification. A small change does not need a separate document merely to satisfy a template.
 
-The factory checks whether the handoff is actionable. It holds unclear or contradictory work and records the missing information rather than inventing requirements or broadening approved scope. This readiness check is distinct from interactive product discovery and from execution routing inside Archon.
+The factory checks whether the handoff is actionable. It holds unclear or contradictory work and records the missing information rather than inventing requirements or broadening approved scope. This readiness check is distinct from interactive product discovery and from execution routing inside Animus.
 
 ## Authorization labels
 
@@ -44,7 +44,7 @@ The first release manages `pabriq-app` using one factory backend, initially on t
 
 The dispatcher checks factory and schedule state, configured work hours, available main-agent slots, issue authorization, dependencies, and claims. Child agents do not consume the requested main-agent slots.
 
-Execution stays within pinned shared Archon workflows using Pi. Skills and MCP configuration are shared across factory agents. Models are selected explicitly by workflow role rather than inherited from harness defaults.
+Execution stays within pinned shared Animus workflows using Pi. Skills and MCP configuration are shared across factory agents. Models are selected explicitly by workflow role rather than inherited from harness defaults.
 
 Implementation happens in isolated worktrees. Required tests, candidate-bound runtime verification, and independent review precede automatic integration into `develop`. Blocking findings return to implementation for correction and renewed verification.
 

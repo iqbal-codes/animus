@@ -10,11 +10,11 @@ import {
   detectAvailableHarnesses,
   detectRepoCheckCommands,
 } from "../../scripts/cli/commands/setup";
-import { readArchonConfig } from "../../scripts/loop/config";
+import { readAnimusConfig } from "../../scripts/loop/config";
 import { loadScheduleConfig } from "../../scripts/loop/scheduler";
 import { FactoryLauncher } from "../../apps/launcher/src/launcher";
 
-describe("LabQ Factory Unified CLI & Repository Setup Onboarding", () => {
+describe("Animus Unified CLI & Repository Setup Onboarding", () => {
   let tempDir: string;
 
   beforeEach(() => {
@@ -52,7 +52,7 @@ describe("LabQ Factory Unified CLI & Repository Setup Onboarding", () => {
   test("renders global and command-scoped help tables cleanly", () => {
     const globalHelp = renderHelp();
     expect(globalHelp).toContain(
-      "LabQ Factory CLI - Unified Backend, Engine-Host & Autonomous Loop Operator",
+      "Animus CLI - Unified Backend, Engine-Host & Autonomous Loop Operator",
     );
     expect(globalHelp).toContain("setup [--yes] [options]");
     expect(globalHelp).toContain("config <show|audit|harnesses|tier|laps|harness|pattern|rule>");
@@ -60,14 +60,14 @@ describe("LabQ Factory Unified CLI & Repository Setup Onboarding", () => {
 
     const setupHelp = renderHelp("setup");
     expect(setupHelp).toContain("setup [--yes] [options]");
-    expect(setupHelp).toContain("labq-factory setup");
+    expect(setupHelp).toContain("animus setup");
   });
 
   test("formats version output in text and JSON modes", () => {
     const textVer = formatVersionOutput(false);
-    expect(textVer).toContain("labq-factory v");
+    expect(textVer).toContain("animus v");
     const jsonVer = JSON.parse(formatVersionOutput(true));
-    expect(jsonVer.name).toBe("labq-factory");
+    expect(jsonVer.name).toBe("animus");
     expect(jsonVer.version).toBeDefined();
   });
 
@@ -97,7 +97,7 @@ describe("LabQ Factory Unified CLI & Repository Setup Onboarding", () => {
     expect(detected.unitTest).toBe("npm run test");
   });
 
-  test("labq-factory setup and config commands configure harness, model tiers, and max laps per repo", async () => {
+  test("animus setup and config commands configure harness, model tiers, and max laps per repo", async () => {
     // 1. Run non-interactive setup on a fresh target repository
     writeFileSync(
       join(tempDir, "package.json"),
@@ -130,13 +130,13 @@ describe("LabQ Factory Unified CLI & Repository Setup Onboarding", () => {
     ]);
     expect(setupCode).toBe(0);
 
-    // Verify .archon/config.yaml was created with claude tiers and develop baseBranch
-    const archonCfg = readArchonConfig(tempDir);
-    expect(archonCfg.assistant).toBe("claude");
-    expect(archonCfg.tiers?.small?.provider).toBe("claude");
-    expect(archonCfg.tiers?.medium?.model).toBe("claude-sonnet-4-5");
-    expect(archonCfg.tiers?.large?.model).toBe("claude-opus-4-5");
-    expect(archonCfg.worktree?.baseBranch).toBe("develop");
+    // Verify .animus/config.yaml was created with claude tiers and develop baseBranch
+    const animusCfg = readAnimusConfig(tempDir);
+    expect(animusCfg.assistant).toBe("claude");
+    expect(animusCfg.tiers?.small?.provider).toBe("claude");
+    expect(animusCfg.tiers?.medium?.model).toBe("claude-sonnet-4-5");
+    expect(animusCfg.tiers?.large?.model).toBe("claude-opus-4-5");
+    expect(animusCfg.worktree?.baseBranch).toBe("develop");
 
     // Verify .factory/schedule.json was created with max_laps=4, parallel=2, interval=120
     const schedCfg = loadScheduleConfig(tempDir);
@@ -177,11 +177,11 @@ describe("LabQ Factory Unified CLI & Repository Setup Onboarding", () => {
     ]);
     expect(tierCode).toBe(0);
 
-    const updatedArchon = readArchonConfig(tempDir);
-    expect(updatedArchon.tiers?.large?.provider).toBe("codex");
-    expect(updatedArchon.tiers?.large?.model).toBe("gpt-5.3-codex");
-    expect(updatedArchon.tiers?.large?.effort).toBe("xhigh");
-    expect(updatedArchon.aliases?.["@reasoning"]?.model).toBe("gpt-5.3-codex");
+    const updatedAnimus = readAnimusConfig(tempDir);
+    expect(updatedAnimus.tiers?.large?.provider).toBe("codex");
+    expect(updatedAnimus.tiers?.large?.model).toBe("gpt-5.3-codex");
+    expect(updatedAnimus.tiers?.large?.effort).toBe("xhigh");
+    expect(updatedAnimus.aliases?.["@reasoning"]?.model).toBe("gpt-5.3-codex");
 
     // 3. Reconfigure laps & capacity via 'config laps'
     const lapsCode = await runCli([

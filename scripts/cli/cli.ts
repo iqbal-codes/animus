@@ -35,7 +35,7 @@ export function formatVersionOutput(json = false): string {
   if (json) {
     return JSON.stringify(
       {
-        name: "labq-factory",
+        name: "animus",
         version: BUNDLED_VERSION,
         commit: BUNDLED_GIT_COMMIT,
         mode,
@@ -45,7 +45,7 @@ export function formatVersionOutput(json = false): string {
       2,
     );
   }
-  return `labq-factory v${BUNDLED_VERSION} (${mode}, commit: ${BUNDLED_GIT_COMMIT}, ${runtime})`;
+  return `animus v${BUNDLED_VERSION} (${mode}, commit: ${BUNDLED_GIT_COMMIT}, ${runtime})`;
 }
 
 export async function runCli(argv: readonly string[]): Promise<number> {
@@ -291,7 +291,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       });
 
     default: {
-      const msg = `Unknown command: ${command}. Run 'labq-factory help' for available commands.`;
+      const msg = `Unknown command: ${command}. Run 'animus help' for available commands.`;
       if (values.json) console.log(JSON.stringify({ ok: false, error: msg }));
       else console.error(`Error: ${msg}`);
       return 1;

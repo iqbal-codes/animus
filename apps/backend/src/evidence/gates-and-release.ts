@@ -6,7 +6,7 @@ import {
   type GateApprovalSubmission,
   type ReleaseReadinessResult,
   type ReleasePolicyStage,
-} from "@labq/contracts/operator";
+} from "@animus/contracts/operator";
 import type { CandidateVerificationEngine } from "./verification";
 import { EvidenceError } from "./errors";
 

@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import type { RunCancellationSubmission, RunCancellationResult } from "@labq/contracts/operator";
+import type { RunCancellationSubmission, RunCancellationResult } from "@animus/contracts/operator";
 import { EvidenceError } from "./errors";
 
 export type ProcessTreeTerminator = (

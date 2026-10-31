@@ -8,7 +8,7 @@ afterEach(() => {
 });
 import { ProjectList } from "../../apps/web/src/features/projects/project-list";
 import { ProjectDetail } from "../../apps/web/src/features/projects/project-detail";
-import type { Project } from "@labq/contracts/operator";
+import type { Project } from "@animus/contracts/operator";
 
 describe("Web Console UI Components: Honest States & Keyboard Interaction", () => {
   const mockProjects: Project[] = [
@@ -67,7 +67,7 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
 
     expect(screen.getByTestId("projects-empty")).toBeTruthy();
     expect(screen.getByText("No repositories enrolled")).toBeTruthy();
-    expect(screen.getByText("factory setup")).toBeTruthy();
+    expect(screen.getByText("animus setup")).toBeTruthy();
 
     const refreshBtn = screen.getByText("Refresh Registry");
     fireEvent.click(refreshBtn);

@@ -33,7 +33,7 @@ function normalizeExtractedReport(value: any, candidate: string) {
     throw new Error("Missing, malformed or stale candidate-bound checks/review verdict");
   }
 
-  // Canonical Archon check-app report normalization
+  // Canonical Animus check-app report normalization
   if (value.overall !== undefined && Array.isArray(value.lines)) {
     const isPass = String(value.overall).toUpperCase() === "PASS";
     const head = value.head || candidate;
@@ -55,7 +55,7 @@ function normalizeExtractedReport(value: any, candidate: string) {
     };
   }
 
-  // Canonical Archon review report normalization
+  // Canonical Animus review report normalization
   if (value.outcome !== undefined) {
     const isPass = ["merge", "approved"].includes(String(value.outcome).toLowerCase());
     const sha = value.sha || candidate;

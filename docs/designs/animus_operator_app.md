@@ -1,4 +1,4 @@
-# LabQ Software Factory Operator App
+# Animus Operator App
 
 *   **Author:** iqbal-codes
 *   **Status:** Proposed (Post-EGM Review)
@@ -8,9 +8,9 @@
 
 ## Overview
 
-The LabQ Software Factory Operator App provides execution control, scheduling governance, and operational observability over an autonomous AI software delivery loop across managed repositories (such as `pabriq-app`). 
+The Animus Operator App provides execution control, scheduling governance, and operational observability over an autonomous AI software delivery loop across managed repositories (such as `pabriq-app`). 
 
-Feature planning, brainstorming, PRD generation, and issue ticket creation take place externally in the operator's personal coding harness. The software factory acts strictly as an execution engine: it discovers authorized backlog issues from GitHub, verifies dependencies, provisions isolated worktrees, runs multi-stage coding and runtime verification laps via Pi (orchestrated by pinned Archon SDLC workflows), and lands verified pull requests into a staging integration branch (`develop`). 
+Feature planning, brainstorming, PRD generation, and issue ticket creation take place externally in the operator's personal coding harness. The software factory acts strictly as an execution engine: it discovers authorized backlog issues from GitHub, verifies dependencies, provisions isolated worktrees, runs multi-stage coding and runtime verification laps via Pi (orchestrated by pinned Animus SDLC workflows), and lands verified pull requests into a staging integration branch (`develop`). 
 
 The operator retains final delivery authority: promotion from `develop` to `main` requires human review and sign-off on a consolidated promotion pull request. The factory runs locally on the operator's machine (with support for remote VPS hosting as an alternative deployment), operating continuously in the background even when the visual operator app is closed.
 
@@ -30,7 +30,7 @@ The Operator App solves these challenges by placing a deterministic control and 
 *   **G-2 (Autonomous Staging Integration)**: Implement and independently review each admitted ticket in an isolated worktree, automatically merging verified changes into `develop` so dependent tickets can unblock and proceed overnight without human intervention.
 *   **G-3 (Immutable Morning Promotion Boundary)**: Once overnight laps complete or the promotion candidate is formed, freeze further merges into `develop` and open a consolidated promotion pull request targeting `main` for human approval.
 *   **G-4 (Operational Control & Safety)**: Provide operator controls to enable/disable scheduling, enforce active working hours (e.g. 20:00 to 05:00), limit concurrent main-agent laps, pause active execution cleanly without losing workspace state, and monitor live tool/agent execution events.
-*   **G-5 (Centralized Configuration & Model Visibility)**: Provide a shared, version-controlled configuration for skills and MCP connections, with explicit model tier mappings in `.archon/config.yaml` rather than relying on untracked personal harness defaults.
+*   **G-5 (Centralized Configuration & Model Visibility)**: Provide a shared, version-controlled configuration for skills and MCP connections, with explicit model tier mappings in `.animus/config.yaml` rather than relying on untracked personal harness defaults.
 
 ## Non-Goals
 
@@ -59,7 +59,7 @@ The Operator App solves these challenges by placing a deterministic control and 
 
 *   **Given**: An active overnight run is executing a multi-round test fix in an isolated worktree. The operator observes abnormal token consumption or decides to perform manual maintenance on `pabriq-app`.
 *   **When**: The operator toggles "Drain New Work" (`POST /api/control/pause`) or triggers "Cancel Lap" (`POST /api/control/cancel`).
-*   **Then**: In drain mode, the scheduler immediately stops admitting new tickets while allowing the current lap to finish cleanly. In cancel mode, the running Archon workflow is cancelled via `archon workflow cancel <id>`, its GitHub claim is released, the worktree is preserved for inspection, and the UI reports the lap as cancelled.
+*   **Then**: In drain mode, the scheduler immediately stops admitting new tickets while allowing the current lap to finish cleanly. In cancel mode, the running Animus workflow is cancelled via `animus workflow cancel <id>`, its GitHub claim is released, the worktree is preserved for inspection, and the UI reports the lap as cancelled.
 
 ### CUJ 3: Observability of Quarantined or Blocked Issues
 
@@ -75,8 +75,8 @@ The Operator App solves these challenges by placing a deterministic control and 
 
 The system consists of three architectural layers running on a single host (local macOS or remote Linux VPS):
 1. **Operator Web App & Backend API**: A lightweight Python service extending `app.py` providing REST endpoints and static UI assets for scheduling control, intake observability, candidate promotion, and lap telemetry.
-2. **Factory Consumer & Native Engine Bridge**: An orchestration controller (`factory/consumer.py`, `laps.py`) communicating with the pinned Archon SDLC runtime via JSON commands over subprocess pipes.
-3. **Execution Runtime (Archon & Pi)**: Isolated Git worktrees executing multi-stage autonomous development laps (`archon-loop`) with the embedded Pi coding agent SDK.
+2. **Factory Consumer & Native Engine Bridge**: An orchestration controller (`factory/consumer.py`, `laps.py`) communicating with the pinned Animus SDLC runtime via JSON commands over subprocess pipes.
+3. **Execution Runtime (Animus & Pi)**: Isolated Git worktrees executing multi-stage autonomous development laps (`animus-loop`) with the embedded Pi coding agent SDK.
 
 ```text
 +-----------------------------------------------------------------------------------+
@@ -113,15 +113,15 @@ The system consists of three architectural layers running on a single host (loca
 |   - schedule fire: Evaluates work hours, capacity slots, and launches laps        |
 |   - Explicit target binding: passes --input target=#<id> to workflow run          |
 +-----------------------------------------------------------------------------------+
-                                        |  Bun CLI invocation (`archon workflow run`)
+                                        |  Bun CLI invocation (`animus workflow run`)
                                         v
 +-----------------------------------------------------------------------------------+
-|                      PINNED ARCHON SDLC ENGINE & PI RUNTIME                       |
+|                      PINNED ANIMUS SDLC ENGINE & PI RUNTIME                       |
 |                                                                                   |
 |   Target Repo: pabriq-app                                                         |
 |   Integration Base: develop                   Promotion Target: main (Human only) |
 |                                                                                   |
-|   Workflow: archon-loop (Pi Agent Provider)                                       |
+|   Workflow: animus-loop (Pi Agent Provider)                                       |
 |   +---------------+     +---------------+     +---------------+     +-----------+ |
 |   | 1. Pick       | --> | 2. Build      | --> | 3. Check App  | --> | 4. Review | |
 |   | (loop-pick)   |     | (loop-work)   |     | (Black-box    |     | (Diff &   | |
@@ -156,7 +156,7 @@ To balance overnight autonomous throughput with release safety, the factory enfo
 *   **Autonomous Staging Base (`develop`)**:
     *   Worktrees are created from `origin/develop` via `consumer.py`'s existing `baseOverride: "develop"` passing configured in `.factory/schedule.json`.
     *   Pull requests created during `loop-work` explicitly target `baseRefName: "develop"`.
-    *   Archon's `land` node merges accepted PRs strictly into `develop`.
+    *   Animus's `land` node merges accepted PRs strictly into `develop`.
 *   **Human Promotion Boundary (`main`)**:
     *   The engine is strictly forbidden from executing automated merges into `main`. Promotion to `main` is manual.
     *   **Promotion Preparation (`POST /api/promotion/prepare`)**:
@@ -166,25 +166,25 @@ To balance overnight autonomous throughput with release safety, the factory enfo
         4. Writes `.factory/PAUSE` to enact a **Candidate Freeze**, halting any new integrations into `develop` while the promotion PR is awaiting operator review.
 
 #### C. Lifecycle, Capacity, and Pause Semantics
-*   **Capacity Slot Accounting**: Concurrency is metered by active delivery laps (configured via `parallel: N` in `.factory/schedule.json`), where active laps correspond to `{ pending, running }` states in Archon's native run store.
+*   **Capacity Slot Accounting**: Concurrency is metered by active delivery laps (configured via `parallel: N` in `.factory/schedule.json`), where active laps correspond to `{ pending, running }` states in Animus's native run store.
 *   **Schedule & Work Window Enforcement**:
     *   `schedule.json` defines `work_window: { enabled: boolean, start_time: "20:00", end_time: "05:00", timezone: "Asia/Jakarta" }`.
     *   The `launch_decision` function in `factory/consumer.py` checks local time against this window before launching new work. Ticks outside the window wake existing in-flight laps to allow them to finish cleanly, but admit no new laps.
 *   **Three-Tier Control Primitives**:
     1.  **Drain (`POST /api/control/pause`)**: Writes `.factory/PAUSE`. The scheduler stops launching new laps while allowing active laps to proceed through verification, review, and staging integration.
     2.  **Resume (`POST /api/control/resume`)**: Removes `.factory/PAUSE`, re-enabling scheduler admissions.
-    3.  **Cancel Active Work (`POST /api/control/cancel`)**: Calls `archon workflow cancel <run-id>`, clears the in-flight GitHub issue claim, and leaves the worktree branch intact for subsequent manual inspection.
+    3.  **Cancel Active Work (`POST /api/control/cancel`)**: Calls `animus workflow cancel <run-id>`, clears the in-flight GitHub issue claim, and leaves the worktree branch intact for subsequent manual inspection.
 
 #### D. Configuration & Model Routing
 *   **Static Version-Controlled Configuration**:
-    *   Global model tiers (`small`, `medium`, `large`) are maintained directly in `.archon/config.yaml`.
+    *   Global model tiers (`small`, `medium`, `large`) are maintained directly in `.animus/config.yaml`.
     *   Shared skills reside in `.factory/resources/skills/`.
     *   MCP definitions reside in `.factory/resources/mcp.json`.
 *   **Read-Only Diagnostic Reporting**:
     *   The app exposes `GET /api/config/models` and `GET /api/config/resources` to display the active configuration in the UI without exposing write CRUD endpoints.
 
 #### E. Observability & Telemetry
-*   **Authoritative Run Telemetry**: The UI reads lap transitions and structured evidence via `GET /api/laps` and `GET /api/laps/:id` directly from Archon's native run store via `laps.py`.
+*   **Authoritative Run Telemetry**: The UI reads lap transitions and structured evidence via `GET /api/laps` and `GET /api/laps/:id` directly from Animus's native run store via `laps.py`.
 *   **Lightweight Telemetry Polling**: The operator dashboard polls `GET /api/laps/:id` every 2–3 seconds while a lap is active, displaying current node status, duration, and execution output without the operational fragility of SSE connection state.
 
 --------------------------------------------------------------------------------
@@ -216,13 +216,13 @@ To balance overnight autonomous throughput with release safety, the factory enfo
 *   **Description**: Build an integrated interactive chat interface within the Operator App to brainstorm features.
 *   **Reason for Rejection**: Overengineered and violates `MISSION.md:45`. The operator already has customized personal harnesses (Claude Code, T3 Code) optimized for conversational planning.
 
-### Alternative C: Direct RPC Subprocess Management Instead of Pinned Archon Workflows
-*   **Description**: Bypass Archon SDLC workflows and implement a custom task runner spawning Pi subprocesses directly.
+### Alternative C: Direct RPC Subprocess Management Instead of Pinned Animus Workflows
+*   **Description**: Bypass Animus SDLC workflows and implement a custom task runner spawning Pi subprocesses directly.
 *   **Reason for Rejection**: Directly violates Hard Invariant 1 (`MISSION.md:55`). Reinvents worktree isolation, claim locks, and verification gates.
 
 ### Alternative D: Dynamic Web CRUD Configuration & Per-Role Model Routing
-*   **Description**: Build web forms and REST endpoints to dynamically rewrite `.archon/config.yaml` and `.factory/resources/mcp.json`.
-*   **Reason for Rejection**: Archon SDLC workflows declare global tiers (`large`), not arbitrary per-node role overrides. Building file-editing web CRUD in Python introduces high complexity for a single-operator local developer tool.
+*   **Description**: Build web forms and REST endpoints to dynamically rewrite `.animus/config.yaml` and `.factory/resources/mcp.json`.
+*   **Reason for Rejection**: Animus SDLC workflows declare global tiers (`large`), not arbitrary per-node role overrides. Building file-editing web CRUD in Python introduces high complexity for a single-operator local developer tool.
 
 --------------------------------------------------------------------------------
 
@@ -263,9 +263,9 @@ The implementation follows 4 sequential phases. Each phase leaves the codebase t
         *   `POST /api/promotion/prepare`: Triggers promotion PR creation.
         *   `POST /api/control/pause`: Writes `.factory/PAUSE`.
         *   `POST /api/control/resume`: Unlinks `.factory/PAUSE`.
-        *   `POST /api/control/cancel`: Cancels run via `archon workflow cancel <id>`.
+        *   `POST /api/control/cancel`: Cancels run via `animus workflow cancel <id>`.
         *   `GET /api/config/schedule`: Reads current schedule.json.
-        *   `GET /api/config/models`: Reads model tiers from `.archon/config.yaml`.
+        *   `GET /api/config/models`: Reads model tiers from `.animus/config.yaml`.
     *   Add static asset handler for `/` and `/static/*` pointing to `web/` with directory traversal protection.
 *   **Tests**: `tests/test_app_control.py` (Create)
     *   Verify HTTP status codes, JSON response bodies, and control actions for pause/resume/cancel.

@@ -59,7 +59,7 @@ export const helpEntries: readonly HelpEntry[] = [
   {
     command: "lap",
     spec: "lap <list|get|run|evidence|report>",
-    description: "Inspect or launch supervised Archon engine laps",
+    description: "Inspect or launch supervised Animus engine laps",
   },
   {
     command: "loop",
@@ -289,32 +289,32 @@ export const orderedFlags: readonly FlagHelp[] = [
 ];
 
 export const orderedExamples: readonly ExampleHelp[] = [
-  { text: "labq-factory setup", command: "setup" },
+  { text: "animus setup", command: "setup" },
   {
-    text: "labq-factory setup --yes --provider claude --max-laps 4 --parallel 2",
+    text: "animus setup --yes --provider claude --max-laps 4 --parallel 2",
     command: "setup",
   },
-  { text: "labq-factory config show", command: "config" },
-  { text: "labq-factory config harnesses", command: "config" },
+  { text: "animus config show", command: "config" },
+  { text: "animus config harnesses", command: "config" },
   {
-    text: "labq-factory config tier large codex gpt-5.3-codex --effort xhigh",
+    text: "animus config tier large codex gpt-5.3-codex --effort xhigh",
     command: "config",
   },
-  { text: "labq-factory config laps --max-laps 4 --parallel 2 --interval 180", command: "config" },
+  { text: "animus config laps --max-laps 4 --parallel 2 --interval 180", command: "config" },
   {
-    text: 'labq-factory config harness --provider pi --static-cmd "bun run check"',
+    text: 'animus config harness --provider pi --static-cmd "bun run check"',
     command: "config",
   },
-  { text: "labq-factory serve --port 3000", command: "serve" },
-  { text: "labq-factory status --port 3000", command: "status" },
-  { text: "labq-factory engine doctor --json", command: "engine" },
-  { text: "labq-factory engine catalog", command: "engine" },
-  { text: "labq-factory doctor", command: "doctor" },
-  { text: "labq-factory control status", command: "control" },
-  { text: "labq-factory lap list --json", command: "lap" },
-  { text: 'labq-factory lap run "Fix login validation for issue #42"', command: "lap" },
-  { text: "labq-factory loop run --issue 72 --dry-run", command: "loop" },
-  { text: "labq-factory scheduler --once --dry-run", command: "scheduler" },
+  { text: "animus serve --port 3000", command: "serve" },
+  { text: "animus status --port 3000", command: "status" },
+  { text: "animus engine doctor --json", command: "engine" },
+  { text: "animus engine catalog", command: "engine" },
+  { text: "animus doctor", command: "doctor" },
+  { text: "animus control status", command: "control" },
+  { text: "animus lap list --json", command: "lap" },
+  { text: 'animus lap run "Fix login validation for issue #42"', command: "lap" },
+  { text: "animus loop run --issue 72 --dry-run", command: "loop" },
+  { text: "animus scheduler --once --dry-run", command: "scheduler" },
 ];
 
 export function formatSpecLine(spec: string, description: string): string {
@@ -347,10 +347,10 @@ export function renderHelp(command?: string): string {
     : orderedExamples;
 
   const sections: string[] = [];
-  sections.push("LabQ Factory CLI - Unified Backend, Engine-Host & Autonomous Loop Operator");
+  sections.push("Animus CLI - Unified Backend, Engine-Host & Autonomous Loop Operator");
   sections.push("");
   sections.push("Usage:");
-  sections.push("  labq-factory <command> [subcommand] [options] [arguments]");
+  sections.push("  animus <command> [subcommand] [options] [arguments]");
   sections.push("");
   sections.push("Commands:");
   sections.push(activeEntries.map((e) => formatSpecLine(e.spec, e.description)).join("\n"));

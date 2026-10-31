@@ -23,7 +23,7 @@ export function extractChangelogNotes(
 
   let body = "";
   if (!match || match.index === undefined) {
-    body = `## Release v${cleanVersion}\n\nAutomated release build for labq-software-factory v${cleanVersion}.`;
+    body = `## Release v${cleanVersion}\n\nAutomated release build for animus v${cleanVersion}.`;
   } else {
     const startIndex = match.index;
     const afterHeading = changelogText.slice(startIndex + match[0].length);
@@ -36,7 +36,7 @@ export function extractChangelogNotes(
     body = section.trim();
   }
 
-  const repo = (options.repo ?? "iqbal-codes/labq-software-factory").trim();
+  const repo = (options.repo ?? "iqbal-codes/animus").trim();
 
   if (options.appendInstallInstructions !== false) {
     const installBlock = [
@@ -50,7 +50,7 @@ export function extractChangelogNotes(
       `bun add -g github:${repo}`,
       "",
       "# Homebrew Tap (macOS & Linux)",
-      "brew install iqbal-codes/tap/labq-factory",
+      "brew install iqbal-codes/tap/animus",
       "```",
     ].join("\n");
     body = `${body}\n${installBlock}\n`;

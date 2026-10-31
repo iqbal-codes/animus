@@ -13,24 +13,24 @@ export function checkWorkspacePackageEdges(repoRoot) {
     {
       pkgRel: "packages/contracts/package.json",
       forbidden: [
-        "@labq/client",
-        "@labq/backend",
-        "@labq/engine-host",
-        "@labq/launcher",
-        "@labq/web",
+        "@animus/client",
+        "@animus/backend",
+        "@animus/engine-host",
+        "@animus/launcher",
+        "@animus/web",
       ],
     },
     {
       pkgRel: "packages/client/package.json",
-      forbidden: ["@labq/backend", "@labq/engine-host", "@labq/launcher", "@labq/web"],
+      forbidden: ["@animus/backend", "@animus/engine-host", "@animus/launcher", "@animus/web"],
     },
     {
       pkgRel: "apps/backend/package.json",
-      forbidden: ["@labq/engine-host"],
+      forbidden: ["@animus/engine-host"],
     },
     {
       pkgRel: "apps/engine-host/package.json",
-      forbidden: ["@labq/backend"],
+      forbidden: ["@animus/backend"],
     },
     {
       pkgRel: "apps/launcher/package.json",
@@ -38,7 +38,7 @@ export function checkWorkspacePackageEdges(repoRoot) {
     },
     {
       pkgRel: "apps/web/package.json",
-      forbidden: ["@labq/backend", "@labq/engine-host", "@labq/launcher"],
+      forbidden: ["@animus/backend", "@animus/engine-host", "@animus/launcher"],
     },
   ];
 
