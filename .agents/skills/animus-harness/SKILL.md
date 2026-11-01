@@ -1,16 +1,16 @@
 ---
-name: factory-harness
+name: animus-harness
 description: Synthesize post-lap memory, extract verified tool guidance and evidence-backed lessons, and author repository skills with observable completion criteria.
 disable-model-invocation: true
 ---
 
-# Factory Harness: Post-Lap Reflection & Memory Synthesis
+# Animus Harness: Post-Lap Reflection & Memory Synthesis
 
 Authoritative procedure for extracting, curating, and persisting repository lessons, tool guidance, and procedural skills after delivery laps.
 
 ## When to Use
 
-Use `/factory-harness` when:
+Use `/animus-harness` when:
 - A delivery lap has completed, and you need to capture discovered quirks, CLI recipes, or gotchas.
 - The repository requires updating `.factory/tool-guidance.json` with verified zero-exit commands.
 - You need to evaluate candidate lessons through TypeSafe Jev System 1 curation before persisting them to `.factory/lessons.jsonl`.

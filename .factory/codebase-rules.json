@@ -11,7 +11,7 @@
       "file_glob": "apps/backend/src/**/*.ts",
       "guidance": "Use SystemForgeAdapter paginated listIssues and getIssueStates batches; resolve only referenced dependencies and keep cached discovery separate from fresh target binding."
     },
-    "contracts": "Define shared schemas, DTOs, and domain types in dedicated contract/type modules with zero explicit 'any'.",
+    "contracts": "Define shared schemas, DTOs, and domain types in dedicated contract/type modules with zero explicit 'any'; model states with discriminated unions, parse untrusted inputs as 'unknown' at boundaries, and compile stub signatures before implementing bodies.",
     "ci_gate_evaluation": {
       "file_glob": "scripts/health/check-ci-gate.mjs",
       "guidance": "Evaluate upstream CI job outcomes in evaluateCiGateOutcome, failing closed on failure, cancelled, missing, or unauthorized skipped results."
@@ -22,7 +22,7 @@
       "guidance": "Stage POSIX install.sh with fail-closed SHA-256 verification into dist/releases/install.sh, generate Homebrew Formula animus.rb via generateHomebrewFormula with fail-closed 64-hex SHA-256 validation, bundle standalone JS CLI via buildBundledCliScript, package extractable .tar.gz archives via packageCliDistributionTarball, compute deterministic SHA-256 digests in checksums.txt, verify binaries and bundled scripts with verifyCliBinarySmoke, and enforce unprivileged build / write-privileged publication separation in release.yml."
     },
     "error_handling": "Return typed domain errors and structured status codes rather than silent catch blocks or raw exception strings.",
-    "ui_primitives": "Reuse canonical shared UI primitives (e.g. DataTable/SimpleTable, FormField/form hooks) when building frontend or mobile views.",
+    "ui_primitives": "Reuse canonical shared UI primitives (e.g. DataTable/SimpleTable, FormField/form hooks) and semantic tokens when building frontend or mobile views; implement all 7 interactive states (hover, focus-visible, disabled, empty, loading, error, long-content) and verify 1440px/390px viewports with >=4.5:1 contrast.",
     "workspace_governance": {
       "file_glob": "scripts/health/check-architecture.mjs",
       "guidance": "Enforce workspace package.json dependency boundaries and required open-source governance files using checkWorkspacePackageEdges and checkOpenSourceGovernanceFiles."

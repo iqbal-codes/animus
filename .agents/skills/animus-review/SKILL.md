@@ -1,5 +1,5 @@
 ---
-name: factory-review
+name: animus-review
 description: Review a factory candidate, branch, PR, or work-in-progress on independent Standards and Spec axes by dispatching two parallel subagents. Never reviews in the same session as the implementer.
 ---
 
@@ -12,13 +12,13 @@ Read `docs/agents/software-factory-workflow.md`. Review without editing, publish
 **Never review code in the same session that implemented it.**
 The builder/implementer cannot act as an independent reviewer of their own work—confirmation bias, cached assumptions, and builder context blind the author to subtle defects, edge cases, and omitted invariants.
 
-- **Separate session requirement:** If invoked within an active implementation session (or after implementing changes in the same thread), do **not** run the review inline. Handoff to an independent review session or instruct the caller to invoke `/factory-review` in a separate review thread.
-- **Coordinator role:** When executing `/factory-review` in an environment that supports subagents, the current session acts exclusively as the **review coordinator**. The coordinator does **not** conduct the code review directly; instead, it pins the scope, identifies sources and standards, dispatches **two dedicated axis subagents** in parallel, and aggregates their results. When running in a standalone review session where subagent delegation is unsupported, the reviewer conducts the evaluation of both axes directly within the session under separate headings.
+- **Separate session requirement:** If invoked within an active implementation session (or after implementing changes in the same thread), do **not** run the review inline. Handoff to an independent review session or instruct the caller to invoke `/animus-review` in a separate review thread.
+- **Coordinator role:** When executing `/animus-review` in an environment that supports subagents, the current session acts exclusively as the **review coordinator**. The coordinator does **not** conduct the code review directly; instead, it pins the scope, identifies sources and standards, dispatches **two dedicated axis subagents** in parallel, and aggregates their results. When running in a standalone review session where subagent delegation is unsupported, the reviewer conducts the evaluation of both axes directly within the session under separate headings.
 
 ## Critical Invariant: Strict Read-Only Review Boundary
 
 - **Reviewers DO NOT edit code:** Reviewers (both the coordinating agent and any delegated review subagents) are strictly forbidden from editing, writing, patching, formatting, refactoring, deleting, or committing any files in the workspace.
-- **No auto-fixing or silent remediation:** When a defect, smell, or contract gap is discovered, report it honestly as a finding with file:line, impact, and severity. Do NOT attempt to fix it during the review stage. Remediation belongs exclusively to `/factory-implement` or subsequent operator-directed work.
+- **No auto-fixing or silent remediation:** When a defect, smell, or contract gap is discovered, report it honestly as a finding with file:line, impact, and severity. Do NOT attempt to fix it during the review stage. Remediation belongs exclusively to `/animus-implement` or subsequent operator-directed work.
 - **Enforced subagent instructions:** When delegating tasks to subagents under `mcp__t3-code__delegate_task`, you MUST explicitly include the instruction:
   `"You are strictly a read-only reviewer. You are FORBIDDEN from using edit, write, or modifying any repository files. Only inspect files, execute read-only check/test commands, and report findings."`
 

@@ -1,28 +1,25 @@
 import { DatabaseSync } from "node:sqlite";
-import { chmodSync, existsSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import {
+  resolveAnimusStateDir,
+  ensureSecureDirectory,
+  migrateLegacyState,
+} from "@animus/contracts/paths";
 import { applyCommandMigrations } from "../command/db";
 import { applyCoordinationMigrations } from "../coordination/db";
 import { applyEvidenceMigrations } from "../evidence/db";
 
 export function resolveStateDir(): string {
-  const custom = process.env.FACTORY_STATE_DIR;
+  const custom = process.env.ANIMUS_STATE_DIR || process.env.FACTORY_STATE_DIR;
   if (custom && custom.trim() !== "") {
-    return custom;
+    return resolveAnimusStateDir(custom);
   }
-  return join(homedir(), ".factory", "state");
+  migrateLegacyState();
+  return resolveAnimusStateDir();
 }
 
 export function ensureStateDirectory(dirPath: string): void {
-  if (!existsSync(dirPath)) {
-    mkdirSync(dirPath, { recursive: true, mode: 0o700 });
-  }
-  try {
-    chmodSync(dirPath, 0o700);
-  } catch {
-    // If chmod fails due to filesystem restrictions (e.g. some tmp mounts), continue
-  }
+  ensureSecureDirectory(dirPath);
 }
 
 export function initializeDatabase(dbPath?: string): DatabaseSync {

@@ -46,6 +46,7 @@ import {
   renderPrompt,
   resolveAnimusCommandsDir,
 } from "./loop/prompts";
+import { resolveAnimusHome, getProjectSlug } from "../packages/contracts/src/paths";
 import {
   setupArtifactDirectories,
   parseAgentReport,
@@ -100,9 +101,11 @@ If the work item cannot be satisfied without changing what an in-repository chec
 
 1. **Branch workflow:** Work on the PR's branch, or create a delivery branch from the default branch (\`local-loop/issue-<number>-<id>\`). If another worktree holds the branch, use \`git checkout -B <branch> origin/<branch> --ignore-other-worktrees\`.
 2. **Branch integration:** Keep the branch current strictly via \`git merge --no-edit origin/<default-branch>\`. Preserve commit history without rebasing or force-pushing.
-3. **Smallest discriminating checks:** Iterate on the smallest unit test, frame, tick, or input path that isolates the behavior. Save exhaustive testing for final validation; running full end-to-end suites repeatedly on every edit wastes hours. Focus exclusively on the criteria and boundary files of your target issue; if tests outside your issue boundary fail, perform one bounded reproduction on the unchanged base before calling them pre-existing. Record the command and both outcomes; if reproduction is unavailable or inconclusive, report an unverified blocker. Never bypass gates or expand scope to repair unrelated systems.
-4. **Final validation:** Run the repository's ordinary checks once on your candidate commit (\`engineering.md\` or harness config). Save complete output to \`$ARTIFACTS_DIR/builder-checks.log\` so subsequent QA and review nodes reuse it without duplicate execution. If user-visible behavior changed, launch the app according to \`$INPUTS.runtime\` and verify the observable user path.
-5. **Commit and push:** Commit with an imperative, conventional commit message (\`feat(...)\`, \`fix(...)\`). The host executor pushes to origin, opens or updates the PR with \`Closes #<n>\`, and ensures the PR is ready for review (\`gh pr ready <n>\`).
+3. **Blueprint types & stubs first (\`.agents/skills/blueprint/SKILL.md\`):** For new modules, cross-file changes, or contract updates, define domain types and exported function signatures with stub bodies first, then verify \`bun run typecheck\` passes before filling in implementation logic.
+4. **Smallest discriminating checks & Two-Strike Unstick (\`.agents/skills/unstick/SKILL.md\`):** Iterate on the smallest unit test, frame, tick, or input path that isolates the behavior (cap narrow verify loops at 5 iterations). If the same error recurs twice after two edits, stop editing immediately: state the shared unverified assumption in one sentence, run a one-line probe to test it directly, revert broken scratch edits (\`git checkout -- <files>\`), and switch to an orthogonal mechanism. Focus exclusively on the criteria and boundary files of your target issue; if tests outside your issue boundary fail, perform one bounded reproduction on the unchanged base before calling them pre-existing. Record the command and both outcomes; if reproduction is unavailable or inconclusive, report an unverified blocker. Never bypass gates or expand scope to repair unrelated systems.
+5. **Blast-radius Proof Level 4 & UI Quality (\`.agents/skills/ui-quality/SKILL.md\`):** For shared callers, async teardown, or serialized contracts, prove external safety at Proof Level 4 (an executed test or probe script that fails loudly if the safety invariant breaks). For frontend/UI work, define semantic tokens first, build all 7 interactive states (\`hover\`, \`focus-visible\`, \`disabled\`, \`empty\`, \`loading\`, \`error\`, \`long-content\`), and verify 1440px and 390px viewports with >=4.5:1 contrast.
+6. **Final validation:** Run the repository's ordinary checks once on your candidate commit (\`engineering.md\` or harness config). Save complete output to \`$ARTIFACTS_DIR/builder-checks.log\` so subsequent QA and review nodes reuse it without duplicate execution. If user-visible behavior changed, launch the app according to \`$INPUTS.runtime\` and verify the observable user path.
+7. **Commit and push:** Commit with an imperative, conventional commit message (\`feat(...)\`, \`fix(...)\`). The host executor pushes to origin, opens or updates the PR with \`Closes #<n>\`, and ensures the PR is ready for review (\`gh pr ready <n>\`).
 
 ## 3. Pull Request Evidence Contract
 
@@ -541,11 +544,13 @@ export async function runLocalLoop(
   }
 
   const runId = randomUUID();
-  const stateRoot = join(common, "factory-local-loop");
+  const stateRoot =
+    process.env.ANIMUS_HOME || process.env.ANIMUS_STATE_DIR || process.env.ANIMUS_RUNS_DIR
+      ? join(resolveAnimusHome(), "projects", getProjectSlug(root))
+      : join(common, "factory-local-loop");
   const runDirectory = join(stateRoot, "runs", runId);
   const { artifactsDir, handoffDir } = await setupArtifactDirectories(runDirectory);
   const lock = join(stateRoot, "locks", `issue-${issue.number}`);
-
   await mkdir(dirname(lock), { recursive: true });
   try {
     await mkdir(lock);
@@ -845,11 +850,11 @@ export async function runLocalLoop(
           "## Bounded role execution (overrides completion instructions above)",
           `Soft deadline (absolute Unix milliseconds): ${softDeadline} (${new Date(softDeadline).toISOString()}).`,
           `Hard deadline (absolute Unix milliseconds): ${hardDeadline}; the host terminates the owned process group then.`,
-          `Write a durable checkpoint to ${checkpointPath} before the soft deadline: completed work, HEAD, dirty files, evidence, blockers, and exact next steps. Preserve this worktree.`,
+          `Write a durable checkpoint to ${checkpointPath} before the soft deadline: completed work, HEAD, dirty files, evidence, failed approaches/disproved assumptions (with probe evidence so they are never repeated), blockers, and exact next steps. Preserve this worktree.`,
           "After soft deadline the Pi guard permits only write/edit of that exact checkpoint path and simple read-only git status/diff/rev-parse. No git add/commit, publication, or other work is allowed.",
           "Bash defaults to 90 seconds; explicitly longer budgets are clipped to remaining hard time. Do not start work that cannot finish before the deadline.",
           'If incomplete, return {"verdict":"interrupted"}; never report pass for incomplete work.',
-          ...(attempt ? [`Continuation ${attempt}: resume the SAME role in the SAME worktree. Read ${checkpointPath} and prior attempt artifacts first; retain all existing work and do not restart the task.`] : []),
+          ...(attempt ? [`Continuation ${attempt}: resume the SAME role in the SAME worktree. Read ${checkpointPath} and prior attempt artifacts first, run the baseline check yourself before editing, skip any failed approaches recorded in the checkpoint, and retain all verified work.`] : []),
         ].join("\n");
         const stepNum = role === "builder" ? 0 : role === "qa" ? 1 : 2;
         const sessionDirectory = join(runDirectory, attempt === 0

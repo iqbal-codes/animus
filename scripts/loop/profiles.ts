@@ -131,8 +131,8 @@ export function getProfileInstructions(profile: VerificationProfile, root: strin
         depth: "normal",
         skipAppLaunch: false,
         runtimeInstructions:
-          "Frontend / UI change. Build the web app and verify the specific visual and interactive components modified. Do not execute deep backend holdout sweeps.",
-        description: "Frontend UI change; targeted web/component verification.",
+          "Frontend / UI change. Build the web app and verify the specific visual and interactive components modified. Verify all 7 interactive states (hover, focus-visible, disabled, empty, loading, error, long-content), check 1440px desktop and 390px mobile viewports for zero horizontal overflow, enforce WCAG 2.2 AA contrast (>=4.5:1) and >=44px touch targets, and follow .agents/skills/ui-quality/SKILL.md. Do not execute deep backend holdout sweeps.",
+        description: "Frontend UI change; targeted web/component and 7-state viewport verification.",
       };
 
     case "api":

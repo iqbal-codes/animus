@@ -18,6 +18,7 @@ import { WorktreeManager } from "./worktree";
 import { freezeContract, executeTargetedImplement, type ImplementRunner } from "./primitive";
 import { SerializedIntegrationManager } from "./integration";
 import { CoordinationError } from "./errors";
+import { getProjectWorktreesDir } from "@animus/contracts/paths";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 
@@ -360,9 +361,7 @@ export class SpecCoordinatorService {
       ? plan.integrationBranch
       : `factory/spec-${specIssueNumber}/ticket-${childIssueNumber}`;
     const worktreeDir = join(
-      project.checkout_path,
-      ".factory",
-      "worktrees",
+      getProjectWorktreesDir(project.checkout_path),
       `spec-${specIssueNumber}`,
       `ticket-${childIssueNumber}`,
     );

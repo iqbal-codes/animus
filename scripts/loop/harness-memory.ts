@@ -1,6 +1,16 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { LocalIssue, LoopRole } from "./types";
+
+const NON_BUILDER_SKILLS = new Set([
+  "animus-grill",
+  "animus-spec",
+  "animus-tickets",
+  "animus-review",
+  "animus-harness",
+  "writing-for-agents",
+  "skill-creator",
+]);
 
 export interface LessonEntry {
   id: string;
@@ -21,23 +31,58 @@ export function resolveAllowedSkills(root: string, role: LoopRole): string[] {
   if (isHarnessSafeMode(root)) return [];
 
   const repoSkillsDir = join(root, ".agents/skills");
-  const candidateNames: string[] = [];
+  const candidateNames = new Set<string>();
 
   switch (role) {
-    case "builder":
-      candidateNames.push("tdd", "diagnosing-bugs", "factory-implement");
+    case "builder": {
+      for (const base of [
+        "tdd",
+        "diagnosing-bugs",
+        "animus-implement",
+        "unstick",
+        "blueprint",
+        "ui-quality",
+      ]) {
+        candidateNames.add(base);
+      }
+      if (existsSync(repoSkillsDir)) {
+        try {
+          for (const entry of readdirSync(repoSkillsDir, { withFileTypes: true })) {
+            if (!entry.isDirectory() || NON_BUILDER_SKILLS.has(entry.name)) continue;
+            const skillMdPath = join(repoSkillsDir, entry.name, "SKILL.md");
+            if (!existsSync(skillMdPath)) continue;
+            const head = readFileSync(skillMdPath, "utf-8").slice(0, 400);
+            if (!/disable-model-invocation:\s*true/i.test(head)) {
+              candidateNames.add(entry.name);
+            }
+          }
+        } catch {}
+      }
+      break;
+    }
+    case "qa":
+      candidateNames.add("ui-quality");
+      break;
+    case "planner":
+      candidateNames.add("blueprint");
+      break;
+    case "investigator":
+      candidateNames.add("diagnosing-bugs");
+      candidateNames.add("unstick");
       break;
     case "reviewer":
       // Unattended loop reviewer is governed directly by loop-review.md with unified Standards & Spec axes
       break;
     case "reflector":
-      candidateNames.push("factory-harness", "writing-for-agents", "skill-creator");
+      candidateNames.add("animus-harness");
+      candidateNames.add("writing-for-agents");
+      candidateNames.add("skill-creator");
       break;
     default:
       break;
   }
 
-  return candidateNames
+  return Array.from(candidateNames)
     .map((name) => join(repoSkillsDir, name))
     .filter((p) => existsSync(join(p, "SKILL.md")) || existsSync(p));
 }

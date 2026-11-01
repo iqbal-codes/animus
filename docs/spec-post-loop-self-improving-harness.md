@@ -80,9 +80,9 @@ Adopt Google Research Harness²'s **Two-Level Recursion** approach, adapted to o
 3. Prepare selective context injection in `scripts/loop/harness-memory.ts` before running the provider:
 - **`resolveAllowedSkills(root: string, role: LoopRole): string[]`**:
   - Return a list of absolute paths to repository-owned `.agents/skills/*` by role:
-    - `builder`: `tdd`, `diagnosing-bugs`, `factory-implement`
-    - `reviewer`: `factory-review`
-    - `reflector`: `factory-harness`, plus the meta-skills `writing-for-agents` and `skill-creator`
+    - `builder`: `tdd`, `diagnosing-bugs`, `animus-implement`
+    - `reviewer`: `animus-review`
+    - `reflector`: `animus-harness`, plus the meta-skills `writing-for-agents` and `skill-creator`
 - **`matchRelevantLessons(root: string, targetHints: string[]): LessonEntry[]`**:
   - Read `.factory/lessons.jsonl`, filtering for `vetoed === false`.
   - Match `trigger_patterns` (globs) against the list of files changed or mentioned in the ticket.
@@ -192,7 +192,7 @@ Run the curation and harness-change persistence process:
    - Spawn a dedicated Pi session (*Skill Synthesis Agent*) including:
      - `--skill <path>/writing-for-agents`
      - `--skill <path>/skill-creator`
-     - `--skill <path>/.agents/skills/factory-harness`
+     - `--skill <path>/.agents/skills/animus-harness`
    - **Mandatory Authoring Rules**:
      - Create/update `.agents/skills/<skill-name>/SKILL.md` with YAML frontmatter (`name`, a `description` that clearly triggers conditional branches), numbered steps, and each step ending with a `*Completion Criterion*`.
      - Use *positive phrasing*, avoid negation, and use precise *leading words*.

@@ -1,5 +1,5 @@
 ---
-name: factory-tickets
+name: animus-tickets
 description: Split an agreed spec into factory-compatible vertical tickets, with parser-readable dependencies and approved publication.
 disable-model-invocation: true
 ---
@@ -10,7 +10,7 @@ Read `docs/agents/software-factory-workflow.md`, `docs/agents/issue-tracker.md`,
 
 ## 1. Establish the source
 
-Read the supplied spec/conversation/issue and all comments. Resolve the intended target repository, current base behavior, relevant glossary/ADRs, and existing issues/PRs. If material product intent is missing, identify the question and stop that branch for `/factory-grill` or `/factory-spec`; do not manufacture an agent-ready ticket.
+Read the supplied spec/conversation/issue and all comments. Resolve the intended target repository, current base behavior, relevant glossary/ADRs, and existing issues/PRs. If material product intent is missing, identify the question and stop that branch for `/animus-grill` or `/animus-spec`; do not manufacture an agent-ready ticket.
 
 ## 2. Draft the task graph
 
@@ -35,4 +35,4 @@ If the user asked only for local drafts, save one file per ticket under `.scratc
 
 ## 4. Handoff
 
-Return issue URLs, source coverage, blockers, and separate contract/admission status. Name the current frontier and any unknown prerequisite state. Suggest `/factory-implement <spec-reference>`; publishing tickets does not launch a lap, close the parent, or authorize merge/deploy.
+Return issue URLs, source coverage, blockers, and separate contract/admission status. Name the current frontier and any unknown prerequisite state. Suggest `/animus-implement <spec-reference>`; publishing tickets does not launch a lap, close the parent, or authorize merge/deploy.

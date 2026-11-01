@@ -159,5 +159,48 @@ describe("TypeScript Harness and Mutation Verification", () => {
       args: { path: "apps/backend/src/main.ts" },
     });
     expect(allowed).toBeUndefined();
+
+    // First bash failure: tool guidance hint only, no unstick trigger yet
+    const fail1 = await handlers.tool_result!({
+      toolName: "bash",
+      isError: true,
+      content: [{ type: "text", text: "Test failed" }],
+    });
+    const fail1Text = fail1?.content?.map((c: any) => c.text).join("\n") ?? "";
+    expect(fail1Text).not.toContain("HARNESS UNSTICK TRIGGER");
+
+    // Second consecutive bash failure: triggers Two-Strike Unstick intervention
+    const fail2 = await handlers.tool_result!({
+      toolName: "bash",
+      isError: true,
+      content: [{ type: "text", text: "Test failed again" }],
+    });
+    const fail2Text = fail2?.content?.map((c: any) => c.text).join("\n") ?? "";
+    expect(fail2Text).toContain("HARNESS UNSTICK TRIGGER");
+    expect(fail2Text).toContain(".agents/skills/unstick/SKILL.md");
+
+    // Editing a file while 2+ consecutive failures remain active emits unstick warning
+    const editAfterFail = await handlers.tool_result!({
+      toolName: "edit",
+      args: { path: "apps/backend/src/main.ts", edits: [{ oldText: "a", newText: "b" }] },
+      content: [{ type: "text", text: "Edited" }],
+    });
+    const editWarnText = editAfterFail?.content?.map((c: any) => c.text).join("\n") ?? "";
+    expect(editWarnText).toContain("HARNESS UNSTICK WARNING");
+
+    // Passing bash probe resets the consecutive failure counter
+    await handlers.tool_result!({
+      toolName: "bash",
+      isError: false,
+      content: [{ type: "text", text: "Probe passed" }],
+    });
+
+    const failAfterReset = await handlers.tool_result!({
+      toolName: "bash",
+      isError: true,
+      content: [{ type: "text", text: "New failure" }],
+    });
+    const failAfterResetText = failAfterReset?.content?.map((c: any) => c.text).join("\n") ?? "";
+    expect(failAfterResetText).not.toContain("HARNESS UNSTICK TRIGGER");
   });
 });

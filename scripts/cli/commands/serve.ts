@@ -1,5 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import {
+  resolveAnimusStateDir,
+  ensureSecureDirectory,
+  enforceSecureFilePermissions,
+} from "../../../packages/contracts/src/paths";
 import { FactoryLauncher, type LauncherOptions } from "../../../apps/launcher/src/launcher";
 
 export interface RuntimeMetadata {
@@ -26,8 +31,10 @@ export function readRuntimeMetadata(stateDir: string): RuntimeMetadata | null {
 }
 
 export function writeRuntimeMetadata(stateDir: string, meta: RuntimeMetadata): void {
-  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-  writeFileSync(getRuntimeMetadataPath(stateDir), JSON.stringify(meta, null, 2), "utf-8");
+  ensureSecureDirectory(stateDir);
+  const metaPath = getRuntimeMetadataPath(stateDir);
+  writeFileSync(metaPath, JSON.stringify(meta, null, 2), { mode: 0o600, encoding: "utf-8" });
+  enforceSecureFilePermissions(metaPath);
 }
 
 export function clearRuntimeMetadata(stateDir: string): void {
@@ -86,7 +93,7 @@ export async function runServeCommand(
   launcherFactory: (options: LauncherOptions) => FactoryLauncher = (options) =>
     new FactoryLauncher(options),
 ): Promise<number> {
-  const stateDir = opts.stateDir ?? join(opts.repoRoot, ".factory/state");
+  const stateDir = opts.stateDir ?? resolveAnimusStateDir();
   const host = opts.host ?? "127.0.0.1";
   const port = opts.port ?? 3000;
   const sub = opts.subcommand ?? "start";
@@ -221,7 +228,7 @@ export async function runStatusCommand(opts: {
   port?: number;
   json?: boolean;
 }): Promise<number> {
-  const stateDir = opts.stateDir ?? join(opts.repoRoot, ".factory/state");
+  const stateDir = opts.stateDir ?? resolveAnimusStateDir();
   const meta = readRuntimeMetadata(stateDir);
   const host = opts.host ?? "127.0.0.1";
   const port = opts.port ?? 3000;
@@ -287,7 +294,8 @@ export async function runStandaloneBackend(opts: {
     cwd: opts.repoRoot,
     env: {
       ...process.env,
-      FACTORY_STATE_DIR: opts.stateDir ?? join(opts.repoRoot, ".factory/state"),
+      ANIMUS_STATE_DIR: opts.stateDir ?? resolveAnimusStateDir(),
+      FACTORY_STATE_DIR: opts.stateDir ?? resolveAnimusStateDir(),
       ...(opts.webDir ? { FACTORY_WEB_DIR: opts.webDir } : {}),
       FACTORY_REMOTE_ACCESS: String(opts.remoteAccess ?? false),
       FACTORY_HOST_URL: process.env.FACTORY_HOST_URL ?? "http://127.0.0.1:4001",

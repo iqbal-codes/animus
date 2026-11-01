@@ -2,13 +2,13 @@
 
 Read this contract for brainstorming, specs, tickets, implementation, or review in this repo. Stage order:
 
-`/factory-grill → /factory-spec → /factory-tickets → /factory-implement → /factory-review`
+`/animus-grill → /animus-spec → /animus-tickets → /animus-implement → /animus-review`
 
 Each stage hands off an artifact, not permission to run the next stage. Read `issue-tracker.md` for tracker operations and `triage-labels.md` for label roles. Resolve the target repository explicitly: this factory's own backlog and a configured product backlog can differ. Use an explicit repository on tracker writes.
 
 ## Authority and current truth
 
-Repository-local skills under `.agents/skills/` (also symlinked to `.claude/skills/`) use the `factory-` prefix to distinguish this workflow from the global Matt skills. Keep factory-specific rules here; the global skills remain unchanged. Use the factory-prefixed commands for this lifecycle.
+Repository-local stage skills under `.agents/skills/` (also symlinked to `.claude/skills/`) use the `animus-` prefix to distinguish this workflow from global skills. Keep factory-specific rules here; global skills remain unchanged. Use the `animus-`-prefixed commands for this lifecycle.
 
 Before acting, read current code, configuration, the source issue and comments, applicable glossary/ADRs, and any existing PR. Design documents describe intent until executable behavior establishes it. Read `.factory/consumer.json` to locate the pinned engine; inspect that source's loop/triage commands when their contract matters. Do not use an ambient engine or hard-code a cache path/revision.
 
@@ -67,13 +67,13 @@ A passing intake result is not proof of engine selection or delivery. The schedu
 
 ## Implementation and evidence
 
-`/factory-implement` prepares or implements approved frontier tickets; it does not replace the native workflow with a parallel scheduler. Discover the configured base, current merge mode, ownership, and existing PR before starting. Do not assume `main`, `develop`, or automatic merge. A prerequisite is complete only when its required outcome is present on the chosen base, not merely because a sibling branch exists or an issue is closed.
+`/animus-implement` prepares or implements approved frontier tickets; it does not replace the native workflow with a parallel scheduler. Discover the configured base, current merge mode, ownership, and existing PR before starting. Do not assume `main`, `develop`, or automatic merge. A prerequisite is complete only when its required outcome is present on the chosen base, not merely because a sibling branch exists or an issue is closed.
 
 For native delivery retain the pinned loop's ownership:
 
 `pick → claim → build/ship → subject → check-app → evidence → review → land → release`
 
-The installed graph may include an optional deployment node. The builder supplies per-criterion checks and a PR Evidence section, then independent runtime/peer review evaluates the exact candidate. The builder does not approve or land their own work, nor review it in the same session: `/factory-review` is conducted in a clean session that always dispatches two independent axis subagents (Standards and Spec). Preserve holdout secrecy and protected paths; ordinary harness checks and independent runtime evidence are distinct results. A local `/factory-review` report cannot fabricate native evidence records or mark native approval complete.
+The installed graph may include an optional deployment node. The builder supplies per-criterion checks and a PR Evidence section, then independent runtime/peer review evaluates the exact candidate. The builder does not approve or land their own work, nor review it in the same session: `/animus-review` is conducted in a clean session that always dispatches two independent axis subagents (Standards and Spec). Preserve holdout secrecy and protected paths; ordinary harness checks and independent runtime evidence are distinct results. A local `/animus-review` report cannot fabricate native evidence records or mark native approval complete.
 
 Record source ticket/spec, AC identifier, observed result, command/scenario, artifact path, and tested candidate/head. Distinguish PASS, FAIL, BLOCKED, and NOT RUN. After code or base changes, rerun affected checks and refresh head-bound evidence. Publish or close work only under the authorized tracker/merge policy; close a parent only after every required outcome is verified.
 

@@ -1,12 +1,12 @@
 ---
-name: factory-spec
+name: animus-spec
 description: Synthesize agreed discussion into a software factory spec, with explicit acceptance and a gated tracker handoff.
 disable-model-invocation: true
 ---
 
 # Write the spec
 
-Read `docs/agents/software-factory-workflow.md` and the tracker/label docs it points to. Synthesize settled discussion rather than starting another interview. Missing intent remains an open question; offer `/factory-grill` for decisions that prevent a complete contract.
+Read `docs/agents/software-factory-workflow.md` and the tracker/label docs it points to. Synthesize settled discussion rather than starting another interview. Missing intent remains an open question; offer `/animus-grill` for decisions that prevent a complete contract.
 
 ## Process
 
@@ -14,7 +14,7 @@ Read `docs/agents/software-factory-workflow.md` and the tracker/label docs it po
 2. Separate observed current behavior from the proposal. Carry forward agreed decisions and exclusions exactly; cite source sections and relevant code evidence. Describe test seams using existing public behavior where possible. New design is a proposal unless already agreed.
 3. Write the spec below. Give acceptance criteria stable identifiers for later ticket and evidence mapping. Include only relevant states, failures, and authority boundaries; do not pad with exhaustive invented user stories.
 4. Present the draft, material gaps, target repository, and proposed labels. Publish or update the source issue only when those writes are authorized. A parent spec is planning-only: label with `spec` paired with `ready-for-human` (or `needs-info` if material intent is missing/incomplete; never `ready-for-agent` for parent specs). Read back any publication and return its exact URL.
-5. Handoff: spec path/URL, complete vs incomplete contract, unresolved decisions, and suggested `/factory-tickets` input. Stop before decomposition or execution unless separately requested.
+5. Handoff: spec path/URL, complete vs incomplete contract, unresolved decisions, and suggested `/animus-tickets` input. Stop before decomposition or execution unless separately requested.
 
 ## Spec shape
 
