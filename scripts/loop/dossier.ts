@@ -8,7 +8,7 @@ export interface LapAttemptRecord {
   status: "waiting_approval" | "sent_back" | "failed" | "needs_owner";
   candidateHead?: string;
   changedFiles: string[];
-  failedStage?: "builder" | "ordinary_checks" | "qa" | "reviewer";
+  failedStage?: "builder" | "ordinary_checks" | "qa" | "reviewer" | "ci";
   errorExcerpt?: string;
   reviewFindings: string[];
   qaFailures: string[];

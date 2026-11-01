@@ -62,6 +62,10 @@ export interface LocalLoopOptions {
   maxContinuations?: number;
   push?: boolean;
   baseBranch?: string;
+  /** Seconds to poll PR CI checks before running reviewer (default 15s). */
+  ciWaitSeconds?: number;
+  /** Optional CI assessment injector for testing */
+  checkPrCi?: (pr: string | number, options?: any) => Promise<any>;
 }
 
 export interface LoopEvidence {

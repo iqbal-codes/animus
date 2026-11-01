@@ -47,6 +47,7 @@ import {
   resolveAnimusCommandsDir,
 } from "./loop/prompts";
 import { resolveAnimusHome, getProjectSlug } from "../packages/contracts/src/paths";
+import { pollPrCiStatus, checkPrCiStatus } from "./loop/ci";
 import {
   setupArtifactDirectories,
   parseAgentReport,
@@ -1020,6 +1021,129 @@ export async function runLocalLoop(
     const { ok: evidenceOkBool, problems: evidenceProblems } = validateEvidenceCitations(qaReport, artifactsDir);
     await Bun.write(join(handoffDir, "evidence-problems.txt"), evidenceProblems.join("\n"));
     const evidenceOk = evidenceOkBool ? "true" : "false";
+
+    // -------------------------------------------------------------
+    // STAGE 3.5: PR CI CHECK GATE (Fail-fast if remote CI already failed)
+    // -------------------------------------------------------------
+    const prTarget = state.pr ?? (options.checkPrCi ? "mock-pr" : undefined);
+    if (prTarget && (options.push !== false || options.checkPrCi)) {
+      if (!state.pr && options.checkPrCi) {
+        state.pr = prTarget;
+      }
+      const ciTimeoutSeconds = options.ciWaitSeconds ?? 15;
+      const ciAssessment = options.checkPrCi
+        ? await options.checkPrCi(prTarget, { cwd: state.worktree })
+        : await pollPrCiStatus(prTarget, {
+            maxWaitSeconds: ciTimeoutSeconds,
+            pollIntervalSeconds: 5,
+            cwd: state.worktree,
+          });
+
+      await Bun.write(
+        join(artifactsDir, "pr-ci.json"),
+        JSON.stringify(ciAssessment, null, 2),
+      );
+
+      if (ciAssessment.status === "fail") {
+        const isMaxLapsExceeded = lap >= maxLaps;
+        const ciStatus: LocalLoopStatus = isMaxLapsExceeded ? "needs_owner" : "sent_back";
+        state.status = ciStatus;
+
+        if (ciStatus === "needs_owner") {
+          try {
+            await processRun(
+              [
+                "gh",
+                "issue",
+                "edit",
+                String(issue.number),
+                "--add-label",
+                "ready-for-human",
+                "--remove-label",
+                "ready-for-agent",
+              ],
+              state.worktree,
+              15_000,
+            );
+          } catch (lblErr: unknown) {
+            const msg = lblErr instanceof Error ? lblErr.message : String(lblErr);
+            console.error("Warning: Failed to update GitHub issue labels on CI escalation:", msg);
+          }
+        }
+
+        const changedFilesFinal = (
+          await git(state.worktree, "diff", "--name-only", "--no-renames", base, state.candidate)
+        )
+          .split("\n")
+          .filter(Boolean);
+
+        const dossier = recordLapAttempt(
+          stateRoot,
+          {
+            issueNumber: issue.number,
+            issueTitle: issue.title,
+            issueUrl: issue.url,
+            branch,
+            prUrl: state.pr,
+          },
+          {
+            runId,
+            timestamp: new Date().toISOString(),
+            status: ciStatus,
+            candidateHead: state.candidate,
+            changedFiles: changedFilesFinal,
+            failedStage: "ci",
+            reviewFindings: ciAssessment.failedChecks.map(
+              (c: any) => `CI Check [${c.workflow ? c.workflow + " / " : ""}${c.name}] failed: ${c.link || c.state}`,
+            ),
+            qaFailures: [],
+          },
+        );
+
+        if (shouldTriggerReflection(dossier, { maxRejections })) {
+          state.status = "reflecting";
+          await save();
+          const reflection = await runPostIssueReflection({
+            root,
+            worktree: state.worktree,
+            dossier,
+            artifactsDir,
+            transport: reflectionTransport,
+            timeoutMs: roleBudgets.reflector.hardMs,
+          });
+          await Bun.write(join(artifactsDir, "reflection.json"), JSON.stringify(reflection, null, 2));
+          dossier.reflectedAt = new Date().toISOString();
+          saveIssueDossier(stateRoot, dossier);
+          state.status = ciStatus;
+        }
+
+        const ciCommentLines = [
+          `### Loop CI Check: Failed (route: ${route})`,
+          "",
+          `**Candidate**: \`${state.candidate}\``,
+          "",
+          "#### ❌ Remote CI Failures:",
+          ...ciAssessment.failedChecks.map(
+            (c: any) => `- [ ] **${c.workflow ? c.workflow + " / " : ""}${c.name}** (\`${c.state}\`): ${c.link || c.description || "Failed"}`,
+          ),
+          "",
+          isMaxLapsExceeded
+            ? "⛔ **Maximum laps exceeded on CI failure.** Handing off to human owner (`ready-for-human`)."
+            : "⚠️ **Work item sent back due to CI failure.** CI error feedback recorded for next lap auto-fix.",
+        ];
+
+        try {
+          await processRun(
+            ["gh", "pr", "comment", String(state.pr), "--body", ciCommentLines.join("\n")],
+            state.worktree,
+            30_000,
+          );
+        } catch {}
+
+        await save();
+        return state;
+      }
+    }
 
     // -------------------------------------------------------------
     // STAGE 4: CODE REVIEW (loop-review)
