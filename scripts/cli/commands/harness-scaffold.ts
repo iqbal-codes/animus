@@ -137,6 +137,26 @@ export function auditAgentsMd(repoRoot: string): AgentsMdAudit {
   };
 }
 
+export const CANONICAL_SKILL_CATALOG = [
+  ["tdd", "Test-driven development red-green-refactor playbook."],
+  ["diagnosing-bugs", "Systematic root-cause bug diagnosis playbook."],
+  ["unstick", "Two-strike failure recovery and premise probing playbook."],
+  ["blueprint", "Type-first architecture and Level 4 blast-radius verification playbook."],
+  ["ui-quality", "Intentional frontend design, 7-state coverage, and viewport audit playbook."],
+  ["animus-implement", "Autonomous builder implementation playbook."],
+  ["animus-review", "Independent code review and evidence verification playbook."],
+  ["animus-harness", "Post-lap memory, tool guidance, and lesson synthesis playbook."],
+  ["animus-brainstorm", "Shape a broad product or initiative idea into an ordered slice map."],
+  ["animus-grill", "Stress-test a single product slice top-down across altitude gates."],
+  ["animus-spec", "Synthesize agreed discussion into a software factory specification."],
+  ["animus-architecture", "Derive tech stack, module topology, and reusable components from product specs."],
+  ["animus-tickets", "Split an agreed spec into vertical tickets with parser-readable dependencies."],
+  ["writing-for-agents", "Authoring concise, positive imperative agent instructions."],
+  ["skill-creator", "Creating structured procedural skills with completion criteria."],
+] as const;
+
+export const CANONICAL_SKILL_NAMES = CANONICAL_SKILL_CATALOG.map(([name]) => name);
+
 export function auditRepositoryHarness(repoRoot: string): HarnessAuditReport {
   const root = resolve(repoRoot);
   const agentsMd = auditAgentsMd(root);
@@ -165,26 +185,8 @@ export function auditRepositoryHarness(repoRoot: string): HarnessAuditReport {
       lstatSync(claudeSkillsPath).isSymbolicLink() || existsSync(claudeSkillsPath);
   } catch {}
 
-  const canonicalSkills = [
-    "tdd",
-    "diagnosing-bugs",
-    "unstick",
-    "blueprint",
-    "ui-quality",
-    "animus-implement",
-    "animus-review",
-    "animus-harness",
-    "animus-brainstorm",
-    "animus-grill",
-    "animus-spec",
-    "animus-architecture",
-    "animus-tickets",
-    "writing-for-agents",
-    "skill-creator",
-  ];
-
-  const canonicalSet = new Set(canonicalSkills);
-  const skillsInstalled = canonicalSkills.filter((name) =>
+  const canonicalSet = new Set<string>(CANONICAL_SKILL_NAMES);
+  const skillsInstalled = CANONICAL_SKILL_NAMES.filter((name) =>
     existsSync(join(root, ".agents/skills", name, "SKILL.md")),
   );
 
@@ -529,23 +531,7 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
   if (sourceRoot && resolve(sourceRoot) !== targetRoot) {
     const sourceSkillsDir = join(sourceRoot, ".agents/skills");
     if (existsSync(sourceSkillsDir)) {
-      for (const skillName of [
-        "tdd",
-        "diagnosing-bugs",
-        "unstick",
-        "blueprint",
-        "ui-quality",
-        "animus-implement",
-        "animus-review",
-        "animus-harness",
-        "animus-brainstorm",
-        "animus-grill",
-        "animus-spec",
-        "animus-architecture",
-        "animus-tickets",
-        "writing-for-agents",
-        "skill-creator",
-      ]) {
+      for (const skillName of CANONICAL_SKILL_NAMES) {
         const srcSkill = join(sourceSkillsDir, skillName);
         const dstSkill = join(targetSkillsDir, skillName);
         if (existsSync(srcSkill) && !existsSync(dstSkill)) {
@@ -572,18 +558,7 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
     }
   } else {
     // Minimal embedded fallback skills if running from standalone binary outside source tree
-    for (const [skillName, desc] of [
-      ["tdd", "Test-driven development red-green-refactor playbook."],
-      ["diagnosing-bugs", "Systematic root-cause bug diagnosis playbook."],
-      ["unstick", "Two-strike failure recovery and premise probing playbook."],
-      ["blueprint", "Type-first architecture and Level 4 blast-radius verification playbook."],
-      ["ui-quality", "Intentional frontend design, 7-state coverage, and viewport audit playbook."],
-      ["animus-implement", "Autonomous builder implementation playbook."],
-      ["animus-review", "Independent code review and evidence verification playbook."],
-      ["animus-harness", "Post-lap memory, tool guidance, and lesson synthesis playbook."],
-      ["writing-for-agents", "Authoring concise, positive imperative agent instructions."],
-      ["skill-creator", "Creating structured procedural skills with completion criteria."],
-    ] as const) {
+    for (const [skillName, desc] of CANONICAL_SKILL_CATALOG) {
       const dstSkillFile = join(targetSkillsDir, skillName, "SKILL.md");
       if (!existsSync(dstSkillFile)) {
         mkdirSync(dirname(dstSkillFile), { recursive: true });

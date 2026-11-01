@@ -792,7 +792,15 @@ test("13. Verification Profiles: resolves appropriate profile and generates tune
     false,
   );
 
-  for (const stageSkill of ["animus-brainstorm", "animus-grill", "animus-architecture"] as const) {
+  for (const stageSkill of [
+    "animus-brainstorm",
+    "animus-grill",
+    "animus-spec",
+    "animus-architecture",
+    "animus-tickets",
+    "animus-implement",
+    "animus-review",
+  ] as const) {
     const skillText = readFileSync(join(root, ".agents/skills", stageSkill, "SKILL.md"), "utf-8");
     expect(skillText).toContain("disable-model-invocation: true");
     expect(skillText).toContain("## When to Use");
