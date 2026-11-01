@@ -223,6 +223,9 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         once: values.once,
         history: values.history,
         json: values.json,
+        mapping: values.mapping,
+        publish: values.publish,
+        candidate: values.candidate,
       });
 
     case "scheduler":

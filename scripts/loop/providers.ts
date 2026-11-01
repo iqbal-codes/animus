@@ -1,3 +1,6 @@
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+
 export const SUPPORTED_PROVIDERS = [
   "pi",
   "claude",
@@ -179,6 +182,33 @@ export interface BuildProviderArgvOptions {
   appendSystemPrompts?: string[];
 }
 
+export function materializeSkillContent(skillPath: string): string | null {
+  const candidates = [join(skillPath, "SKILL.md"), skillPath];
+  for (const c of candidates) {
+    if (existsSync(c)) {
+      try {
+        const stat = statSync(c);
+        if (stat.isFile()) {
+          return readFileSync(c, "utf-8");
+        }
+      } catch {}
+    }
+  }
+  return null;
+}
+
+export function materializeContextText(textOrPath: string): string {
+  if (existsSync(textOrPath)) {
+    try {
+      const stat = statSync(textOrPath);
+      if (stat.isFile()) {
+        return readFileSync(textOrPath, "utf-8");
+      }
+    } catch {}
+  }
+  return textOrPath;
+}
+
 /**
  * Builds standard CLI arguments for running an autonomous lap step across
  * any supported Animus SDLC provider harness with reasoning effort mapping.
@@ -194,6 +224,14 @@ export function buildProviderArgv(
       ? clampEffort(options.effort, descriptor.supportedEfforts)
       : options.effort;
 
+  const skillContents = (options.skills ?? [])
+    .map((s) => materializeSkillContent(s))
+    .filter((s): s is string => typeof s === "string" && s.trim().length > 0);
+
+  const materializedSystemPrompts = (options.appendSystemPrompts ?? [])
+    .map((p) => materializeContextText(p))
+    .concat(skillContents);
+
   switch (norm) {
     case "claude":
       return [
@@ -204,7 +242,7 @@ export function buildProviderArgv(
         "--dangerously-skip-permissions",
         ...(options.model ? ["--model", options.model] : []),
         ...(clamped ? ["--effort", clamped] : []),
-        ...(options.appendSystemPrompts?.flatMap((p) => ["--append-system-prompt", p]) ?? []),
+        ...(materializedSystemPrompts.flatMap((p) => ["--append-system-prompt", p])),
         "-p",
         options.prompt,
       ];
@@ -219,9 +257,8 @@ export function buildProviderArgv(
         "--no-extensions",
         ...(options.extensions?.flatMap((e) => ["-e", e]) ?? []),
         "--no-skills",
-        ...(options.skills?.flatMap((s) => ["--skills", s]) ?? []),
         "--no-context-files",
-        ...(options.appendSystemPrompts?.flatMap((p) => ["--append-system-prompt", p]) ?? []),
+        ...(materializedSystemPrompts.flatMap((p) => ["--append-system-prompt", p])),
         "--auto-approve",
         ...(options.model ? ["--model", options.model] : []),
         ...(clamped ? ["--thinking", clamped] : []),
@@ -229,8 +266,8 @@ export function buildProviderArgv(
       ];
 
     case "codex": {
-      const finalPrompt = options.appendSystemPrompts?.length
-        ? `${options.appendSystemPrompts.join("\n\n")}\n\n---\n\n${options.prompt}`
+      const finalPrompt = materializedSystemPrompts.length
+        ? `${materializedSystemPrompts.join("\n\n")}\n\n---\n\n${options.prompt}`
         : options.prompt;
       return [
         "codex",
@@ -244,8 +281,8 @@ export function buildProviderArgv(
     }
 
     case "opencode": {
-      const finalPrompt = options.appendSystemPrompts?.length
-        ? `${options.appendSystemPrompts.join("\n\n")}\n\n---\n\n${options.prompt}`
+      const finalPrompt = materializedSystemPrompts.length
+        ? `${materializedSystemPrompts.join("\n\n")}\n\n---\n\n${options.prompt}`
         : options.prompt;
       return [
         "opencode",

@@ -107,6 +107,11 @@ export interface LocalLoopResult {
   reviewCommentUrl?: string;
   evidence: LoopEvidence[];
   error?: string;
+  identities?: import("./report-schema").HostBoundIdentities;
+  builderReport?: import("./report-schema").BuilderReport;
+  qaReport?: import("./report-schema").QaReport;
+  reviewerReport?: import("./report-schema").ReviewerReport;
+  findings?: import("./report-schema").ReviewFinding[];
 }
 export type LocalLoopRoute = LocalLoopResult["route"];
 export type LocalLoopStatus = LocalLoopResult["status"];
@@ -144,3 +149,5 @@ export interface MergeQueuePlan {
   reasons: string[];
   eligible: boolean;
 }
+
+export * from "./report-schema";

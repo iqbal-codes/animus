@@ -3,8 +3,10 @@ import { join } from "node:path";
 import type { LocalIssue, LoopRole } from "./types";
 
 const NON_BUILDER_SKILLS = new Set([
+  "animus-brainstorm",
   "animus-grill",
   "animus-spec",
+  "animus-architecture",
   "animus-tickets",
   "animus-review",
   "animus-harness",
@@ -172,7 +174,10 @@ export function buildCuratedAppendPrompts(
   const prompts: string[] = [];
   const agentsMdPath = join(root, "AGENTS.md");
   if (existsSync(agentsMdPath)) {
-    prompts.push(agentsMdPath);
+    try {
+      const agentsMdContent = readFileSync(agentsMdPath, "utf-8");
+      prompts.push(agentsMdContent);
+    } catch {}
   }
 
   const changedHints = changedFilesList

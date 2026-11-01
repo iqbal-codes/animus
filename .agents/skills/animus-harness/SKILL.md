@@ -35,5 +35,5 @@ Use `/animus-harness` when:
    *Completion Criterion*: New or updated skills pass YAML parsing and every step concludes with an explicit `*Completion Criterion*`.
 
 5. **Verify Integrity and Commit to Repository Memory**
-   Run `tests/test_skills_integrity.py` and inspect `.factory/` files to ensure all JSON/JSONL entries parse without error and AGENTS.md remains under 150 lines.
+   Run the repository check and test suite (`bun harness/ci.ts`) and inspect `.factory/` files to ensure all JSON/JSONL entries parse without error and `AGENTS.md` remains under 150 lines.
    *Completion Criterion*: Test suite passes cleanly and changes are staged in git.

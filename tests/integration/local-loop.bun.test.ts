@@ -9,14 +9,12 @@ import {
   extractReport,
   renderPrompt,
   resolveAnimusCommandsDir,
-  ANIMUS_BUILDER_PROMPT,
-  ANIMUS_QA_PROMPT,
-  ANIMUS_REVIEWER_PROMPT,
   formatBuilderComment,
   formatEscalationHandoff,
   type LocalIssue,
   type PiTransport,
 } from "../../scripts/local-loop";
+import { loadPrompt } from "../../scripts/loop/prompts";
 
 test("accepts a single fenced JSON report without discarding findings and rejects ambiguous or invalid reports", () => {
   const value = { candidate: "abc", verdict: "pass", findings: ["must fix"], checks: [] };
@@ -129,19 +127,19 @@ test("Animus prompt templates include canonical SDLC roles and strict contracts"
     expect(existsSync(dir)).toBe(true);
   }
 
-  expect(ANIMUS_BUILDER_PROMPT).toContain("# Make the move");
-  expect(ANIMUS_BUILDER_PROMPT).toContain("Two reviewers check your work right after you.");
-  expect(ANIMUS_BUILDER_PROMPT).toContain("Evidence");
+  const builderPrompt = loadPrompt("loop-work", root);
+  expect(builderPrompt).toContain("# Make the move");
+  expect(builderPrompt).toContain("Two reviewers check your work right after you.");
+  expect(builderPrompt).toContain("Evidence");
 
-  expect(ANIMUS_QA_PROMPT).toContain("# Check the app as a user would");
-  expect(ANIMUS_QA_PROMPT).toContain("You are the black-box tester");
-  expect(ANIMUS_QA_PROMPT).toContain("merged_with");
+  const qaPrompt = loadPrompt("loop-check-app", root);
+  expect(qaPrompt).toContain("# Check the app as a user would");
+  expect(qaPrompt).toContain("You are the black-box tester");
 
-  expect(ANIMUS_REVIEWER_PROMPT).toContain(
-    "# Review, then merge, send back, or return to the owner",
-  );
-  expect(ANIMUS_REVIEWER_PROMPT).toContain("dispositions");
-  expect(ANIMUS_REVIEWER_PROMPT).toContain("Loop review:");
+  const reviewerPrompt = loadPrompt("loop-review", root);
+  expect(reviewerPrompt).toContain("# Review, then merge, send back, or return to the owner");
+  expect(reviewerPrompt).toContain("dispositions");
+  expect(reviewerPrompt).toContain("Loop review:");
 });
 
 const roots: string[] = [];
@@ -217,7 +215,7 @@ test("executes one clean lap: builder commits, checks run, QA silent, reviewer p
                 text: JSON.stringify({
                   candidate: head,
                   verdict: "pass",
-                  checks: [{ criterion: "AC1", result: "pass", evidence: "unit test ok" }],
+                  checks: [{ criterion: "AC1", result: "pass", evidence: "builder-checks.log" }],
                   findings: [],
                 }),
               },
@@ -298,7 +296,7 @@ test("executes autonomous lap with alternative provider harness (e.g. claude)", 
               text: JSON.stringify({
                 candidate: head,
                 verdict: "pass",
-                checks: [{ criterion: "AC1", result: "pass", evidence: "unit test ok" }],
+                checks: [{ criterion: "AC1", result: "pass", evidence: "builder-checks.log" }],
                 findings: [],
               }),
             },
@@ -340,8 +338,21 @@ test("triggers post-issue terminal reflection when Lap 0 is sent_back and Lap 1 
   let lapRound = 0;
   const rolesInvoked: string[] = [];
 
-  const transport: PiTransport = async ({ cwd, role }) => {
+  const transport: PiTransport = async ({ cwd, role, argv }) => {
     rolesInvoked.push(`${lapRound}:${role}`);
+    if (lapRound === 1 && (role === "builder" || role === "reviewer")) {
+      expect(argv.join("\n")).toContain("fnd-1");
+      expect(argv.join("\n")).toContain("Port 0 causes crash");
+    }
+    if (role === "qa") {
+      expect(argv.join("\n")).not.toContain("Host finding ledger");
+      expect(argv.join("\n")).not.toContain("Builder structured handoff");
+      expect(argv.join("\n")).not.toContain("Port 0 causes crash");
+    }
+    if (role === "reviewer") {
+      expect(argv.join("\n")).toContain("Builder structured handoff");
+      expect(argv.join("\n")).toContain("Repaired port behavior");
+    }
     if (role === "builder") {
       await Bun.write(join(cwd, "fix.txt"), `attempt-${lapRound}`);
       git(cwd, "add", "fix.txt");
@@ -385,14 +396,30 @@ test("triggers post-issue terminal reflection when Lap 0 is sent_back and Lap 1 
                 text: JSON.stringify({
                   candidate: head,
                   verdict: isRejected ? "fail" : "pass",
+                  summary: "Repaired port behavior",
+                  changes: ["fix.txt: handle dynamic port"],
                   checks: [
                     {
                       criterion: "AC1",
                       result: isRejected ? "fail" : "pass",
-                      evidence: isRejected ? "port 0 rejected" : "port resolved",
+                      evidence: "builder-checks.log",
                     },
                   ],
                   findings: isRejected ? ["Port 0 causes crash"] : [],
+                  rechecks: isRejected
+                    ? []
+                    : [
+                        {
+                          findingId: "fnd-1",
+                          recheck: {
+                            recheckStatus: "resolved",
+                            recheckCandidate: head,
+                            recheckEvidence: "app-check.json",
+                            recheckRole: "reviewer",
+                            notes: "Port 0 crash resolved",
+                          },
+                        },
+                      ],
                 }),
               },
             ],
@@ -461,7 +488,7 @@ test("executes lap with verification profile: docs profile instructs QA to skip 
               text: JSON.stringify({
                 candidate: head,
                 verdict: "pass",
-                checks: [{ criterion: "AC1", result: "pass", evidence: "docs verified" }],
+                checks: [{ criterion: "AC1", result: "pass", evidence: "builder-checks.log" }],
                 findings: [],
               }),
             },
@@ -719,7 +746,7 @@ test("fetches origin baseBranch, fast-forwards clean local branch, and bases new
                 text: JSON.stringify({
                   candidate: head,
                   verdict: "pass",
-                  checks: [{ criterion: "AC1", result: "pass", evidence: "test ok" }],
+                  checks: [{ criterion: "AC1", result: "pass", evidence: "builder-checks.log" }],
                   findings: [],
                 }),
               },

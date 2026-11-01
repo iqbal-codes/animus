@@ -94,7 +94,7 @@ Backend onboarding creates missing labels without overwriting existing labels or
 
 The factory machine needs GitHub credentials with repository and label permissions. Label creation can have partial effects. Failed preparation preserves the repository, checkout, and labels already created; retry after fixing the reported problem. A label-preparation failure does not complete new enrollment.
 
-See [triage labels](agents/triage-labels.md) for admission semantics. Creating these labels does not make unlabeled issues executable.
+See [issue tracker & triage labels](agents/issue-tracker.md) for admission semantics. Creating these labels does not make unlabeled issues executable.
 
 ## Monitoring and execution
 

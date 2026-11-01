@@ -5,7 +5,7 @@ description: Design, implement, or audit frontend UI views and components with i
 
 # UI Quality: Intentional Frontend Design & Evidence-Based Audit
 
-Build and verify interfaces that communicate clear hierarchy, reuse canonical design tokens, handle every interactive state, and pass desktop/mobile visual and accessibility audits.
+Build and verify interfaces that communicate clear hierarchy, reuse canonical design tokens, handle every interactive state, and pass desktop/mobile visual and accessibility audits. Consult `docs/agents/pr-evidence-contract.md` for Before/After capture applicability, honest baseline states, and the manual upload handoff workflow.
 
 ## When to Use
 
@@ -13,6 +13,7 @@ Use this playbook when:
 - Creating or restyling a web page, application screen, or reusable UI component (`profile:ui`).
 - Auditing a frontend change during builder self-check or black-box QA verification.
 - Replacing generic AI template layouts or fixing visual, responsive, or accessibility defects.
+- Capturing comparative Before/After UI evidence for pull requests.
 
 ## Steps
 
@@ -43,3 +44,11 @@ Use this playbook when:
    7. **Copy** (concrete domain terminology and honest state messages)
    Remediate any axis scoring <= 2 at the shared token or primitive level, then re-verify.
    *Completion Criterion*: Every applicable axis scores >= 3 with cited evidence, zero horizontal overflow occurs at 1440px or 390px, and frontend build/test checks exit 0.
+
+4. **Capture matched Before/After evidence and prepare upload handoff.**
+   When changes alter user-visible behavior or when an AC requires visual verification, capture matched states following `docs/agents/pr-evidence-contract.md`:
+   - **Matched capture**: Pair identical route, scenario, data, theme, and viewport (1440px and 390px) between baseline and candidate. Screenshots are not an unconditional merge gate for non-visual changes.
+   - **Honest comparative applicability**: For new features, record `Before: N/A: new feature; <reason>` with mandatory real After candidate capture. For existing uncaptured baselines, record `Before: unavailable: not captured; <reason>`; never relabel missing baselines as N/A or substitute design mockups. Missing baseline blocks only if the ticket explicitly requires baseline regression proof.
+   - **Local artifacts**: Store captures in the run artifact directory with stable immutable evidence IDs (`ev-cap-<id>`). Do not emit `file://`, `localhost`, local filesystem paths, or placeholder links in PR markdown.
+   - **Manual upload handoff**: Operators manually upload capture images through the GitHub UI and bind URLs via the loop evidence workflow (`animus loop evidence` semantics) with local preview by default and explicit publish for host-owned PR boundaries.
+   *Completion Criterion*: Local captures are recorded with stable evidence IDs, honest applicability annotations (`N/A: new feature` or `unavailable: not captured`) are documented where baselines differ, zero fake URLs or localhost links are emitted, and the capture checklist is prepared for operator manual upload and URL binding.

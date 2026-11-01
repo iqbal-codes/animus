@@ -5,7 +5,8 @@
   "exports": {
     "./operator": "./src/operator.ts",
     "./host": "./src/host.ts",
-    "./paths": "./src/paths.ts"
+    "./paths": "./src/paths.ts",
+    "./sanitizer": "./src/sanitizer.ts"
   },
   "dependencies": {
     "zod": "4.1.12"

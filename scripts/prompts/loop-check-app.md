@@ -32,19 +32,18 @@ Apply the depth selected for this work item's risk profile:
 
 Sample decisive states and edge transitions rather than attempting combinatorial exhaustive input sweeps. Where the builder or host executor has already saved complete check logs on the identical commit under `$ARTIFACTS_DIR` (such as `builder-checks.log`), reuse those logs instead of repeating identical commands.
 
-## 3. Verify what would merge (Detached Base Merge)
+## 3. Host-Prepared Detached Base Merge
 
-Because the landed artifact is this pull request merged with the current default branch, evaluate that exact integration state:
-1. Check out the candidate head: `gh pr checkout <n>` (or `git checkout -B <branch> origin/<branch> --ignore-other-worktrees`). Verify HEAD matches $INPUTS.head.
-2. Form a detached integration commit: `git checkout --detach && git fetch origin $INPUTS.base && git merge --no-edit origin/$INPUTS.base`.
-3. If merge conflicts arise, record criterion `C0: FAIL (Merge conflict with base branch)` with `overall: FAIL`, and stop.
-4. Record the resulting detached commit SHA as `merged_with`.
+Because the landed artifact is this pull request merged with the current default branch, the host loop executor has already checked out and prepared the detached integration state at `$INPUTS.head` (tested integration commit: `$INPUTS.tested_head`, merged with default branch tip `$INPUTS.base_tip`) in your current isolated verification checkout.
+1. Do NOT run `git checkout`, `git fetch`, or `git merge`. You are already running inside the disposable host-owned integration worktree.
+2. Verify that your current environment reflects the delivered changes.
+3. Record `$INPUTS.tested_head` as `head` and `$INPUTS.merged_with` (or base tip) as `merged_with`.
 
 ## 4. Black-Box Execution & Evidence
 
 1. **Launch the application:** When `$INPUTS.skip_app_launch` is `false`, start the app according to `$INPUTS.runtime` on its real code path rather than mock stubs. When `$INPUTS.skip_app_launch` is `true`, do not launch background processes, HTTP servers, or browser drivers; evaluate criteria directly against modified files, syntax, and test logs.
 2. **Drive the public surface:** Interact via documented CLI commands, HTTP endpoints, or driver libraries. Avoid using tools or scripts introduced in the PR itself to validate the PR's own claims.
-3. **Record concrete artifacts:** Save every command log, curl output, screenshot, and measurement as an immutable file under `$ARTIFACTS_DIR`. Cite each piece of evidence by its absolute path.
+3. **Record concrete artifacts:** Save every command log, curl output, screenshot, and measurement as an immutable file under `$ARTIFACTS_DIR`. Cite each piece of evidence by its relative path under `$ARTIFACTS_DIR` or filename.
 4. **Line classification:**
    - Contract criteria (`C1`, `C2`...): `PASS`, `FAIL`, or `INCOMPLETE`.
    - Fenced holdouts (`H1`...): Scenarios evaluated via `holdout-verifier` subagent.
@@ -73,7 +72,7 @@ Return your structured report in JSON (plain or within a single ```json code fen
       "kind": "criterion",
       "verdict": "PASS",
       "text": "<observable user behavior or command result>",
-      "evidence": ["<absolute file paths in $ARTIFACTS_DIR>"],
+      "evidence": ["<relative file path under $ARTIFACTS_DIR>"],
       "pre_existing": "",
       "defect": "",
       "carried_from": ""

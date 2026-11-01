@@ -6,31 +6,30 @@ disable-model-invocation: true
 
 # Implement the approved frontier
 
-Read `docs/agents/software-factory-workflow.md` and the configured tracker instructions. This skill coordinates delivery against the spec; the pinned factory workflow owns native scheduling, claims, evidence, and landing. Do not create a competing integration-branch/merger-agent system.
+Implement an approved spec through its ticket frontier while preserving native factory ownership, candidate-bound evidence, and independent review boundaries. Consult `docs/agents/pr-evidence-contract.md` for the canonical PR body, evidence matrix, Before/After captures, and finding lifecycle contract, and `docs/agents/issue-tracker.md` for tracker operations.
 
-## 1. Resolve work and authority
+## When to Use
 
-Read the full spec, child tickets, comments, latest agreed Contract, dependencies, and existing PRs. Establish the explicit target repository, actual checkout/base, configured engine revision, merge mode, and user-authorized operations. Preserve unrelated dirty files. If the spec has no executable tickets, propose `/animus-tickets` rather than improvising a task graph.
+Use this playbook when:
+- Implementing an approved frontier ticket from a parent specification or tracker issue.
+- Delivering code changes for an unambiguous, approved work item.
+- Remediating review findings on an existing candidate branch.
 
-Build a requirement-to-ticket checklist. A frontier ticket has complete intent, no unresolved owner decision, no competing active claim, no open/unverifiable prerequisites, and its prerequisite outcomes present on the selected base. Inspect existing PRs before starting another implementation. Labels alone do not establish any of these facts.
+## Steps
 
-## 2. Choose the delivery path
+1. **Resolve work, authority, and candidate identities.**
+   Read the full spec, child tickets, comments, agreed Contract, dependencies, and existing PRs. Read `docs/agents/pr-evidence-contract.md` and `docs/agents/issue-tracker.md`. Establish the target repository, explicit base SHA, candidate branch/head SHA, merge mode, and authorized operations. Preserve unrelated dirty files. Verify the target ticket is a frontier ticket: complete intent, no unresolved owner decisions, no competing active claims, and all prerequisite outcomes verified on the chosen base. If the spec lacks executable tickets, invoke `/animus-tickets` first.
+   *Completion Criterion*: Target ticket, base SHA, candidate head SHA, and prerequisite verification status are documented with zero unresolved blockers or unverified prerequisites.
 
-- **Native factory delivery requested:** inspect the pinned workflow's actual inputs, workability policy, and consumer controls. Use the existing consumer boundary and approved/supervised mode. Establish how the named ticket is selected before launch; if target binding is unsupported or unverifiable, report that exact blocker instead of claiming the run implements that ticket. Show the intended repository, base, ticket, and merge mode before any separately unauthorized launch.
-- **Direct code implementation requested:** implement one approved frontier ticket in the current authorized checkout/branch, using repo conventions and behavior-driven tests. This is manual assistance, not a native lap: report its evidence honestly and leave native admission/review/land state unchanged. Delegate only independent slices when authorized and supported by the environment; give each a complete contract and disjoint ownership. Never reset another checkout to obtain a clean starting point.
+2. **Choose the delivery path.**
+   - **Native factory delivery requested**: Inspect the pinned engine's inputs, workability policy, and consumer boundary. Verify how the target ticket is selected before launch; report any target-binding blocker without claiming execution. Present the repository, base, ticket, and merge mode for authorization before launch.
+   - **Direct code implementation requested**: Implement the single approved frontier ticket in the authorized branch using repository conventions, domain types (`.agents/skills/blueprint`), and test-driven development (`.agents/skills/tdd`). Never reset another checkout or touch out-of-scope worktrees.
+   *Completion Criterion*: Delivery path is selected with verified authority; direct edits stay confined to the designated branch with zero incidental scheduler, branch-switch, or merge mutations.
 
-Do not install schedules, toggle brakes, force admission, push, merge, promote, or deploy as an incidental consequence of implementing code.
+3. **Build, verify, and compile candidate-bound evidence.**
+   Follow `docs/agents/pr-evidence-contract.md` for all evidence compilation. Write tests first at agreed public seams (`.agents/skills/tdd`). Run ordinary unit/typecheck checks separately from behavioral and integration scenarios. If UI is changed, capture local image artifacts under the run artifact directory with stable evidence IDs; pair Before/After for applicable visual states or record honest applicability (`Before: N/A: new feature; <reason>` with mandatory After capture, or `Before: unavailable: not captured; <reason>`). Operators handle screenshot uploads manually via the GitHub UI, and URL binding is performed through the loop evidence workflow; never emit fake URLs, `file://`, or localhost links in evidence records. For any prior finding, record author remediation (`F<id> | author response: implemented, awaiting independent recheck`) citing the commit SHA, changed files, and specific verification scenario; author claims never close findings.
+   *Completion Criterion*: Every applicable AC is accounted for in a criterion matrix with exact status (`PASS`, `FAIL`, `BLOCKED`, `NOT RUN`), observed behavior, command/artifact path, and tested commit SHA, with zero `"not implemented"` stubs remaining.
 
-## 3. Build and verify
-
-Read existing patterns before editing. Use `/tdd` when available; prove each criterion with targeted behavior checks, including relevant error/transition cases. Run ordinary repo checks separately from integration/runtime scenarios. Preserve protected holdout paths and never expose hidden holdout content in builder prompts or reports.
-
-Maintain a criterion evidence matrix: source issue/AC, scenario or command, observed result, artifact path, and tested head/candidate. Record BLOCKED or NOT RUN when a prerequisite is unavailable; do not substitute mocks for required live proof. New code/base changes invalidate affected evidence.
-
-For a native lap, let independent check-app/evidence/review/land/release nodes run under their actual policy. A builder's own test result is not peer approval. For direct implementation, request `/animus-review` with explicit base, head, worktree scope, and source spec/tickets. That user-invoked review is a separate handoff; do not pretend it automatically advanced native state. Never perform this review in the same session as the implementer—the implementer cannot review their own work; review requires a separate session that dispatches two independent axis subagents.
-
-## 4. Advance and hand back
-
-After verified authorized integration, refresh the base and dependency outcomes before taking the next ticket. Continue only within the requested scope. If blocked, return the exact missing prerequisite/decision and all completed work rather than closing work optimistically.
-
-Report delivered vs remaining tickets, branch/head, criterion evidence, independent review status, and outstanding approval. Close issues/parent or mark PRs ready only when the authorized delivery policy and actual verified outcomes justify it. Code written, PR open, review passed, merged, promoted, and deployed are distinct states. Leave cleanup of pre-existing code/worktrees to an explicit request.
+4. **Advance, format PR Evidence, and hand back.**
+   Format the candidate's PR body following the 6 canonical headings in `docs/agents/pr-evidence-contract.md` (Problem and Outcome, Invariants, Review Guidance, Changed Seams, Evidence, Judge Alterations). Leave forge publication, native status transitions, and readiness labeling to the host orchestrator. Request `/animus-review` in a clean, separate session to conduct independent peer review across Standards and Spec axes; never perform the review in the same session as the implementer. Report delivered vs remaining tickets, exact tested candidate SHA, criterion matrix, and any outstanding blockers or required human approvals.
+   *Completion Criterion*: PR body and evidence adhere to the canonical contract, independent review is requested in a separate session without inline reviewer self-certification, and handback summary records delivered vs remaining frontier tickets with exact Git commit references.

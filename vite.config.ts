@@ -1,10 +1,21 @@
 import { defineConfig } from "vite-plus";
 import { builtinModules } from "node:module";
 import { fileURLToPath } from "node:url";
+import { readFile } from "node:fs/promises";
 
 if (process.versions.bun) throw new Error("Vite+ tooling requires Node");
 
 export default defineConfig({
+  plugins: [
+    {
+      name: "animus-prompt-text",
+      enforce: "pre",
+      async load(id) {
+        if (!id.endsWith(".md") || !id.includes("/scripts/prompts/")) return null;
+        return `export default ${JSON.stringify(await readFile(id, "utf8"))};`;
+      },
+    },
+  ],
   lint: {
     ignorePatterns: [
       "**/node_modules/**",
@@ -85,7 +96,7 @@ export default defineConfig({
       "neutral-suite": { command: "vp test run", cache: false },
       "bun-suite": {
         command:
-          "bun test --timeout 30000 tests/integration/local-loop-deadlines.bun.test.ts tests/integration/scheduler-discovery.bun.test.ts tests/integration/onboarding-http.bun.test.ts tests/integration/loop-script.bun.test.ts tests/integration/loop-watch.bun.test.ts tests/integration/loop-modules.bun.test.ts tests/integration/health.bun.test.ts tests/integration/local-loop.bun.test.ts tests/integration/onboarding-monitor.bun.test.ts tests/integration/loop-ci.bun.test.ts",
+          "bun test --timeout 30000 tests/integration/local-loop-deadlines.bun.test.ts tests/integration/scheduler-discovery.bun.test.ts tests/integration/onboarding-http.bun.test.ts tests/integration/loop-script.bun.test.ts tests/integration/loop-watch.bun.test.ts tests/integration/loop-modules.bun.test.ts tests/integration/health.bun.test.ts tests/integration/local-loop.bun.test.ts tests/integration/onboarding-monitor.bun.test.ts tests/integration/loop-ci.bun.test.ts tests/integration/loop-report-schema.bun.test.ts tests/integration/loop-pr-reporting.bun.test.ts tests/integration/loop-evidence-cli.bun.test.ts tests/integration/loop-dossier-findings.bun.test.ts tests/integration/loop-publication.bun.test.ts",
         cache: false,
       },
       "toolchain-check": { command: "node scripts/health/check-toolchain.mjs", cache: false },

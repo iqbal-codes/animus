@@ -10,7 +10,7 @@
 
 - **Canonical Configuration**: `AGENTS.md` and `.agents/skills/` are authoritative sources of truth. Compatibility symlinks (`CLAUDE.md -> AGENTS.md`, `.claude/skills -> ../.agents/skills`) mirror them for tool support.
 - **Repository Skills**: Canonical playbooks live in `.agents/skills/`. Consult when triggered:
-  - Spec drafting & breakdown: `/animus-grill`, `/animus-spec`, `/animus-tickets`
+  - Spec drafting, product shaping & architecture: `/animus-brainstorm`, `/animus-grill`, `/animus-spec`, `/animus-architecture`, `/animus-tickets`
   - Implementation & verification: `/animus-implement`, `.agents/skills/tdd`, `.agents/skills/blueprint`
   - Failure recovery & root-causing: `/diagnosing-bugs`, `.agents/skills/unstick`
   - Frontend & UI verification: `.agents/skills/ui-quality`
@@ -25,10 +25,9 @@
 
 ## Domain & Workflow Documentation
 
-- **Engineering & SDLC Workflow**: Read `docs/agents/software-factory-workflow.md` for stage handoffs (`grill → spec → tickets → implement → review`).
-- **Issue Tracker & Dependencies**: Read `docs/agents/issue-tracker.md` for `gh` conventions and native/textual dependency requirements.
-- **Canonical Triage Labels**: Read `docs/agents/triage-labels.md` for label definitions (`ready-for-agent`, `needs-info`, `ready-for-human`, `needs-triage`, `wontfix`).
-- **Domain Models & ADRs**: Read `docs/agents/domain.md` for glossary terms and architectural decisions.
+- **PR & Evidence Contract**: Read `docs/agents/pr-evidence-contract.md` for canonical PR bodies, evidence matrices, Before/After captures, and finding rechecks.
+- **Issue Tracker, Dependencies & Triage Labels**: Read `docs/agents/issue-tracker.md` for `gh` conventions, native/textual `Depends on:` rules, and canonical triage labels (`ready-for-agent`, `needs-info`, `ready-for-human`, `needs-triage`, `wontfix`, `spec`, `needs-owner`).
+- **Domain Models & ADRs**: Read `docs/agents/domain.md` for glossary terms, architecture docs, and ADR conventions.
 
 ## Execution Rules
 

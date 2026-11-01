@@ -9,6 +9,12 @@ import {
   startSchedulerLoop,
   type BacklogCandidate,
 } from "../../loop/scheduler";
+import {
+  bindEvidenceMapping,
+  previewEvidenceCaptures,
+  publishBoundEvidence,
+  resolveRunDirectory,
+} from "../../loop/evidence-manager";
 
 export async function runLoopCliCommand(opts: {
   subcommand?: string;
@@ -21,6 +27,9 @@ export async function runLoopCliCommand(opts: {
   once?: boolean;
   history?: boolean;
   json?: boolean;
+  mapping?: string;
+  publish?: boolean;
+  candidate?: string;
 }): Promise<number> {
   const sub = opts.subcommand ?? "run";
 
@@ -94,7 +103,72 @@ export async function runLoopCliCommand(opts: {
       return 0;
     }
 
-    throw new Error(`Unknown loop subcommand: ${sub}. Expected run or watch.`);
+    if (sub === "evidence") {
+      const rawIssue = opts.issue ?? opts.positionals[2];
+      const issueNum = rawIssue && /^[1-9]\d*$/.test(rawIssue) ? Number(rawIssue) : undefined;
+      const runDir = await resolveRunDirectory(opts.repoRoot, {
+        runId: opts.run,
+        issue: issueNum,
+      });
+
+      if (opts.mapping) {
+        const mappingPath = resolve(opts.repoRoot, opts.mapping);
+        const bound = bindEvidenceMapping({
+          runDirectory: runDir,
+          mappingFilePath: mappingPath,
+          explicitCandidate: opts.candidate,
+        });
+
+        if (opts.publish) {
+          const pubResult = await publishBoundEvidence({
+            repoRoot: opts.repoRoot,
+            runDirectory: runDir,
+            noPush: opts.noPush,
+          });
+          if (opts.json) {
+            console.log(JSON.stringify({ ok: true, bound, publish: pubResult }, null, 2));
+          } else {
+            console.log(
+              `Bound ${bound.boundCount} capture(s) for candidate ${bound.candidate}.\n${pubResult.message}`,
+            );
+          }
+          return pubResult.ok ? 0 : 1;
+        }
+
+        if (opts.json) {
+          console.log(JSON.stringify({ ok: true, bound }, null, 2));
+        } else {
+          console.log(
+            `Bound ${bound.boundCount} capture(s) for candidate ${bound.candidate}. Run with --publish to update PR.`,
+          );
+        }
+        return 0;
+      }
+
+      if (opts.publish) {
+        const pubResult = await publishBoundEvidence({
+          repoRoot: opts.repoRoot,
+          runDirectory: runDir,
+          noPush: opts.noPush,
+        });
+        if (opts.json) {
+          console.log(JSON.stringify(pubResult, null, 2));
+        } else {
+          console.log(pubResult.message);
+        }
+        return pubResult.ok ? 0 : 1;
+      }
+
+      const preview = previewEvidenceCaptures(runDir);
+      if (opts.json) {
+        console.log(JSON.stringify(preview, null, 2));
+      } else {
+        console.log(preview.checklist.join("\n"));
+      }
+      return 0;
+    }
+
+    throw new Error(`Unknown loop subcommand: ${sub}. Expected run, watch, or evidence.`);
   } catch (err: any) {
     const msg = err?.message ?? String(err);
     if (opts.json) console.log(JSON.stringify({ ok: false, error: msg }));

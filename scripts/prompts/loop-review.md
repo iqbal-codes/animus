@@ -39,7 +39,7 @@ In this unattended loop, you conduct the code inspection directly as the indepen
    - Check CI status (`gh pr checks <n>`).
 
 3. **Evidence & Preconditions:**
-   - Candidate checkout: `git checkout -B <branch> origin/<branch> --ignore-other-worktrees`.
+   - Candidate checkout: check out the candidate branch safely without destructive `-B` resets.
    - Reuse check outputs saved in `$ARTIFACTS_DIR` by builder and QA; re-run checks only if resolving contested lines.
 
 ## 3. Mandatory Line Dispositions
@@ -73,6 +73,32 @@ Return your final decision in JSON (plain or within a single ```json code fence)
   "pr": "$INPUTS.pr",
   "sha": "$INPUTS.head",
   "delivers": "all | part | none",
+  "axes": {
+    "standards": {
+      "status": "pass | fail | incomplete",
+      "summary": "Evaluation across correctness, security, simplicity, and codebase rules."
+    },
+    "spec": {
+      "status": "pass | fail | incomplete",
+      "summary": "Evaluation across source acceptance criteria and invariants."
+    }
+  },
+  "findings": [
+    {
+      "id": "F1",
+      "axis": "standards | spec",
+      "classification": "defect | gap | judgment",
+      "blocking": true,
+      "title": "Concise defect title",
+      "description": "Concrete failure scenario and consequence",
+      "location": {
+        "file": "path/to/file.ts",
+        "line": 42
+      },
+      "evidence": "relative/path/to/artifact.log",
+      "status": "open"
+    }
+  ],
   "dispositions": [
     {
       "line": "D1",
@@ -80,6 +106,18 @@ Return your final decision in JSON (plain or within a single ```json code fence)
       "file": "",
       "issue": "",
       "reason": ""
+    }
+  ],
+  "rechecks": [
+    {
+      "findingId": "F1",
+      "recheck": {
+        "recheckStatus": "resolved | unresolved | partially_resolved",
+        "recheckEvidence": "relative/path/to/evidence.log",
+        "recheckCandidate": "$INPUTS.head",
+        "recheckRole": "reviewer",
+        "notes": "Verified defect resolved on fresh candidate."
+      }
     }
   ],
   "judge_changes": [],

@@ -6,17 +6,43 @@ disable-model-invocation: true
 
 # Make executable tickets
 
-Read `docs/agents/software-factory-workflow.md`, `docs/agents/issue-tracker.md`, and `docs/agents/triage-labels.md`. The workflow doc owns the ticket body template and admission rules; use them rather than a second format.
+Read `docs/agents/issue-tracker.md` for tracker conventions, dependency rules, and canonical triage labels.
 
 ## 1. Establish the source
 
-Read the supplied spec/conversation/issue and all comments. Resolve the intended target repository, current base behavior, relevant glossary/ADRs, and existing issues/PRs. If material product intent is missing, identify the question and stop that branch for `/animus-grill` or `/animus-spec`; do not manufacture an agent-ready ticket.
+Read the supplied spec/conversation/issue, `docs/architecture.md` (when present), `docs/research-*.md` notes, and all comments. Resolve the intended target repository, current base behavior, relevant glossary/ADRs, and existing issues/PRs. If material product intent is missing, identify the question and stop that branch for `/animus-grill` or `/animus-spec`; if a greenfield product spec lacks a settled tech stack, folder topology, or shared component strategy, route to `/animus-architecture` first rather than inventing architecture inside tickets.
 
 ## 2. Draft the task graph
 
-Create narrow, complete vertical slices that are independently verifiable and fit one delivery lap. A slice includes every layer necessary for its behavior, not every layer in the system. Keep issue-owned enabling refactors inside their slice. A separate prerequisite needs its own independently meaningful outcome.
+Create narrow, complete vertical slices that are independently verifiable and fit one delivery lap. A slice includes every layer necessary for its behavior, not every layer in the system. Keep issue-owned enabling refactors inside their slice. A separate prerequisite needs its own independently meaningful outcome. When `docs/architecture.md` defines foundation prerequisites (`S0`: repo scaffold, folder topology, or shared reusable UI/CRUD primitives consumed across multiple specs), draft explicit foundation prerequisite ticket(s) first and wire downstream feature slices to depend on them (`Depends on: #<foundation>`) so parallel builders reuse shared components rather than duplicating them.
 
-Use the shared ticket template: Source and problem (including value and timing), Outcome, Invariants, Acceptance criteria, Boundary, and standalone `Depends on:`. Include the source spec section and stable parent-AC references; give child criteria local identifiers. Keep each issue self-contained enough for a fresh builder and reviewer.
+Use the canonical ticket body template below. Include the source spec section (`Part of #<parent>` near the top when a parent spec issue exists) and stable parent-AC references; give child criteria local identifiers. Keep each issue self-contained enough for a fresh builder and reviewer:
+
+```markdown
+## Source and problem
+
+<Source spec reference and section; what is wrong/missing today, why it matters,
+and why now. Use settled intent, not invented urgency.>
+
+## Outcome
+
+<The observable behavior this ticket delivers.>
+
+## Invariants
+
+<Properties that must remain true, including authority and data boundaries.>
+
+## Acceptance criteria
+
+- [ ] AC1: <Observable condition and how it is verified.>
+- [ ] AC2: <Relevant failure, boundary, or state-transition behavior.>
+
+## Boundary
+
+<Explicit exclusions and any issue-owned enabling work.>
+
+Depends on: None
+```
 
 For each edge explain why the blocker must finish first. Use only genuine prerequisite edges; shared file edits or a preferred implementation order alone do not make a product dependency. Check for self-edges, cycles, missing prerequisite records, and already-delivered outcomes. For broad mechanical changes, prefer one atomic clean cutover when independently green slices cannot preserve the contract. Obtain explicit approval before proposing temporary compatibility paths or an integration-only verification strategy.
 
