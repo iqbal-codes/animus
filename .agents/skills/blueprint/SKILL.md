@@ -5,7 +5,7 @@ description: Architect non-trivial modules, cross-file refactors, or high-risk c
 
 # Blueprint: Type-First Architecture & Blast-Radius Proof
 
-Lock in the data shapes, module boundaries, and verification checks before writing implementation bodies so the compiler validates structure upfront and external callers remain safe.
+Lock in data shapes, module boundaries, and verification checks before writing implementation bodies so the compiler validates structure upfront and external callers remain safe.
 
 ## When to Use
 
@@ -22,12 +22,12 @@ Use this playbook when:
    *Completion Criterion*: The written plan maps every step to concrete file/symbol anchors and an executable verification command, with at least one rejected alternative and its rejection reason recorded.
 
 2. **Compile domain types and stub signatures before bodies.**
-   Model domain state so illegal states are unrepresentable: use discriminated unions instead of optional-field bags, brand distinct primitive IDs, parse untrusted external inputs (`unknown`) once at the boundary, and enforce exhaustive `never` checks in switch/default branches. Write exported function signatures and module interfaces with stub bodies (`throw new Error("not implemented")`) and run the repository typechecker before implementing logic.
-   *Completion Criterion*: The repository typechecker (`bun run typecheck` or configured static check) validates all new types and function signatures with zero type mismatches across callers.
+   Model domain state so illegal states are unrepresentable: use discriminated unions instead of optional-field bags, brand distinct primitive IDs, parse untrusted external inputs (`unknown`) once at the boundary, and enforce exhaustive `never` checks in switch/default branches. Write exported function signatures and module interfaces with temporary stub bodies (`throw new Error("not implemented")`) and run the repository typechecker to validate contracts across callers before writing logic.
+   *Completion Criterion*: The repository typechecker (`bun run typecheck` or configured static check) validates all new types and function signatures with zero type mismatches across existing and new callers.
 
-3. **Implement one stub per verification cycle and prune.**
-   Replace one stub body at a time, running its narrowest discriminating check immediately after each edit. Inline single-caller wrappers, delete dead code or superseded paths in the same change, and verify that diff size (`git diff --shortstat`) stays minimal.
-   *Completion Criterion*: Zero `"not implemented"` stubs remain in the worktree, narrow unit/integration checks exit 0 with captured output, and no deprecated shims or unused types remain.
+3. **Implement vertical slices via behavioral RED → GREEN loops and eliminate stubs.**
+   Drive each slice from stub signature to functional implementation using test-driven development (`.agents/skills/tdd`). Write a failing behavioral test at the agreed public seam (RED), implement the stub body with the minimal code to turn the test passing (GREEN), and refactor. Never leave unfinished stubs, placeholders, mocks, no-ops, or `"throw new Error('not implemented')"` bodies at handback—every stub must be fully implemented and verified or explicitly removed. Inline single-caller wrappers, delete dead code or superseded paths in the same change, and verify that diff size stays minimal.
+   *Completion Criterion*: Zero `"not implemented"` stubs, placeholders, or deprecated shims remain in the worktree; all behavioral RED → GREEN vertical slices pass their discriminating checks with exit code 0; and all migrated callers compile cleanly.
 
 4. **Prove external blast-radius safety at Proof Level 4.**
    Identify the 1–2 load-bearing safety invariants that protect code outside the diff (caller contracts, async teardown/ordering, pinned dependency behavior, or persisted data compatibility). Grade each invariant on the 5-level proof ladder:

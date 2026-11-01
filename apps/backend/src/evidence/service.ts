@@ -22,7 +22,7 @@ import { LandingGuard } from "./landing-guard";
 import { TieredActionMatrix, type FreshnessResolver } from "./tiered-actions";
 import { RunControlManager, type ProcessTreeTerminator } from "./run-controls";
 import { GateAndReleaseManager } from "./gates-and-release";
-import { ReportSanitizer } from "./sanitizer";
+import { ReportSanitizer } from "@animus/contracts/sanitizer";
 import { EvidenceError } from "./errors";
 
 export class EvidenceService {

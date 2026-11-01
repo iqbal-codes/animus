@@ -63,8 +63,8 @@ export const helpEntries: readonly HelpEntry[] = [
   },
   {
     command: "loop",
-    spec: "loop <run|watch>",
-    description: "Run or watch a local autonomous issue loop",
+    spec: "loop <run|watch|evidence>",
+    description: "Run, watch, or bind/publish evidence for local autonomous issue loops",
   },
   {
     command: "scheduler",
@@ -279,6 +279,21 @@ export const orderedFlags: readonly FlagHelp[] = [
     commands: ["intake"],
   },
   {
+    spec: "--mapping <path>",
+    description: "Evidence ID to hosted image URL mapping file for loop evidence binding",
+    commands: ["loop"],
+  },
+  {
+    spec: "--publish",
+    description: "Publish bound evidence to GitHub PR body",
+    commands: ["loop"],
+  },
+  {
+    spec: "--candidate <sha>",
+    description: "Explicit candidate SHA to bind evidence against",
+    commands: ["loop"],
+  },
+  {
     spec: "--json",
     description: "Output machine-readable JSON",
   },
@@ -314,6 +329,8 @@ export const orderedExamples: readonly ExampleHelp[] = [
   { text: "animus lap list --json", command: "lap" },
   { text: 'animus lap run "Fix login validation for issue #42"', command: "lap" },
   { text: "animus loop run --issue 72 --dry-run", command: "loop" },
+  { text: "animus loop evidence --issue 72", command: "loop" },
+  { text: "animus loop evidence --issue 72 --mapping evidence-map.json --publish", command: "loop" },
   { text: "animus scheduler --once --dry-run", command: "scheduler" },
 ];
 

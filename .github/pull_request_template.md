@@ -16,7 +16,30 @@
 
 ## Evidence
 
+<!-- BEGIN_FACTORY_EVIDENCE_INDEX -->
 <!-- Map each contract criterion to concrete verification evidence: command output, test assertion, or log path. -->
+
+| Criterion / scenario | Result | Expected → observed | Check / artifact |
+| --- | --- | --- | --- |
+| <!-- e.g. AC1 --> | <!-- PASS / FAIL / BLOCKED / NOT RUN --> | <!-- required behavior → actual assertion or failure details --> | <!-- command/scenario; evidence ID/path --> |
+
+### Before / After
+
+<!-- UI screenshots or nonvisual comparison table; use 'N/A: new feature' or 'Before unavailable' when justified. -->
+
+| Scenario | Before | After |
+| --- | --- | --- |
+| <!-- scenario / route / viewport --> | <!-- baseline observation & image --> | <!-- candidate observation & image --> |
+
+<details>
+<summary>Reproduction and detailed evidence</summary>
+
+<!-- Detailed test commands, reproduction steps, or raw execution logs. -->
+
+</details>
+
+Outstanding: None.
 
 ### Judge Alterations (Requires Approval)
 None.
+<!-- END_FACTORY_EVIDENCE_INDEX -->

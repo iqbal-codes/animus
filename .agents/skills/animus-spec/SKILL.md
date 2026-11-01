@@ -6,15 +6,15 @@ disable-model-invocation: true
 
 # Write the spec
 
-Read `docs/agents/software-factory-workflow.md` and the tracker/label docs it points to. Synthesize settled discussion rather than starting another interview. Missing intent remains an open question; offer `/animus-grill` for decisions that prevent a complete contract.
+Read `docs/agents/issue-tracker.md` when publishing or updating tracker issues and applying canonical triage labels. Synthesize settled discussion rather than starting another interview. Missing intent remains an open question; offer `/animus-grill` for decisions that prevent a complete contract.
 
 ## Process
 
-1. Resolve the source conversation/issue/path and target repository. Read the source in full, including comments, relevant code, glossary and ADRs. Check whether the requested outcome already exists or overlaps another issue.
-2. Separate observed current behavior from the proposal. Carry forward agreed decisions and exclusions exactly; cite source sections and relevant code evidence. Describe test seams using existing public behavior where possible. New design is a proposal unless already agreed.
+1. Resolve the source conversation/issue/path (including any `docs/brainstorm-<slug>.md` slice entry and `docs/research-*.md` notes) and target repository. Read the source in full, including comments, relevant code, glossary and ADRs. Check whether the requested outcome already exists or overlaps another issue.
+2. Separate observed current behavior from the proposal. Carry forward agreed decisions, parked sensible defaults, and exclusions exactly; cite source sections and relevant code evidence. Keep greenfield product specs focused on observable product behavior and business invariants without prematurely prescribing tech stack or folder layout (which `/animus-architecture` settles before `/animus-tickets`). Describe test seams using existing public behavior where possible. New design is a proposal unless already agreed.
 3. Write the spec below. Give acceptance criteria stable identifiers for later ticket and evidence mapping. Include only relevant states, failures, and authority boundaries; do not pad with exhaustive invented user stories.
 4. Present the draft, material gaps, target repository, and proposed labels. Publish or update the source issue only when those writes are authorized. A parent spec is planning-only: label with `spec` paired with `ready-for-human` (or `needs-info` if material intent is missing/incomplete; never `ready-for-agent` for parent specs). Read back any publication and return its exact URL.
-5. Handoff: spec path/URL, complete vs incomplete contract, unresolved decisions, and suggested `/animus-tickets` input. Stop before decomposition or execution unless separately requested.
+5. Handoff: spec path/URL (updating the slice's `Spec Pointer` in `docs/brainstorm-<slug>.md` when applicable), complete vs incomplete contract, unresolved decisions, and suggested next stage: `/animus-architecture` (when tech stack, folder topology, or cross-spec reusable components are not yet settled) or `/animus-tickets` (when codebase architecture is already established). Stop before architecture or decomposition unless separately requested.
 
 ## Spec shape
 

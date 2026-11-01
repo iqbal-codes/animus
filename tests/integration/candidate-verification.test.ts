@@ -13,9 +13,9 @@ import { CommandLedger } from "../../apps/backend/src/command";
 import {
   EvidenceService,
   EvidenceError,
-  ReportSanitizer,
   handleProjectEvidenceRoute,
 } from "../../apps/backend/src/evidence";
+import { ReportSanitizer } from "@animus/contracts/sanitizer";
 import { createFactoryClient } from "@animus/client";
 
 describe("Candidate-Bound Verification, Landing Guard & Tiered Action Freshness (Issue #63)", () => {

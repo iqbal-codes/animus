@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { BUNDLED_PROMPTS } from "./bundled-prompts";
 
 export function resolveAnimusCommandsDir(root: string): string | null {
   const packPath = join(root, "factory/pack.json");
@@ -20,8 +21,8 @@ export function resolveAnimusCommandsDir(root: string): string | null {
   return null;
 }
 
-export function loadPrompt(promptName: string, root: string): string {
-  // 1. Check local scripts/prompts/
+export function loadPrompt(promptName: string, root: string = process.cwd()): string {
+  // 1. Check local scripts/prompts/ (consumer override precedence)
   const localPromptPath = join(root, "scripts/prompts", `${promptName}.md`);
   if (existsSync(localPromptPath)) {
     return readFileSync(localPromptPath, "utf-8");
@@ -36,21 +37,64 @@ export function loadPrompt(promptName: string, root: string): string {
     }
   }
 
-  throw new Error(`Prompt template '${promptName}' could not be located.`);
+  // 3. Check bundled canonical resources for installed distributions
+  if (BUNDLED_PROMPTS[promptName]) {
+    return BUNDLED_PROMPTS[promptName]!;
+  }
+
+  throw new Error(
+    `Prompt template '${promptName}' could not be located in local scripts/prompts, pinned pack, or bundled resources.`,
+  );
+}
+
+export interface PromptRenderOptions {
+  allowUnresolved?: boolean;
+  requiredTokens?: string[];
 }
 
 export function renderPrompt(
   template: string,
-  vars: Record<string, string>,
+  vars: Record<string, string | undefined>,
   artifactsDir: string,
+  options?: PromptRenderOptions,
 ): string {
   let result = template;
   // Sort keys descending by length so longer variable names (e.g. $INPUTS.profile)
   // are replaced before prefixes (e.g. $INPUTS.pr).
-  const sortedEntries = Object.entries(vars).sort(([a], [b]) => b.length - a.length);
+  const sortedEntries = Object.entries(vars)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => b.length - a.length);
+
   for (const [key, value] of sortedEntries) {
-    result = result.replaceAll(`$INPUTS.${key}`, value);
+    if (value !== undefined) {
+      result = result.replaceAll(`$INPUTS.${key}`, value);
+    }
   }
   result = result.replaceAll("$ARTIFACTS_DIR", artifactsDir);
+
+  // Validate required tokens
+  if (options?.requiredTokens) {
+    const missingTokens = options.requiredTokens.filter((token) => {
+      const val = vars[token];
+      return val === undefined || val === "";
+    });
+    if (missingTokens.length > 0) {
+      throw new Error(
+        `Prompt rendering failed: missing required inputs: ${missingTokens.join(", ")}`,
+      );
+    }
+  }
+
+  // Reject unresolved $INPUTS tokens at render/dispatch seam unless explicitly allowed
+  if (!options?.allowUnresolved) {
+    const unresolvedMatches = [...result.matchAll(/\$INPUTS\.([a-zA-Z0-9_]+)/g)];
+    if (unresolvedMatches.length > 0) {
+      const unresolvedTokens = Array.from(new Set(unresolvedMatches.map((m) => m[1])));
+      throw new Error(
+        `Prompt rendering failed: unresolved required template tokens: ${unresolvedTokens.map((t) => `$INPUTS.${t}`).join(", ")}`,
+      );
+    }
+  }
+
   return result;
 }

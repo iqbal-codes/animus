@@ -786,6 +786,19 @@ test("13. Verification Profiles: resolves appropriate profile and generates tune
   expect(
     repoBuilderSkills.some((s) => s.endsWith(".agents/skills/policy-verifier-regressions")),
   ).toBe(true);
+  expect(repoBuilderSkills.some((s) => s.endsWith(".agents/skills/animus-brainstorm"))).toBe(false);
+  expect(repoBuilderSkills.some((s) => s.endsWith(".agents/skills/animus-grill"))).toBe(false);
+  expect(repoBuilderSkills.some((s) => s.endsWith(".agents/skills/animus-architecture"))).toBe(
+    false,
+  );
+
+  for (const stageSkill of ["animus-brainstorm", "animus-grill", "animus-architecture"] as const) {
+    const skillText = readFileSync(join(root, ".agents/skills", stageSkill, "SKILL.md"), "utf-8");
+    expect(skillText).toContain("disable-model-invocation: true");
+    expect(skillText).toContain("## When to Use");
+    expect(skillText).toContain("## Steps");
+    expect(skillText).toContain("*Completion Criterion*:");
+  }
 
   const repoQaSkills = resolveAllowedSkills(root, "qa");
   expect(repoQaSkills.some((s) => s.endsWith(".agents/skills/ui-quality"))).toBe(true);

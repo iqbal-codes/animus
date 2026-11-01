@@ -1,48 +1,55 @@
-# Issue tracker: GitHub
+# Issue Tracker, Dependencies & Triage Labels
 
-Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
+Issues and specifications for this repository live in GitHub Issues. Use the `gh` CLI for all tracker operations.
 
-For the brainstorming → spec → tickets → implementation → review lifecycle, read `software-factory-workflow.md`. It defines executable ticket bodies, publication/admission labels, and the textual dependency line required by factory intake and animus-loop. Native edges alone are insufficient for those consumers.
+For ticket decomposition and publication workflow, see `.agents/skills/animus-tickets/SKILL.md`. Both factory intake and `animus-loop` parse the standalone textual `Depends on:` line (`Depends on: #12, #14` or `Depends on: None`) in the issue body; native GitHub blocking edges supplement that line, never replace it.
 
-## Conventions
+## Canonical Triage & Admission Labels
 
-- **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
+Runtime intake and planning skills use five canonical triage labels to control work admission:
+
+| Canonical Label | Admission State | Meaning |
+| --- | --- | --- |
+| `ready-for-agent` | **Admitted** | Fully specified, unambiguous ticket ready for autonomous agent execution once prerequisites close |
+| `needs-triage` | **Held** | Newly opened or unreviewed item awaiting maintainer evaluation |
+| `needs-info` | **Held** | Waiting on reporter or product owner to resolve missing intent or open questions |
+| `ready-for-human` | **Held** | Requires human implementation, architectural sign-off, or parent-spec tracking |
+| `wontfix` | **Excluded** | Will not be actioned; overrides all other labels with absolute precedence |
+
+### Admission Gate Rules
+
+- `ready-for-agent`: Admits an open ticket only when all referenced `Depends on:` prerequisites are closed, no blocking/exclusion labels are present, and no active loop claim exists. Apply only to self-contained, executable child tickets.
+- `needs-info`, `ready-for-human`, `needs-triage`: Hold work from autonomous pickup even if `ready-for-agent` is also present.
+- `wontfix`: Excludes work with absolute precedence.
+- **Unlabeled issues**: Held awaiting triage (`unlabeled_awaiting_triage`). Creating labels in a repository does not make unlabeled issues executable.
+- **Legacy `factory:*` labels**: `factory:ready`, `factory:hold`, and `factory:exclude` carry zero triage or admission authority.
+
+### Taxonomy, Spec & Loop Execution Labels
+
+- `spec`: Identifies a parent specification planning record delivered via child tickets. Pair every parent spec with `ready-for-human` (or `needs-info` when incomplete) to prevent direct autonomous loop intake. Never label a parent spec or ambiguous subticket `ready-for-agent`.
+- `needs-owner`: Applied by the loop dispatcher, builder, or reviewer when a ticket hits the attempt/send-back limit, touches protected governance paths, alters judge checks without approval, or requires human product direction. Holds the item for human intervention.
+- `priority`: Prioritizes eligible unblocked `ready-for-agent` tickets ahead of standard backlog order during dispatch.
+- `route:ship`: Routes an eligible ticket directly through the `complex` multi-stage shipping pipeline.
+
+## `gh` CLI Conventions
+
+Infer the repository from `git remote -v` (or pass `-R <owner>/<repo>` when targeting an external repo):
+
+- **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc (`--body-file -`) for multi-line bodies.
 - **Read an issue**: `gh issue view <number> --json number,title,body,labels,comments`.
 - **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
-- **Make an issue a sub-issue of a parent**: `gh issue create --parent <parent> ...`, or `gh issue edit <parent> --add-sub-issue <child>` afterwards (`gh` 2.94+). Older `gh`: `gh api --method POST repos/<owner>/<repo>/issues/<parent>/sub_issues -F sub_issue_id=<child-db-id>` (database id, as in **Blocking** below). Without sub-issues, put `Part of #<parent>` at the top of the child body.
-- **Comment on an issue**: `gh issue comment <number> --body "..."`
-- **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
-- **Close**: `gh issue close <number> --comment "..."`
+- **Link a child ticket to a parent spec**:
+  - Put `Part of #<parent>` near the top of the child issue body.
+  - Link as a native GitHub sub-issue when supported: `gh issue create --parent <parent> ...`, or `gh issue edit <parent> --add-sub-issue <child>` (`gh` 2.94+), or `gh api --method POST repos/<owner>/<repo>/issues/<parent>/sub_issues -F sub_issue_id=<child-db-id>`.
+- **Record dependencies**:
+  - **Canonical textual line (required)**: Write `Depends on: #12, #14` or `Depends on: None` as a standalone line in the ticket body.
+  - **Native GitHub dependency edge (supplementary)**: `gh api --method POST repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by -F issue_id=<blocker-db-id>`, where `<blocker-db-id>` is the numeric database ID from `gh api repos/<owner>/<repo>/issues/<n> --jq .id`.
+- **Comment on an issue**: `gh issue comment <number> --body "..."`.
+- **Apply / remove labels**: `gh issue edit <number> --add-label "..." --remove-label "..."`.
+- **Close an issue**: `gh issue close <number> --comment "..."`.
 
-Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
+## Pull Requests as a Triage Surface
 
-## Pull requests as a triage surface
+**PRs as a request surface: no.** _(Set to `yes` if this repository treats external PRs as feature requests.)_
 
-**PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
-
-When set to `yes`, PRs run through the same labels and states as issues, using the `gh pr` equivalents:
-
-- **Read a PR**: `gh pr view <number> --comments` and `gh pr diff <number>` for the diff.
-- **List external PRs for triage**: `gh api --paginate 'repos/{owner}/{repo}/pulls?state=open' --jq '.[] | select(.author_association | IN("OWNER","MEMBER","COLLABORATOR") | not) | {number, title, author: .user.login, author_association, labels: [.labels[].name]}'`.
-- **Comment / label / close**: `gh pr comment`, `gh pr edit --add-label`/`--remove-label`, `gh pr close`.
-
-GitHub shares one number space across issues and PRs, so a bare `#42` may be either: resolve with `gh pr view 42` and fall back to `gh issue view 42`.
-
-## When a skill says "publish to the issue tracker"
-
-Create a GitHub issue.
-
-## When a skill says "fetch the relevant ticket"
-
-Read it as in **Read an issue** above.
-
-## Wayfinding operations
-
-Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.
-
-- **Map**: a single issue labelled `wayfinder:map`, holding the Notes / Decisions-so-far / Fog body. `gh issue create --label wayfinder:map`.
-- **Child ticket**: an issue linked to the map as a GitHub sub-issue (see **Make an issue a sub-issue of a parent**). Where sub-issues aren't enabled, add the child to a task list in the map body and put `Part of #<map>` at the top of the child body. Labels: `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`). Once claimed, the ticket is assigned to the driving dev.
-- **Blocking**: GitHub's **native issue dependencies**, the canonical, UI-visible representation. Add an edge with `gh api --method POST repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by -F issue_id=<blocker-db-id>`, where `<blocker-db-id>` is the blocker's numeric **database id** (`gh api repos/<owner>/<repo>/issues/<n> --jq .id`, _not_ the `#number` or `node_id`). GitHub reports `issue_dependencies_summary.blocked_by` (open blockers only, the live gate). Where dependencies aren't available, fall back to a `Blocked by: #<n>, #<n>` line at the top of the child body. A ticket is unblocked when every blocker is closed.
-- **Frontier query**: list the map's open children (`gh issue list --state open`, scoped to the map's sub-issues / task list), drop any with an open blocker (`issue_dependencies_summary.blocked_by > 0`, or an open issue in the `Blocked by` line) or an assignee; first in map order wins.
-- **Claim**: `gh issue edit <n> --add-assignee @me`, the session's first write.
-- **Resolve**: `gh issue comment <n> --body "<answer>"`, then `gh issue close <n>`, then append a context pointer (gist + link) to the map's Decisions-so-far.
+When set to `yes`, external PRs use the same canonical triage labels via `gh pr` equivalents (`gh pr view <number> --comments`, `gh pr diff <number>`, `gh pr comment`, `gh pr edit --add-label`/`--remove-label`, `gh pr close`). Because GitHub shares one number space across issues and PRs, resolve an unknown `#42` with `gh pr view 42` and fall back to `gh issue view 42`.

@@ -174,8 +174,10 @@ export function auditRepositoryHarness(repoRoot: string): HarnessAuditReport {
     "animus-implement",
     "animus-review",
     "animus-harness",
+    "animus-brainstorm",
     "animus-grill",
     "animus-spec",
+    "animus-architecture",
     "animus-tickets",
     "writing-for-agents",
     "skill-creator",
@@ -264,7 +266,7 @@ export function generateCanonicalAgentsMd(
     "",
     "- **Canonical Configuration**: `AGENTS.md` and `.agents/skills/` are authoritative sources of truth (`CLAUDE.md -> AGENTS.md`, `.claude/skills -> ../.agents/skills`).",
     "- **Repository Skills**: Consult playbooks in `.agents/skills/` when triggered:",
-    "  - Spec drafting & breakdown: `/animus-grill`, `/animus-spec`, `/animus-tickets`",
+    "  - Spec drafting, product shaping & architecture: `/animus-brainstorm`, `/animus-grill`, `/animus-spec`, `/animus-architecture`, `/animus-tickets`",
     "  - Implementation & verification: `/animus-implement`, `.agents/skills/tdd/SKILL.md`",
     "  - Code review & standards: `/animus-review`",
     "  - Defect root-causing: `/diagnosing-bugs`",
@@ -275,7 +277,14 @@ export function generateCanonicalAgentsMd(
       commands.unitTest +
       "`).",
     "- **Evidence-Backed Lessons**: Inspect `.factory/lessons.jsonl` for repository-specific gotchas matching target files before editing.",
+    "- **Harness Authoring Standard**: Adhere to `docs/agents/harness-authoring-standard.md` when curating lessons, rules, or skills.",
     "- **Harness Safe Mode**: Bypass dynamic harness memory and use base tooling when `.factory/NO_HARNESS_MEMORY` is present.",
+    "",
+    "## Domain & Workflow Documentation",
+    "",
+    "- **PR & Evidence Contract**: Read `docs/agents/pr-evidence-contract.md` for canonical PR bodies, evidence matrices, Before/After captures, and finding rechecks.",
+    "- **Issue Tracker, Dependencies & Triage Labels**: Read `docs/agents/issue-tracker.md` for `gh` conventions, `Depends on:` rules, and canonical triage labels.",
+    "- **Domain Models & ADRs**: Read `docs/agents/domain.md`, `GLOSSARY.md`, and `docs/adr/` before modifying domain models or architectural boundaries.",
     "",
     "## Execution Rules",
     "",
@@ -529,8 +538,10 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
         "animus-implement",
         "animus-review",
         "animus-harness",
+        "animus-brainstorm",
         "animus-grill",
         "animus-spec",
+        "animus-architecture",
         "animus-tickets",
         "writing-for-agents",
         "skill-creator",
@@ -541,6 +552,21 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
           cpSync(srcSkill, dstSkill, { recursive: true });
           skillsCopied.push(skillName);
           createdOrUpdatedPaths.push(dstSkill);
+        }
+      }
+    }
+
+    const sourceAgentDocsDir = join(sourceRoot, "docs/agents");
+    if (existsSync(sourceAgentDocsDir)) {
+      const targetAgentDocsDir = join(targetRoot, "docs/agents");
+      mkdirSync(targetAgentDocsDir, { recursive: true });
+      for (const entry of readdirSync(sourceAgentDocsDir, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+        const srcDoc = join(sourceAgentDocsDir, entry.name);
+        const dstDoc = join(targetAgentDocsDir, entry.name);
+        if (!existsSync(dstDoc)) {
+          cpSync(srcDoc, dstDoc);
+          createdOrUpdatedPaths.push(dstDoc);
         }
       }
     }

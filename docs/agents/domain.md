@@ -1,51 +1,57 @@
-# Domain Docs
+# Domain Models, Architecture & ADRs
 
-How the engineering skills should consume this repo's domain documentation when exploring the codebase.
+How planning, architecture, and implementation skills consume and maintain this repository's domain vocabulary, architectural decisions, and shared component patterns.
 
-## Before exploring, read these
+## Before exploring or designing, read these
 
-- **`GLOSSARY.md`** at the repo root, or
-- **`GLOSSARY-MAP.md`** at the repo root if it exists: it points at one `GLOSSARY.md` per context. Read each one relevant to the topic.
-- **`docs/adr/`**: read ADRs that touch the area you're about to work in. In multi-context repos, also check `src/<context>/docs/adr/` for context-scoped decisions.
+- **`GLOSSARY.md`** at the repository root (or **`GLOSSARY-MAP.md`** in multi-context repositories, which points to each context's `GLOSSARY.md`).
+- **`docs/architecture.md`**: settled technology stack, folder/module topology, and the shared reusable component/module catalog produced by `/animus-architecture`.
+- **`docs/adr/`**: Architectural Decision Records covering the area you are about to modify (and `src/<context>/docs/adr/` in multi-context repositories).
+- **`.factory/codebase-rules.json`**: enforced structural rules (`rules`) and canonical shared building blocks (`pattern_registry`) across backend, frontend, CLI, and database layers.
 
-If any of these files don't exist, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The `/domain-modeling` skill (reached via `/grill-with-docs` and `/improve-codebase-architecture`) creates them lazily when terms or decisions actually get resolved.
+If `GLOSSARY.md`, `docs/architecture.md`, or `docs/adr/` do not exist yet, **proceed silently**. Do not flag their absence or create empty boilerplate upfront; `/animus-grill`, `/animus-spec`, and `/animus-architecture` establish them when domain terms and architectural boundaries are settled.
 
 ## File structure
 
-Single-context repo (most repos):
+Single-context repository (most repositories):
 
-```
+```text
 /
 ├── GLOSSARY.md
-├── docs/adr/
-│   ├── 0001-event-sourced-orders.md
-│   └── 0002-postgres-for-write-model.md
+├── docs/
+│   ├── architecture.md
+│   └── adr/
+│       ├── 0001-event-sourced-orders.md
+│       └── 0002-postgres-for-write-model.md
 └── src/
 ```
 
-Multi-context repo (presence of `GLOSSARY-MAP.md` at the root):
+Multi-context repository (presence of `GLOSSARY-MAP.md` at the root):
 
-```
+```text
 /
 ├── GLOSSARY-MAP.md
-├── docs/adr/                          ← system-wide decisions
+├── docs/
+│   ├── architecture.md
+│   └── adr/                          ← system-wide decisions
 └── src/
     ├── ordering/
     │   ├── GLOSSARY.md
-    │   └── docs/adr/                  ← context-specific decisions
+    │   └── docs/adr/                 ← context-specific decisions
     └── billing/
         ├── GLOSSARY.md
         └── docs/adr/
 ```
 
-## Use the glossary's vocabulary
+## Use the canonical domain vocabulary
 
-When your output names a domain concept (in an issue title, a refactor proposal, a hypothesis, a test name), use the term as defined in `GLOSSARY.md`. Don't drift to synonyms the glossary explicitly avoids.
+When naming a domain concept in a spec, ticket title, type definition, module seam, or test name, use the exact term defined in `GLOSSARY.md` (or the `Shared Product Spine` in `docs/brainstorm-*.md`). Avoid drifting to synonyms that the glossary or product spine rejects.
 
-If the concept you need isn't in the glossary yet, that's a signal: either you're inventing language the project doesn't use (reconsider) or there's a real gap (note it for `/domain-modeling`).
+If a needed domain concept is missing from the glossary, treat that as a signal: either reuse existing project terminology or surface the new term during `/animus-grill` / `/animus-architecture` so it is recorded consistently.
 
-## Flag ADR conflicts
+## Reuse shared primitives and flag ADR conflicts
 
-If your output contradicts an existing ADR, surface it explicitly rather than silently overriding:
+- Consult `docs/architecture.md` and `pattern_registry` in `.factory/codebase-rules.json` before creating new UI primitives, data adapters, or service helpers. Reuse registered shared components rather than duplicating patterns across slices.
+- If a proposed change or implementation conflicts with an existing ADR in `docs/adr/`, surface the conflict explicitly rather than overriding it silently:
 
-> _Contradicts ADR-0007 (event-sourced orders), but worth reopening because…_
+> _Contradicts ADR-0002 (postgres-for-write-model), but worth reopening because…_
