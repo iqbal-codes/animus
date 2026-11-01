@@ -3,26 +3,26 @@ assistant: pi
 
 assistants:
   pi:
-    model: 9router/ag/gemini-3.8-flash
+    model: default
 
 tiers:
   small:
     provider: pi
-    model: 9router/ag/gemini-3.8-flash
+    model: default
     effort: medium
   medium:
     provider: pi
-    model: 9router/ag/gemini-3.8-flash
+    model: default
     effort: high
   large:
     provider: pi
-    model: 9router/ag/gemini-3.8-flash
+    model: default
     effort: high
 
 aliases:
   '@reasoning':
     provider: pi
-    model: 9router/ag/gemini-3.8-flash
+    model: default
     effort: high
 
 worktree:

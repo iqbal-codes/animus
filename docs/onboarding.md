@@ -33,17 +33,21 @@ cd /absolute/path/to/product
 animus setup
 ```
 
-Setup targets the current directory. It configures the repository, then enrolls that checkout through the factory API at `http://127.0.0.1:3000` by default. Registry commands do not create a database inside the managed repository.
+Setup targets the current directory. It enforces a fail-closed preflight check requiring an active Git repository checkout or worktree and a valid GitHub `origin` remote (`github.com`). Running setup in a non-Git directory or with a non-GitHub remote fails closed immediately before prompting or writing files.
+
+Once preflight succeeds, `animus setup` deterministically configures the repository and enrolls the checkout through the factory API at `http://127.0.0.1:3000` by default. Registry commands do not create a database inside the managed repository.
 
 The interactive wizard provides:
 
-1. A harness checkbox list. Use Up/Down to navigate, Space to toggle, and Enter to continue. Select at least one harness. Installed status does not establish authentication.
-2. An AGENTS.md action selector when an instruction file already exists.
-3. A tier overview. Open Small, Medium, or Large with Enter/Space, choose a selected harness, choose or enter a model ID, then choose reasoning effort. The searchable lists accept typed queries. Pi and OpenCode catalogs come from their local CLI catalog commands; unsupported or unavailable catalogs offer manual entry. Catalog presence does not establish account access. Harness effort choices do not establish model-specific support. A model reported as not supporting reasoning receives no effort override.
+1. A harness checkbox list. Use Up/Down to navigate, Space to toggle, and Enter to continue. Select at least one harness (`pi`, `claude`, `omp`, `codex`, or `opencode`). Installed status does not establish authentication.
+2. An `AGENTS.md` action selector (`--agents-md <keep|overwrite>`). When an instruction file already exists, it defaults to `keep` to preserve existing project instructions; selecting `overwrite` writes a fresh copy from `factory/templates/AGENTS.template.md`.
+3. A tier overview. Small, Medium, and Large tiers default model selection to `"default"`, using each harness's native CLI default model with reasoning effort defaulted to `"default"`. Operators can inspect or customize model IDs and reasoning efforts; Pi and OpenCode catalogs come from their local CLI catalog commands, while other providers support manual entry. Catalog presence does not establish account access. Harness effort choices do not establish model-specific support. A model reported as not supporting reasoning receives no effort override.
 4. Numeric inputs with visible defaults. Invalid, non-positive, fractional, or unsafe integer values are rejected and reprompted. Enter accepts the displayed default.
-5. Editable static-check and unit-test commands. These commands are saved, not executed by setup. Replace missing or no-op checks with real project checks before expecting execution.
+5. Editable static-check and unit-test commands. These commands are saved directly to `harness/harness.config.json` and `.factory/tool-guidance.json` without blind synthetic injection. Replace missing or no-op checks with real project checks before expecting execution.
 
 Escape or Ctrl-C cancels an interactive prompt and restores terminal state. Configuration is written only after the configuration prompts finish. Once configuration has been written, an enrollment failure preserves those files and exits unsuccessfully with a registration error.
+
+After scaffolding completes, `animus setup` directs the operator to run `/animus-harness` in their personal coding agent to perform live command verification (`exit 0`), audit codebase topology, and author `AGENTS.md` and domain holdout scenarios.
 
 For configuration without enrollment:
 
@@ -51,10 +55,10 @@ For configuration without enrollment:
 animus setup --local-only
 ```
 
-For noninteractive configuration and enrollment, use `--yes` and explicit settings as needed. `--yes` is not a verification of model availability or project checks.
+For noninteractive configuration and enrollment, use `--yes` and explicit settings as needed (`--agents-md keep` or `overwrite`). `--yes` is not a verification of model availability or project checks.
 
 ```sh
-animus setup --yes --provider claude \
+animus setup --yes --provider claude --agents-md keep \
   --static-cmd "bun run check" --unit-cmd "bun test"
 ```
 

@@ -15,8 +15,9 @@
   - Failure recovery & root-causing: `/diagnosing-bugs`, `.agents/skills/unstick`
   - Frontend & UI verification: `.agents/skills/ui-quality`
   - Code review & standards: `/animus-review`
-  - Post-lap memory & lesson synthesis: `/animus-harness`, `.agents/skills/writing-for-agents`, `.agents/skills/skill-creator`
-- **Learned Repo Playbooks** (synthesized via `/animus-harness` from past issue laps):
+  - Repository harness setup & self-check: `/animus-harness`
+  - Post-lap memory & lesson synthesis: `/animus-learn`, `.agents/skills/writing-for-agents`, `.agents/skills/skill-creator`
+- **Learned Repo Playbooks** (synthesized via `/animus-learn` from past issue laps):
   - When implementing or repairing governance policy verifiers, read `.agents/skills/policy-verifier-regressions/SKILL.md` and follow it.
 - **Verified Tool Guidance**: Inspect `.factory/tool-guidance.json` for validated CLI recipes (test, lint, format, typecheck, build) that exited code 0.
 - **Evidence-Backed Lessons**: Inspect `.factory/lessons.jsonl` for repo-specific gotchas matching target files before editing.

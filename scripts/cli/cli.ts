@@ -88,12 +88,18 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   const maxLaps = values["max-laps"] !== undefined ? Number(values["max-laps"]) : undefined;
   const parallel = values.parallel !== undefined ? Number(values.parallel) : undefined;
   const intervalSeconds = values.interval !== undefined ? Number(values.interval) : undefined;
-  const agentsMdAction =
-    values["agents-md"] === "keep" ||
-    values["agents-md"] === "upgrade" ||
-    values["agents-md"] === "overwrite"
-      ? values["agents-md"]
-      : undefined;
+
+  if (
+    values["agents-md"] !== undefined &&
+    values["agents-md"] !== "keep" &&
+    values["agents-md"] !== "overwrite"
+  ) {
+    const msg = "--agents-md must be 'keep' or 'overwrite'";
+    if (values.json) console.log(JSON.stringify({ ok: false, error: msg }));
+    else console.error(`Error: ${msg}`);
+    return 1;
+  }
+  const agentsMdAction = values["agents-md"] as "keep" | "overwrite" | undefined;
 
   if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65535)) {
     const msg = `--port must be an integer between 0 and 65535, got: ${values.port}`;

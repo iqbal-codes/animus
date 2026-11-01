@@ -10,6 +10,7 @@ const NON_BUILDER_SKILLS = new Set([
   "animus-tickets",
   "animus-review",
   "animus-harness",
+  "animus-learn",
   "writing-for-agents",
   "skill-creator",
 ]);
@@ -77,7 +78,7 @@ export function resolveAllowedSkills(root: string, role: LoopRole): string[] {
       // Unattended loop reviewer is governed directly by loop-review.md with unified Standards & Spec axes
       break;
     case "reflector":
-      candidateNames.add("animus-harness");
+      candidateNames.add("animus-learn");
       candidateNames.add("writing-for-agents");
       candidateNames.add("skill-creator");
       break;

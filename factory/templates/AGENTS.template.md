@@ -15,7 +15,8 @@
   - Failure recovery & root-causing: `/diagnosing-bugs`, `.agents/skills/unstick/SKILL.md`
   - Frontend & UI verification: `.agents/skills/ui-quality/SKILL.md`
   - Code review & standards: `/animus-review`
-  - Post-lap memory & lesson synthesis: `/animus-harness`, `.agents/skills/writing-for-agents/SKILL.md`, `.agents/skills/skill-creator/SKILL.md`
+  - Repository harness setup & self-check: `/animus-harness`
+  - Post-lap memory & lesson synthesis: `/animus-learn`, `.agents/skills/writing-for-agents/SKILL.md`, `.agents/skills/skill-creator/SKILL.md`
 - **Verified Tool Guidance**: Inspect `.factory/tool-guidance.json` for validated CLI recipes (`static`: `$STATIC_CHECK`, `unit`: `$UNIT_TEST`).
 - **Evidence-Backed Lessons**: Inspect `.factory/lessons.jsonl` for repository-specific gotchas matching target files before editing.
 - **Harness Authoring Standard**: Adhere to `docs/agents/harness-authoring-standard.md` when curating lessons, rules, or skills.

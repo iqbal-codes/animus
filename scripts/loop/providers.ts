@@ -224,6 +224,8 @@ export function buildProviderArgv(
       ? clampEffort(options.effort, descriptor.supportedEfforts)
       : options.effort;
 
+  const model = options.model && options.model !== "default" ? options.model : undefined;
+
   const skillContents = (options.skills ?? [])
     .map((s) => materializeSkillContent(s))
     .filter((s): s is string => typeof s === "string" && s.trim().length > 0);
@@ -240,7 +242,7 @@ export function buildProviderArgv(
         "--output-format",
         "json",
         "--dangerously-skip-permissions",
-        ...(options.model ? ["--model", options.model] : []),
+        ...(model ? ["--model", model] : []),
         ...(clamped ? ["--effort", clamped] : []),
         ...(materializedSystemPrompts.flatMap((p) => ["--append-system-prompt", p])),
         "-p",
@@ -260,7 +262,7 @@ export function buildProviderArgv(
         "--no-context-files",
         ...(materializedSystemPrompts.flatMap((p) => ["--append-system-prompt", p])),
         "--auto-approve",
-        ...(options.model ? ["--model", options.model] : []),
+        ...(model ? ["--model", model] : []),
         ...(clamped ? ["--thinking", clamped] : []),
         options.prompt,
       ];
@@ -274,7 +276,7 @@ export function buildProviderArgv(
         "exec",
         "--json",
         "--dangerously-bypass-approvals-and-sandbox",
-        ...(options.model ? ["--model", options.model] : []),
+        ...(model ? ["--model", model] : []),
         ...(clamped ? ["-c", `model_reasoning_effort="${clamped}"`] : []),
         finalPrompt,
       ];
@@ -291,7 +293,7 @@ export function buildProviderArgv(
         "json",
         "--auto",
         "--standalone",
-        ...(options.model ? ["--model", options.model] : []),
+        ...(model ? ["--model", model] : []),
         ...(clamped && ["medium", "high", "xhigh", "max"].includes(clamped) ? ["--thinking"] : []),
         finalPrompt,
       ];
@@ -314,7 +316,7 @@ export function buildProviderArgv(
         "--no-context-files",
         ...(options.appendSystemPrompts?.flatMap((p) => ["--append-system-prompt", p]) ?? []),
         "--no-approve",
-        ...(options.model ? ["--model", options.model] : []),
+        ...(model ? ["--model", model] : []),
         ...(clamped ? ["--thinking", clamped] : []),
         "--",
         options.prompt,
