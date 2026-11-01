@@ -1,4 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -23,6 +24,15 @@ describe("Animus Unified CLI & Repository Setup Onboarding", () => {
       `factory-cli-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     );
     mkdirSync(tempDir, { recursive: true, mode: 0o700 });
+    execFileSync("git", ["init", "--quiet", tempDir]);
+    execFileSync("git", [
+      "-C",
+      tempDir,
+      "remote",
+      "add",
+      "origin",
+      "https://github.com/acme/target-repo.git",
+    ]);
   });
 
   afterEach(() => {
@@ -134,8 +144,8 @@ describe("Animus Unified CLI & Repository Setup Onboarding", () => {
     const animusCfg = readAnimusConfig(tempDir);
     expect(animusCfg.assistant).toBe("claude");
     expect(animusCfg.tiers?.small?.provider).toBe("claude");
-    expect(animusCfg.tiers?.medium?.model).toBe("claude-sonnet-4-5");
-    expect(animusCfg.tiers?.large?.model).toBe("claude-opus-4-5");
+    expect(animusCfg.tiers?.medium?.model).toBe("default");
+    expect(animusCfg.tiers?.large?.model).toBe("default");
     expect(animusCfg.worktree?.baseBranch).toBe("develop");
 
     // Verify .factory/schedule.json was created with max_laps=4, parallel=2, interval=120
@@ -243,6 +253,12 @@ describe("Animus Unified CLI & Repository Setup Onboarding", () => {
     expect(existsSync(join(tempDir, ".agents/skills/animus-brainstorm/SKILL.md"))).toBe(true);
     expect(existsSync(join(tempDir, ".agents/skills/animus-grill/SKILL.md"))).toBe(true);
     expect(existsSync(join(tempDir, ".agents/skills/animus-architecture/SKILL.md"))).toBe(true);
+    expect(existsSync(join(tempDir, ".agents/skills/security-hardening/SKILL.md"))).toBe(true);
+    expect(existsSync(join(tempDir, ".agents/skills/animus-harness/SKILL.md"))).toBe(true);
+    expect(existsSync(join(tempDir, ".agents/skills/animus-learn/SKILL.md"))).toBe(true);
+    expect(existsSync(join(tempDir, "docs/agents/issue-tracker.md"))).toBe(true);
+    expect(existsSync(join(tempDir, "docs/agents/domain.md"))).toBe(true);
+    expect(existsSync(join(tempDir, "docs/agents/pr-evidence-contract.md"))).toBe(true);
     expect(existsSync(join(tempDir, ".claude/skills"))).toBe(true);
     expect(existsSync(join(tempDir, ".claude/settings.json"))).toBe(true);
     expect(existsSync(join(tempDir, ".factory/hooks/loop-guard.ts"))).toBe(true);
@@ -252,26 +268,83 @@ describe("Animus Unified CLI & Repository Setup Onboarding", () => {
     expect(existsSync(join(tempDir, "harness/ci.ts"))).toBe(true);
   });
 
-  test("brownfield repository with poor AGENTS.md is audited, backed up, and upgraded while preserving notes", async () => {
-    // Create a poor/sparse AGENTS.md in a brownfield repo
-    const poorAgentsContent = "# Old Repo Guide\nAlways use snake_case for database columns.\n";
-    writeFileSync(join(tempDir, "AGENTS.md"), poorAgentsContent, "utf-8");
+  test("brownfield repository with existing AGENTS.md keeps it untouched by default and supports explicit --agents-md overwrite", async () => {
+    const existingAgents = "# Existing Repo Guide\nAlways use snake_case for database columns.\n";
+    writeFileSync(join(tempDir, "AGENTS.md"), existingAgents, "utf-8");
 
     const setupCode = await runCli(["setup", "--cwd", tempDir, "--yes", "--local-only", "--json"]);
     expect(setupCode).toBe(0);
 
-    // Backup of original AGENTS.md must exist
+    expect(readFileSync(join(tempDir, "AGENTS.md"), "utf-8")).toBe(existingAgents);
+    expect(existsSync(join(tempDir, ".factory/AGENTS.md.bak"))).toBe(false);
+
+    const overwriteCode = await runCli([
+      "setup",
+      "--cwd",
+      tempDir,
+      "--yes",
+      "--local-only",
+      "--agents-md",
+      "overwrite",
+      "--json",
+    ]);
+    expect(overwriteCode).toBe(0);
+
     const backupPath = join(tempDir, ".factory/AGENTS.md.bak");
     expect(existsSync(backupPath)).toBe(true);
-    expect(readFileSync(backupPath, "utf-8")).toBe(poorAgentsContent);
+    expect(readFileSync(backupPath, "utf-8")).toBe(existingAgents);
+    const newAgents = readFileSync(join(tempDir, "AGENTS.md"), "utf-8");
+    expect(newAgents).toContain(".agents/skills/");
+  });
 
-    // Upgraded AGENTS.md must include canonical pointers AND preserved project conventions
-    const upgradedContent = readFileSync(join(tempDir, "AGENTS.md"), "utf-8");
-    expect(upgradedContent).toContain(".agents/skills/");
-    expect(upgradedContent).toContain(".factory/tool-guidance.json");
-    expect(upgradedContent).toContain("## Project-Specific Conventions");
-    expect(upgradedContent).toContain("Always use snake_case for database columns.");
-    expect(upgradedContent.split("\n").length).toBeLessThanOrEqual(150);
+  test("animus setup fails closed before writing files when .git or GitHub origin remote is missing", async () => {
+    const noGitDir = join(
+      tmpdir(),
+      `factory-nogit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    );
+    mkdirSync(noGitDir, { recursive: true, mode: 0o700 });
+
+    const gitlabDir = join(
+      tmpdir(),
+      `factory-gitlab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    );
+    mkdirSync(gitlabDir, { recursive: true, mode: 0o700 });
+    execFileSync("git", ["init", "--quiet", gitlabDir]);
+    execFileSync("git", [
+      "-C",
+      gitlabDir,
+      "remote",
+      "add",
+      "origin",
+      "https://gitlab.com/acme/repo.git",
+    ]);
+
+    try {
+      const noGitCode = await runCli([
+        "setup",
+        "--cwd",
+        noGitDir,
+        "--yes",
+        "--local-only",
+        "--json",
+      ]);
+      expect(noGitCode).toBe(1);
+      expect(existsSync(join(noGitDir, ".animus"))).toBe(false);
+
+      const gitlabCode = await runCli([
+        "setup",
+        "--cwd",
+        gitlabDir,
+        "--yes",
+        "--local-only",
+        "--json",
+      ]);
+      expect(gitlabCode).toBe(1);
+      expect(existsSync(join(gitlabDir, ".animus"))).toBe(false);
+    } finally {
+      rmSync(noGitDir, { recursive: true, force: true });
+      rmSync(gitlabDir, { recursive: true, force: true });
+    }
   });
 
   test("executes engine catalog, doctor, and control commands via runCli", async () => {

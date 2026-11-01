@@ -17,8 +17,8 @@ export interface AgentsMdAudit {
   exists: boolean;
   path: string;
   lineCount: number;
-  score: number; // 0..100
-  status: "missing" | "poor" | "good";
+  status: "missing" | "present";
+  hasCanonicalPointers: boolean;
   missingSections: string[];
   issues: string[];
 }
@@ -54,12 +54,12 @@ export interface ScaffoldHarnessOptions {
   targetRepoRoot: string;
   factorySourceRoot?: string;
   detectedCommands: DetectedRepoCommands;
-  agentsMdAction?: "keep" | "upgrade" | "overwrite";
+  agentsMdAction?: "keep" | "overwrite";
 }
 
 export interface ScaffoldHarnessResult {
   auditBefore: HarnessAuditReport;
-  agentsMdActionTaken: "created" | "upgraded" | "overwritten" | "kept";
+  agentsMdActionTaken: "created" | "overwritten" | "kept";
   agentsMdBackupPath?: string;
   createdOrUpdatedPaths: string[];
   skillsCopied: string[];
@@ -79,8 +79,8 @@ export function auditAgentsMd(repoRoot: string): AgentsMdAudit {
       exists: false,
       path,
       lineCount: 0,
-      score: 0,
       status: "missing",
+      hasCanonicalPointers: false,
       missingSections: REQUIRED_SKILL_POINTERS.map((r) => r.label),
       issues: ["AGENTS.md does not exist in this repository."],
     };
@@ -92,36 +92,18 @@ export function auditAgentsMd(repoRoot: string): AgentsMdAudit {
   const issues: string[] = [];
   const missingSections: string[] = [];
 
-  let score = 100;
-
-  if (content.trim().length < 120) {
-    score -= 40;
-    issues.push("AGENTS.md is too sparse (< 120 characters) and lacks actionable context pointers.");
-  }
-
-  if (lineCount > 150) {
-    score -= 25;
-    issues.push(`AGENTS.md exceeds the 150-line context budget (${lineCount} lines); progressive disclosure is needed.`);
-  }
-
   for (const req of REQUIRED_SKILL_POINTERS) {
     if (!content.includes(req.key)) {
       missingSections.push(req.label);
-      score -= 15;
     }
   }
 
-  // Check for excessive negative proverbs ("don't", "do not", "never")
-  const negMatches = content.match(/\b(do not|don't|avoid)\b/gi) ?? [];
-  if (negMatches.length > 6) {
-    score -= 10;
+  if (lineCount > 150) {
     issues.push(
-      `Contains ${negMatches.length} negative prohibitions; prefer positive imperative instructions.`,
+      `AGENTS.md exceeds the 150-line context budget (${lineCount} lines); progressive disclosure is needed.`,
     );
   }
 
-  score = Math.max(0, Math.min(100, score));
-  const status: AgentsMdAudit["status"] = score >= 75 ? "good" : "poor";
   if (missingSections.length > 0) {
     issues.push(`Missing factory harness pointers: ${missingSections.join(", ")}`);
   }
@@ -130,12 +112,34 @@ export function auditAgentsMd(repoRoot: string): AgentsMdAudit {
     exists: true,
     path,
     lineCount,
-    score,
-    status,
+    status: "present",
+    hasCanonicalPointers: missingSections.length === 0,
     missingSections,
     issues,
   };
 }
+
+export const CANONICAL_SKILL_CATALOG = [
+  ["tdd", "Test-driven development red-green-refactor playbook."],
+  ["diagnosing-bugs", "Systematic root-cause bug diagnosis playbook."],
+  ["unstick", "Two-strike failure recovery and premise probing playbook."],
+  ["blueprint", "Type-first architecture and Level 4 blast-radius verification playbook."],
+  ["ui-quality", "Intentional frontend design, 7-state coverage, and viewport audit playbook."],
+  ["animus-implement", "Autonomous builder implementation playbook."],
+  ["animus-review", "Independent code review and evidence verification playbook."],
+  ["animus-harness", "Interactive repository harness setup, toolchain verification, and self-check playbook."],
+  ["animus-learn", "Post-lap memory, tool guidance, and lesson synthesis playbook."],
+  ["animus-brainstorm", "Shape a broad product or initiative idea into an ordered slice map."],
+  ["animus-grill", "Stress-test a single product slice top-down across altitude gates."],
+  ["animus-spec", "Synthesize agreed discussion into a software factory specification."],
+  ["animus-architecture", "Derive tech stack, module topology, and reusable components from product specs."],
+  ["animus-tickets", "Split an agreed spec into vertical tickets with parser-readable dependencies."],
+  ["security-hardening", "Harden software against vulnerabilities, validate trust boundaries, enforce least privilege, and prevent OWASP Top 10 defects."],
+  ["writing-for-agents", "Authoring concise, positive imperative agent instructions."],
+  ["skill-creator", "Creating structured procedural skills with completion criteria."],
+] as const;
+
+export const CANONICAL_SKILL_NAMES = CANONICAL_SKILL_CATALOG.map(([name]) => name);
 
 export function auditRepositoryHarness(repoRoot: string): HarnessAuditReport {
   const root = resolve(repoRoot);
@@ -165,26 +169,8 @@ export function auditRepositoryHarness(repoRoot: string): HarnessAuditReport {
       lstatSync(claudeSkillsPath).isSymbolicLink() || existsSync(claudeSkillsPath);
   } catch {}
 
-  const canonicalSkills = [
-    "tdd",
-    "diagnosing-bugs",
-    "unstick",
-    "blueprint",
-    "ui-quality",
-    "animus-implement",
-    "animus-review",
-    "animus-harness",
-    "animus-brainstorm",
-    "animus-grill",
-    "animus-spec",
-    "animus-architecture",
-    "animus-tickets",
-    "writing-for-agents",
-    "skill-creator",
-  ];
-
-  const canonicalSet = new Set(canonicalSkills);
-  const skillsInstalled = canonicalSkills.filter((name) =>
+  const canonicalSet = new Set<string>(CANONICAL_SKILL_NAMES);
+  const skillsInstalled = CANONICAL_SKILL_NAMES.filter((name) =>
     existsSync(join(root, ".agents/skills", name, "SKILL.md")),
   );
 
@@ -232,7 +218,6 @@ export function auditRepositoryHarness(repoRoot: string): HarnessAuditReport {
 export function generateCanonicalAgentsMd(
   repoRoot: string,
   commands: DetectedRepoCommands,
-  preservedNotes?: string,
 ): string {
   const projectName = basename(resolve(repoRoot)) || "Repository";
   const sourceRoot = resolveFactorySourceRoot();
@@ -245,12 +230,7 @@ export function generateCanonicalAgentsMd(
       .replaceAll("$STATIC_CHECK", commands.staticCheck)
       .replaceAll("$UNIT_TEST", commands.unitTest)
       .trimEnd();
-    const lines = rendered.split("\n");
-    if (preservedNotes && preservedNotes.trim()) {
-      const trimmedNotes = preservedNotes.trim().split("\n").slice(0, 60);
-      lines.push("", "## Project-Specific Conventions", "", ...trimmedNotes);
-    }
-    return lines.slice(0, 148).join("\n") + "\n";
+    return rendered + "\n";
   }
 
   const lines: string[] = [
@@ -264,44 +244,37 @@ export function generateCanonicalAgentsMd(
     "",
     "## Repository Knowledge, Skills & Memory",
     "",
-    "- **Canonical Configuration**: `AGENTS.md` and `.agents/skills/` are authoritative sources of truth (`CLAUDE.md -> AGENTS.md`, `.claude/skills -> ../.agents/skills`).",
-    "- **Repository Skills**: Consult playbooks in `.agents/skills/` when triggered:",
-    "  - Spec drafting, product shaping & architecture: `/animus-brainstorm`, `/animus-grill`, `/animus-spec`, `/animus-architecture`, `/animus-tickets`",
-    "  - Implementation & verification: `/animus-implement`, `.agents/skills/tdd/SKILL.md`",
-    "  - Code review & standards: `/animus-review`",
-    "  - Defect root-causing: `/diagnosing-bugs`",
-    "  - Post-lap memory & lesson synthesis: `/animus-harness`, `.agents/skills/writing-for-agents/SKILL.md`, `.agents/skills/skill-creator/SKILL.md`",
-    "- **Verified Tool Guidance**: Inspect `.factory/tool-guidance.json` for validated CLI recipes (`static`: `" +
+    "- **Canonical Configuration**: \`AGENTS.md\` and \`.agents/skills/\` are authoritative sources of truth (\`CLAUDE.md -> AGENTS.md\`, \`.claude/skills -> ../.agents/skills\`).",
+    "- **Repository Skills**: Consult playbooks in \`.agents/skills/\` when triggered:",
+    "  - Spec drafting, product shaping & architecture: \`/animus-brainstorm\`, \`/animus-grill\`, \`/animus-spec\`, \`/animus-architecture\`, \`/animus-tickets\`",
+    "  - Implementation & verification: \`/animus-implement\`, \`.agents/skills/tdd/SKILL.md\`, \`.agents/skills/blueprint/SKILL.md\`, \`.agents/skills/security-hardening/SKILL.md\`",
+    "  - Code review & standards: \`/animus-review\`",
+    "  - Defect root-causing: \`/diagnosing-bugs\`",
+    "  - Harness setup & self-check: \`/animus-harness\`",
+    "  - Post-lap memory & lesson synthesis: \`/animus-learn\`, \`.agents/skills/writing-for-agents/SKILL.md\`, \`.agents/skills/skill-creator/SKILL.md\`",
+    "- **Verified Tool Guidance**: Inspect \`.factory/tool-guidance.json\` for validated CLI recipes (\`static\`: \`" +
       commands.staticCheck +
-      "`, `unit`: `" +
+      "\`, \`unit\`: \`" +
       commands.unitTest +
-      "`).",
-    "- **Evidence-Backed Lessons**: Inspect `.factory/lessons.jsonl` for repository-specific gotchas matching target files before editing.",
-    "- **Harness Authoring Standard**: Adhere to `docs/agents/harness-authoring-standard.md` when curating lessons, rules, or skills.",
-    "- **Harness Safe Mode**: Bypass dynamic harness memory and use base tooling when `.factory/NO_HARNESS_MEMORY` is present.",
+      "\`).",
+    "- **Evidence-Backed Lessons**: Inspect \`.factory/lessons.jsonl\` for repository-specific gotchas matching target files before editing.",
+    "- **Harness Authoring Standard**: Adhere to \`docs/agents/harness-authoring-standard.md\` when curating lessons, rules, or skills.",
+    "- **Harness Safe Mode**: Bypass dynamic harness memory and use base tooling when \`.factory/NO_HARNESS_MEMORY\` is present.",
     "",
     "## Domain & Workflow Documentation",
     "",
-    "- **PR & Evidence Contract**: Read `docs/agents/pr-evidence-contract.md` for canonical PR bodies, evidence matrices, Before/After captures, and finding rechecks.",
-    "- **Issue Tracker, Dependencies & Triage Labels**: Read `docs/agents/issue-tracker.md` for `gh` conventions, `Depends on:` rules, and canonical triage labels.",
-    "- **Domain Models & ADRs**: Read `docs/agents/domain.md`, `GLOSSARY.md`, and `docs/adr/` before modifying domain models or architectural boundaries.",
+    "- **PR & Evidence Contract**: Read \`docs/agents/pr-evidence-contract.md\` for canonical PR bodies, evidence matrices, Before/After captures, and finding rechecks.",
+    "- **Issue Tracker, Dependencies & Triage Labels**: Read \`docs/agents/issue-tracker.md\` for \`gh\` conventions, \`Depends on:\` rules, and canonical triage labels.",
+    "- **Domain Models & ADRs**: Read \`docs/agents/domain.md\`, \`GLOSSARY.md\`, and \`docs/adr/\` before modifying domain models or architectural boundaries.",
     "",
     "## Execution Rules",
     "",
-    "- **Red -> Green Loop**: Write failing tests first at public seams using `.agents/skills/tdd/SKILL.md`, then implement minimal passing code.",
-    "- **Protected Governance Paths**: Keep `MISSION.md`, `FACTORY.md`, `FACTORY_RULES.md`, `harness/**`, `.factory/holdout/**`, and `.factory/hooks/**` untouched during delivery laps.",
+    "- **Red -> Green Loop**: Write failing tests first at public seams using \`.agents/skills/tdd/SKILL.md\`, then implement minimal passing code.",
+    "- **Protected Governance Paths**: Keep \`MISSION.md\`, \`FACTORY.md\`, \`FACTORY_RULES.md\`, \`harness/**\`, \`.factory/holdout/**\`, and \`.factory/hooks/**\` untouched during delivery laps.",
     "- **Clean Cutover**: Migrate all callers when modifying contracts; keep one canonical implementation without dead shims.",
   ];
 
-  if (preservedNotes && preservedNotes.trim()) {
-    const trimmedNotes = preservedNotes
-      .trim()
-      .split("\n")
-      .slice(0, 60);
-    lines.push("", "## Project-Specific Conventions", "", ...trimmedNotes);
-  }
-
-  return lines.slice(0, 148).join("\n") + "\n";
+  return lines.join("\n") + "\n";
 }
 
 function defaultLoopGuardTs(): string {
@@ -373,20 +346,10 @@ export default function registerLoopGuard(api: any) {
 }
 
 function defaultHoldoutMd(): string {
-  return `# Holdout scenarios
+  return `# Fenced Acceptance Holdouts
 
-Acceptance checks the agents building the code never see. Written from the product document,
-they test end-to-end invariants across issues.
-
-\`\`\`
-## H-01 Core application health and primary user journey
-Protects: Core application startup and primary user workflow
-Touches: apps/**, packages/**, src/**
-Setup: Start the application with a clean state directory
-Steps: Exercise the primary user or API entrypoint
-Expect: Service responds cleanly without unhandled errors
-Author: owner
-\`\`\`
+> **STRICT ACCESS POLICY**: Only holdout-writer and holdout-verifier agents may read this file.
+> Builders and general agents are prohibited from reading this document.
 `;
 }
 
@@ -478,18 +441,14 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
   const createdOrUpdatedPaths: string[] = [];
   const skillsCopied: string[] = [];
 
-  // 1. Handle AGENTS.md (Greenfield missing, or Brownfield poor/upgrade/overwrite)
+  // 1. Handle AGENTS.md (Greenfield missing, or Brownfield overwrite/keep)
   const agentsPath = join(targetRoot, "AGENTS.md");
   let agentsMdActionTaken: ScaffoldHarnessResult["agentsMdActionTaken"] = "kept";
   let agentsMdBackupPath: string | undefined;
 
   const desiredAction =
     opts.agentsMdAction ??
-    (!auditBefore.agentsMd.exists
-      ? "overwrite"
-      : auditBefore.agentsMd.status === "poor"
-        ? "upgrade"
-        : "keep");
+    (!auditBefore.agentsMd.exists ? "overwrite" : "keep");
 
   if (!auditBefore.agentsMd.exists) {
     writeFileSync(
@@ -499,20 +458,21 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
     );
     agentsMdActionTaken = "created";
     createdOrUpdatedPaths.push(agentsPath);
-  } else if (desiredAction === "upgrade" || desiredAction === "overwrite") {
+  } else if (desiredAction === "overwrite") {
     const existingText = readFileSync(agentsPath, "utf-8");
     agentsMdBackupPath = join(targetRoot, ".factory/AGENTS.md.bak");
     mkdirSync(dirname(agentsMdBackupPath), { recursive: true });
     writeFileSync(agentsMdBackupPath, existingText, "utf-8");
 
-    const preserved = desiredAction === "upgrade" ? existingText : undefined;
     writeFileSync(
       agentsPath,
-      generateCanonicalAgentsMd(targetRoot, opts.detectedCommands, preserved),
+      generateCanonicalAgentsMd(targetRoot, opts.detectedCommands),
       "utf-8",
     );
-    agentsMdActionTaken = desiredAction === "upgrade" ? "upgraded" : "overwritten";
+    agentsMdActionTaken = "overwritten";
     createdOrUpdatedPaths.push(agentsPath);
+  } else {
+    agentsMdActionTaken = "kept";
   }
 
   // 2. Ensure CLAUDE.md -> AGENTS.md symlink
@@ -529,23 +489,7 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
   if (sourceRoot && resolve(sourceRoot) !== targetRoot) {
     const sourceSkillsDir = join(sourceRoot, ".agents/skills");
     if (existsSync(sourceSkillsDir)) {
-      for (const skillName of [
-        "tdd",
-        "diagnosing-bugs",
-        "unstick",
-        "blueprint",
-        "ui-quality",
-        "animus-implement",
-        "animus-review",
-        "animus-harness",
-        "animus-brainstorm",
-        "animus-grill",
-        "animus-spec",
-        "animus-architecture",
-        "animus-tickets",
-        "writing-for-agents",
-        "skill-creator",
-      ]) {
+      for (const skillName of CANONICAL_SKILL_NAMES) {
         const srcSkill = join(sourceSkillsDir, skillName);
         const dstSkill = join(targetSkillsDir, skillName);
         if (existsSync(srcSkill) && !existsSync(dstSkill)) {
@@ -572,18 +516,7 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
     }
   } else {
     // Minimal embedded fallback skills if running from standalone binary outside source tree
-    for (const [skillName, desc] of [
-      ["tdd", "Test-driven development red-green-refactor playbook."],
-      ["diagnosing-bugs", "Systematic root-cause bug diagnosis playbook."],
-      ["unstick", "Two-strike failure recovery and premise probing playbook."],
-      ["blueprint", "Type-first architecture and Level 4 blast-radius verification playbook."],
-      ["ui-quality", "Intentional frontend design, 7-state coverage, and viewport audit playbook."],
-      ["animus-implement", "Autonomous builder implementation playbook."],
-      ["animus-review", "Independent code review and evidence verification playbook."],
-      ["animus-harness", "Post-lap memory, tool guidance, and lesson synthesis playbook."],
-      ["writing-for-agents", "Authoring concise, positive imperative agent instructions."],
-      ["skill-creator", "Creating structured procedural skills with completion criteria."],
-    ] as const) {
+    for (const [skillName, desc] of CANONICAL_SKILL_CATALOG) {
       const dstSkillFile = join(targetSkillsDir, skillName, "SKILL.md");
       if (!existsSync(dstSkillFile)) {
         mkdirSync(dirname(dstSkillFile), { recursive: true });
@@ -742,17 +675,8 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
       JSON.stringify(
         {
           schema_version: 1,
-          description:
-            "Domain-agnostic codebase conventions & shared pattern registry (Backend, Frontend, Mobile, CLI, Database) enforced by loop-guard.ts",
           rules: [],
-          pattern_registry: {
-            contracts:
-              "Define shared schemas, DTOs, and domain types in dedicated contract/type modules with zero explicit 'any'.",
-            persistence:
-              "Execute database and external storage operations through repository/service abstractions and transactional migration helpers.",
-            error_handling:
-              "Return typed domain errors and structured status codes rather than silent catch blocks or raw exception strings.",
-          },
+          pattern_registry: {},
         },
         null,
         2,
@@ -815,11 +739,16 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
     createdOrUpdatedPaths.push(factoryRulesPath);
   }
 
-  const harnessCiPath = join(targetRoot, "harness/ci.ts");
-  if (!existsSync(harnessCiPath)) {
-    mkdirSync(dirname(harnessCiPath), { recursive: true });
-    writeFileSync(harnessCiPath, defaultHarnessCiTs(), "utf-8");
-    createdOrUpdatedPaths.push(harnessCiPath);
+  const isNodeOrBun =
+    opts.detectedCommands.projectType === "typescript-bun" ||
+    opts.detectedCommands.projectType === "node";
+  if (isNodeOrBun) {
+    const harnessCiPath = join(targetRoot, "harness/ci.ts");
+    if (!existsSync(harnessCiPath)) {
+      mkdirSync(dirname(harnessCiPath), { recursive: true });
+      writeFileSync(harnessCiPath, defaultHarnessCiTs(), "utf-8");
+      createdOrUpdatedPaths.push(harnessCiPath);
+    }
   }
 
   return {

@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import {
   completeRepositoryOnboarding,
+  verifyGitHubRepositoryPreflight,
   type FactoryConnectionOptions,
 } from "./onboarding-registration";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -27,6 +28,7 @@ import type { ModelTier } from "../../loop/types";
 import {
   auditRepositoryHarness,
   scaffoldRepositoryHarness,
+  CANONICAL_SKILL_NAMES,
   type HarnessAuditReport,
   type ScaffoldHarnessResult,
 } from "./harness-scaffold";
@@ -85,29 +87,29 @@ export const DEFAULT_PROVIDER_MODELS: Record<
   { small: string; medium: string; large: string }
 > = {
   pi: {
-    small: "router/ag/gemini-3.8-flash",
-    medium: "router/ag/gemini-3.8-flash",
-    large: "router/cx/gpt-6.1-sol",
+    small: "default",
+    medium: "default",
+    large: "default",
   },
   claude: {
-    small: "claude-haiku-4-5",
-    medium: "claude-sonnet-4-5",
-    large: "claude-opus-4-5",
+    small: "default",
+    medium: "default",
+    large: "default",
   },
   omp: {
-    small: "9router/ag/gemini-3.8-flash",
-    medium: "9router/ag/gemini-3.8-flash",
-    large: "9router/cx/gpt-6.1-sol",
+    small: "default",
+    medium: "default",
+    large: "default",
   },
   codex: {
-    small: "gpt-5.1-codex-mini",
-    medium: "gpt-5.2-codex",
-    large: "gpt-5.3-codex",
+    small: "default",
+    medium: "default",
+    large: "default",
   },
   opencode: {
-    small: "anthropic/claude-haiku-4-5",
-    medium: "anthropic/claude-sonnet-4-5",
-    large: "anthropic/claude-opus-4-5",
+    small: "default",
+    medium: "default",
+    large: "default",
   },
 };
 
@@ -360,7 +362,7 @@ export interface SetupCommandOptions extends FactoryConnectionOptions {
   unitCmd?: string;
   workWindow?: string;
   timezone?: string;
-  agentsMdAction?: "keep" | "upgrade" | "overwrite";
+  agentsMdAction?: "keep" | "overwrite";
   json?: boolean;
 }
 
@@ -377,6 +379,13 @@ export async function applyRepositorySetup(
 ): Promise<SetupConfigSummary> {
   if (opts.provider !== undefined && !isSupportedProvider(opts.provider))
     throw new Error(`Unsupported provider '${opts.provider}'.`);
+  if (
+    opts.agentsMdAction !== undefined &&
+    opts.agentsMdAction !== "keep" &&
+    opts.agentsMdAction !== "overwrite"
+  ) {
+    throw new Error("--agents-md must be 'keep' or 'overwrite'.");
+  }
   for (const [name, value] of Object.entries({
     maxLaps: opts.maxLaps,
     parallel: opts.parallel,
@@ -385,6 +394,7 @@ export async function applyRepositorySetup(
     if (value !== undefined) positiveInteger(value, name);
   }
   const repoRoot = resolve(opts.repoRoot);
+  verifyGitHubRepositoryPreflight(repoRoot);
   const detectedHarnesses = (interaction.detectHarnesses ?? detectAvailableHarnesses)();
   const detectedCommands = detectRepoCheckCommands(repoRoot);
   const existingAnimus = readAnimusConfig(repoRoot);
@@ -449,13 +459,9 @@ export async function applyRepositorySetup(
     Intl.DateTimeFormat().resolvedOptions().timeZone ??
     "Asia/Jakarta";
 
-  let agentsMdAction: "keep" | "upgrade" | "overwrite" =
+  let agentsMdAction: "keep" | "overwrite" =
     opts.agentsMdAction ??
-    (!harnessAudit.agentsMd.exists
-      ? "overwrite"
-      : harnessAudit.agentsMd.status === "poor"
-        ? "upgrade"
-        : "keep");
+    (!harnessAudit.agentsMd.exists ? "overwrite" : "keep");
 
   if (opts.provider && isSupportedProvider(opts.provider)) {
     selectedProvider = opts.provider;
@@ -536,12 +542,12 @@ Target: ${repoRoot}`);
       largeBinding = normalizeBinding(largeBinding, "large");
 
       prompts.note(
-        `AGENTS.md: ${harnessAudit.agentsMd.status} (${harnessAudit.agentsMd.score}/100)`,
+        `AGENTS.md: ${harnessAudit.agentsMd.status} (${harnessAudit.agentsMd.lineCount} lines)`,
       );
       if (harnessAudit.agentsMd.exists) {
         agentsMdAction = (await prompts.select(
           "AGENTS.md action",
-          ["keep", "upgrade", "overwrite"].map((value) => ({ value, label: value })),
+          ["keep", "overwrite"].map((value) => ({ value, label: value })),
           agentsMdAction,
         )) as typeof agentsMdAction;
       }
@@ -577,15 +583,19 @@ Target: ${repoRoot}`);
           prompts.note(
             `Models from ${catalog.source ?? "harness catalog"}. Availability may depend on credentials.`,
           );
+          const modelChoices = [
+            ...(!catalog.models.some((m) => m.id === "default")
+              ? [{ value: "default", label: "Harness default (use CLI default model)" }]
+              : []),
+            ...catalog.models.map((m) => ({
+              value: m.id,
+              label: `${m.id}${m.name ? ` — ${m.name}` : ""}`,
+            })),
+            { value: "__manual__", label: "Enter a model ID manually" },
+          ];
           const choice = await prompts.select(
             "Model (type to search)",
-            [
-              ...catalog.models.map((m) => ({
-                value: m.id,
-                label: `${m.id}${m.name ? ` — ${m.name}` : ""}`,
-              })),
-              { value: "__manual__", label: "Enter a model ID manually" },
-            ],
+            modelChoices,
             initialModel,
             true,
           );
@@ -597,7 +607,9 @@ Target: ${repoRoot}`);
           model = await ask("Model ID", initialModel);
         }
         const metadata = catalog.models.find((m) => m.id === model);
-        prompts.note(metadata?.capabilities ?? "Model capabilities unknown.");
+        if (model !== "default") {
+          prompts.note(metadata?.capabilities ?? "Model capabilities unknown.");
+        }
         let effort = "default";
         if (metadata?.reasoning === false) {
           prompts.note(
@@ -758,13 +770,15 @@ Target: ${repoRoot}`);
       existingTools = JSON.parse(readFileSync(toolGuidancePath, "utf-8"));
     } catch {}
   }
-  const updatedTools = {
-    test: existsSync(join(repoRoot, "harness/ci.ts")) ? "bun harness/ci.ts" : unitTest,
-    lint: existingTools.lint ?? staticCheck,
-    format: existingTools.format ?? "bun run format",
-    typecheck: existingTools.typecheck ?? staticCheck,
-    build: existingTools.build ?? "bun run build:web",
-    verify: existingTools.verify ?? staticCheck,
+  const updatedTools: Record<string, string> = {
+    ...(unitTest && unitTest !== "true" ? { test: existingTools.test ?? unitTest } : {}),
+    ...(staticCheck && staticCheck !== "true"
+      ? {
+          lint: existingTools.lint ?? staticCheck,
+          typecheck: existingTools.typecheck ?? staticCheck,
+          verify: existingTools.verify ?? staticCheck,
+        }
+      : {}),
     ...existingTools,
   };
   writeFileSync(toolGuidancePath, JSON.stringify(updatedTools, null, 2) + "\n", "utf-8");
@@ -819,7 +833,7 @@ export async function runSetupCommand(
       `  Project Mode:     ${summary.scaffoldResult.auditBefore.projectMode.toUpperCase()}`,
     );
     console.log(
-      `  AGENTS.md:        ${summary.scaffoldResult.agentsMdActionTaken.toUpperCase()} (initial score: ${summary.scaffoldResult.auditBefore.agentsMd.score}/100)`,
+      `  AGENTS.md:        ${summary.scaffoldResult.agentsMdActionTaken.toUpperCase()} (status: ${summary.scaffoldResult.auditBefore.agentsMd.status.toUpperCase()}, lines: ${summary.scaffoldResult.auditBefore.agentsMd.lineCount})`,
     );
     if (summary.scaffoldResult.agentsMdBackupPath) {
       console.log(`  AGENTS.md Backup: ${summary.scaffoldResult.agentsMdBackupPath}`);
@@ -853,6 +867,9 @@ export async function runSetupCommand(
     for (const p of summary.scaffoldResult.createdOrUpdatedPaths) {
       console.log(`  - ${p}`);
     }
+    console.log(
+      "\nNext Step (Agentic Harnessing):\n  Run /animus-harness in your coding agent to verify check commands (exit 0) and tailor AGENTS.md & HOLDOUT.md.",
+    );
     return await finish();
   } catch (err: any) {
     const msg = err?.message ?? String(err);
@@ -876,7 +893,7 @@ export async function runConfigCliCommand(opts: {
   unitCmd?: string;
   workWindow?: string;
   timezone?: string;
-  agentsMdAction?: "keep" | "upgrade" | "overwrite";
+  agentsMdAction?: "keep" | "overwrite";
   fileGlob?: string;
   forbidRegex?: string;
   requireRegex?: string;
@@ -896,14 +913,14 @@ export async function runConfigCliCommand(opts: {
         console.log(`Repository Harness Audit (${repoRoot}):`);
         console.log(`  Project Mode:       ${report.projectMode.toUpperCase()}`);
         console.log(
-          `  AGENTS.md Status:   ${report.agentsMd.status.toUpperCase()} (score: ${report.agentsMd.score}/100, lines: ${report.agentsMd.lineCount})`,
+          `  AGENTS.md Status:   ${report.agentsMd.status.toUpperCase()} (lines: ${report.agentsMd.lineCount})`,
         );
         for (const issue of report.agentsMd.issues) {
           console.log(`    - ${issue}`);
         }
         console.log(`  CLAUDE.md Symlink:  ${report.claudeMdSymlink ? "present" : "missing"}`);
         console.log(
-          `  Installed Skills:   ${report.skillsInstalled.length}/10 (${report.skillsInstalled.join(", ") || "none"})`,
+          `  Installed Skills:   ${report.skillsInstalled.length}/${CANONICAL_SKILL_NAMES.length} (${report.skillsInstalled.join(", ") || "none"})`,
         );
         console.log(
           `  Hooks Installed:    loop-guard=${report.hooksInstalled.loopGuard}, holdout-fence=${report.hooksInstalled.holdoutFence}`,
@@ -950,9 +967,9 @@ export async function runConfigCliCommand(opts: {
 
       console.log("\nAGENTS.md & Harness Health:");
       console.log(
-        `  AGENTS.md:         ${harnessAudit.agentsMd.status.toUpperCase()} (score: ${harnessAudit.agentsMd.score}/100, lines: ${harnessAudit.agentsMd.lineCount})`,
+        `  AGENTS.md:         ${harnessAudit.agentsMd.status.toUpperCase()} (lines: ${harnessAudit.agentsMd.lineCount})`,
       );
-      console.log(`  Skills Installed:  ${harnessAudit.skillsInstalled.length}/10`);
+      console.log(`  Skills Installed:  ${harnessAudit.skillsInstalled.length}/${CANONICAL_SKILL_NAMES.length}`);
 
       console.log("\nModel Tiers (.animus/config.yaml):");
       console.log(`  Default Assistant: ${animusConfig.assistant ?? "pi"}`);
@@ -1033,6 +1050,7 @@ export async function runConfigCliCommand(opts: {
         model: modelArg,
         ...(effortVal ? { effort: effortVal as EffortRung } : {}),
       });
+      verifyGitHubRepositoryPreflight(repoRoot);
       const cfg = readAnimusConfig(repoRoot);
       const updated: AnimusConfig = {
         ...cfg,
@@ -1154,6 +1172,7 @@ export async function runConfigCliCommand(opts: {
         throw new Error('Usage: animus config pattern <domain> "<guidance>"');
       }
 
+      verifyGitHubRepositoryPreflight(repoRoot);
       const res = persistCodebaseRulesUpdates(repoRoot, { [domainKey]: guidanceText });
       if (opts.json) {
         console.log(JSON.stringify({ ok: true, updatedPatterns: res.updatedComponents }, null, 2));
@@ -1192,6 +1211,7 @@ export async function runConfigCliCommand(opts: {
         );
       }
 
+      verifyGitHubRepositoryPreflight(repoRoot);
       const modeVal = opts.mode === "block" ? "block" : "warn";
       const res = persistCodebaseRulesUpdates(repoRoot, undefined, [
         {

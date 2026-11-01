@@ -66,13 +66,63 @@ export function createRegistrationClient(options: FactoryConnectionOptions = {})
   return createFactoryClient({ baseUrl: url.origin, fetch: authenticatedFetch });
 }
 
-function githubRepo(value: string): string {
-  const match =
-    /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)?([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/.exec(
-      value.trim(),
-    );
-  if (!match) throw new Error("Repository must identify a GitHub owner/repository.");
-  return match[1]!;
+export function parseGitHubRemoteUrl(value: string): string | null {
+  const trimmed = value.trim();
+  const patterns = [
+    /^https:\/\/(?:[^@\s/]+@)?github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/,
+    /^git@github\.com:([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/,
+    /^ssh:\/\/git@github\.com(?::\d+)?\/([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/,
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(trimmed);
+    if (match?.[1]) return match[1];
+  }
+  return null;
+}
+
+export function githubRepo(value: string, allowBare = false): string {
+  const parsed = parseGitHubRemoteUrl(value);
+  if (parsed) return parsed;
+  if (allowBare) {
+    const match = /^([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/.exec(value.trim());
+    if (match?.[1]) return match[1];
+  }
+  throw new Error("Repository must identify a GitHub owner/repository.");
+}
+
+export function verifyGitHubRepositoryPreflight(repoRoot: string): {
+  checkoutPath: string;
+  repo: string;
+} {
+  const target = resolve(repoRoot);
+  try {
+    const isWorkTree = execFileSync("git", ["-C", target, "rev-parse", "--is-inside-work-tree"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (isWorkTree.trim() !== "true") {
+      throw new Error();
+    }
+  } catch {
+    throw new Error("Local registration requires a Git checkout with a GitHub origin remote.");
+  }
+
+  let remote: string;
+  try {
+    remote = execFileSync("git", ["-C", target, "remote", "get-url", "origin"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  } catch {
+    throw new Error("Local registration requires a Git checkout with a GitHub origin remote.");
+  }
+
+  const repo = parseGitHubRemoteUrl(remote);
+  if (!repo) {
+    throw new Error("Repository must identify a GitHub owner/repository.");
+  }
+
+  return { checkoutPath: realpathSync(target), repo };
 }
 
 export async function registerRepository(options: RegistrationOptions): Promise<{
@@ -88,24 +138,18 @@ export async function registerRepository(options: RegistrationOptions): Promise<
   let checkout: string | undefined;
   let repo: string;
   if (clone) {
-    repo = githubRepo(options.repo!);
+    repo = githubRepo(options.repo!, true);
   } else {
     if (!isLoopback(url)) {
       throw new Error(
         "Cannot verify a local checkout on a remote factory. Use project register --repo <owner/repository> for a factory-managed GitHub clone; no laptop path will be sent.",
       );
     }
-    checkout = realpathSync(resolve(options.repoRoot, options.path ?? "."));
-    let remote: string;
-    try {
-      remote = execFileSync("git", ["-C", checkout, "remote", "get-url", "origin"], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-      }).trim();
-    } catch {
-      throw new Error("Local registration requires a Git checkout with a GitHub origin remote.");
-    }
-    repo = githubRepo(remote);
+    const preflight = verifyGitHubRepositoryPreflight(
+      resolve(options.repoRoot, options.path ?? "."),
+    );
+    checkout = preflight.checkoutPath;
+    repo = preflight.repo;
   }
   const client = createRegistrationClient(options);
   const matches = (project: Project) =>

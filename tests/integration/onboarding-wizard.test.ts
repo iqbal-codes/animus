@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +15,15 @@ const roots: string[] = [];
 function repo() {
   const root = mkdtempSync(join(tmpdir(), "onboarding-wizard-"));
   roots.push(root);
+  execFileSync("git", ["init", "--quiet", root]);
+  execFileSync("git", [
+    "-C",
+    root,
+    "remote",
+    "add",
+    "origin",
+    "https://github.com/acme/wizard-test.git",
+  ]);
   return root;
 }
 afterEach(() => {
@@ -53,6 +63,24 @@ class Answers implements WizardPrompts {
 const offline = { detectHarnesses: () => [] };
 
 describe("onboarding wizard setup", () => {
+  test("defaults all provider model tiers to 'default' (harness default) and rejects non-GitHub repositories before prompting", async () => {
+    const root = repo();
+    const result = await applyRepositorySetup(
+      { repoRoot: root, nonInteractive: true, provider: "pi" },
+      offline,
+    );
+    expect(result.animusConfig.tiers?.small?.model).toBe("default");
+    expect(result.animusConfig.tiers?.medium?.model).toBe("default");
+    expect(result.animusConfig.tiers?.large?.model).toBe("default");
+
+    const nonGit = mkdtempSync(join(tmpdir(), "onboarding-wizard-nongit-"));
+    roots.push(nonGit);
+    await expect(
+      applyRepositorySetup({ repoRoot: nonGit, nonInteractive: true }, offline),
+    ).rejects.toThrow("GitHub");
+    expect(existsSync(join(nonGit, ".animus"))).toBe(false);
+  });
+
   test.each(["maxLaps", "parallel", "intervalSeconds"] as const)(
     "noninteractive %s validation rejects zero",
     async (field) => {

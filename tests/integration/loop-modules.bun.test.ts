@@ -487,6 +487,22 @@ test("11. Multiple Provider Harness Support: resolves and formats argv for Pi, C
   const codexWithEffort = buildProviderArgv("codex", { prompt, model, effort: "ultra" });
   expect(codexWithEffort).toContain("-c");
   expect(codexWithEffort).toContain('model_reasoning_effort="ultra"');
+
+  const piWithDefaultModel = buildProviderArgv("pi", { prompt, model: "default", effort: "high" });
+  expect(piWithDefaultModel).not.toContain("--model");
+  expect(piWithDefaultModel).not.toContain("default");
+  expect(piWithDefaultModel).toContain("--thinking");
+  expect(piWithDefaultModel).toContain("high");
+
+  const claudeWithDefaultModel = buildProviderArgv("claude", {
+    prompt,
+    model: "default",
+    effort: "high",
+  });
+  expect(claudeWithDefaultModel).not.toContain("--model");
+  expect(claudeWithDefaultModel).not.toContain("default");
+  expect(claudeWithDefaultModel).toContain("--effort");
+  expect(claudeWithDefaultModel).toContain("high");
 });
 
 test("post-loop self-improving harness: curated injection, dossier terminal trigger, Jev curation, and skill promotion", async () => {
@@ -495,6 +511,7 @@ test("post-loop self-improving harness: curated injection, dossier terminal trig
     mkdirSync(join(dir, ".factory/hooks"), { recursive: true });
     mkdirSync(join(dir, ".agents/skills/tdd"), { recursive: true });
     mkdirSync(join(dir, ".agents/skills/animus-harness"), { recursive: true });
+    mkdirSync(join(dir, ".agents/skills/animus-learn"), { recursive: true });
     mkdirSync(join(dir, ".agents/skills/writing-for-agents"), { recursive: true });
     mkdirSync(join(dir, ".agents/skills/skill-creator"), { recursive: true });
     writeFileSync(
@@ -504,6 +521,10 @@ test("post-loop self-improving harness: curated injection, dossier terminal trig
     writeFileSync(
       join(dir, ".agents/skills/animus-harness/SKILL.md"),
       "---\nname: animus-harness\ndescription: harness\n---\n",
+    );
+    writeFileSync(
+      join(dir, ".agents/skills/animus-learn/SKILL.md"),
+      "---\nname: animus-learn\ndescription: learn\n---\n",
     );
     writeFileSync(
       join(dir, ".agents/skills/writing-for-agents/SKILL.md"),
@@ -537,7 +558,7 @@ test("post-loop self-improving harness: curated injection, dossier terminal trig
     expect(builderSkills.some((s) => s.endsWith(".agents/skills/tdd"))).toBe(true);
 
     const reflectorSkills = resolveAllowedSkills(dir, "reflector");
-    expect(reflectorSkills.some((s) => s.endsWith("animus-harness"))).toBe(true);
+    expect(reflectorSkills.some((s) => s.endsWith("animus-learn"))).toBe(true);
     expect(reflectorSkills.some((s) => s.endsWith("writing-for-agents"))).toBe(true);
     expect(reflectorSkills.some((s) => s.endsWith("skill-creator"))).toBe(true);
 
@@ -783,6 +804,7 @@ test("13. Verification Profiles: resolves appropriate profile and generates tune
   expect(repoBuilderSkills.some((s) => s.endsWith(".agents/skills/unstick"))).toBe(true);
   expect(repoBuilderSkills.some((s) => s.endsWith(".agents/skills/blueprint"))).toBe(true);
   expect(repoBuilderSkills.some((s) => s.endsWith(".agents/skills/ui-quality"))).toBe(true);
+  expect(repoBuilderSkills.some((s) => s.endsWith(".agents/skills/security-hardening"))).toBe(true);
   expect(
     repoBuilderSkills.some((s) => s.endsWith(".agents/skills/policy-verifier-regressions")),
   ).toBe(true);
@@ -792,13 +814,27 @@ test("13. Verification Profiles: resolves appropriate profile and generates tune
     false,
   );
 
-  for (const stageSkill of ["animus-brainstorm", "animus-grill", "animus-architecture"] as const) {
+  for (const stageSkill of [
+    "animus-brainstorm",
+    "animus-grill",
+    "animus-spec",
+    "animus-architecture",
+    "animus-tickets",
+    "animus-implement",
+    "animus-review",
+  ] as const) {
     const skillText = readFileSync(join(root, ".agents/skills", stageSkill, "SKILL.md"), "utf-8");
     expect(skillText).toContain("disable-model-invocation: true");
     expect(skillText).toContain("## When to Use");
     expect(skillText).toContain("## Steps");
     expect(skillText).toContain("*Completion Criterion*:");
   }
+
+  const secText = readFileSync(join(root, ".agents/skills/security-hardening/SKILL.md"), "utf-8");
+  expect(secText).not.toContain("disable-model-invocation: true");
+  expect(secText).toContain("## When to Use");
+  expect(secText).toContain("## Steps");
+  expect(secText).toContain("*Completion Criterion*:");
 
   const repoQaSkills = resolveAllowedSkills(root, "qa");
   expect(repoQaSkills.some((s) => s.endsWith(".agents/skills/ui-quality"))).toBe(true);

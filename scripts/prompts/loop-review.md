@@ -24,7 +24,7 @@ If QA reported `overall: "NO PR"`, no pull request was delivered. Leave one comm
 In this unattended loop, you conduct the code inspection directly as the independent reviewer across two unified evaluation axes. Do NOT attempt to delegate to external subagents; you are already running in a clean, separate reviewer session isolated from the builder. Evaluate both axes directly:
 
 1. **Standards Axis:**
-   - Inspect diff across three reviewer lenses: **Correctness** (broken callers, state ownership), **Security & Edge Cases** (untrusted input boundary parsing, async teardown, error paths), and **Simplicity** (`git diff --shortstat` discipline, single-caller wrappers, dead shims, narration comments).
+   - Inspect diff across three reviewer lenses: **Correctness** (broken callers, state ownership), **Security & Edge Cases** (untrusted input boundary parsing, async teardown, error paths, and compliance with `.agents/skills/security-hardening/SKILL.md`), and **Simplicity** (`git diff --shortstat` discipline, single-caller wrappers, dead shims, narration comments).
    - Inspect diff for code smells: Mysterious Name, Duplicated Code, Feature Envy, Shotgun Surgery, Divergent Change, Speculative Generality.
    - Verify compliance with documented repo rules in `AGENTS.md` and codebase conventions.
    - Protected paths: verify zero modifications to protected paths ($INPUTS.protected_paths). Any alteration mandates `needs-owner`.
