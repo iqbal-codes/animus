@@ -44,6 +44,7 @@ export function resolveAllowedSkills(root: string, role: LoopRole): string[] {
         "unstick",
         "blueprint",
         "ui-quality",
+        "security-hardening",
       ]) {
         candidateNames.add(base);
       }

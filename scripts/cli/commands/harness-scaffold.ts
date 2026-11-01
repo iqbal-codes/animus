@@ -151,6 +151,7 @@ export const CANONICAL_SKILL_CATALOG = [
   ["animus-spec", "Synthesize agreed discussion into a software factory specification."],
   ["animus-architecture", "Derive tech stack, module topology, and reusable components from product specs."],
   ["animus-tickets", "Split an agreed spec into vertical tickets with parser-readable dependencies."],
+  ["security-hardening", "Harden software against vulnerabilities, validate trust boundaries, enforce least privilege, and prevent OWASP Top 10 defects."],
   ["writing-for-agents", "Authoring concise, positive imperative agent instructions."],
   ["skill-creator", "Creating structured procedural skills with completion criteria."],
 ] as const;
@@ -269,7 +270,7 @@ export function generateCanonicalAgentsMd(
     "- **Canonical Configuration**: `AGENTS.md` and `.agents/skills/` are authoritative sources of truth (`CLAUDE.md -> AGENTS.md`, `.claude/skills -> ../.agents/skills`).",
     "- **Repository Skills**: Consult playbooks in `.agents/skills/` when triggered:",
     "  - Spec drafting, product shaping & architecture: `/animus-brainstorm`, `/animus-grill`, `/animus-spec`, `/animus-architecture`, `/animus-tickets`",
-    "  - Implementation & verification: `/animus-implement`, `.agents/skills/tdd/SKILL.md`",
+    "  - Implementation & verification: `/animus-implement`, `.agents/skills/tdd/SKILL.md`, `.agents/skills/blueprint/SKILL.md`, `.agents/skills/security-hardening/SKILL.md`",
     "  - Code review & standards: `/animus-review`",
     "  - Defect root-causing: `/diagnosing-bugs`",
     "  - Post-lap memory & lesson synthesis: `/animus-harness`, `.agents/skills/writing-for-agents/SKILL.md`, `.agents/skills/skill-creator/SKILL.md`",

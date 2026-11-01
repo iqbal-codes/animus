@@ -243,6 +243,7 @@ describe("Animus Unified CLI & Repository Setup Onboarding", () => {
     expect(existsSync(join(tempDir, ".agents/skills/animus-brainstorm/SKILL.md"))).toBe(true);
     expect(existsSync(join(tempDir, ".agents/skills/animus-grill/SKILL.md"))).toBe(true);
     expect(existsSync(join(tempDir, ".agents/skills/animus-architecture/SKILL.md"))).toBe(true);
+    expect(existsSync(join(tempDir, ".agents/skills/security-hardening/SKILL.md"))).toBe(true);
     expect(existsSync(join(tempDir, "docs/agents/issue-tracker.md"))).toBe(true);
     expect(existsSync(join(tempDir, "docs/agents/domain.md"))).toBe(true);
     expect(existsSync(join(tempDir, "docs/agents/pr-evidence-contract.md"))).toBe(true);

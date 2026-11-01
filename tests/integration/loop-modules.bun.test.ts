@@ -783,6 +783,7 @@ test("13. Verification Profiles: resolves appropriate profile and generates tune
   expect(repoBuilderSkills.some((s) => s.endsWith(".agents/skills/unstick"))).toBe(true);
   expect(repoBuilderSkills.some((s) => s.endsWith(".agents/skills/blueprint"))).toBe(true);
   expect(repoBuilderSkills.some((s) => s.endsWith(".agents/skills/ui-quality"))).toBe(true);
+  expect(repoBuilderSkills.some((s) => s.endsWith(".agents/skills/security-hardening"))).toBe(true);
   expect(
     repoBuilderSkills.some((s) => s.endsWith(".agents/skills/policy-verifier-regressions")),
   ).toBe(true);
@@ -807,6 +808,12 @@ test("13. Verification Profiles: resolves appropriate profile and generates tune
     expect(skillText).toContain("## Steps");
     expect(skillText).toContain("*Completion Criterion*:");
   }
+
+  const secText = readFileSync(join(root, ".agents/skills/security-hardening/SKILL.md"), "utf-8");
+  expect(secText).not.toContain("disable-model-invocation: true");
+  expect(secText).toContain("## When to Use");
+  expect(secText).toContain("## Steps");
+  expect(secText).toContain("*Completion Criterion*:");
 
   const repoQaSkills = resolveAllowedSkills(root, "qa");
   expect(repoQaSkills.some((s) => s.endsWith(".agents/skills/ui-quality"))).toBe(true);
