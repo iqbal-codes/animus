@@ -16,4 +16,5 @@ export * from "./harness-memory";
 export * from "./dossier";
 export * from "./reflector";
 export * from "./profiles";
+export * from "./ci";
 

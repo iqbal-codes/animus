@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { getProjectRunsDir, resolveAnimusHome, getProjectSlug } from "../../packages/contracts/src/paths";
 import { loadIssueDossier } from "./dossier";
+import { reconcileWaitingApprovalPrCi, type GhRunner, type checkPrCiStatus } from "./ci";
 
 export interface WorkWindowConfig {
   enabled: boolean;
@@ -318,6 +319,9 @@ export interface SchedulerTickOptions {
   sharedRoot?: string;
   now?: Date;
   runsDir?: string;
+  reconcileCi?: boolean;
+  ghRun?: GhRunner;
+  checkPrCi?: typeof checkPrCiStatus;
   fetchBacklog: () => Promise<{ issues: BacklogCandidate[]; closedNumbers: Set<number> }>;
   launchLap: (issue: BacklogCandidate) => Promise<{ runId: string }>;
 }
@@ -369,6 +373,20 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
       if (existsSync(projectRuns)) return projectRuns;
       return join(root, ".factory-local-loop", "runs");
     })();
+
+  // 3. Reconcile PR CI status for runs waiting approval
+  if (options.reconcileCi !== false) {
+    try {
+      await reconcileWaitingApprovalPrCi(runsDir, root, {
+        ghRun: options.ghRun,
+        maxLaps: mergedConfig.max_laps,
+        checkPrCi: options.checkPrCi,
+      });
+    } catch (reconcileErr) {
+      console.error("Warning: CI reconciliation failed:", reconcileErr);
+    }
+  }
+
   const activeCount = countActiveLaps(runsDir);
   const waitingApprovalNumbers = getIssuesWaitingApproval(runsDir);
   if (activeCount >= mergedConfig.parallel) {
