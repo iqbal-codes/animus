@@ -24,15 +24,17 @@ If QA reported `overall: "NO PR"`, no pull request was delivered. Leave one comm
 In this unattended loop, you conduct the code inspection directly as the independent reviewer across two unified evaluation axes. Do NOT attempt to delegate to external subagents; you are already running in a clean, separate reviewer session isolated from the builder. Evaluate both axes directly:
 
 1. **Standards Axis:**
+   - Inspect diff across three reviewer lenses: **Correctness** (broken callers, state ownership), **Security & Edge Cases** (untrusted input boundary parsing, async teardown, error paths), and **Simplicity** (`git diff --shortstat` discipline, single-caller wrappers, dead shims, narration comments).
    - Inspect diff for code smells: Mysterious Name, Duplicated Code, Feature Envy, Shotgun Surgery, Divergent Change, Speculative Generality.
    - Verify compliance with documented repo rules in `AGENTS.md` and codebase conventions.
    - Protected paths: verify zero modifications to protected paths ($INPUTS.protected_paths). Any alteration mandates `needs-owner`.
    - Weakened tests: verify no skipped, commented-out, or loosened checks without owner approval.
    - **Anti-Reinvention Gate:** Block hand-rolled implementations of standard specifications, protocols, or file formats under the Standards axis. Require the candidate to adopt standard platform tools or established dependencies.
    - **Actionable Remediation Guidance:** Every blocking finding must state the target architectural direction: name the specific platform tool, command, or declared library that replaces ad-hoc logic.
-2. **Spec Axis:**
+2. **Spec Axis & Blast-Radius Proof:**
    - Map every acceptance criterion and invariant in the source issue/contract to the implementation and evidence.
    - Verify that all QA lines in `app-check.json` (both criteria and runtime probes) pass or have valid dispositions.
+   - **Blast-Radius Proof Level 4:** When a change modifies shared interfaces, async lifecycle/teardown, or persisted schemas with callers outside the diff, require Proof Level 4 (an executed test or isolated probe script output proving external callers remain safe) rather than verbal claims alone.
    - Inspect for scope creep or behavioral regressions against `$INPUTS.base`.
    - Check CI status (`gh pr checks <n>`).
 

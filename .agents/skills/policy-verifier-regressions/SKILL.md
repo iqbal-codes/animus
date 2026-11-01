@@ -1,6 +1,7 @@
 ---
 name: policy-verifier-regressions
 description: Use when implementing or repairing governance policy verifiers for Git attributes, GitHub template labels, or Renovate rules, especially after a false-positive review finding. Build isolated semantic mutation regressions and distinguish repaired examples from remaining policy gaps.
+origin: learned
 ---
 
 # Policy Verifier Regressions

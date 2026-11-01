@@ -167,6 +167,8 @@ function loadToolGuidance(cwd: string): Record<string, string> {
 export default function registerLoopGuard(api: any) {
   if (!api || typeof api.on !== "function") return;
 
+  let consecutiveBashFailures = 0;
+
   api.on("tool_call", async (event: any) => {
     const toolName = String(event?.toolName ?? "");
     const args = (event?.input ?? event?.args ?? {}) as Record<string, any>;
@@ -245,13 +247,23 @@ export default function registerLoopGuard(api: any) {
     const toolName = String(event?.toolName ?? "");
     const args = event?.input ?? event?.args ?? {};
 
+    if (toolName === "bash" && !event?.isError) {
+      consecutiveBashFailures = 0;
+    }
+
     if (toolName === "bash" && event?.isError) {
+      consecutiveBashFailures += 1;
       const guidance = loadToolGuidance(process.cwd());
       const entries = Object.entries(guidance);
       const hints: string[] = [];
       if (entries.length > 0) {
         const hint = entries.map(([k, v]) => `${k}: \`${v}\``).join(", ");
         hints.push(`[HARNESS TOOL GUIDANCE HINT] Verified repository commands -> ${hint}`);
+      }
+      if (consecutiveBashFailures >= 2) {
+        hints.push(
+          "[HARNESS UNSTICK TRIGGER — 2+ CONSECUTIVE FAILURES]: Stop editing production code immediately. Follow .agents/skills/unstick/SKILL.md: (1) state the single shared assumption behind the failed attempts in one sentence, (2) run a 1-line probe to test that assumption directly, (3) revert broken scratch edits (`git checkout -- <files>`) before trying an orthogonal approach, and (4) log the disproved assumption in your checkpoint.",
+        );
       }
       const rawText = Array.isArray(event?.content)
         ? event.content.map((c: any) => c?.text ?? "").join("\n")
@@ -298,6 +310,11 @@ export default function registerLoopGuard(api: any) {
       if (lessons.length > 0) {
         sections.push(
           `[HARNESS ACTIVE LESSONS for ${args.path}]:\n${lessons.map((l) => `  - ${l}`).join("\n")}`,
+        );
+      }
+      if ((toolName === "write" || toolName === "edit") && consecutiveBashFailures >= 2) {
+        sections.push(
+          "[HARNESS UNSTICK WARNING]: You modified code after 2+ consecutive command failures without a passing probe. Follow .agents/skills/unstick/SKILL.md: verify your shared assumption with a 1-line probe and revert broken scratch edits if the next check fails.",
         );
       }
       if (sections.length > 0) {

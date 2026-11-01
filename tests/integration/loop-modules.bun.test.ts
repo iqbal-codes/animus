@@ -494,7 +494,7 @@ test("post-loop self-improving harness: curated injection, dossier terminal trig
   try {
     mkdirSync(join(dir, ".factory/hooks"), { recursive: true });
     mkdirSync(join(dir, ".agents/skills/tdd"), { recursive: true });
-    mkdirSync(join(dir, ".agents/skills/factory-harness"), { recursive: true });
+    mkdirSync(join(dir, ".agents/skills/animus-harness"), { recursive: true });
     mkdirSync(join(dir, ".agents/skills/writing-for-agents"), { recursive: true });
     mkdirSync(join(dir, ".agents/skills/skill-creator"), { recursive: true });
     writeFileSync(
@@ -502,8 +502,8 @@ test("post-loop self-improving harness: curated injection, dossier terminal trig
       "---\nname: tdd\ndescription: test\n---\n",
     );
     writeFileSync(
-      join(dir, ".agents/skills/factory-harness/SKILL.md"),
-      "---\nname: factory-harness\ndescription: harness\n---\n",
+      join(dir, ".agents/skills/animus-harness/SKILL.md"),
+      "---\nname: animus-harness\ndescription: harness\n---\n",
     );
     writeFileSync(
       join(dir, ".agents/skills/writing-for-agents/SKILL.md"),
@@ -516,7 +516,7 @@ test("post-loop self-improving harness: curated injection, dossier terminal trig
     writeFileSync(join(dir, ".factory/hooks/loop-guard.ts"), "export default function() {}");
     writeFileSync(
       join(dir, "AGENTS.md"),
-      "# Instructions\n- Post-lap memory & lesson synthesis: `/factory-harness`\n",
+      "# Instructions\n- Post-lap memory & lesson synthesis: `/animus-harness`\n",
     );
     writeFileSync(
       join(dir, ".factory/lessons.jsonl"),
@@ -537,7 +537,7 @@ test("post-loop self-improving harness: curated injection, dossier terminal trig
     expect(builderSkills.some((s) => s.endsWith(".agents/skills/tdd"))).toBe(true);
 
     const reflectorSkills = resolveAllowedSkills(dir, "reflector");
-    expect(reflectorSkills.some((s) => s.endsWith("factory-harness"))).toBe(true);
+    expect(reflectorSkills.some((s) => s.endsWith("animus-harness"))).toBe(true);
     expect(reflectorSkills.some((s) => s.endsWith("writing-for-agents"))).toBe(true);
     expect(reflectorSkills.some((s) => s.endsWith("skill-creator"))).toBe(true);
 
@@ -697,6 +697,17 @@ test("post-loop self-improving harness: curated injection, dossier terminal trig
     expect(reflectionOutcome.updatedComponents).toEqual(["form"]);
     expect(reflectionOutcome.promotedSkill?.skillName).toBe("port-resolution");
     expect(existsSync(join(dir, ".agents/skills/port-resolution/SKILL.md"))).toBe(true);
+    const promotedSkillContent = readFileSync(
+      join(dir, ".agents/skills/port-resolution/SKILL.md"),
+      "utf-8",
+    );
+    expect(promotedSkillContent).toContain("origin: learned");
+
+    // Promoted skill without disable-model-invocation is dynamically exposed to builder on next lap
+    const builderSkillsAfterPromotion = resolveAllowedSkills(dir, "builder");
+    expect(
+      builderSkillsAfterPromotion.some((s) => s.endsWith(".agents/skills/port-resolution")),
+    ).toBe(true);
 
     const updatedAgentsMd = readFileSync(join(dir, "AGENTS.md"), "utf-8");
     expect(updatedAgentsMd).toContain("port-resolution");
@@ -764,6 +775,23 @@ test("13. Verification Profiles: resolves appropriate profile and generates tune
   expect(uiInst.depth).toBe("normal");
   expect(uiInst.skipAppLaunch).toBe(false);
   expect(uiInst.runtimeInstructions).toContain("Frontend / UI change");
+  expect(uiInst.runtimeInstructions).toContain("1440px");
+  expect(uiInst.runtimeInstructions).toContain("390px");
+  expect(uiInst.runtimeInstructions).toContain(".agents/skills/ui-quality/SKILL.md");
+
+  const repoBuilderSkills = resolveAllowedSkills(root, "builder");
+  expect(repoBuilderSkills.some((s) => s.endsWith(".agents/skills/unstick"))).toBe(true);
+  expect(repoBuilderSkills.some((s) => s.endsWith(".agents/skills/blueprint"))).toBe(true);
+  expect(repoBuilderSkills.some((s) => s.endsWith(".agents/skills/ui-quality"))).toBe(true);
+  expect(
+    repoBuilderSkills.some((s) => s.endsWith(".agents/skills/policy-verifier-regressions")),
+  ).toBe(true);
+
+  const repoQaSkills = resolveAllowedSkills(root, "qa");
+  expect(repoQaSkills.some((s) => s.endsWith(".agents/skills/ui-quality"))).toBe(true);
+
+  const repoPlannerSkills = resolveAllowedSkills(root, "planner");
+  expect(repoPlannerSkills.some((s) => s.endsWith(".agents/skills/blueprint"))).toBe(true);
 
   // Core auth / security
   const secIssue = {

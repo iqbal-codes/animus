@@ -10,11 +10,13 @@
 
 - **Canonical Configuration**: `AGENTS.md` and `.agents/skills/` are authoritative sources of truth. Compatibility symlinks (`CLAUDE.md -> AGENTS.md`, `.claude/skills -> ../.agents/skills`) mirror them for tool support.
 - **Repository Skills**: Canonical playbooks live in `.agents/skills/`. Consult when triggered:
-  - Spec drafting & breakdown: `/factory-grill`, `/factory-spec`, `/factory-tickets`
-  - Implementation & verification: `/factory-implement`, `.agents/skills/tdd`
-  - Code review & standards: `/factory-review`
-  - Defect root-causing: `/diagnosing-bugs`
-  - Post-lap memory & lesson synthesis: `/factory-harness`, `.agents/skills/writing-for-agents`, `.agents/skills/skill-creator`
+  - Spec drafting & breakdown: `/animus-grill`, `/animus-spec`, `/animus-tickets`
+  - Implementation & verification: `/animus-implement`, `.agents/skills/tdd`, `.agents/skills/blueprint`
+  - Failure recovery & root-causing: `/diagnosing-bugs`, `.agents/skills/unstick`
+  - Frontend & UI verification: `.agents/skills/ui-quality`
+  - Code review & standards: `/animus-review`
+  - Post-lap memory & lesson synthesis: `/animus-harness`, `.agents/skills/writing-for-agents`, `.agents/skills/skill-creator`
+- **Learned Repo Playbooks** (synthesized via `/animus-harness` from past issue laps):
   - When implementing or repairing governance policy verifiers, read `.agents/skills/policy-verifier-regressions/SKILL.md` and follow it.
 - **Verified Tool Guidance**: Inspect `.factory/tool-guidance.json` for validated CLI recipes (test, lint, format, typecheck, build) that exited code 0.
 - **Evidence-Backed Lessons**: Inspect `.factory/lessons.jsonl` for repo-specific gotchas matching target files before editing.
@@ -31,5 +33,6 @@
 ## Execution Rules
 
 - **Red → Green Loop**: Test-first at agreed public seams using `.agents/skills/tdd`. Never mock internals or write tautological assertions.
+- **Blueprint & Two-Strike Unstick**: Compile domain types and stub signatures before bodies (`.agents/skills/blueprint`). After 2 consecutive check failures, stop editing, probe the shared assumption, and revert scratch debris (`.agents/skills/unstick`).
 - **Offline Invariant**: Test suites run offline with zero live network calls. Use injectable mock transports for external APIs (e.g., OpenRouter / Jev).
-- **Clean Cutover**: Migrate all callers when modifying contracts; never leave deprecated shims or duplicate conventions.
+- **Clean Cutover**: Migrate all callers when modifying contracts; never leave deprecated shims, narration comments, or duplicate conventions.

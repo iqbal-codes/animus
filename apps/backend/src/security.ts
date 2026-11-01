@@ -1,15 +1,18 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, statSync, readFileSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, statSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { join, dirname } from "node:path";
+import {
+  resolveAnimusStateDir,
+  ensureSecureDirectory,
+  enforceSecureFilePermissions,
+  migrateLegacyState,
+} from "@animus/contracts/paths";
 
 export function ensureSessionSecret(secretPath?: string): string {
-  const resolvedPath = secretPath || join(homedir(), ".factory", "state", "session.secret");
+  migrateLegacyState();
+  const resolvedPath = secretPath || join(resolveAnimusStateDir(), "session.secret");
   const dir = dirname(resolvedPath);
-
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-  }
+  ensureSecureDirectory(dir);
 
   if (existsSync(resolvedPath)) {
     let mode = statSync(resolvedPath).mode & 0o777;
@@ -27,9 +30,7 @@ export function ensureSessionSecret(secretPath?: string): string {
 
   const secret = randomBytes(32).toString("hex");
   writeFileSync(resolvedPath, secret, { mode: 0o600 });
-  try {
-    chmodSync(resolvedPath, 0o600);
-  } catch {}
+  enforceSecureFilePermissions(resolvedPath);
   return secret;
 }
 

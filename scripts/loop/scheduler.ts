@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { getProjectRunsDir, resolveAnimusHome, getProjectSlug } from "../../packages/contracts/src/paths";
 import { loadIssueDossier } from "./dossier";
 
 export interface WorkWindowConfig {
@@ -55,9 +56,36 @@ export const BLOCKING_LABELS = new Set([
   "wontfix",
   "needs-owner",
 ]);
+function parseScheduleJson(filePath: string): Partial<ScheduleConfig> | null {
+  if (!existsSync(filePath)) return null;
+  try {
+    const raw = JSON.parse(readFileSync(filePath, "utf-8"));
+    if (typeof raw !== "object" || raw === null) return null;
+    return {
+      ...(typeof raw.workflow === "string" ? { workflow: raw.workflow } : {}),
+      ...(typeof raw.parallel === "number" && raw.parallel > 0 ? { parallel: raw.parallel } : {}),
+      ...(typeof raw.max_laps === "number" && raw.max_laps > 0 ? { max_laps: raw.max_laps } : {}),
+      ...(typeof raw.interval_seconds === "number" && raw.interval_seconds > 0
+        ? { interval_seconds: raw.interval_seconds }
+        : {}),
+      ...(typeof raw.inputs === "object" && raw.inputs !== null ? { inputs: raw.inputs } : {}),
+      ...(typeof raw.work_window === "object" && raw.work_window !== null
+        ? {
+            work_window: {
+              enabled: Boolean(raw.work_window.enabled),
+              start_time: raw.work_window.start_time || "20:00",
+              end_time: raw.work_window.end_time || "05:00",
+              timezone: raw.work_window.timezone || "Asia/Jakarta",
+            },
+          }
+        : {}),
+    };
+  } catch {
+    return null;
+  }
+}
 
 export function loadScheduleConfig(root: string): ScheduleConfig {
-  const schedulePath = join(root, ".factory/schedule.json");
   const defaults: ScheduleConfig = {
     workflow: "animus-loop",
     parallel: 1,
@@ -72,32 +100,46 @@ export function loadScheduleConfig(root: string): ScheduleConfig {
     },
   };
 
-  if (!existsSync(schedulePath)) return defaults;
+  const repoSchedule = parseScheduleJson(join(root, ".factory/schedule.json"));
+  const userGlobal = parseScheduleJson(join(resolveAnimusHome(), "schedule.json"));
+  const userProject = parseScheduleJson(
+    join(resolveAnimusHome(), "projects", getProjectSlug(root), "schedule.json"),
+  );
 
-  try {
-    const raw = JSON.parse(readFileSync(schedulePath, "utf-8"));
-    return {
-      workflow: typeof raw.workflow === "string" ? raw.workflow : defaults.workflow,
-      parallel: typeof raw.parallel === "number" && raw.parallel > 0 ? raw.parallel : defaults.parallel,
-      max_laps: typeof raw.max_laps === "number" && raw.max_laps > 0 ? raw.max_laps : defaults.max_laps,
-      interval_seconds:
-        typeof raw.interval_seconds === "number" && raw.interval_seconds > 0
-          ? raw.interval_seconds
-          : defaults.interval_seconds,
-      inputs: typeof raw.inputs === "object" && raw.inputs !== null ? raw.inputs : defaults.inputs,
-      work_window:
-        typeof raw.work_window === "object" && raw.work_window !== null
-          ? {
-              enabled: Boolean(raw.work_window.enabled),
-              start_time: raw.work_window.start_time || "20:00",
-              end_time: raw.work_window.end_time || "05:00",
-              timezone: raw.work_window.timezone || "Asia/Jakarta",
-            }
-          : defaults.work_window,
-    };
-  } catch {
-    return defaults;
-  }
+  return {
+    ...defaults,
+    ...repoSchedule,
+    ...userGlobal,
+    ...userProject,
+    inputs: {
+      ...defaults.inputs,
+      ...repoSchedule?.inputs,
+      ...userGlobal?.inputs,
+      ...userProject?.inputs,
+    },
+    work_window: {
+      enabled:
+        userProject?.work_window?.enabled ??
+        userGlobal?.work_window?.enabled ??
+        repoSchedule?.work_window?.enabled ??
+        defaults.work_window!.enabled,
+      start_time:
+        userProject?.work_window?.start_time ??
+        userGlobal?.work_window?.start_time ??
+        repoSchedule?.work_window?.start_time ??
+        defaults.work_window!.start_time,
+      end_time:
+        userProject?.work_window?.end_time ??
+        userGlobal?.work_window?.end_time ??
+        repoSchedule?.work_window?.end_time ??
+        defaults.work_window!.end_time,
+      timezone:
+        userProject?.work_window?.timezone ??
+        userGlobal?.work_window?.timezone ??
+        repoSchedule?.work_window?.timezone ??
+        defaults.work_window!.timezone,
+    },
+  };
 }
 
 export function checkBrakes(
@@ -312,6 +354,9 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
   const runsDir =
     options.runsDir ??
     (() => {
+      if (process.env.ANIMUS_RUNS_DIR || process.env.ANIMUS_HOME) {
+        return getProjectRunsDir(root);
+      }
       try {
         const gitRes = Bun.spawnSync(["git", "rev-parse", "--git-common-dir"], { cwd: root });
         if (gitRes.exitCode === 0) {
@@ -320,6 +365,8 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
           if (existsSync(commonRuns)) return commonRuns;
         }
       } catch {}
+      const projectRuns = getProjectRunsDir(root);
+      if (existsSync(projectRuns)) return projectRuns;
       return join(root, ".factory-local-loop", "runs");
     })();
   const activeCount = countActiveLaps(runsDir);

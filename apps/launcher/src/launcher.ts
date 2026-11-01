@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveAnimusStateDir } from "@animus/contracts/paths";
 import { validateBindAddress, ensureSessionSecret } from "./security";
 
 export interface LauncherOptions {
@@ -79,7 +80,7 @@ export class FactoryLauncher {
       host: opts.host ?? "127.0.0.1",
       port: opts.port ?? 3000,
       enginePort: opts.enginePort ?? 0,
-      stateDir: opts.stateDir ?? join(defaultRoot, ".factory/state"),
+      stateDir: opts.stateDir ?? resolveAnimusStateDir(),
       webDir: opts.webDir ?? join(defaultRoot, "apps/web/dist"),
       remoteAccess: opts.remoteAccess ?? false,
       repoRoot: opts.repoRoot ?? defaultRoot,

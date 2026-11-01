@@ -19,7 +19,7 @@ import type {
   ControlState,
   ControlAction,
 } from "@animus/contracts/operator";
-
+import { getProjectRunsDir } from "@animus/contracts/paths";
 export function readDiagnostics(repoRoot: string): Diagnostics {
   const packPath = join(repoRoot, "factory/pack.json");
   if (!existsSync(packPath)) {
@@ -230,7 +230,10 @@ export function readLapEvidence(repoRoot: string, lapId: string): LapEvidence {
 
 export function readLapReport(repoRoot: string, lapId: string): string {
   const detail = readLapDetail(repoRoot, lapId);
+  const projectRuns = getProjectRunsDir(repoRoot);
   const candidates = [
+    join(projectRuns, detail.id, "reviewer/report.md"),
+    join(projectRuns, detail.id, "review/report.md"),
     join(repoRoot, ".animus/runs", detail.id, "reviewer/report.md"),
     join(repoRoot, ".animus/runs", detail.id, "review/report.md"),
     join(process.env.HOME || "", ".cache/factory/animus/runs", detail.id, "reviewer/report.md"),

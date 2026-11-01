@@ -3,6 +3,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   symlinkSync,
   unlinkSync,
@@ -28,6 +29,7 @@ export interface HarnessAuditReport {
   agentsMd: AgentsMdAudit;
   claudeMdSymlink: boolean;
   skillsInstalled: string[];
+  learnedSkills: string[];
   claudeSkillsSymlink: boolean;
   hooksInstalled: {
     loopGuard: boolean;
@@ -166,19 +168,36 @@ export function auditRepositoryHarness(repoRoot: string): HarnessAuditReport {
   const canonicalSkills = [
     "tdd",
     "diagnosing-bugs",
-    "factory-implement",
-    "factory-review",
-    "factory-harness",
-    "factory-grill",
-    "factory-spec",
-    "factory-tickets",
+    "unstick",
+    "blueprint",
+    "ui-quality",
+    "animus-implement",
+    "animus-review",
+    "animus-harness",
+    "animus-grill",
+    "animus-spec",
+    "animus-tickets",
     "writing-for-agents",
     "skill-creator",
   ];
 
+  const canonicalSet = new Set(canonicalSkills);
   const skillsInstalled = canonicalSkills.filter((name) =>
     existsSync(join(root, ".agents/skills", name, "SKILL.md")),
   );
+
+  const learnedSkills: string[] = [];
+  const skillsDir = join(root, ".agents/skills");
+  if (existsSync(skillsDir)) {
+    try {
+      for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
+        if (!entry.isDirectory() || canonicalSet.has(entry.name)) continue;
+        if (existsSync(join(skillsDir, entry.name, "SKILL.md"))) {
+          learnedSkills.push(entry.name);
+        }
+      }
+    } catch {}
+  }
 
   return {
     repoRoot: root,
@@ -186,6 +205,7 @@ export function auditRepositoryHarness(repoRoot: string): HarnessAuditReport {
     agentsMd,
     claudeMdSymlink,
     skillsInstalled,
+    learnedSkills,
     claudeSkillsSymlink,
     hooksInstalled: {
       loopGuard: existsSync(join(root, ".factory/hooks/loop-guard.ts")),
@@ -244,11 +264,11 @@ export function generateCanonicalAgentsMd(
     "",
     "- **Canonical Configuration**: `AGENTS.md` and `.agents/skills/` are authoritative sources of truth (`CLAUDE.md -> AGENTS.md`, `.claude/skills -> ../.agents/skills`).",
     "- **Repository Skills**: Consult playbooks in `.agents/skills/` when triggered:",
-    "  - Spec drafting & breakdown: `/factory-grill`, `/factory-spec`, `/factory-tickets`",
-    "  - Implementation & verification: `/factory-implement`, `.agents/skills/tdd/SKILL.md`",
-    "  - Code review & standards: `/factory-review`",
+    "  - Spec drafting & breakdown: `/animus-grill`, `/animus-spec`, `/animus-tickets`",
+    "  - Implementation & verification: `/animus-implement`, `.agents/skills/tdd/SKILL.md`",
+    "  - Code review & standards: `/animus-review`",
     "  - Defect root-causing: `/diagnosing-bugs`",
-    "  - Post-lap memory & lesson synthesis: `/factory-harness`, `.agents/skills/writing-for-agents/SKILL.md`, `.agents/skills/skill-creator/SKILL.md`",
+    "  - Post-lap memory & lesson synthesis: `/animus-harness`, `.agents/skills/writing-for-agents/SKILL.md`, `.agents/skills/skill-creator/SKILL.md`",
     "- **Verified Tool Guidance**: Inspect `.factory/tool-guidance.json` for validated CLI recipes (`static`: `" +
       commands.staticCheck +
       "`, `unit`: `" +
@@ -503,12 +523,15 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
       for (const skillName of [
         "tdd",
         "diagnosing-bugs",
-        "factory-implement",
-        "factory-review",
-        "factory-harness",
-        "factory-grill",
-        "factory-spec",
-        "factory-tickets",
+        "unstick",
+        "blueprint",
+        "ui-quality",
+        "animus-implement",
+        "animus-review",
+        "animus-harness",
+        "animus-grill",
+        "animus-spec",
+        "animus-tickets",
         "writing-for-agents",
         "skill-creator",
       ]) {
@@ -526,9 +549,12 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
     for (const [skillName, desc] of [
       ["tdd", "Test-driven development red-green-refactor playbook."],
       ["diagnosing-bugs", "Systematic root-cause bug diagnosis playbook."],
-      ["factory-implement", "Autonomous builder implementation playbook."],
-      ["factory-review", "Independent code review and evidence verification playbook."],
-      ["factory-harness", "Post-lap memory, tool guidance, and lesson synthesis playbook."],
+      ["unstick", "Two-strike failure recovery and premise probing playbook."],
+      ["blueprint", "Type-first architecture and Level 4 blast-radius verification playbook."],
+      ["ui-quality", "Intentional frontend design, 7-state coverage, and viewport audit playbook."],
+      ["animus-implement", "Autonomous builder implementation playbook."],
+      ["animus-review", "Independent code review and evidence verification playbook."],
+      ["animus-harness", "Post-lap memory, tool guidance, and lesson synthesis playbook."],
       ["writing-for-agents", "Authoring concise, positive imperative agent instructions."],
       ["skill-creator", "Creating structured procedural skills with completion criteria."],
     ] as const) {

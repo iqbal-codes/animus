@@ -1,7 +1,7 @@
 # Spec: Operate a multi-repository Software Factory through a local-first web console
 
 Date: 2026-10-28\
-Status: **Implementation-Ready Specification** (all open questions Q1–Q7 have been resolved via `/factory-grill`).\
+Status: **Implementation-Ready Specification** (all open questions Q1–Q7 have been resolved via `/animus-grill`).\
 Target repository: `iqbal-codes/animus`  
 Source: [Software Factory Web Console Architecture](https://github.com/iqbal-codes/animus/issues/46), all 11 child issues and their resolution comments, and the Q1–Q7 grill results.\
 Baseline source: `5fa30a37748d0acde86a6fc6c0fc3ba49d5e8105`.  
@@ -154,4 +154,4 @@ Supporting seams:
 
 Recommended next steps:
 1. **Publish to Tracker**: Request operator approval to publish this spec draft to the GitHub issue tracker with the `needs-info` label (as a planning parent spec).
-2. **Ticket Decomposition**: Run `/factory-tickets docs/spec-web-console.md` to break this specification into independent vertical slices with explicit dependencies.
+2. **Ticket Decomposition**: Run `/animus-tickets docs/spec-web-console.md` to break this specification into independent vertical slices with explicit dependencies.

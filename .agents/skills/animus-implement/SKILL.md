@@ -1,5 +1,5 @@
 ---
-name: factory-implement
+name: animus-implement
 description: Implement an approved spec through its ticket frontier while preserving native factory ownership and evidence gates.
 disable-model-invocation: true
 ---
@@ -10,7 +10,7 @@ Read `docs/agents/software-factory-workflow.md` and the configured tracker instr
 
 ## 1. Resolve work and authority
 
-Read the full spec, child tickets, comments, latest agreed Contract, dependencies, and existing PRs. Establish the explicit target repository, actual checkout/base, configured engine revision, merge mode, and user-authorized operations. Preserve unrelated dirty files. If the spec has no executable tickets, propose `/factory-tickets` rather than improvising a task graph.
+Read the full spec, child tickets, comments, latest agreed Contract, dependencies, and existing PRs. Establish the explicit target repository, actual checkout/base, configured engine revision, merge mode, and user-authorized operations. Preserve unrelated dirty files. If the spec has no executable tickets, propose `/animus-tickets` rather than improvising a task graph.
 
 Build a requirement-to-ticket checklist. A frontier ticket has complete intent, no unresolved owner decision, no competing active claim, no open/unverifiable prerequisites, and its prerequisite outcomes present on the selected base. Inspect existing PRs before starting another implementation. Labels alone do not establish any of these facts.
 
@@ -27,7 +27,7 @@ Read existing patterns before editing. Use `/tdd` when available; prove each cri
 
 Maintain a criterion evidence matrix: source issue/AC, scenario or command, observed result, artifact path, and tested head/candidate. Record BLOCKED or NOT RUN when a prerequisite is unavailable; do not substitute mocks for required live proof. New code/base changes invalidate affected evidence.
 
-For a native lap, let independent check-app/evidence/review/land/release nodes run under their actual policy. A builder's own test result is not peer approval. For direct implementation, request `/factory-review` with explicit base, head, worktree scope, and source spec/tickets. That user-invoked review is a separate handoff; do not pretend it automatically advanced native state. Never perform this review in the same session as the implementer—the implementer cannot review their own work; review requires a separate session that dispatches two independent axis subagents.
+For a native lap, let independent check-app/evidence/review/land/release nodes run under their actual policy. A builder's own test result is not peer approval. For direct implementation, request `/animus-review` with explicit base, head, worktree scope, and source spec/tickets. That user-invoked review is a separate handoff; do not pretend it automatically advanced native state. Never perform this review in the same session as the implementer—the implementer cannot review their own work; review requires a separate session that dispatches two independent axis subagents.
 
 ## 4. Advance and hand back
 

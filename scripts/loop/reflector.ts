@@ -350,10 +350,13 @@ export function applySkillPromotion(
       "---",
       `name: ${safeName}`,
       `description: ${promotion.description.trim()}`,
+      "origin: learned",
       "---",
       "",
       markdown,
     ].join("\n");
+  } else if (!/^origin:\s*learned/m.test(markdown.slice(0, 400))) {
+    markdown = markdown.replace(/^---\r?\n/, "---\norigin: learned\n");
   }
   if (!markdown.includes("*Completion Criterion*")) {
     markdown += "\n\n   *Completion Criterion*: Skill verification steps pass cleanly.\n";
@@ -368,8 +371,12 @@ export function applySkillPromotion(
     const content = readFileSync(agentsPath, "utf-8");
     if (!content.includes(safeName)) {
       const lines = content.split("\n");
-      // Insert into Repository Skills list or append under Repository Knowledge
-      const insertIdx = lines.findIndex((l) => l.includes("Post-lap memory & lesson synthesis"));
+      // Insert under Learned Repo Playbooks if present, or after Post-lap memory & lesson synthesis
+      const learnedIdx = lines.findIndex((l) => l.includes("Learned Repo Playbooks"));
+      const insertIdx =
+        learnedIdx >= 0
+          ? learnedIdx
+          : lines.findIndex((l) => l.includes("Post-lap memory & lesson synthesis"));
       if (insertIdx >= 0) {
         lines.splice(insertIdx + 1, 0, `  ${pointerLine.startsWith("-") ? pointerLine : `- ${pointerLine}`}`);
       } else {
