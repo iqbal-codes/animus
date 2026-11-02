@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export interface MonitorIssue {
@@ -53,6 +54,7 @@ export interface MonitorRuntime {
     root: string,
     issue: MonitorIssue,
   ): Promise<{ runId: string; status: string; error?: string }>;
+  hasCapacityFull?(this: void, root: string): boolean;
 }
 
 async function githubWorker(
@@ -91,6 +93,7 @@ export async function loadMonitorRuntime(
     githubRead?: (args: string[], cwd: string) => unknown;
     fetchBacklog?: MonitorRuntime["fetchBacklog"];
     launch?: MonitorRuntime["launch"];
+    hasCapacityFull?: MonitorRuntime["hasCapacityFull"];
   } = {},
 ): Promise<MonitorRuntime> {
   // Resolve from the installed factory, never from a registered project's source tree.
@@ -159,5 +162,21 @@ export async function loadMonitorRuntime(
         ? contracts.readIssueContract(root, number, repo, overrides.githubRead)
         : ((await githubWorker("contract", root, repo, number)) as MonitorIssue),
     launch: overrides.launch ?? ((root, issue) => loop.runLocalLoop(root, issue, { push: true })),
+    hasCapacityFull:
+      overrides.hasCapacityFull ??
+      ((root) => {
+        const cfg = scheduler.loadScheduleConfig(root);
+        const parallel = cfg.parallel ?? 1;
+        const candidates = [
+          join(root, ".git", "factory-local-loop", "runs"),
+          join(root, ".factory-local-loop", "runs"),
+        ];
+        for (const dir of candidates) {
+          if (existsSync(dir)) {
+            if (scheduler.countActiveLaps(dir) >= parallel) return true;
+          }
+        }
+        return false;
+      }),
   };
 }

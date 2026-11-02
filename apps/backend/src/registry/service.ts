@@ -130,6 +130,14 @@ export class ProjectRegistryService {
     return this.mapRow(this.verifyCheckoutIntegrity(row));
   }
 
+  getProjectByRepoName(repoName: string): Project | null {
+    const row = this.db
+      .prepare("SELECT * FROM projects WHERE LOWER(repo_name) = LOWER(?) AND status != 'tombstone'")
+      .get(repoName) as unknown as ProjectRow | undefined;
+    if (!row) return null;
+    return this.mapRow(this.verifyCheckoutIntegrity(row));
+  }
+
   async registerProject(registration: ProjectRegistration): Promise<Project> {
     const now = new Date().toISOString();
     const id = `proj_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
