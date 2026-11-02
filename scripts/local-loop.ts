@@ -233,55 +233,135 @@ export function formatEscalationHandoff(
 export async function computeExternalBlastRadius(
   worktree: string,
   changedFiles: string[],
+  options?: { timeoutMs?: number; rgBin?: string; maxFiles?: number },
 ): Promise<string> {
   try {
     const changedSet = new Set(changedFiles.map((f) => f.replace(/^\.\//, "")));
-    const lines: string[] = [];
-    for (const rawPath of changedFiles) {
-      const relPath = rawPath.replace(/^\.\//, "");
-      if (!/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(relPath) || /\.test\.|\.spec\./.test(relPath))
-        continue;
+    const sourceFiles = changedFiles
+      .map((f) => f.replace(/^\.\//, ""))
+      .filter(
+        (f) =>
+          /\.(ts|tsx|js|jsx|mjs|cjs)$/.test(f) &&
+          !/\.(test|spec)\./.test(f) &&
+          !f.startsWith(".git/") &&
+          !f.startsWith("node_modules/") &&
+          !f.startsWith("dist/"),
+      )
+      .slice(0, options?.maxFiles ?? 25);
+
+    if (sourceFiles.length === 0) {
+      return "(No unmodified external callers detected)";
+    }
+
+    const fileRegexMap = new Map<string, RegExp>();
+    const allStems = new Set<string>();
+
+    for (const relPath of sourceFiles) {
       const stem = basename(relPath).replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, "");
-      if (stem === "index" || stem === "types" || stem.length < 3) continue;
-      const res = await processRun(
-        [
-          "rg",
-          "-n",
-          "--max-count",
-          "5",
-          "--glob",
-          "!node_modules/**",
-          "--glob",
-          "!dist/**",
-          "--glob",
-          "!.git/**",
-          stem,
-          ".",
-        ],
-        worktree,
-        5_000,
+      const stems: string[] = [];
+      if (stem === "index") {
+        stems.push("index");
+        const parentDir = basename(dirname(relPath));
+        if (parentDir && parentDir !== "." && parentDir !== "src" && parentDir !== "lib") {
+          stems.push(parentDir, `${parentDir}/index`);
+        }
+      } else {
+        stems.push(stem);
+      }
+      for (const s of stems) allStems.add(s);
+      const escaped = stems.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+      fileRegexMap.set(
+        relPath,
+        new RegExp(
+          `(?:import|export|from|require)\\b[^\\n\\r]*['"\`][^'"\`]*\\/(?:${escaped})(?:\\.[a-zA-Z0-9]+)?['"\`]`,
+        ),
       );
-      if (res.exitCode === 0 && res.stdout.trim()) {
-        const externalHits = res.stdout
-          .trim()
-          .split("\n")
-          .map((l) => l.replace(/^\.\//, ""))
-          .filter((l) => {
-            const hitFile = l.split(":")[0];
-            return Boolean(hitFile && !changedSet.has(hitFile) && !hitFile.startsWith(".git/"));
-          })
-          .slice(0, 8);
-        if (externalHits.length > 0) {
-          lines.push(
-            `- \`${relPath}\` is referenced outside the diff by:\n` +
-              externalHits.map((h) => `  - \`${h}\``).join("\n"),
-          );
+    }
+
+    const combinedEscaped = Array.from(allStems)
+      .map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join("|");
+    const rgPattern = `(?:import|export|from|require)\\b[^\\n\\r]*['"\`][^'"\`]*\\/(?:${combinedEscaped})(?:\\.[a-zA-Z0-9]+)?['"\`]`;
+
+    const res = await processRun(
+      [
+        options?.rgBin ?? "rg",
+        "-n",
+        "--max-count",
+        "10",
+        "--max-columns",
+        "200",
+        "--glob",
+        "!node_modules/**",
+        "--glob",
+        "!dist/**",
+        "--glob",
+        "!.git/**",
+        rgPattern,
+        ".",
+      ],
+      worktree,
+      options?.timeoutMs ?? 5_000,
+    );
+
+    if (res.exitCode === 127) {
+      return "(External blast radius scan unavailable: ripgrep not installed)";
+    }
+    if (res.timedOut || res.exitCode === 124) {
+      return "(External blast radius scan unavailable: scan timed out)";
+    }
+    if (res.exitCode !== 0 && res.exitCode !== 1) {
+      return "(External blast radius scan unavailable: scan error)";
+    }
+    if (res.exitCode === 1 || !res.stdout.trim()) {
+      return "(No unmodified external callers detected)";
+    }
+
+    const hitLines = res.stdout
+      .trim()
+      .split("\n")
+      .map((l) => l.replace(/^\.\//, ""))
+      .slice(0, 500);
+
+    const callersMap = new Map<string, string[]>();
+    for (const line of hitLines) {
+      const hitFile = line.split(":")[0];
+      if (
+        !hitFile ||
+        changedSet.has(hitFile) ||
+        hitFile.startsWith(".git/") ||
+        hitFile.startsWith("node_modules/") ||
+        hitFile.startsWith("dist/")
+      )
+        continue;
+      for (const relPath of sourceFiles) {
+        if (fileRegexMap.get(relPath)?.test(line)) {
+          const list = callersMap.get(relPath) ?? [];
+          if (list.length < 8 && !list.includes(line)) {
+            list.push(line);
+            callersMap.set(relPath, list);
+          }
         }
       }
     }
-    return lines.length > 0 ? lines.join("\n") : "(No unmodified external callers detected)";
+
+    const resultBlocks: string[] = [];
+    for (const relPath of sourceFiles) {
+      const hits = callersMap.get(relPath);
+      if (hits && hits.length > 0) {
+        resultBlocks.push(
+          `- \`${relPath}\` is referenced outside the diff by:\n` +
+            hits.map((h) => `  - \`${h}\``).join("\n"),
+        );
+      }
+    }
+
+    if (resultBlocks.length === 0) {
+      return "(No unmodified external callers detected)";
+    }
+    return resultBlocks.join("\n").split("\n").slice(0, 50).join("\n");
   } catch {
-    return "(No unmodified external callers detected)";
+    return "(External blast radius scan unavailable)";
   }
 }
 
@@ -870,10 +950,6 @@ export async function runLocalLoop(
       const promptVars: Record<string, string> = {
         route,
         target: issue.url,
-        issue_number: String(issue.number),
-        issue_title: issue.title,
-        issue_body: issue.body || "(No description provided)",
-        issue_comments: formattedComments || "(No comments)",
         pr: state.pr ?? "",
         reason: `Autonomous delivery for issue #${issue.number}: ${issue.title} [profile: ${effectiveProfile}]`,
         runtime: profileInstructions.runtimeInstructions,
@@ -890,9 +966,6 @@ export async function runLocalLoop(
         evidence_ok: extraVars.evidence_ok ?? "true",
         merge: "approve",
         rejections: String(maxRejections),
-        blast_radius: blastRadius,
-        diff_stat: diffStat,
-        diff_content: boundedDiff,
         ...extraVars,
       };
 

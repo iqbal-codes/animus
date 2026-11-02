@@ -1028,6 +1028,58 @@ test("computeExternalBlastRadius detects unmodified callers of changed files and
   // 4. Safe fallback on non-code files
   const radiusReadme = await computeExternalBlastRadius(root, ["README.md"]);
   expect(radiusReadme).toBe("(No unmodified external callers detected)");
+
+  // 5. Index module reference detection without false positives
+  await mkdir(join(root, "src/components"), { recursive: true });
+  await Bun.write(
+    join(root, "src/components/index.ts"),
+    "export function Button() { return 'btn'; }\n",
+  );
+  await Bun.write(
+    join(root, "src/index-caller.ts"),
+    "import { Button } from './components';\nexport const b = Button();\n",
+  );
+  await Bun.write(
+    join(root, "src/index-sub-caller.ts"),
+    "import { Button } from './components/index';\nexport const b2 = Button();\n",
+  );
+  await Bun.write(join(root, "src/unrelated-index.ts"), "const index = 0; console.log(index);\n");
+  git(root, "add", ".");
+  git(root, "commit", "-m", "add index module components and callers");
+
+  const radiusIndex = await computeExternalBlastRadius(root, ["src/components/index.ts"]);
+  expect(radiusIndex).toContain("src/index-caller.ts");
+  expect(radiusIndex).toContain("src/index-sub-caller.ts");
+  expect(radiusIndex).not.toContain("src/unrelated-index.ts");
+
+  // 6. Adversarial collisions (log/run/app): substrings without import quotes must not trigger false positives
+  await Bun.write(join(root, "src/app.ts"), "export const app = 'app';\n");
+  await Bun.write(join(root, "src/log.ts"), "export const log = 'log';\n");
+  await Bun.write(join(root, "src/run.ts"), "export const run = 'run';\n");
+  await Bun.write(
+    join(root, "src/adversarial.ts"),
+    "console.log('running log');\napp.listen(8080);\nconst isRunning = run();\n",
+  );
+  git(root, "add", ".");
+  git(root, "commit", "-m", "add adversarial collision files");
+
+  const radiusCollisions = await computeExternalBlastRadius(root, [
+    "src/app.ts",
+    "src/log.ts",
+    "src/run.ts",
+  ]);
+  expect(radiusCollisions).toBe("(No unmodified external callers detected)");
+
+  // 7. Explicit unavailable state when ripgrep binary is absent
+  const radiusUnavailable = await computeExternalBlastRadius(root, ["src/app.ts"], {
+    rgBin: "nonexistent-rg-bin-12345",
+  });
+  expect(radiusUnavailable).toBe("(External blast radius scan unavailable: ripgrep not installed)");
+
+  // 8. Bounded operations and runtime on many changed files
+  const manyFiles = Array.from({ length: 30 }, (_, i) => `src/file-${i}.ts`);
+  const radiusMany = await computeExternalBlastRadius(root, manyFiles);
+  expect(radiusMany).toBe("(No unmodified external callers detected)");
 });
 
 test("runLocalLoop pre-packs issue body, comments, blast radius, and reviewer diff context into role prompts", async () => {
@@ -1164,6 +1216,13 @@ test("runLocalLoop pre-packs issue body, comments, blast radius, and reviewer di
     "## Host-Computed Blast Radius (Unmodified Callers Outside the Diff)",
   );
   expect(capturedPrompts.reviewer).toContain("src/auth-consumer.ts");
-  expect(capturedPrompts.reviewer).toContain("app-check.json");
+  expect(capturedPrompts.reviewer).toContain("## QA structured report (handoff/app-check.json)");
+  expect(capturedPrompts.reviewer).toContain('"overall": "PASS"');
+  expect(capturedPrompts.reviewer).toContain('"id": "AC1"');
+  expect(capturedPrompts.reviewer).toContain("## Candidate Git Diff Stat");
   expect(capturedPrompts.reviewer).toContain("src/auth-helper.ts");
+  expect(capturedPrompts.reviewer).toContain("## Candidate Git Diff (Bounded)");
+  const diffSection = capturedPrompts.reviewer.split("## Candidate Git Diff (Bounded)")[1] ?? "";
+  const diffLines = diffSection.split("\n");
+  expect(diffLines.length).toBeLessThanOrEqual(405);
 });
