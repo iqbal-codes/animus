@@ -1,0 +1,47 @@
+{
+  "skill_name": "animus-triage",
+  "evals": [
+    {
+      "id": 1,
+      "name": "clear-bug-outcome-verify-before-question",
+      "skills": ["animus-triage"],
+      "prompt": "Triage this incoming bug issue. Title: 'Export button crashes'. Body: 'Click Export from the billing report and the page crashes. Please fix export so finance can download the report as CSV.' The repo has an existing report export path and tests; inspect relevant implementation and tests before deciding whether clarification is needed. Return one supported triage action and its complete output only; no tracker writes.",
+      "expected_output": "Repository-grounded triage that verifies or carefully qualifies the reported crash, assumes CSV export is the intended outcome, and asks only for a missing observation that materially blocks an executable ticket.",
+      "files": [],
+      "expectations": [
+        "Treats CSV export as settled requester intent rather than initiating product discovery.",
+        "Inspects repository implementation/tests or explicitly states that evidence is unavailable.",
+        "Uses clarification only for a concrete blocker not discoverable from the repo or issue.",
+        "Produces a supported action with bounded acceptance criteria and no invented scope."
+      ]
+    },
+    {
+      "id": 2,
+      "name": "brownfield-feature-resolve-technical-unknowns",
+      "skills": ["animus-triage"],
+      "prompt": "Triage this issue: 'Add a copy link button to each project row so teammates can share a project directly.' The repository already has project rows, route helpers, clipboard utilities, tests, and established accessibility conventions. Inspect those patterns and return one supported triage action, using only read-only investigation. Do not ask me to choose UI placement or clipboard technology when the codebase already establishes them. No tracker writes.",
+      "expected_output": "A ready single-ticket brief that discovers existing UI/route/clipboard conventions, preserves the stated sharing outcome, and avoids mandatory brainstorming, architecture, or spec stages.",
+      "files": [],
+      "expectations": [
+        "Inspects existing project row, routing, clipboard, and test conventions before deciding details.",
+        "Does not ask the requester to resolve technical facts discoverable from the codebase.",
+        "Uses the canonical five issue sections and an explicit dependency line.",
+        "Keeps scope to sharing a project link and does not invent adjacent features."
+      ]
+    },
+    {
+      "id": 3,
+      "name": "explicit-exploration-without-chosen-outcome",
+      "skills": ["animus-triage"],
+      "prompt": "Triage this issue: 'We should rethink onboarding. Explore some ideas for making the first week feel more engaging; I don't know yet whether this means tutorials, a checklist, notifications, or something else.' The repository contains an existing onboarding flow. Return the single supported triage action and explain the authority boundary. Do not write tracker state.",
+      "expected_output": "Preserves the issue as exploratory and routes for human product direction instead of inventing a chosen outcome or marking an implementation ticket ready; uses brainstorming only if the configured triage contract permits it.",
+      "files": [],
+      "expectations": [
+        "Recognizes that the requester explicitly asks for outcome exploration and has not chosen a product direction.",
+        "Does not manufacture a ready-for-agent implementation brief or select a solution unilaterally.",
+        "Uses the supported human-hold path or asks a focused authority question under the runner contract.",
+        "Does not confuse repository evidence about current onboarding with authorization to decide the future outcome."
+      ]
+    }
+  ]
+}

@@ -120,6 +120,7 @@ export function auditAgentsMd(repoRoot: string): AgentsMdAudit {
 }
 
 export const CANONICAL_SKILL_CATALOG = [
+  ["animus-triage", "Repository-grounded issue triage and executable-brief playbook."],
   ["tdd", "Test-driven development red-green-refactor playbook."],
   ["diagnosing-bugs", "Systematic root-cause bug diagnosis playbook."],
   ["unstick", "Two-strike failure recovery and premise probing playbook."],
@@ -246,6 +247,7 @@ export function generateCanonicalAgentsMd(
     "",
     "- **Canonical Configuration**: \`AGENTS.md\` and \`.agents/skills/\` are authoritative sources of truth (\`CLAUDE.md -> AGENTS.md\`, \`.claude/skills -> ../.agents/skills\`).",
     "- **Repository Skills**: Consult playbooks in \`.agents/skills/\` when triggered:",
+    "  - Issue triage: `/animus-triage`",
     "  - Spec drafting, product shaping & architecture: \`/animus-brainstorm\`, \`/animus-grill\`, \`/animus-spec\`, \`/animus-architecture\`, \`/animus-tickets\`",
     "  - Implementation & verification: \`/animus-implement\`, \`.agents/skills/tdd/SKILL.md\`, \`.agents/skills/blueprint/SKILL.md\`, \`.agents/skills/security-hardening/SKILL.md\`",
     "  - Code review & standards: \`/animus-review\`",

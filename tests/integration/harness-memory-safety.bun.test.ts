@@ -83,9 +83,10 @@ test("dirty and staged lessons and AGENTS never replace accepted committed conte
   expect(prompts.join("\n")).not.toContain("UNACCEPTED");
 });
 
-test("triage role injects exactly 5 planning skills from accepted baseline and fails closed if modified", () => {
+test("triage role injects the triage playbook and planning skills from accepted baseline", () => {
   const root = repository();
   const triageSkills = [
+    "animus-triage",
     "animus-brainstorm",
     "animus-grill",
     "animus-architecture",
@@ -107,7 +108,9 @@ test("triage role injects exactly 5 planning skills from accepted baseline and f
   // Fails closed if any skill is tampered
   put(root, ".agents/skills/animus-brainstorm/SKILL.md", "TAMPERED");
   expect(resolveAllowedSkills(root, "triage", accepted)).toEqual(
-    triageSkills.slice(1).map((s) => join(root, ".agents/skills", s)),
+    [...triageSkills.slice(0, 1), ...triageSkills.slice(2)].map((s) =>
+      join(root, ".agents/skills", s),
+    ),
   );
 });
 

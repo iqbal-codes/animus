@@ -10,6 +10,7 @@
 
 - **Canonical Configuration**: `AGENTS.md` and `.agents/skills/` are authoritative sources of truth (`CLAUDE.md -> AGENTS.md`, `.claude/skills -> ../.agents/skills`).
 - **Repository Skills**: Consult playbooks in `.agents/skills/` when triggered:
+  - Issue triage: `/animus-triage`
   - Spec drafting, product shaping & architecture: `/animus-brainstorm`, `/animus-grill`, `/animus-spec`, `/animus-architecture`, `/animus-tickets`
   - Implementation & verification: `/animus-implement`, `.agents/skills/tdd/SKILL.md`, `.agents/skills/blueprint/SKILL.md`, `.agents/skills/security-hardening/SKILL.md`
   - Failure recovery & root-causing: `/diagnosing-bugs`, `.agents/skills/unstick/SKILL.md`

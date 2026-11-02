@@ -51,6 +51,12 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
       "export default function registerLoopGuard() {}",
       "utf-8",
     );
+    mkdirSync(join(root, ".agents/skills/animus-triage"), { recursive: true });
+    writeFileSync(
+      join(root, ".agents/skills/animus-triage/SKILL.md"),
+      "# animus-triage\nTriage playbook",
+      "utf-8",
+    );
     mkdirSync(join(root, ".agents/skills/animus-brainstorm"), { recursive: true });
     writeFileSync(
       join(root, ".agents/skills/animus-brainstorm/SKILL.md"),
@@ -772,7 +778,7 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
         labels: [{ name: "needs-triage" }],
       });
 
-      // Delete loop-guard.ts while keeping the 5 accepted planning skills intact
+      // Delete loop-guard.ts while keeping the accepted triage and planning skills intact
       rmSync(join(root, ".factory/hooks/loop-guard.ts"), { force: true });
 
       const result = await runTriagePass({
@@ -1389,7 +1395,7 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
   });
 
   describe("Provider Safety Enforcement & Planning Skills Argv", () => {
-    test("wires -e loop-guard.ts, FACTORY_LOOP_ROLE=triage, and all 5 planning skills for pi provider", async () => {
+    test("wires -e loop-guard.ts, FACTORY_LOOP_ROLE=triage, and triage playbook plus planning skills for pi provider", async () => {
       const { root, acceptedRef } = makeGitRepo();
       const stateRoot = makeStateRoot();
       const forge = new SyntheticForgeAdapter();
@@ -1441,12 +1447,13 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
       expect(argv[toolsIdx + 1]).toBe("read,grep,find");
       expect(argv).toContain("--no-mcp");
 
-      // Verify all 5 planning skills
+      // Verify the named triage playbook and available planning skills
       const skillIndices = argv
         .map((arg, idx) => (arg === "--skill" ? idx : -1))
         .filter((idx) => idx !== -1);
       const passedSkills = skillIndices.map((idx) => argv[idx + 1]!);
 
+      expect(passedSkills.some((s) => s.includes("animus-triage"))).toBe(true);
       expect(passedSkills.some((s) => s.includes("animus-brainstorm"))).toBe(true);
       expect(passedSkills.some((s) => s.includes("animus-grill"))).toBe(true);
       expect(passedSkills.some((s) => s.includes("animus-architecture"))).toBe(true);
@@ -1504,7 +1511,7 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
       expect(argv[toolsIdx + 1]).toBe("read,grep,find");
     });
 
-    test("holds when any of the 5 planning skills is missing before spawn for all providers", async () => {
+    test("holds when the required triage playbook is missing before spawn", async () => {
       const { root } = makeGitRepo();
       const stateRoot = makeStateRoot();
       const forge = new SyntheticForgeAdapter();
@@ -1517,10 +1524,10 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
         labels: [{ name: "needs-triage" }],
       });
 
-      // Remove one of the planning skills
-      rmSync(join(root, ".agents/skills/animus-tickets"), { recursive: true, force: true });
+      // Remove the triage playbook while leaving planning skills available.
+      rmSync(join(root, ".agents/skills/animus-triage"), { recursive: true, force: true });
       execFileSync("git", ["add", "-A"], { cwd: root });
-      execFileSync("git", ["commit", "-m", "remove animus-tickets"], { cwd: root });
+      execFileSync("git", ["commit", "-m", "remove animus-triage"], { cwd: root });
       const newRef = execFileSync("git", ["rev-parse", "HEAD"], {
         cwd: root,
         encoding: "utf-8",
@@ -1545,7 +1552,7 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
 
       expect(transportLaunched).toBe(false);
       expect(result.processed[0]?.status).toBe("held");
-      expect(result.processed[0]?.reason).toContain("5 accepted planning skills");
+      expect(result.processed[0]?.reason).toContain("accepted triage playbook");
     });
 
     test("options.env FACTORY_LOOP_ROLE cannot override enforced triage role", async () => {

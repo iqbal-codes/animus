@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { LocalIssue, LoopRole } from "./types";
 
 const NON_BUILDER_SKILLS = new Set([
+  "animus-triage",
   "animus-brainstorm",
   "animus-grill",
   "animus-spec",
@@ -113,6 +114,7 @@ export function resolveAllowedSkills(root: string, role: LoopRole, acceptedRef?:
       candidateNames.add("skill-creator");
       break;
     case "triage":
+      candidateNames.add("animus-triage");
       candidateNames.add("animus-brainstorm");
       candidateNames.add("animus-grill");
       candidateNames.add("animus-architecture");

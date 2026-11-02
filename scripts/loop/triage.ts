@@ -11,7 +11,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { z } from "zod";
 import {
   assertIssueForge,
@@ -53,13 +53,7 @@ export const CANONICAL_SECTIONS = [
   "## Boundary",
 ] as const;
 
-export const REQUIRED_PLANNING_SKILLS = [
-  "animus-brainstorm",
-  "animus-grill",
-  "animus-architecture",
-  "animus-spec",
-  "animus-tickets",
-] as const;
+export const REQUIRED_TRIAGE_SKILL = "animus-triage";
 
 export const askClarificationSchema = z.strictObject({
   action: z.literal("ask_clarification"),
@@ -1182,13 +1176,13 @@ async function triageSingleIssue(
     const model = options.env?.FACTORY_LOOP_MODEL ?? roleConfig.model;
     const effort = (options.env?.FACTORY_LOOP_EFFORT as EffortRung) ?? roleConfig.effort;
 
-    // Check exactly 5 accepted planning skills BEFORE spawn for all providers
+    // The domain playbook is required; exploratory planning skills are optional and selected by it.
     const skills = resolveAllowedSkills(root, "triage", options.acceptedRef);
-    if (skills.length !== 5) {
+    if (!skills.some((skill) => basename(skill) === REQUIRED_TRIAGE_SKILL)) {
       return {
         issueNumber,
         status: "held",
-        reason: `Triage execution requires exactly 5 accepted planning skills, but found ${skills.length}.`,
+        reason: "Triage execution requires the accepted triage playbook (animus-triage), but it is unavailable.",
       };
     }
 

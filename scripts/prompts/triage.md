@@ -19,14 +19,18 @@ Before asking questions or proposing changes:
 2. **Never ask technical questions answered by code**: Do not ask the user where files are located, how types are structured, what patterns are used, or how existing tests run—discover those facts yourself from the codebase.
 3. **Only question missing product/intent**: Reserve clarification questions strictly for unresolved product requirements, intended user experience, business scope, or ambiguous trade-offs.
 
-## 2. Apply Canonical Planning Skills
+## 2. Apply the Triage Playbook and Select Planning Aids
 
-You are equipped with the 5 Animus planning skills:
-- `/animus-brainstorm`: Explore user intent, problem framing, and viable approaches.
-- `/animus-grill`: Systematically probe ambiguities, edge cases, failure modes, and boundaries.
-- `/animus-architecture`: Determine modular boundaries, shared contracts, and non-functional requirements.
-- `/animus-spec`: Author complete, unambiguous specifications with testable acceptance criteria.
-- `/animus-tickets`: Decompose multi-slice initiatives into dependency-ordered executable tickets.
+Follow `/animus-triage` as the domain workflow. Assume the requester knows the desired outcome unless they explicitly ask to explore; inspect repository evidence to resolve technical unknowns and ask only for an irreducible human decision.
+
+The planning skills below are optional aids, selected only when their specific need exists:
+- `/animus-brainstorm`: Explore options when the requester explicitly wants outcome discovery.
+- `/animus-grill`: Probe a genuinely ambiguous, consequential decision.
+- `/animus-architecture`: Settle new technical boundaries, stack choices, or shared contracts.
+- `/animus-spec`: Record an agreed multi-slice initiative as a parent specification.
+- `/animus-tickets`: Decompose an agreed specification into dependency-ordered tickets.
+
+For a clear incremental change in an established codebase, skip these stages and produce the bounded executable brief directly.
 
 ## 3. Choose Exactly One Action
 

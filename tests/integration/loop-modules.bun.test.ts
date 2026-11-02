@@ -807,6 +807,15 @@ test("13. Verification Profiles: resolves appropriate profile and generates tune
     expect(skillText).toContain("*Completion Criterion*:");
   }
 
+  const triageSkillText = readFileSync(
+    join(root, ".agents/skills/animus-triage/SKILL.md"),
+    "utf-8",
+  );
+  expect(triageSkillText).not.toContain("disable-model-invocation: true");
+  expect(triageSkillText).toContain("## When to Use");
+  expect(triageSkillText).toContain("## Steps");
+  expect(triageSkillText).toContain("*Completion Criterion*:");
+
   const secText = readFileSync(join(root, ".agents/skills/security-hardening/SKILL.md"), "utf-8");
   expect(secText).not.toContain("disable-model-invocation: true");
   expect(secText).toContain("## When to Use");
