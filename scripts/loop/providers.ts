@@ -214,6 +214,20 @@ export function materializeContextText(textOrPath: string): string {
   return textOrPath;
 }
 
+const COMPANION_PLANNING_SKILLS = new Set([
+  "animus-brainstorm",
+  "animus-grill",
+  "animus-architecture",
+  "animus-spec",
+  "animus-tickets",
+]);
+
+function getSkillName(skillPath: string): string {
+  const normalized = skillPath.replace(/[/\\]SKILL\.md$/i, "").replace(/[/\\]+$/, "");
+  const parts = normalized.split(/[/\\]/);
+  return parts[parts.length - 1] ?? skillPath;
+}
+
 /**
  * Builds standard CLI arguments for running an autonomous lap step across
  * any supported Animus SDLC provider harness with reasoning effort mapping.
@@ -231,13 +245,40 @@ export function buildProviderArgv(
 
   const model = options.model && options.model !== "default" ? options.model : undefined;
 
-  const skillContents = (options.skills ?? [])
-    .map((s) => materializeSkillContent(s))
-    .filter((s): s is string => typeof s === "string" && s.trim().length > 0);
+  const isPi = norm === "pi";
 
-  const materializedSystemPrompts = (options.appendSystemPrompts ?? [])
-    .map((p) => materializeContextText(p))
-    .concat(skillContents);
+  const skillContents: string[] =
+    isPi || !options.skills || options.skills.length === 0
+      ? []
+      : (() => {
+          const hasTriage = options.skills.some((s) => getSkillName(s) === "animus-triage");
+          const contents: string[] = [];
+          const companionList: string[] = [];
+          for (const s of options.skills) {
+            const name = getSkillName(s);
+            if (hasTriage && COMPANION_PLANNING_SKILLS.has(name)) {
+              companionList.push(`- ${name}: ${s}`);
+            } else {
+              const content = materializeSkillContent(s);
+              if (content && content.trim().length > 0) {
+                contents.push(content);
+              }
+            }
+          }
+          if (companionList.length > 0) {
+            contents.push(
+              `Companion planning skills available on demand:\n${companionList.join("\n")}`,
+            );
+          }
+          return contents;
+        })();
+
+  const materializedSystemPrompts =
+    isPi
+      ? []
+      : (options.appendSystemPrompts ?? [])
+          .map((p) => materializeContextText(p))
+          .concat(skillContents);
 
   switch (norm) {
     case "claude": {

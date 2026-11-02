@@ -245,6 +245,11 @@ export function resolveProviderForRole(root: string, role: LoopRole): string {
 }
 
 export function resolveEffortForRole(root: string, role: LoopRole): EffortRung | undefined {
+  const roleEnvKey = `FACTORY_LOOP_${role.toUpperCase()}_EFFORT`;
+  const roleEffort = process.env[roleEnvKey];
+  if (roleEffort && isEffortRung(roleEffort)) {
+    return roleEffort;
+  }
   if (process.env.FACTORY_LOOP_EFFORT && isEffortRung(process.env.FACTORY_LOOP_EFFORT)) {
     return process.env.FACTORY_LOOP_EFFORT;
   }

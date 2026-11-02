@@ -8,6 +8,7 @@ import {
   serializeAnimusConfigYaml,
   type AnimusConfig,
 } from "../../scripts/loop/config";
+import { buildProviderArgv } from "../../scripts/loop/providers";
 import registerLoopGuard from "../../.factory/hooks/loop-guard";
 import { evaluateTriageToolCall, isTriageCommandAllowed } from "../../scripts/loop/triage-policy";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -23,6 +24,9 @@ describe("Triage Role Configuration & Tier Resolution", () => {
     delete process.env.FACTORY_LOOP_PROVIDER;
     delete process.env.FACTORY_LOOP_EFFORT;
     delete process.env.FACTORY_LOOP_ROLE;
+    delete process.env.FACTORY_LOOP_TRIAGE_EFFORT;
+    delete process.env.FACTORY_LOOP_BUILDER_EFFORT;
+    delete process.env.FACTORY_LOOP_QA_EFFORT;
   });
 
   afterEach(() => {
@@ -124,6 +128,34 @@ describe("Triage Role Configuration & Tier Resolution", () => {
     expect(resolveModelForRole(root, "triage")).toBe("env-model-override");
     expect(resolveProviderForRole(root, "triage")).toBe("env-provider-override");
     expect(resolveEffortForRole(root, "triage")).toBe("max");
+  });
+
+  test("FACTORY_LOOP_<ROLE>_EFFORT overrides global FACTORY_LOOP_EFFORT and config for specific role", () => {
+    const root = makeRepo({
+      tiers: {
+        medium: {
+          provider: "pi",
+          model: "pi-medium",
+          effort: "high",
+        },
+      },
+      roles: {
+        triage: {
+          effort: "medium",
+        },
+      },
+    });
+
+    process.env.FACTORY_LOOP_EFFORT = "high";
+    process.env.FACTORY_LOOP_TRIAGE_EFFORT = "low";
+    process.env.FACTORY_LOOP_QA_EFFORT = "minimal";
+
+    // Triage gets role-specific override "low" despite global FACTORY_LOOP_EFFORT="high"
+    expect(resolveEffortForRole(root, "triage")).toBe("low");
+    // QA gets role-specific override "minimal"
+    expect(resolveEffortForRole(root, "qa")).toBe("minimal");
+    // Builder has no role-specific override, so it gets global FACTORY_LOOP_EFFORT="high"
+    expect(resolveEffortForRole(root, "builder")).toBe("high");
   });
 
   test("serializeAnimusConfigYaml and parseYamlSimple round-trip roles configuration cleanly", () => {
@@ -675,5 +707,90 @@ describe("Triage Read-Only & Command Guard (.factory/hooks/loop-guard.ts)", () =
         expect(res.allowed).toBe(true);
       }
     });
+  });
+});
+
+describe("buildProviderArgv Triage Skill Optimization & Lazy Materialization", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(() => {
+    for (const d of tempDirs.splice(0)) {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  function makeSkill(name: string, content: string): string {
+    const dir = mkdtempSync(join(tmpdir(), `skill-${name}-`));
+    tempDirs.push(dir);
+    const skillPath = join(dir, name);
+    mkdirSync(skillPath, { recursive: true });
+    writeFileSync(join(skillPath, "SKILL.md"), content);
+    return skillPath;
+  }
+
+  test("provider pi skips materializing skills and passes --skill flags directly", () => {
+    const triageSkill = makeSkill("animus-triage", "# Animus Triage Full Content");
+    const brainstormSkill = makeSkill("animus-brainstorm", "# Animus Brainstorm Full Content");
+
+    const argv = buildProviderArgv("pi", {
+      prompt: "Triage this issue",
+      skills: [triageSkill, brainstormSkill],
+    });
+
+    expect(argv[0]).toBe("pi");
+    expect(argv).toContain("--skill");
+    expect(argv).toContain(triageSkill);
+    expect(argv).toContain(brainstormSkill);
+    // Pi does not include materialized skill bodies in append-system-prompt
+    expect(argv.some((arg) => arg.includes("Animus Triage Full Content"))).toBe(false);
+    expect(argv.some((arg) => arg.includes("Animus Brainstorm Full Content"))).toBe(false);
+  });
+
+  test("non-Pi provider with animus-triage inlines animus-triage in full and formats companion planning skills as concise path pointers", () => {
+    const triageSkill = makeSkill(
+      "animus-triage",
+      "# Animus Triage\nFull triage methodology and instructions.",
+    );
+    const brainstormSkill = makeSkill(
+      "animus-brainstorm",
+      "# Animus Brainstorm\nVery long brainstorm content (30KB).",
+    );
+    const grillSkill = makeSkill("animus-grill", "# Animus Grill\nVery long grill content (20KB).");
+
+    const argv = buildProviderArgv("claude", {
+      prompt: "Triage this issue",
+      skills: [triageSkill, brainstormSkill, grillSkill],
+    });
+
+    expect(argv[0]).toBe("claude");
+    // animus-triage is inlined in full
+    expect(argv.some((arg) => arg.includes("Full triage methodology and instructions."))).toBe(
+      true,
+    );
+
+    // companion skills are NOT inlined in full
+    expect(argv.some((arg) => arg.includes("Very long brainstorm content"))).toBe(false);
+    expect(argv.some((arg) => arg.includes("Very long grill content"))).toBe(false);
+
+    // companion skills ARE listed as concise on-demand path references
+    expect(
+      argv.some((arg) => arg.includes("animus-brainstorm") && arg.includes(brainstormSkill)),
+    ).toBe(true);
+    expect(argv.some((arg) => arg.includes("animus-grill") && arg.includes(grillSkill))).toBe(true);
+  });
+
+  test("non-Pi provider without animus-triage inlines all passed skills in full", () => {
+    const brainstormSkill = makeSkill(
+      "animus-brainstorm",
+      "# Animus Brainstorm\nFull content when standalone.",
+    );
+
+    const argv = buildProviderArgv("claude", {
+      prompt: "Brainstorm design",
+      skills: [brainstormSkill],
+    });
+
+    expect(argv[0]).toBe("claude");
+    expect(argv.some((arg) => arg.includes("Full content when standalone."))).toBe(true);
   });
 });

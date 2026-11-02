@@ -1,6 +1,6 @@
 import type { LocalLoopOptions, LoopRole, RoleBudget } from "./types";
 
-const roles: LoopRole[] = ["builder", "qa", "reviewer", "reflector", "planner", "investigator", "manager", "auditor", "simplifier"];
+const roles: LoopRole[] = ["builder", "qa", "reviewer", "reflector", "planner", "investigator", "manager", "auditor", "simplifier", "triage"];
 const MAX_TIMER_MS = 2_147_483_647;
 
 export function validateTimeout(ms: number) {
@@ -29,7 +29,9 @@ export function resolveRoleBudgets(
     const prefix = `FACTORY_LOOP_${role.toUpperCase()}`;
     const defaults = role === "builder"
       ? { softMs: 20 * 60_000, hardMs: 25 * 60_000 }
-      : { softMs: 15 * 60_000, hardMs: 20 * 60_000 };
+      : role === "triage"
+        ? { softMs: 120_000, hardMs: 180_000 }
+        : { softMs: 15 * 60_000, hardMs: 20 * 60_000 };
     if (options.timeoutMs !== undefined) {
       return [role, { softMs: Math.floor(options.timeoutMs * 0.8), hardMs: options.timeoutMs }];
     }
