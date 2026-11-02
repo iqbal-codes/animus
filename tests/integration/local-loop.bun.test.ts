@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import {
   runLocalLoop,
+  computeExternalBlastRadius,
   parseAgentReport,
   extractReport,
   renderPrompt,
@@ -985,4 +986,184 @@ test("holds subticket at waiting_approval (not sent_back) when critical impact (
   expect(res.autoMerge?.criticalImpacts).toContain("database_or_state_migration");
   // Integration branch was NOT advanced automatically; awaits human merge approval
   expect(git(root, "rev-parse", "refs/heads/factory/spec-200-integration")).toBe(baseSha);
+});
+
+test("computeExternalBlastRadius detects unmodified callers of changed files and falls back safely", async () => {
+  const root = await fixture();
+  await mkdir(join(root, "src"), { recursive: true });
+  await Bun.write(
+    join(root, "src/shared-component.ts"),
+    "export function sharedComponent() { return 'component'; }\n",
+  );
+  await Bun.write(
+    join(root, "src/caller-page.ts"),
+    "import { sharedComponent } from './shared-component';\nconsole.log(sharedComponent());\n",
+  );
+  await Bun.write(
+    join(root, "src/caller-service.ts"),
+    "import { sharedComponent } from './shared-component';\nexport const svc = sharedComponent();\n",
+  );
+  await Bun.write(join(root, "src/isolated.ts"), "export function isolated() { return 123; }\n");
+  git(root, "add", ".");
+  git(root, "commit", "-m", "initial codebase");
+
+  // 1. Detects callers when only shared-component is changed
+  const radius = await computeExternalBlastRadius(root, ["src/shared-component.ts"]);
+  expect(radius).toContain("- `src/shared-component.ts` is referenced outside the diff by:");
+  expect(radius).toContain("src/caller-page.ts");
+  expect(radius).toContain("src/caller-service.ts");
+
+  // 2. Excludes files that are already part of changedFiles
+  const radiusWithCaller = await computeExternalBlastRadius(root, [
+    "src/shared-component.ts",
+    "src/caller-page.ts",
+  ]);
+  expect(radiusWithCaller).toContain("src/caller-service.ts");
+  expect(radiusWithCaller).not.toContain("src/caller-page.ts");
+
+  // 3. Fallback when changed file has no external callers
+  const radiusIsolated = await computeExternalBlastRadius(root, ["src/isolated.ts"]);
+  expect(radiusIsolated).toBe("(No unmodified external callers detected)");
+
+  // 4. Safe fallback on non-code files
+  const radiusReadme = await computeExternalBlastRadius(root, ["README.md"]);
+  expect(radiusReadme).toBe("(No unmodified external callers detected)");
+});
+
+test("runLocalLoop pre-packs issue body, comments, blast radius, and reviewer diff context into role prompts", async () => {
+  const root = await fixture();
+  await mkdir(join(root, "src"), { recursive: true });
+  await Bun.write(
+    join(root, "src/auth-helper.ts"),
+    "export function checkToken(token: string) { return Boolean(token); }\n",
+  );
+  await Bun.write(
+    join(root, "src/auth-consumer.ts"),
+    "import { checkToken } from './auth-helper';\nexport const ok = checkToken('test');\n",
+  );
+  git(root, "add", ".");
+  git(root, "commit", "-m", "base commit");
+
+  const issue: LocalIssue = {
+    number: 777,
+    url: "https://github.com/example/repo/issues/777",
+    title: "Enhance auth helper validation",
+    body: "## Acceptance Criteria\n- AC1: Token must be non-empty\n- AC2: Throw on null",
+    comments: ["Contract: acceptance criteria are strict and mandatory."],
+    dependencies: [],
+    activeClaim: false,
+  };
+
+  const capturedPrompts: Record<string, string> = {};
+
+  const transport: PiTransport = async ({ argv, cwd, role }) => {
+    // Extract the rendered prompt from argv
+    const promptArgIdx = argv.indexOf("-p") !== -1 ? argv.indexOf("-p") : argv.indexOf("--");
+    const promptText = promptArgIdx !== -1 ? argv[promptArgIdx + 1] : argv[argv.length - 1];
+    capturedPrompts[role] = promptText || "";
+
+    if (role === "builder") {
+      // Modify auth-helper.ts so diff and blast radius exist
+      await Bun.write(
+        join(cwd, "src/auth-helper.ts"),
+        "export function checkToken(token: string) { if (!token) throw new Error('invalid'); return true; }\n",
+      );
+      git(cwd, "add", "src/auth-helper.ts");
+      git(cwd, "commit", "-m", "fix(auth): enforce non-empty token");
+      const candidate = git(cwd, "rev-parse", "HEAD");
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          candidate,
+          verdict: "pass",
+          summary: "Enhanced token validation",
+          outcome: "Enforced non-empty token check",
+          invariants: ["Token must be non-empty"],
+          risk: "Low risk change to auth helper",
+          changedSeams: ["auth-helper.ts"],
+          delivers: "all",
+          checks: [{ criterion: "lint", result: "pass", evidence: "typecheck clean" }],
+          captures: [],
+        }),
+        stderr: "",
+      };
+    }
+
+    if (role === "qa") {
+      const head = git(cwd, "rev-parse", "HEAD");
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          head,
+          overall: "PASS",
+          summary: "Black-box checks passed",
+          lines: [
+            { id: "AC1", kind: "criterion", verdict: "PASS", evidence: ["builder-checks.log"] },
+            { id: "AC2", kind: "criterion", verdict: "PASS", evidence: ["builder-checks.log"] },
+          ],
+          noticed: [],
+          captures: [],
+        }),
+        stderr: "",
+      };
+    }
+
+    // Reviewer role
+    const head = git(cwd, "rev-parse", "HEAD");
+    return {
+      exitCode: 0,
+      stdout: JSON.stringify({
+        sha: head,
+        outcome: "merge",
+        delivers: "all",
+        axes: {
+          standards: { status: "pass", summary: "Clean code standards" },
+          spec: { status: "pass", summary: "ACs verified" },
+        },
+        findings: [],
+        dispositions: [],
+        rechecks: [],
+        judge_changes: [],
+        auto_merge_judgement: {
+          eligible: true,
+          risk_level: "low",
+          scope_aligned: true,
+          critical_impacts: [],
+          rationale: "Clean patch",
+        },
+        reason: "Review passed cleanly",
+      }),
+      stderr: "",
+    };
+  };
+
+  const res = await runLocalLoop(root, issue, { pi: transport, push: false });
+  expect(res.status).toBe("waiting_approval");
+
+  // Verify Builder prompt has pre-packed issue body and comments
+  expect(capturedPrompts.builder).toBeDefined();
+  expect(capturedPrompts.builder).toContain("Enhance auth helper validation");
+  expect(capturedPrompts.builder).toContain("## Acceptance Criteria");
+  expect(capturedPrompts.builder).toContain("AC1: Token must be non-empty");
+  expect(capturedPrompts.builder).toContain(
+    "Contract: acceptance criteria are strict and mandatory.",
+  );
+
+  // Verify QA prompt has pre-packed issue body and blast-radius map
+  expect(capturedPrompts.qa).toBeDefined();
+  expect(capturedPrompts.qa).toContain("AC1: Token must be non-empty");
+  expect(capturedPrompts.qa).toContain(
+    "## Host-Computed Blast Radius (Unmodified Callers Outside the Diff)",
+  );
+  expect(capturedPrompts.qa).toContain("src/auth-consumer.ts");
+
+  // Verify Reviewer prompt has pre-packed issue body, blast-radius map, and reviewer diff context
+  expect(capturedPrompts.reviewer).toBeDefined();
+  expect(capturedPrompts.reviewer).toContain("AC1: Token must be non-empty");
+  expect(capturedPrompts.reviewer).toContain(
+    "## Host-Computed Blast Radius (Unmodified Callers Outside the Diff)",
+  );
+  expect(capturedPrompts.reviewer).toContain("src/auth-consumer.ts");
+  expect(capturedPrompts.reviewer).toContain("app-check.json");
+  expect(capturedPrompts.reviewer).toContain("src/auth-helper.ts");
 });
