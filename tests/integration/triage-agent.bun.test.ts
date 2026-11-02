@@ -10,11 +10,13 @@ import {
 } from "../../apps/backend/src/registry/forge";
 import {
   acquireIssueLock,
+  computeIssueFreshnessFingerprint,
   evaluateTriageEligibility,
   isIssueEligibleForTriage,
   promoteEpicSchema,
   runTriagePass,
   TRIAGE_AGENT_MARKER,
+  type TriageFailureRecord,
   validateCanonicalIssueBody,
 } from "../../scripts/loop/triage";
 import type { AgentTransport } from "../../scripts/loop/types";
@@ -28,6 +30,7 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
     delete process.env.FACTORY_LOOP_PROVIDER;
     delete process.env.FACTORY_LOOP_EFFORT;
     delete process.env.FACTORY_LOOP_ROLE;
+    delete process.env.PI_OFFLINE;
   });
 
   afterEach(() => {
@@ -1444,7 +1447,7 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
       expect(argv[extIdx + 1]).toContain("loop-guard.ts");
       expect(argv).toContain("--tools");
       const toolsIdx = argv.indexOf("--tools");
-      expect(argv[toolsIdx + 1]).toBe("read,grep,find");
+      expect(argv[toolsIdx + 1]).toBe("read,grep,find,ls");
       expect(argv).toContain("--no-mcp");
 
       // Verify the named triage playbook and available planning skills
@@ -1508,7 +1511,7 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
       expect(argv[extIdx + 1]).toContain("loop-guard.ts");
       expect(argv).toContain("--tools");
       const toolsIdx = argv.indexOf("--tools");
-      expect(argv[toolsIdx + 1]).toBe("read,grep,find");
+      expect(argv[toolsIdx + 1]).toBe("read,grep,find,ls");
     });
 
     test("holds when the required triage playbook is missing before spawn", async () => {
@@ -2932,6 +2935,362 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
       expect(result.processed).toHaveLength(1);
       expect(result.processed[0]?.status).toBe("failed");
       expect(result.processed[0]?.error).toContain("Triage agent transport exited with code");
+    });
+  });
+
+  describe("Issue #127: Boundary Codebase Pointers, Cache-First Triage Prompt, and Failure Backoff", () => {
+    test("AC1: scripts/prompts/triage.md places static instructions before dynamic $INPUTS.* tokens and documents Boundary pointers", () => {
+      const promptPath = join(process.cwd(), "scripts/prompts/triage.md");
+      const promptText = readFileSync(promptPath, "utf-8");
+
+      // Verify standardized Boundary pointers are documented
+      expect(promptText).toContain("Touchpoints");
+      expect(promptText).toContain("Known callers (blast radius)");
+      expect(promptText).toContain("Test seam");
+      expect(promptText).toContain("Exclusions");
+
+      // Verify static sections come before dynamic $INPUTS tokens
+      const staticExplorationIdx = promptText.indexOf(
+        "## 1. Codebase Exploration First (Read-Only)",
+      );
+      const staticOutputIdx = promptText.indexOf("## 4. Strict Output Format");
+      const dynamicIssueNumberIdx = promptText.indexOf("$INPUTS.issue_number");
+      const dynamicIssueBodyIdx = promptText.indexOf("$INPUTS.issue_body");
+      const dynamicIssueCommentsIdx = promptText.indexOf("$INPUTS.issue_comments");
+
+      expect(staticExplorationIdx).toBeGreaterThan(-1);
+      expect(staticOutputIdx).toBeGreaterThan(staticExplorationIdx);
+      expect(dynamicIssueNumberIdx).toBeGreaterThan(staticOutputIdx);
+      expect(dynamicIssueBodyIdx).toBeGreaterThan(staticOutputIdx);
+      expect(dynamicIssueCommentsIdx).toBeGreaterThan(staticOutputIdx);
+    });
+
+    test("AC1: animus-tickets and animus-triage skills document standardized Boundary pointers", () => {
+      const ticketsSkillPath = join(process.cwd(), ".agents/skills/animus-tickets/SKILL.md");
+      const ticketsText = readFileSync(ticketsSkillPath, "utf-8");
+      expect(ticketsText).toContain("Touchpoints");
+      expect(ticketsText).toContain("Known callers (blast radius)");
+      expect(ticketsText).toContain("Test seam");
+      expect(ticketsText).toContain("Exclusions");
+
+      const triageSkillPath = join(process.cwd(), ".agents/skills/animus-triage/SKILL.md");
+      const triageText = readFileSync(triageSkillPath, "utf-8");
+      expect(triageText).toContain("Touchpoints");
+      expect(triageText).toContain("Known callers (blast radius)");
+      expect(triageText).toContain("Test seam");
+      expect(triageText).toContain("Exclusions");
+    });
+
+    test("AC2: wires buildCuratedAppendPrompts into appendSystemPrompts and sets tools to read,grep,find,ls", async () => {
+      const { root } = makeGitRepo();
+      const stateRoot = makeStateRoot();
+      const forge = new SyntheticForgeAdapter();
+      forge.addRepository("owner/repo");
+
+      // Write AGENTS.md so buildCuratedAppendPrompts returns AGENTS.md content
+      writeFileSync(
+        join(root, "AGENTS.md"),
+        "# Canonical Agent Instructions\nMust be respected.\n",
+        "utf-8",
+      );
+      execFileSync("git", ["add", "AGENTS.md"], { cwd: root });
+      execFileSync("git", ["commit", "-m", "add AGENTS.md"], { cwd: root });
+      const newAcceptedRef = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: root,
+        encoding: "utf-8",
+      }).trim();
+
+      forge.addIssue("owner/repo", {
+        number: 800,
+        title: "Test append prompts",
+        state: "OPEN",
+        body: "Test body with non-empty content",
+        labels: [{ name: "needs-triage" }],
+      });
+
+      let capturedRequest: any = null;
+      const transport: AgentTransport = async (req) => {
+        capturedRequest = req;
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            action: "ask_clarification",
+            question: "Clarify please?",
+            reason: "Understood",
+          }),
+          stderr: "",
+        };
+      };
+
+      await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport,
+        acceptedRef: newAcceptedRef,
+        issueNumber: 800,
+        env: { FACTORY_LOOP_PROVIDER: "pi" },
+      });
+
+      expect(capturedRequest).toBeDefined();
+      const argv = capturedRequest.argv as string[];
+      expect(argv).toContain("--tools");
+      const toolsIdx = argv.indexOf("--tools");
+      expect(argv[toolsIdx + 1]).toBe("read,grep,find,ls");
+
+      // Verify appendSystemPrompts is wired via --append-system-prompt
+      expect(argv).toContain("--append-system-prompt");
+      const promptIdx = argv.indexOf("--append-system-prompt");
+      expect(argv[promptIdx + 1]).toContain("Canonical Agent Instructions");
+    });
+
+    test("AC3: fast-paths open issue with empty body and 0 comments directly to ask_clarification without transport", async () => {
+      const { root, acceptedRef } = makeGitRepo();
+      const stateRoot = makeStateRoot();
+      const forge = new SyntheticForgeAdapter();
+      forge.addRepository("owner/repo");
+
+      forge.addIssue("owner/repo", {
+        number: 801,
+        title: "Empty issue title",
+        state: "OPEN",
+        body: "",
+        labels: [{ name: "needs-triage" }],
+      });
+
+      let transportCalls = 0;
+      const transport: AgentTransport = async () => {
+        transportCalls++;
+        return { exitCode: 0, stdout: "{}", stderr: "" };
+      };
+
+      const result = await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport,
+        acceptedRef,
+        issueNumber: 801,
+        dryRun: false,
+      });
+
+      expect(transportCalls).toBe(0);
+      expect(result.processed).toHaveLength(1);
+      expect(result.processed[0]?.status).toBe("clarification_requested");
+      expect(result.processed[0]?.action).toBe("ask_clarification");
+
+      // Check forge was updated with needs-info and comment with marker
+      const updated = await forge.getIssue("owner/repo", 801);
+      expect(updated?.labels?.map((l: any) => l.name)).toContain("needs-info");
+      expect(updated?.labels?.map((l: any) => l.name)).not.toContain("needs-triage");
+      expect(updated?.comments?.length).toBe(1);
+      expect(updated?.comments?.[0]?.body).toContain(TRIAGE_AGENT_MARKER);
+    });
+
+    test("AC3: fast-paths whitespace-only body in dry-run mode returning planned with 0 mutations", async () => {
+      const { root, acceptedRef } = makeGitRepo();
+      const stateRoot = makeStateRoot();
+      const forge = new SyntheticForgeAdapter();
+      forge.addRepository("owner/repo");
+
+      forge.addIssue("owner/repo", {
+        number: 802,
+        title: "Whitespace issue title",
+        state: "OPEN",
+        body: "   \n\t  \n  ",
+        labels: [{ name: "needs-triage" }],
+      });
+
+      let transportCalls = 0;
+      const transport: AgentTransport = async () => {
+        transportCalls++;
+        return { exitCode: 0, stdout: "{}", stderr: "" };
+      };
+
+      const result = await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport,
+        acceptedRef,
+        issueNumber: 802,
+        dryRun: true,
+      });
+
+      expect(transportCalls).toBe(0);
+      expect(result.processed).toHaveLength(1);
+      expect(result.processed[0]?.status).toBe("planned");
+      expect(result.processed[0]?.action).toBe("ask_clarification");
+
+      // Verify no mutations in forge
+      const untouched = await forge.getIssue("owner/repo", 802);
+      expect(untouched?.labels?.map((l: any) => l.name)).toContain("needs-triage");
+      expect(untouched?.labels?.map((l: any) => l.name)).not.toContain("needs-info");
+      expect(untouched?.comments?.length ?? 0).toBe(0);
+    });
+
+    test("AC3: does not fast-path issue with non-empty body or existing comments", async () => {
+      const { root, acceptedRef } = makeGitRepo();
+      const stateRoot = makeStateRoot();
+      const forge = new SyntheticForgeAdapter();
+      forge.addRepository("owner/repo");
+
+      forge.addIssue("owner/repo", {
+        number: 803,
+        title: "Non-empty issue",
+        state: "OPEN",
+        body: "We need a feature here",
+        labels: [{ name: "needs-triage" }],
+      });
+
+      let transportCalls = 0;
+      const transport: AgentTransport = async () => {
+        transportCalls++;
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            action: "ask_clarification",
+            question: "Which feature?",
+            reason: "Missing details",
+          }),
+          stderr: "",
+        };
+      };
+
+      await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport,
+        acceptedRef,
+        issueNumber: 803,
+      });
+
+      expect(transportCalls).toBe(1);
+    });
+
+    test("AC4: records failure backoff in stateRoot and suppresses retries after 2 attempts until fingerprint changes", async () => {
+      const { root, acceptedRef } = makeGitRepo();
+      const stateRoot = makeStateRoot();
+      const forge = new SyntheticForgeAdapter();
+      forge.addRepository("owner/repo");
+
+      forge.addIssue("owner/repo", {
+        number: 810,
+        title: "Failing issue",
+        state: "OPEN",
+        body: "Trigger failure",
+        labels: [{ name: "needs-triage" }],
+      });
+
+      const failingTransport: AgentTransport = async () => {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: "Model execution error",
+        };
+      };
+
+      // Attempt 1: First failure
+      const result1 = await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport: failingTransport,
+        acceptedRef,
+        issueNumber: 810,
+      });
+
+      expect(result1.processed[0]?.status).toBe("failed");
+      const failureFile = join(stateRoot, "triage-failures", "issue-810.json");
+      expect(existsSync(failureFile)).toBe(true);
+
+      const record1: TriageFailureRecord = JSON.parse(readFileSync(failureFile, "utf-8"));
+      expect(record1.attempts).toBe(1);
+      expect(record1.lastError).toContain("Triage agent transport exited with code 1");
+      expect(typeof record1.fingerprint).toBe("string");
+      expect(record1.fingerprint.length).toBe(64);
+
+      // Issue is still eligible after 1 attempt (max 2 attempts)
+      const issueNow = (await forge.getIssue("owner/repo", 810))!;
+      expect(record1.fingerprint).toBe(computeIssueFreshnessFingerprint(issueNow));
+      const elig1 = evaluateTriageEligibility(issueNow, stateRoot);
+      expect(elig1.eligible).toBe(true);
+
+      // Attempt 2: Second failure with identical fingerprint
+      const result2 = await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport: failingTransport,
+        acceptedRef,
+        issueNumber: 810,
+      });
+
+      expect(result2.processed[0]?.status).toBe("failed");
+      const record2: TriageFailureRecord = JSON.parse(readFileSync(failureFile, "utf-8"));
+      expect(record2.attempts).toBe(2);
+      expect(record2.fingerprint).toBe(record1.fingerprint);
+
+      // After 2 failed attempts, evaluateTriageEligibility marks it ineligible
+      const elig2 = evaluateTriageEligibility(issueNow, stateRoot);
+      expect(elig2.eligible).toBe(false);
+      expect(elig2.reason).toContain("failed triage 2 times");
+
+      // Attempt 3: Pass run skips this issue automatically
+      let transportCalledAttempt3 = false;
+      const result3 = await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport: async () => {
+          transportCalledAttempt3 = true;
+          return { exitCode: 0, stdout: "{}", stderr: "" };
+        },
+        acceptedRef,
+        issueNumber: 810,
+      });
+
+      expect(result3.processed[0]?.status).toBe("skipped");
+      expect(result3.processed[0]?.reason).toContain("failed triage 2 times");
+      expect(transportCalledAttempt3).toBe(false);
+
+      // Modify issue (author adds a comment) -> fingerprint changes
+      await forge.createIssueComment("owner/repo", 810, "Here is more context from the author");
+      const updatedIssue = (await forge.getIssue("owner/repo", 810))!;
+
+      // Eligibility restored automatically
+      const elig3 = evaluateTriageEligibility(updatedIssue, stateRoot);
+      expect(elig3.eligible).toBe(true);
+      // Stale failure file should be cleaned up
+      expect(existsSync(failureFile)).toBe(false);
+
+      // Now successful triage runs and clears failure state
+      const successfulTransport = mockTransport({
+        action: "ask_clarification",
+        question: "Can you confirm the version?",
+        reason: "Author comment added context",
+      });
+
+      const result4 = await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport: successfulTransport,
+        acceptedRef,
+        issueNumber: 810,
+      });
+
+      expect(result4.processed[0]?.status).toBe("clarification_requested");
+      expect(existsSync(failureFile)).toBe(false);
     });
   });
 });
