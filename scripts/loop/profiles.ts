@@ -147,7 +147,7 @@ export function getProfileInstructions(profile: VerificationProfile, root: strin
       return {
         depth: "deep",
         skipAppLaunch: false,
-        runtimeInstructions: `See project runtime guide in ${runtimeDocPath} for launching services and black-box verification. Probe security, data transitions, and holdouts.`,
+        runtimeInstructions: `See project runtime guide in ${runtimeDocPath} for launching services and black-box verification. Probe security, data transitions, and holdouts, following .agents/skills/security-hardening/SKILL.md.`,
         description: "Core architecture, security, or data change; deep verification with holdouts.",
       };
 

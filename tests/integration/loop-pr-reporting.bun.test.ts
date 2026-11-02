@@ -483,4 +483,96 @@ describe("PR Body and Comment Reporting Lifecycle", () => {
     );
     expect(evidence).toContain("Local: `checkout-after.png` *(access: inaccessible)*");
   });
+
+  test("formatReviewComment and renderEvidenceContent render auto-merge judgement for both auto-merged and critical-impact held PRs", () => {
+    const baseReviewerReport: ReviewerReport = {
+      sha: dummyIdentities.prHead,
+      outcome: "approved",
+      reason: "All checks and acceptance criteria passed.",
+      delivers: "all",
+      axes: {
+        standards: { status: "pass", summary: "Clean implementation" },
+        spec: { status: "pass", summary: "All ACs verified" },
+      },
+      findings: [],
+      dispositions: [],
+      rechecks: [],
+      judge_changes: [],
+    };
+
+    const heldComment = formatReviewComment({
+      outcome: "approved",
+      route: "simple",
+      candidate: dummyIdentities.prHead,
+      blastRadiusCount: 2,
+      reviewerReport: baseReviewerReport,
+      autoMerge: {
+        authorized: false,
+        decision: "hold_for_human",
+        isSubticket: true,
+        targetBranch: "factory/spec-58-integration",
+        baseBranch: "main",
+        riskLevel: "high",
+        scopeAligned: true,
+        criticalImpacts: ["database_or_state_migration"],
+        deterministicImpacts: ["database_or_state_migration"],
+        reviewerImpacts: ["database_or_state_migration"],
+        reasons: ["Database or state persistence impact detected (files: apps/backend/src/db.ts)."],
+        rationale:
+          "Contains SQLite schema migration requiring human review before downstream subtickets proceed.",
+      },
+    });
+
+    expect(heldComment).toContain("#### 🛡️ Auto-Merge & Critical Impact Gate:");
+    expect(heldComment).toContain("`hold_for_human`");
+    expect(heldComment).toContain("`database_or_state_migration`");
+    expect(heldComment).toContain("Auto-Merge Held for Human Review");
+
+    const mergedComment = formatReviewComment({
+      outcome: "merged",
+      route: "simple",
+      candidate: dummyIdentities.prHead,
+      blastRadiusCount: 1,
+      reviewerReport: { ...baseReviewerReport, outcome: "merge" },
+      autoMerge: {
+        authorized: true,
+        decision: "auto_merge",
+        isSubticket: true,
+        targetBranch: "factory/spec-58-integration",
+        baseBranch: "main",
+        riskLevel: "low",
+        scopeAligned: true,
+        criticalImpacts: [],
+        deterministicImpacts: [],
+        reviewerImpacts: [],
+        reasons: [],
+        rationale: "Bounded UI component slice with zero critical impacts.",
+      },
+    });
+
+    expect(mergedComment).toContain("`auto_merge`");
+    expect(mergedComment).toContain("factory/spec-58-integration");
+    expect(mergedComment).toContain("Auto-merged into integration branch");
+
+    const evWithAutoMerge = renderEvidenceContent({
+      identities: dummyIdentities,
+      outstanding: [],
+      autoMerge: {
+        authorized: false,
+        decision: "hold_for_human",
+        isSubticket: true,
+        targetBranch: "factory/spec-58-integration",
+        baseBranch: "main",
+        riskLevel: "high",
+        scopeAligned: true,
+        criticalImpacts: ["database_or_state_migration"],
+        deterministicImpacts: ["database_or_state_migration"],
+        reviewerImpacts: [],
+        reasons: ["Database or state persistence impact detected (files: apps/backend/src/db.ts)."],
+      },
+    });
+
+    expect(evWithAutoMerge).toContain("### Auto-Merge & Critical Impact Gate");
+    expect(evWithAutoMerge).toContain("`database_or_state_migration`");
+  });
 });

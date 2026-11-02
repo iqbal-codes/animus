@@ -195,6 +195,32 @@ export const reviewOutcomeSchema = z.enum([
 ]);
 export type ReviewOutcome = z.infer<typeof reviewOutcomeSchema>;
 
+export const criticalImpactCategorySchema = z.enum([
+  "database_or_state_migration",
+  "cross_domain_or_shared_contract",
+  "security_auth_or_trust_boundary",
+  "dependency_toolchain_or_infra",
+  "foundational_direction_or_irreversible",
+]);
+export type CriticalImpactCategory = z.infer<typeof criticalImpactCategorySchema>;
+
+export const autoMergeRiskLevelSchema = z.enum([
+  "trivial",
+  "low",
+  "moderate",
+  "high",
+]);
+export type AutoMergeRiskLevel = z.infer<typeof autoMergeRiskLevelSchema>;
+
+export const autoMergeJudgementSchema = z.object({
+  eligible: z.boolean(),
+  risk_level: autoMergeRiskLevelSchema,
+  scope_aligned: z.boolean().default(true),
+  critical_impacts: z.array(criticalImpactCategorySchema).default([]),
+  rationale: z.string().default(""),
+});
+export type AutoMergeJudgement = z.infer<typeof autoMergeJudgementSchema>;
+
 export const reviewerReportSchema = z.object({
   sha: z.string().min(1, "Candidate SHA is required"),
   pr: z.string().optional(),
@@ -219,6 +245,7 @@ export const reviewerReportSchema = z.object({
   dispositions: z.array(reviewDispositionSchema).default([]),
   rechecks: z.array(remediationRecheckRecordSchema).default([]),
   judge_changes: z.array(z.string()).default([]),
+  auto_merge_judgement: autoMergeJudgementSchema.optional(),
 });
 export type ReviewerReport = z.infer<typeof reviewerReportSchema>;
 

@@ -155,7 +155,7 @@ export const orderedFlags: readonly FlagHelp[] = [
   },
   {
     spec: "--small-tier <spec>",
-    description: "Small tier binding (e.g. pi:router/ag/gemini-3.8-flash:medium)",
+    description: "Small tier binding (e.g. pi:default:medium)",
     commands: ["setup"],
   },
   {
@@ -204,8 +204,8 @@ export const orderedFlags: readonly FlagHelp[] = [
     commands: ["setup", "config"],
   },
   {
-    spec: "--agents-md <keep|upgrade|overwrite>",
-    description: "How to handle AGENTS.md during setup (default: auto-upgrade if missing/poor)",
+    spec: "--agents-md <keep|overwrite>",
+    description: "How to handle AGENTS.md during setup (default: keep existing, create if missing)",
     commands: ["setup", "config"],
   },
   {

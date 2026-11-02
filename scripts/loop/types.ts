@@ -93,6 +93,7 @@ export interface LocalLoopResult {
     | "reviewing"
     | "reflecting"
     | "waiting_approval"
+    | "merged"
     | "sent_back"
     | "needs_owner"
     | "interrupted"
@@ -101,6 +102,9 @@ export interface LocalLoopResult {
   worktree: string;
   branch: string;
   base: string;
+  partOf?: number;
+  integrationBranch?: string;
+  finalIntegrationPr?: string;
   candidate?: string;
   pr?: string;
   verificationProfile?: VerificationProfile;
@@ -112,9 +116,32 @@ export interface LocalLoopResult {
   qaReport?: import("./report-schema").QaReport;
   reviewerReport?: import("./report-schema").ReviewerReport;
   findings?: import("./report-schema").ReviewFinding[];
+  autoMerge?: AutoMergeEvaluationResult;
 }
 export type LocalLoopRoute = LocalLoopResult["route"];
 export type LocalLoopStatus = LocalLoopResult["status"];
+
+export interface DiffImpactAnalysis {
+  hasCriticalImpact: boolean;
+  categories: import("./report-schema").CriticalImpactCategory[];
+  reasons: string[];
+  touchedDomains: string[];
+}
+
+export interface AutoMergeEvaluationResult {
+  authorized: boolean;
+  decision: "auto_merge" | "hold_for_human";
+  isSubticket: boolean;
+  targetBranch: string;
+  baseBranch: string;
+  riskLevel: import("./report-schema").AutoMergeRiskLevel;
+  scopeAligned: boolean;
+  criticalImpacts: import("./report-schema").CriticalImpactCategory[];
+  deterministicImpacts: import("./report-schema").CriticalImpactCategory[];
+  reviewerImpacts: import("./report-schema").CriticalImpactCategory[];
+  reasons: string[];
+  rationale?: string;
+}
 
 export type ModelTier = "small" | "medium" | "large";
 

@@ -1,6 +1,7 @@
 ---
 name: animus-review
 description: Review a factory candidate, branch, PR, or work-in-progress on independent Standards and Spec axes by dispatching two parallel subagents. Never reviews in the same session as the implementer.
+disable-model-invocation: true
 ---
 
 # Review a factory candidate

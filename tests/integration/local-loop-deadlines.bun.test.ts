@@ -340,7 +340,12 @@ test("soft checkpoint continues builder in place and requires fresh successful Q
       },
     });
     expect(result.status).toBe("waiting_approval");
-    expect(roles).toEqual(["builder", "builder", "qa", "reviewer"]);
+    expect(roles.filter((r) => r !== "reflector")).toEqual([
+      "builder",
+      "builder",
+      "qa",
+      "reviewer",
+    ]);
     expect(result.evidence.filter((e) => e.role === "builder")).toHaveLength(2);
   } finally {
     process.env.PATH = path;
@@ -432,6 +437,8 @@ for (const terminalPath of ["approved", "failed"] as const) {
       process.env.PATH = `${bin}:${path}`;
       const dossierPath = join(root, ".git/factory-local-loop/dossiers/issue-1.json");
       await mkdir(join(root, ".git/factory-local-loop/dossiers"), { recursive: true });
+      await mkdir(join(root, ".factory"), { recursive: true });
+      await Bun.write(join(root, ".factory/schedule.json"), JSON.stringify({ max_laps: 1 }));
       await Bun.write(
         dossierPath,
         JSON.stringify({
@@ -485,7 +492,11 @@ for (const terminalPath of ["approved", "failed"] as const) {
               );
               return {
                 exitCode: 0,
-                stdout: JSON.stringify({ attribution: "no_observed_effect" }),
+                stdout: JSON.stringify({
+                  schema_version: 1,
+                  attribution: "no_observed_effect",
+                  mutations: [],
+                }),
                 stderr: "",
               };
             }
@@ -498,15 +509,11 @@ for (const terminalPath of ["approved", "failed"] as const) {
             };
           },
         });
-        expect({ attempts, status: result.status, error: result.error }).toMatchObject({
+        expect({ attempts }).toMatchObject({
           attempts: exhaustion === "resume" ? 2 : 1,
         });
         expect(result.status).toBe(
-          exhaustion === "resume"
-            ? terminalPath === "approved"
-              ? "waiting_approval"
-              : "failed"
-            : "interrupted",
+          terminalPath === "approved" ? "waiting_approval" : "needs_owner",
         );
         expect(result.evidence.filter((e) => e.role === "reflector")).toHaveLength(attempts);
         const checkpoint = await Bun.file(
@@ -517,9 +524,10 @@ for (const terminalPath of ["approved", "failed"] as const) {
         if (exhaustion === "resume") expect(dossier.reflectedAt).toBeString();
         else {
           expect(dossier.reflectedAt).toBeUndefined();
-          expect(
-            await Bun.file(join(result.runDirectory, "artifacts/reflection.json")).exists(),
-          ).toBe(false);
+          const record = await Bun.file(
+            join(result.runDirectory, "artifacts/reflection.json"),
+          ).json();
+          expect(record.status).toBe("error");
         }
       } finally {
         process.env.PATH = path;

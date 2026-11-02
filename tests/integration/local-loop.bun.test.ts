@@ -227,6 +227,7 @@ test("executes one clean lap: builder commits, checks run, QA silent, reviewer p
   };
 
   const res = await runLocalLoop(root, issue, { pi: transport, push: false });
+  expect(res.error).toBeUndefined();
   expect(res.status).toBe("waiting_approval");
   expect(res.route).toBe("simple");
   expect(res.evidence.filter((e) => e.kind === "pi")).toHaveLength(3); // builder, qa, reviewer
@@ -449,7 +450,9 @@ test("triggers post-issue terminal reflection when Lap 0 is sent_back and Lap 1 
     "1:reflector",
   ]);
   expect(existsSync(join(resLap1.runDirectory, "artifacts", "reflection.json"))).toBe(true);
-  expect(existsSync(join(root, ".factory/lessons.jsonl"))).toBe(true);
+  expect(existsSync(join(root, ".factory/lessons.jsonl"))).toBe(false);
+  const reflection = await Bun.file(join(resLap1.runDirectory, "artifacts/reflection.json")).json();
+  expect(reflection.status).toBe("held");
 });
 
 test("executes lap with verification profile: docs profile instructs QA to skip app launch", async () => {
@@ -762,4 +765,224 @@ test("fetches origin baseBranch, fast-forwards clean local branch, and bases new
   expect(res.base).toBe(remoteHeadSha);
   expect(capturedWorktreeBaseParent).toBe(remoteHeadSha);
   expect(git(root, "rev-parse", "HEAD")).toBe(remoteHeadSha);
+});
+
+test("auto-merges bounded subticket into factory/spec-<parent>-integration and chains next dependent subticket on top of it", async () => {
+  const root = await fixture();
+  const mainBaseSha = git(root, "rev-parse", "HEAD");
+
+  const subticket1: LocalIssue = {
+    number: 201,
+    url: "https://github.com/owner/repo/issues/201",
+    title: "feat(web): add status badge component",
+    body: "Part of #200\n\n## Acceptance criteria\n- [ ] AC1: Render status badge\n\nDepends on: None",
+    comments: [],
+    dependencies: [],
+    activeClaim: false,
+  };
+
+  const makeTransport = (fileToCreate: string, checkPriorFile?: string): PiTransport => {
+    return async ({ cwd, role }) => {
+      if (role === "builder") {
+        if (checkPriorFile) {
+          expect(existsSync(join(cwd, checkPriorFile))).toBe(true);
+        }
+        await mkdir(join(cwd, "apps/web/src"), { recursive: true });
+        await Bun.write(join(cwd, fileToCreate), "export const ok = true;\n");
+        git(cwd, "add", fileToCreate);
+        git(cwd, "commit", "-m", `feat: add ${fileToCreate}`);
+        const head = git(cwd, "rev-parse", "HEAD");
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            candidate: head,
+            verdict: "pass",
+            summary: `Implemented ${fileToCreate}`,
+            checks: [{ criterion: "AC1", result: "pass", evidence: "builder-checks.log" }],
+          }),
+          stderr: "",
+        };
+      }
+      if (role === "qa") {
+        const head = git(cwd, "rev-parse", "HEAD");
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            head,
+            overall: "PASS",
+            summary: "AC1 verified",
+            lines: [
+              {
+                id: "AC1",
+                kind: "criterion",
+                verdict: "PASS",
+                text: "Verified",
+                evidence: ["builder-checks.log"],
+              },
+            ],
+            noticed: [],
+            captures: [],
+          }),
+          stderr: "",
+        };
+      }
+      const head = git(cwd, "rev-parse", "HEAD");
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          sha: head,
+          outcome: "merge",
+          delivers: "all",
+          axes: {
+            standards: { status: "pass", summary: "Clean bounded slice" },
+            spec: { status: "pass", summary: "AC1 met" },
+          },
+          findings: [],
+          dispositions: [],
+          rechecks: [],
+          judge_changes: [],
+          auto_merge_judgement: {
+            eligible: true,
+            risk_level: "low",
+            scope_aligned: true,
+            critical_impacts: [],
+            rationale: "Bounded UI slice with zero critical impacts.",
+          },
+          reason: "Safe to auto-merge into integration branch.",
+        }),
+        stderr: "",
+      };
+    };
+  };
+
+  const res1 = await runLocalLoop(root, subticket1, {
+    pi: makeTransport("apps/web/src/badge.tsx"),
+    push: false,
+  });
+
+  expect(res1.partOf).toBe(200);
+  expect(res1.integrationBranch).toBe("factory/spec-200-integration");
+  expect(res1.status).toBe("merged");
+  expect(res1.autoMerge?.authorized).toBe(true);
+  expect(res1.autoMerge?.decision).toBe("auto_merge");
+  expect(git(root, "rev-parse", "refs/heads/factory/spec-200-integration")).toBe(res1.candidate!);
+  // main branch remains untouched
+  expect(git(root, "rev-parse", "refs/heads/main")).toBe(mainBaseSha);
+
+  // Now run Subticket #202 (Part of #200) -> branches off factory/spec-200-integration containing badge.tsx!
+  const subticket2: LocalIssue = {
+    number: 202,
+    url: "https://github.com/owner/repo/issues/202",
+    title: "feat(web): add status panel using badge",
+    body: "Part of #200\n\n## Acceptance criteria\n- [ ] AC1: Render status panel\n\nDepends on: #201",
+    comments: [],
+    dependencies: [{ number: 201, state: "CLOSED" }],
+    activeClaim: false,
+  };
+
+  const res2 = await runLocalLoop(root, subticket2, {
+    pi: makeTransport("apps/web/src/panel.tsx", "apps/web/src/badge.tsx"),
+    push: false,
+  });
+
+  expect(res2.status).toBe("merged");
+  expect(res2.base).toBe(res1.candidate!);
+  expect(git(root, "rev-parse", "refs/heads/factory/spec-200-integration")).toBe(res2.candidate!);
+});
+
+test("holds subticket at waiting_approval (not sent_back) when critical impact (DB migration) is present despite passing all quality checks", async () => {
+  const root = await fixture();
+  const baseSha = git(root, "rev-parse", "HEAD");
+
+  const dbSubticket: LocalIssue = {
+    number: 203,
+    url: "https://github.com/owner/repo/issues/203",
+    title: "feat(db): add coordination schema migration",
+    body: "Part of #200\n\n## Acceptance criteria\n- [ ] AC1: Add table migration\n\nDepends on: None",
+    comments: [],
+    dependencies: [],
+    activeClaim: false,
+  };
+
+  const transport: PiTransport = async ({ cwd, role }) => {
+    if (role === "builder") {
+      await mkdir(join(cwd, "apps/backend/src/coordination"), { recursive: true });
+      await Bun.write(
+        join(cwd, "apps/backend/src/coordination/db.ts"),
+        "export const DDL = 'CREATE TABLE spec_runs (id TEXT PRIMARY KEY)';\n",
+      );
+      git(cwd, "add", "apps/backend/src/coordination/db.ts");
+      git(cwd, "commit", "-m", "feat(db): add spec_runs table");
+      const head = git(cwd, "rev-parse", "HEAD");
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          candidate: head,
+          verdict: "pass",
+          summary: "Added spec_runs table",
+          checks: [{ criterion: "AC1", result: "pass", evidence: "builder-checks.log" }],
+        }),
+        stderr: "",
+      };
+    }
+    if (role === "qa") {
+      const head = git(cwd, "rev-parse", "HEAD");
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          head,
+          overall: "PASS",
+          summary: "Migration verified",
+          lines: [
+            {
+              id: "AC1",
+              kind: "criterion",
+              verdict: "PASS",
+              text: "Table created",
+              evidence: ["builder-checks.log"],
+            },
+          ],
+          noticed: [],
+          captures: [],
+        }),
+        stderr: "",
+      };
+    }
+    const head = git(cwd, "rev-parse", "HEAD");
+    return {
+      exitCode: 0,
+      stdout: JSON.stringify({
+        sha: head,
+        outcome: "merge",
+        delivers: "all",
+        axes: {
+          standards: { status: "pass", summary: "Clean SQL migration" },
+          spec: { status: "pass", summary: "AC1 satisfied" },
+        },
+        findings: [],
+        dispositions: [],
+        rechecks: [],
+        judge_changes: [],
+        auto_merge_judgement: {
+          eligible: true,
+          risk_level: "low",
+          scope_aligned: true,
+          critical_impacts: [],
+          rationale: "Clean code",
+        },
+        reason: "Code and tests pass.",
+      }),
+      stderr: "",
+    };
+  };
+
+  const res = await runLocalLoop(root, dbSubticket, { pi: transport, push: false });
+
+  // Must NOT be sent_back (code and ACs are 100% valid!) and must NOT be auto-merged!
+  expect(res.status).toBe("waiting_approval");
+  expect(res.autoMerge?.authorized).toBe(false);
+  expect(res.autoMerge?.decision).toBe("hold_for_human");
+  expect(res.autoMerge?.criticalImpacts).toContain("database_or_state_migration");
+  // Integration branch was NOT advanced automatically; awaits human merge approval
+  expect(git(root, "rev-parse", "refs/heads/factory/spec-200-integration")).toBe(baseSha);
 });

@@ -6,15 +6,35 @@ disable-model-invocation: true
 
 # Write the spec
 
-Read `docs/agents/issue-tracker.md` when publishing or updating tracker issues and applying canonical triage labels. Synthesize settled discussion rather than starting another interview. Missing intent remains an open question; offer `/animus-grill` for decisions that prevent a complete contract.
+Read `docs/agents/issue-tracker.md` when publishing or updating tracker issues. Synthesize settled discussion rather than starting another interview. Missing intent remains an open question; offer `/animus-grill` for decisions that prevent a complete contract.
 
-## Process
+## When to Use
 
-1. Resolve the source conversation/issue/path (including any `docs/brainstorm-<slug>.md` slice entry and `docs/research-*.md` notes) and target repository. Read the source in full, including comments, relevant code, glossary and ADRs. Check whether the requested outcome already exists or overlaps another issue.
-2. Separate observed current behavior from the proposal. Carry forward agreed decisions, parked sensible defaults, and exclusions exactly; cite source sections and relevant code evidence. Keep greenfield product specs focused on observable product behavior and business invariants without prematurely prescribing tech stack or folder layout (which `/animus-architecture` settles before `/animus-tickets`). Describe test seams using existing public behavior where possible. New design is a proposal unless already agreed.
-3. Write the spec below. Give acceptance criteria stable identifiers for later ticket and evidence mapping. Include only relevant states, failures, and authority boundaries; do not pad with exhaustive invented user stories.
-4. Present the draft, material gaps, target repository, and proposed labels. Publish or update the source issue only when those writes are authorized. A parent spec is planning-only: label with `spec` paired with `ready-for-human` (or `needs-info` if material intent is missing/incomplete; never `ready-for-agent` for parent specs). Read back any publication and return its exact URL.
-5. Handoff: spec path/URL (updating the slice's `Spec Pointer` in `docs/brainstorm-<slug>.md` when applicable), complete vs incomplete contract, unresolved decisions, and suggested next stage: `/animus-architecture` (when tech stack, folder topology, or cross-spec reusable components are not yet settled) or `/animus-tickets` (when codebase architecture is already established). Stop before architecture or decomposition unless separately requested.
+Use this playbook when:
+- Synthesizing a completed `/animus-grill` slice contract or settled discussion into a formal specification (`docs/spec-<slice>.md` or a parent `spec` issue).
+- Updating an existing specification with newly settled product decisions or acceptance criteria.
+
+## Steps
+
+1. **Resolve the source and target repository.**
+   Resolve the source conversation/issue/path (including any `docs/brainstorm-<slug>.md` slice entry and `docs/research-*.md` notes) and target repository. Read the source in full, including comments, relevant code, glossary, and ADRs. Check whether the requested outcome already exists or overlaps another issue.
+   *Completion Criterion*: Source inputs, target repository, and overlap checks are verified with zero unexamined source comments or references.
+
+2. **Separate current behavior from the agreed proposal.**
+   Separate observed current behavior from the proposal. Carry forward agreed decisions, parked sensible defaults, and exclusions exactly; cite source sections and relevant code evidence. Keep greenfield product specs focused on observable product behavior and business invariants without prematurely prescribing tech stack or folder layout (which `/animus-architecture` settles before `/animus-tickets`). Describe test seams using existing public behavior where possible. New design is a proposal unless already agreed.
+   *Completion Criterion*: Every requirement in the draft traces to a settled decision, parked default, or observed repository fact.
+
+3. **Draft the specification.**
+   Write the spec using the shape below. Give acceptance criteria stable identifiers (`AC1`, `AC2`...) for later ticket and evidence mapping. Include only relevant states, failures, and authority boundaries; omit inapplicable optional sections rather than writing filler.
+   *Completion Criterion*: The specification draft contains all required sections with stable `AC<n>` identifiers and zero invented user-story padding.
+
+4. **Present the draft and publish only when authorized.**
+   Present the draft, material gaps, target repository, and proposed labels. Publish or update the source issue only when those writes are authorized. A parent spec is planning-only: label with `spec` paired with `ready-for-human` (or `needs-info` if material intent is missing/incomplete; never `ready-for-agent` for parent specs). Read back any publication and return its exact URL.
+   *Completion Criterion*: Draft is reviewed by the user, and any authorized tracker publication is read back with verified canonical labels and exact URL.
+
+5. **Hand off to architecture or ticket decomposition.**
+   Return the spec path/URL (updating the slice's `Spec Pointer` in `docs/brainstorm-<slug>.md` when applicable), complete vs incomplete contract status, unresolved decisions, and suggested next stage: `/animus-architecture` (when tech stack, folder topology, or cross-spec reusable components are not yet settled) or `/animus-tickets` (when codebase architecture is already established). Stop before architecture or decomposition unless separately requested.
+   *Completion Criterion*: Spec pointer and handoff summary are delivered without auto-invoking downstream stages.
 
 ## Spec shape
 
@@ -47,4 +67,4 @@ required artifacts, candidate binding, and ordinary vs independent checks.>
 <Real prerequisites and exact unresolved decisions, or explicitly none.>
 ```
 
-Omit an inapplicable optional section rather than writing filler. A material open question prevents calling the spec implementation-ready. File/symbol references may support current-truth claims; they are evidence, not a substitute for an outcome contract. Preserve a decision-rich prototype excerpt only when it communicates an agreed contract more precisely than prose.
+A material open question prevents calling the spec implementation-ready. File/symbol references may support current-truth claims; they are evidence, not a substitute for an outcome contract. Preserve a decision-rich prototype excerpt only when it communicates an agreed contract more precisely than prose.

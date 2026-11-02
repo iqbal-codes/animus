@@ -12,33 +12,34 @@ Read `docs/agents/domain.md` first. This stage translates settled product specif
 
 Use this playbook when:
 - Starting a greenfield application or service after product specs (`docs/spec-*.md` or spec issues) are settled.
+- Remediating messy brownfield codebases when `/animus-harness` identifies competing legacy patterns, missing module seams, or duplicated components requiring target-state topology and a Foundation / Strangler Slice (`S0`).
 - Introducing a new technology stack, defining codebase folder conventions (e.g., feature-based vs layer-based), or extracting cross-slice reusable UI/domain components before `/animus-tickets`.
-- Skip directly from `/animus-spec` to `/animus-tickets` for incremental brownfield slices whose stack, folder topology, and shared primitives already exist in the repository.
+- Skip directly from `/animus-spec` to `/animus-tickets` for incremental brownfield slices whose stack, folder topology, and shared primitives already exist cleanly in the repository.
 
 ## Steps
 
-1. **Extract architectural drivers and repeating patterns from settled product specs.**
-   Read all target product specs (`docs/spec-*.md` or spec issues), any `docs/brainstorm-<slug>.md` map, and existing repository conventions (`AGENTS.md`, `GLOSSARY.md`, `docs/adr/`, `.factory/codebase-rules.json`). Identify:
+1. **Extract architectural drivers and legacy freeze markers.**
+   Read all target product specs (`docs/spec-*.md` or spec issues), any `docs/brainstorm-<slug>.md` map, existing repository conventions (`AGENTS.md`, `GLOSSARY.md`, `docs/adr/`), and any `[LEGACY - FREEZE]` markers or rules recorded in `.factory/codebase-rules.json` by `/animus-harness`. Identify:
    - **Delivery & runtime drivers**: public SEO / SSR vs authenticated internal SPA, offline/local-first vs online-only, realtime vs request/response.
    - **Data & state drivers**: relational integrity, concurrency, auditability, and multi-tenancy requirements.
-   - **Cross-spec repeating patterns**: scan across all settled product specs to find recurring UI and domain structures (e.g., filterable CRUD data tables, transactional forms, approval modals, status badges, shared validation modules) that should be built once as **Shared Reusable Components / Deep Modules**.
-   *Completion Criterion*: Every architectural question and reusable-component candidate cites concrete requirements across the settled product specs.
+   - **Cross-spec repeating patterns & legacy seams**: scan across settled product specs and legacy paths to identify recurring UI/domain structures that belong in a shared reusable module catalog, along with superseded paths requiring strangler migration.
+   *Completion Criterion*: Every architectural decision, reusable primitive, and legacy seam cites concrete requirements across specs and harness audits.
 
-2. **Settle Tech Stack, Module Topology, and Reusable Primitives with the user.**
+2. **Settle Tech Stack, As-Is vs Target-Be Topology, and Reusable Primitives with the user.**
    Work in 1–2 concise rounds of numbered questions (max 3–4 per round), pairing each with a product-grounded recommendation (`➡️`) worded so agreement accepts it:
-   - **Runtime & Tech Stack**: frontend/backend frameworks, state/query layer, database, and UI primitives justified by Step 1's product drivers (e.g., SPA like Vite for internal tools without SSR needs vs SSR framework for public/SEO surfaces) while honoring user taste.
-   - **Codebase & Folder Topology**: directory organization (e.g., feature-based `src/features/<slice>/` vs domain/layer-based) and deep module seams using `.agents/skills/blueprint/SKILL.md` and `docs/agents/domain.md` conventions.
+   - **Runtime & Tech Stack**: frontend/backend frameworks, state/query layer, database, and UI primitives justified by product drivers while honoring user preferences.
+   - **Codebase & Folder Topology (As-Is vs Target-Be)**: directory organization distinguishing `Retained Core Seams (Keep)`, `Frozen / Legacy Paths ([LEGACY - FREEZE])`, and `Target Seams & Strangler Path` using `.agents/skills/blueprint/SKILL.md` and `docs/agents/domain.md`.
    - **Shared Reusable Component & Module Catalog**: the exact shared primitives (tables, form fields, layout shells, API/data adapters) that foundation tickets must deliver so feature slices reuse them without duplication.
    **Default-and-Park Rule**: When the user accepts a recommendation or delegates to standard defaults, lock that sub-branch immediately without spawning micro-questions.
-   *Completion Criterion*: The user confirms the tech stack, folder/module topology, and catalog of shared reusable components.
+   *Completion Criterion*: The user confirms the tech stack, As-Is vs Target-Be folder/module topology, and catalog of shared reusable components.
 
 3. **Verify selected stack patterns against official primary sources.**
    Verify current versions, setup conventions, and idiomatic APIs for the chosen stack against primary sources (via Context7 docs tools or by dispatching `$research` to write `docs/research-<stack-topic>.md`) instead of relying on pretraining memory.
    *Completion Criterion*: Every chosen framework and library pattern is verified against official primary-source documentation and cited in `docs/research-*.md` or `docs/architecture.md`.
 
 4. **Write `docs/architecture.md` and hand off to `/animus-tickets`.**
-   Write `docs/architecture.md` (and any load-bearing ADRs in `docs/adr/`) using the shape below. If the user wants structural conventions enforced automatically during builder laps (e.g., requiring shared `<FormField />` or enforcing feature-folder boundaries), propose corresponding rules for `.factory/codebase-rules.json` or `AGENTS.md` for user approval. Present the completed architecture doc and suggest `/animus-tickets` next. Do not invoke `/animus-tickets` automatically.
-   *Completion Criterion*: `docs/architecture.md` (and any approved ADRs or codebase rules) is written and confirmed with the user.
+   Write `docs/architecture.md` (and any load-bearing ADRs in `docs/adr/`) using the shape below, including Foundation / Strangler Slice (`S0`) prerequisites. Synchronize module boundary rules into `.factory/codebase-rules.json` (using `mode: "warn"` on legacy paths or target-scoped globs until `S0` completes) and `AGENTS.md`. Present the completed architecture doc and suggest `/animus-tickets` next. Hand off cleanly without automatic invocation.
+   *Completion Criterion*: `docs/architecture.md`, updated `.factory/codebase-rules.json`, and `AGENTS.md` are written and confirmed with the user.
 
 ## Architecture document shape
 
@@ -50,11 +51,14 @@ Use this playbook when:
 - **Runtime & Tech Stack**: <Chosen frameworks, libraries, and product-driven rationale>
 - **Primary-Source References**: <Links to `docs/research-*.md` or official docs verified>
 
-## 2. Directory & Module Topology
+## 2. Directory & Module Topology (As-Is vs Target-Be)
 ```text
-<Canonical folder tree, e.g., src/features/<slice>/, src/shared/components/, etc.>
+<Canonical folder tree showing Retained Core Seams, [LEGACY - FREEZE] paths, and Target Seams>
 ```
-- **Module Seam Rules**: <Import boundaries and where interfaces live>
+- **Retained Core Seams**: <Paths and modules kept as-is>
+- **Frozen / Legacy Paths**: <Paths marked [LEGACY - FREEZE] to strangle>
+- **Target Seams & Strangler Path**: <New target modules and migration sequence>
+- **Module Seam Rules**: <Import boundaries and interface locations>
 
 ## 3. Shared Reusable Component & Module Catalog
 | Shared Primitive | Location | Responsibility & Interface | Consumed by Specs |

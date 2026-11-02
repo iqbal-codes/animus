@@ -74,7 +74,7 @@ export async function runLoopCliCommand(opts: {
       );
       const result = await runLocalLoop(opts.repoRoot, contract, { push: !opts.noPush });
       console.log(JSON.stringify(result, null, 2));
-      return result.status === "waiting_approval" ? 0 : 1;
+      return result.status === "waiting_approval" || result.status === "merged" ? 0 : 1;
     }
 
     if (sub === "watch") {

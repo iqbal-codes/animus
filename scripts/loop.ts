@@ -1,6 +1,8 @@
 import { parseArgs } from "node:util";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { inspectLocalLoop, runLocalLoop, type LocalIssue } from "./local-loop";
+import { getMergedIssueNumbers } from "./loop/scheduler";
+import { getProjectSlug, resolveAnimusHome } from "../packages/contracts/src/paths";
 import { isActiveClaim, parseDependencies } from "../apps/backend/src/intake/parser";
 
 export function parseIssueArgs(args: string[]): { issue: number; dryRun: boolean; push: boolean } {
@@ -132,19 +134,32 @@ export function readIssueContract(
       );
     dependencies.add(dependency.number);
   }
+  let localMergedIssues = new Set<number>();
+  try {
+    const gitCommonRes = Bun.spawnSync(["git", "rev-parse", "--git-common-dir"], { cwd: root });
+    const commonDir =
+      gitCommonRes.exitCode === 0 ? resolve(root, gitCommonRes.stdout.toString().trim()) : join(root, ".git");
+    const stateRoot =
+      process.env.ANIMUS_HOME || process.env.ANIMUS_STATE_DIR || process.env.ANIMUS_RUNS_DIR
+        ? join(resolveAnimusHome(), "projects", getProjectSlug(root))
+        : join(commonDir, "factory-local-loop");
+    localMergedIssues = getMergedIssueNumbers(join(stateRoot, "runs"));
+  } catch {}
+
   const resolved = [...dependencies].map((dependency) => {
     const data = read(
       ["issue", "view", String(dependency), "--repo", repo, "--json", "number,url,state"],
       root,
     ) as { number: number; url: string; state: string };
+    const isClosedOrMerged = data.state === "CLOSED" || localMergedIssues.has(dependency);
     if (
       data.number !== dependency ||
       data.url !== `https://github.com/${repo}/issues/${dependency}` ||
-      data.state !== "CLOSED" ||
+      !isClosedOrMerged ||
       dependency === number
     )
       throw new Error(`Unresolved dependency #${dependency}`);
-    return { number: dependency, state: data.state };
+    return { number: dependency, state: "CLOSED" };
   });
   return {
     number,
@@ -193,7 +208,7 @@ if (import.meta.main) {
       );
       const result = await runLocalLoop(root, contract, { push });
       console.log(JSON.stringify(result, null, 2));
-      if (result.status !== "waiting_approval") process.exitCode = 1;
+      if (result.status !== "waiting_approval" && result.status !== "merged") process.exitCode = 1;
     }
   } catch (error) {
     console.error(error instanceof Error ? error.message : "Loop launch failed");

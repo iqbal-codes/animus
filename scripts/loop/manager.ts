@@ -72,6 +72,8 @@ export async function runManagerPass(
           if (now - stats.mtimeMs > 3 * 60 * 60 * 1000) {
             stuckRunsCount++;
           }
+        } else if (state.status === "merged") {
+          mergedCount++;
         } else if (state.status === "waiting_approval") {
           waitingApprovalCount++;
         } else if (state.status === "sent_back") {
