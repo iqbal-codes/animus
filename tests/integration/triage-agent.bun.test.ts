@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -3546,6 +3554,335 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
       const thinkingIdx = capturedArgv!.indexOf("--thinking");
       expect(thinkingIdx).toBeGreaterThan(-1);
       expect(capturedArgv![thinkingIdx + 1]).toBe("low");
+    });
+
+    test("failure record schema validation fails closed for wrong-shape JSON ({}, null, array, invalid attempts) without mutating", () => {
+      const stateRoot = makeStateRoot();
+      const failuresDir = join(stateRoot, "triage-failures");
+      mkdirSync(failuresDir, { recursive: true });
+
+      const issue: ForgeIssue = {
+        number: 998,
+        title: "Test wrong shape failure files",
+        state: "OPEN",
+        body: "Some body",
+        labels: [{ name: "needs-triage" }],
+      };
+      const fp = computeIssueFreshnessFingerprint(issue);
+      const failureFile = join(failuresDir, "issue-998.json");
+
+      // 1. Empty JSON object {}
+      writeFileSync(failureFile, "{}", "utf-8");
+      const resEmpty = evaluateTriageEligibility(issue, stateRoot);
+      expect(resEmpty.eligible).toBe(false);
+      expect(resEmpty.reason).toContain("failure record is unreadable or corrupted");
+      expect(readFileSync(failureFile, "utf-8")).toBe("{}"); // never mutate
+
+      // 2. JSON null
+      writeFileSync(failureFile, "null", "utf-8");
+      const resNull = evaluateTriageEligibility(issue, stateRoot);
+      expect(resNull.eligible).toBe(false);
+      expect(resNull.reason).toContain("failure record is unreadable or corrupted");
+      expect(readFileSync(failureFile, "utf-8")).toBe("null");
+
+      // 3. JSON array []
+      writeFileSync(failureFile, "[]", "utf-8");
+      const resArray = evaluateTriageEligibility(issue, stateRoot);
+      expect(resArray.eligible).toBe(false);
+      expect(resArray.reason).toContain("failure record is unreadable or corrupted");
+      expect(readFileSync(failureFile, "utf-8")).toBe("[]");
+
+      // 4. Invalid attempts (string, float, negative)
+      const invalidAttemptsCases = ["invalid", 1.5, -1];
+      for (const badAttempts of invalidAttemptsCases) {
+        const payload = JSON.stringify({
+          fingerprint: fp,
+          attempts: badAttempts,
+          failedAt: new Date().toISOString(),
+          lastError: "Failed earlier",
+        });
+        writeFileSync(failureFile, payload, "utf-8");
+        const resBadAttempts = evaluateTriageEligibility(issue, stateRoot);
+        expect(resBadAttempts.eligible).toBe(false);
+        expect(resBadAttempts.reason).toContain("failure record is unreadable or corrupted");
+        expect(readFileSync(failureFile, "utf-8")).toBe(payload);
+      }
+
+      // 5. Missing required fields (failedAt missing)
+      const missingFailedAt = JSON.stringify({
+        fingerprint: fp,
+        attempts: 1,
+        lastError: "Failed earlier",
+      });
+      writeFileSync(failureFile, missingFailedAt, "utf-8");
+      const resMissingField = evaluateTriageEligibility(issue, stateRoot);
+      expect(resMissingField.eligible).toBe(false);
+      expect(resMissingField.reason).toContain("failure record is unreadable or corrupted");
+
+      // 6. Extra fields rejected by strict schema
+      const extraFields = JSON.stringify({
+        fingerprint: fp,
+        attempts: 1,
+        failedAt: new Date().toISOString(),
+        lastError: "Failed earlier",
+        unexpectedExtraField: true,
+      });
+      writeFileSync(failureFile, extraFields, "utf-8");
+      const resExtra = evaluateTriageEligibility(issue, stateRoot);
+      expect(resExtra.eligible).toBe(false);
+      expect(resExtra.reason).toContain("failure record is unreadable or corrupted");
+    });
+
+    test("timeout failure with unwritable stateRoot does not double-fault or crash runTriagePass and returns structured failure", async () => {
+      const { root, acceptedRef } = makeGitRepo();
+      const stateRoot = makeStateRoot();
+      const forge = new SyntheticForgeAdapter();
+      forge.addRepository("owner/repo");
+      forge.addIssue("owner/repo", {
+        number: 880,
+        title: "Timeout persistence obstruction issue",
+        state: "OPEN",
+        body: "Body",
+        labels: [{ name: "needs-triage" }],
+      });
+
+      // Obstruct triage-failures by creating it as a regular file
+      writeFileSync(join(stateRoot, "triage-failures"), "blocking-file-obstruction");
+
+      const timeoutTransport: AgentTransport = async () => ({
+        exitCode: 124,
+        stdout: "",
+        stderr: "Execution timed out",
+        timedOut: true,
+      });
+
+      const result = await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport: timeoutTransport,
+        acceptedRef,
+        issueNumber: 880,
+      });
+
+      expect(result.failureCount).toBe(1);
+      expect(result.processed[0]?.status).toBe("failed");
+      expect(result.processed[0]?.error).toContain("timed out after");
+      expect(result.processed[0]?.error).toContain("failed to persist triage failure record");
+
+      // Lock should be cleanly released
+      const lock = await acquireIssueLock(stateRoot, 880);
+      expect(lock).not.toBeNull();
+      if (lock) await lock.release();
+    });
+
+    test("nonzero exit failure with unwritable stateRoot does not double-fault or crash runTriagePass and returns structured failure", async () => {
+      const { root, acceptedRef } = makeGitRepo();
+      const stateRoot = makeStateRoot();
+      const forge = new SyntheticForgeAdapter();
+      forge.addRepository("owner/repo");
+      forge.addIssue("owner/repo", {
+        number: 881,
+        title: "Nonzero exit persistence obstruction issue",
+        state: "OPEN",
+        body: "Body",
+        labels: [{ name: "needs-triage" }],
+      });
+
+      writeFileSync(join(stateRoot, "triage-failures"), "blocking-file-obstruction");
+
+      const nonzeroTransport: AgentTransport = async () => ({
+        exitCode: 1,
+        stdout: "",
+        stderr: "Agent crashed on startup",
+      });
+
+      const result = await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport: nonzeroTransport,
+        acceptedRef,
+        issueNumber: 881,
+      });
+
+      expect(result.failureCount).toBe(1);
+      expect(result.processed[0]?.status).toBe("failed");
+      expect(result.processed[0]?.error).toContain("Triage agent transport exited with code 1");
+      expect(result.processed[0]?.error).toContain("failed to persist triage failure record");
+
+      const lock = await acquireIssueLock(stateRoot, 881);
+      expect(lock).not.toBeNull();
+      if (lock) await lock.release();
+    });
+
+    test("schema output failure with unwritable stateRoot does not double-fault or crash runTriagePass and returns structured failure", async () => {
+      const { root, acceptedRef } = makeGitRepo();
+      const stateRoot = makeStateRoot();
+      const forge = new SyntheticForgeAdapter();
+      forge.addRepository("owner/repo");
+      forge.addIssue("owner/repo", {
+        number: 882,
+        title: "Schema failure persistence obstruction issue",
+        state: "OPEN",
+        body: "Body",
+        labels: [{ name: "needs-triage" }],
+      });
+
+      writeFileSync(join(stateRoot, "triage-failures"), "blocking-file-obstruction");
+
+      const malformedTransport: AgentTransport = async () => ({
+        exitCode: 0,
+        stdout: "not-json-at-all",
+        stderr: "",
+      });
+
+      const result = await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport: malformedTransport,
+        acceptedRef,
+        issueNumber: 882,
+      });
+
+      expect(result.failureCount).toBe(1);
+      expect(result.processed[0]?.status).toBe("failed");
+      expect(result.processed[0]?.error).toContain("Malformed triage output");
+      expect(result.processed[0]?.error).toContain("failed to persist triage failure record");
+
+      const lock = await acquireIssueLock(stateRoot, 882);
+      expect(lock).not.toBeNull();
+      if (lock) await lock.release();
+    });
+
+    test("cleanup error when clearing failure record returns structured failed outcome with explicit diagnostic", async () => {
+      const { root, acceptedRef } = makeGitRepo();
+      const stateRoot = makeStateRoot();
+      const failDir = join(stateRoot, "triage-failures");
+      mkdirSync(failDir, { recursive: true });
+      const failFile = join(failDir, "issue-883.json");
+
+      // Write a valid failure record with attempts 1 so the issue remains eligible
+      const initialRecord: TriageFailureRecord = {
+        fingerprint: "stale-failure-fingerprint-changed",
+        attempts: 1,
+        failedAt: new Date().toISOString(),
+        lastError: "Initial transient failure",
+      };
+      writeFileSync(failFile, JSON.stringify(initialRecord, null, 2), "utf-8");
+
+      const forge = new SyntheticForgeAdapter();
+      forge.addRepository("owner/repo");
+      forge.addIssue("owner/repo", {
+        number: 883,
+        title: "Cleanup error test issue",
+        state: "OPEN",
+        body: "Some body",
+        labels: [{ name: "needs-triage" }],
+      });
+
+      const successTransport: AgentTransport = async () => ({
+        exitCode: 0,
+        stdout: JSON.stringify({
+          action: "ask_clarification",
+          question: "Clarification question?",
+          reason: "Clarification reason",
+        }),
+        stderr: "",
+      });
+
+      // Make failures directory read-only (0o555): file can be read by eligibility check, but rmSync(failFile) will throw EACCES
+      chmodSync(failDir, 0o555);
+
+      try {
+        const result = await runTriagePass({
+          root,
+          repo: "owner/repo",
+          stateRoot,
+          forge,
+          transport: successTransport,
+          acceptedRef,
+          issueNumber: 883,
+        });
+
+        expect(result.failureCount).toBe(1);
+        expect(result.processed[0]?.status).toBe("failed");
+        expect(result.processed[0]?.error).toContain("Failed to clear triage failure record");
+
+        const lock = await acquireIssueLock(stateRoot, 883);
+        expect(lock).not.toBeNull();
+        if (lock) await lock.release();
+      } finally {
+        chmodSync(failDir, 0o777);
+      }
+    });
+
+    test("consolidated ask_clarification path handles deterministic empty issue fast-path with label transition and failure clear", async () => {
+      const { root, acceptedRef } = makeGitRepo();
+      const stateRoot = makeStateRoot();
+      const failDir = join(stateRoot, "triage-failures");
+      mkdirSync(failDir, { recursive: true });
+      const failFile = join(failDir, "issue-884.json");
+
+      // Write an existing failure file with different fingerprint that should be cleared on success
+      const priorRecord: TriageFailureRecord = {
+        fingerprint: "old-fingerprint-changed",
+        attempts: 1,
+        failedAt: new Date().toISOString(),
+        lastError: "Prior error",
+      };
+      writeFileSync(failFile, JSON.stringify(priorRecord, null, 2), "utf-8");
+
+      let updateIssueCalls = 0;
+      const forge = new SyntheticForgeAdapter();
+      forge.addRepository("owner/repo");
+      forge.addIssue("owner/repo", {
+        number: 884,
+        title: "Empty stub issue with needs-triage",
+        state: "OPEN",
+        body: "   ",
+        labels: [{ name: "needs-triage" }, { name: "bug" }],
+        comments: [],
+      });
+
+      const origUpdate = forge.updateIssue.bind(forge);
+      forge.updateIssue = async (repo, num, input) => {
+        updateIssueCalls++;
+        return origUpdate(repo, num, input);
+      };
+
+      let transportCalled = false;
+      const result = await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport: async () => {
+          transportCalled = true;
+          return { exitCode: 0, stdout: "{}", stderr: "" };
+        },
+        acceptedRef,
+        issueNumber: 884,
+      });
+
+      expect(transportCalled).toBe(false);
+      expect(result.processed[0]?.status).toBe("clarification_requested");
+      expect(result.processed[0]?.action).toBe("ask_clarification");
+      expect(updateIssueCalls).toBe(1);
+
+      const updated = await forge.getIssue("owner/repo", 884);
+      expect(updated?.comments).toHaveLength(1);
+      expect(updated?.comments![0]?.body).toContain("Please provide a description");
+      expect(updated?.comments![0]?.body).toContain(TRIAGE_AGENT_MARKER);
+      const labelNames = (updated?.labels ?? []).map((l) => (typeof l === "string" ? l : l.name));
+      expect(labelNames).toEqual(["bug", "needs-info"]);
+
+      // Prior failure record is cleanly removed by clearFailure()
+      expect(existsSync(failFile)).toBe(false);
     });
   });
 });

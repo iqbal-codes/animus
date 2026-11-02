@@ -181,12 +181,14 @@ export interface TriageEligibilityResult {
   reason: string;
 }
 
-export interface TriageFailureRecord {
-  fingerprint: string;
-  attempts: number;
-  failedAt: string;
-  lastError: string;
-}
+export const triageFailureRecordSchema = z.strictObject({
+  fingerprint: z.string().min(1, "Failure record fingerprint must not be empty"),
+  attempts: z.number().int().nonnegative().finite(),
+  failedAt: z.string().min(1, "Failure record timestamp must not be empty"),
+  lastError: z.string(),
+});
+
+export type TriageFailureRecord = z.infer<typeof triageFailureRecordSchema>;
 
 export interface TriageIssueResult {
   issueNumber: number;
@@ -268,10 +270,18 @@ export function evaluateTriageEligibility(
     if (existsSync(failureFile)) {
       try {
         const raw = readFileSync(failureFile, "utf-8");
-        const record = JSON.parse(raw) as TriageFailureRecord;
+        const parsed = JSON.parse(raw);
+        const parsedRecord = triageFailureRecordSchema.safeParse(parsed);
+        if (!parsedRecord.success) {
+          return {
+            eligible: false,
+            reason: `Issue #${issue.number} failure record is unreadable or corrupted: ${parsedRecord.error.message}`,
+          };
+        }
+        const record = parsedRecord.data;
         const currentFingerprint = computeIssueFreshnessFingerprint(issue);
-        if (record && record.fingerprint === currentFingerprint) {
-          if (typeof record.attempts === "number" && record.attempts >= 2) {
+        if (record.fingerprint === currentFingerprint) {
+          if (record.attempts >= 2) {
             return {
               eligible: false,
               reason: `Issue #${issue.number} failed triage ${record.attempts} times and has not been updated since last failure`,
@@ -1144,8 +1154,9 @@ function recordTriageFailure(
   if (existsSync(failureFile)) {
     try {
       const raw = JSON.parse(readFileSync(failureFile, "utf-8"));
-      if (raw && raw.fingerprint === fingerprint && typeof raw.attempts === "number") {
-        attempts = raw.attempts + 1;
+      const parsedRecord = triageFailureRecordSchema.safeParse(raw);
+      if (parsedRecord.success && parsedRecord.data.fingerprint === fingerprint) {
+        attempts = parsedRecord.data.attempts + 1;
       }
     } catch {
       attempts = 1;
@@ -1158,8 +1169,17 @@ function recordTriageFailure(
     lastError,
   };
   const tmpFile = `${failureFile}.${randomUUID()}.tmp`;
-  writeFileSync(tmpFile, JSON.stringify(record, null, 2), "utf-8");
-  renameSync(tmpFile, failureFile);
+  try {
+    writeFileSync(tmpFile, JSON.stringify(record, null, 2), "utf-8");
+    renameSync(tmpFile, failureFile);
+  } catch (err) {
+    try {
+      if (existsSync(tmpFile)) {
+        rmSync(tmpFile, { force: true });
+      }
+    } catch {}
+    throw err;
+  }
 }
 
 function clearTriageFailure(stateRoot: string, issueNumber: number): void {
@@ -1167,6 +1187,39 @@ function clearTriageFailure(stateRoot: string, issueNumber: number): void {
   if (existsSync(failureFile)) {
     rmSync(failureFile, { force: true });
   }
+}
+
+async function executeAskClarification(
+  forge: IssueForgeAdapter,
+  repo: string,
+  issueNumber: number,
+  existingLabels: Array<{ name: string } | string> | undefined,
+  question: string,
+  reason: string,
+): Promise<TriageIssueResult> {
+  const commentBody = `${question}\n\n${TRIAGE_AGENT_MARKER}`;
+  await forge.createIssueComment(repo, issueNumber, commentBody);
+  const normalized = normalizeLabels(existingLabels);
+  const newLabels = normalized.filter((l) => l !== NEEDS_TRIAGE);
+  if (!newLabels.includes(NEEDS_INFO)) {
+    newLabels.push(NEEDS_INFO);
+  }
+  const targetLabels = Array.from(new Set(newLabels));
+  const labelsChanged =
+    targetLabels.length !== normalized.length ||
+    targetLabels.some((l) => !normalized.includes(l)) ||
+    normalized.some((l) => !targetLabels.includes(l));
+  if (labelsChanged) {
+    await forge.updateIssue(repo, issueNumber, {
+      labels: targetLabels,
+    });
+  }
+  return {
+    issueNumber,
+    status: "clarification_requested",
+    action: "ask_clarification",
+    reason,
+  };
 }
 
 async function triageSingleIssue(
@@ -1186,17 +1239,35 @@ async function triageSingleIssue(
   }
 
   let currentIssue: ForgeIssue | undefined;
+  let failurePersistenceError: string | undefined;
+
   const recordFailure = (lastError: string) => {
-    const fp = currentIssue ? computeIssueFreshnessFingerprint(currentIssue) : "";
-    recordTriageFailure(stateRoot, issueNumber, fp, lastError);
+    try {
+      const fp = currentIssue ? computeIssueFreshnessFingerprint(currentIssue) : "";
+      recordTriageFailure(stateRoot, issueNumber, fp, lastError);
+    } catch (err: any) {
+      failurePersistenceError = err?.message || String(err);
+    }
   };
-  const clearFailure = () => clearTriageFailure(stateRoot, issueNumber);
+
+  const clearFailure = (): string | undefined => {
+    try {
+      clearTriageFailure(stateRoot, issueNumber);
+      return undefined;
+    } catch (err: any) {
+      return `Failed to clear triage failure record: ${err?.message || String(err)}`;
+    }
+  };
+
   const fail = (error: string): TriageIssueResult => {
     recordFailure(error);
+    const finalError = failurePersistenceError
+      ? `${error} (failed to persist triage failure record: ${failurePersistenceError})`
+      : error;
     return {
       issueNumber,
       status: "failed",
-      error,
+      error: finalError,
     };
   };
 
@@ -1262,7 +1333,14 @@ async function triageSingleIssue(
           `TRIAGE SAFETY VIOLATION: Working tree in '${root}' was mutated during triage execution.\nBefore: ${beforeSnapshot}\nAfter: ${afterSnapshot}`,
         );
       }
-      clearFailure();
+      const clearErr = clearFailure();
+      if (clearErr) {
+        return {
+          issueNumber,
+          status: "failed",
+          error: clearErr,
+        };
+      }
       return {
         issueNumber,
         status: epicResult.status,
@@ -1285,30 +1363,23 @@ async function triageSingleIssue(
         };
       }
 
-      const commentBody = `Please provide a description of the problem, intended outcome, and reproduction steps or acceptance criteria.\n\n${TRIAGE_AGENT_MARKER}`;
-      await forge.createIssueComment(repo, issueNumber, commentBody);
-      const existingLabels = normalizeLabels(issue.labels);
-      const newLabels = existingLabels.filter((l) => l !== NEEDS_TRIAGE);
-      if (!newLabels.includes(NEEDS_INFO)) {
-        newLabels.push(NEEDS_INFO);
-      }
-      const targetLabels = Array.from(new Set(newLabels));
-      const labelsChanged =
-        targetLabels.length !== existingLabels.length ||
-        targetLabels.some((l) => !existingLabels.includes(l)) ||
-        existingLabels.some((l) => !targetLabels.includes(l));
-      if (labelsChanged) {
-        await forge.updateIssue(repo, issueNumber, {
-          labels: targetLabels,
-        });
-      }
-      clearFailure();
-      return {
+      const res = await executeAskClarification(
+        forge,
+        repo,
         issueNumber,
-        status: "clarification_requested",
-        action: "ask_clarification",
-        reason: "Issue body is empty with no comments; deterministic clarification requested.",
-      };
+        issue.labels,
+        "Please provide a description of the problem, intended outcome, and reproduction steps or acceptance criteria.",
+        "Issue body is empty with no comments; deterministic clarification requested.",
+      );
+      const clearErr = clearFailure();
+      if (clearErr) {
+        return {
+          issueNumber,
+          status: "failed",
+          error: clearErr,
+        };
+      }
+      return res;
     }
 
     const effectiveEnv: Record<string, string | undefined> = {
@@ -1561,29 +1632,23 @@ async function triageSingleIssue(
 
     switch (action.action) {
       case "ask_clarification": {
-        const commentBody = `${action.question}\n\n${TRIAGE_AGENT_MARKER}`;
-        await forge.createIssueComment(repo, issueNumber, commentBody);
-        const newLabels = existingLabels.filter((l) => l !== NEEDS_TRIAGE);
-        if (!newLabels.includes(NEEDS_INFO)) {
-          newLabels.push(NEEDS_INFO);
-        }
-        const targetLabels = Array.from(new Set(newLabels));
-        const labelsChanged =
-          targetLabels.length !== existingLabels.length ||
-          targetLabels.some((l) => !existingLabels.includes(l)) ||
-          existingLabels.some((l) => !targetLabels.includes(l));
-        if (labelsChanged) {
-          await forge.updateIssue(repo, issueNumber, {
-            labels: targetLabels,
-          });
-        }
-        clearFailure();
-        return {
+        const res = await executeAskClarification(
+          forge,
+          repo,
           issueNumber,
-          status: "clarification_requested",
-          action: "ask_clarification",
-          reason: action.reason,
-        };
+          fresh.labels,
+          action.question,
+          action.reason,
+        );
+        const clearErr = clearFailure();
+        if (clearErr) {
+          return {
+            issueNumber,
+            status: "failed",
+            error: clearErr,
+          };
+        }
+        return res;
       }
 
       case "promote_single_ticket": {
@@ -1602,7 +1667,14 @@ async function triageSingleIssue(
           labels: Array.from(new Set(newLabels)),
         });
 
-        clearFailure();
+        const clearErr = clearFailure();
+        if (clearErr) {
+          return {
+            issueNumber,
+            status: "failed",
+            error: clearErr,
+          };
+        }
         return {
           issueNumber,
           status: "promoted_single",
@@ -1613,7 +1685,14 @@ async function triageSingleIssue(
 
       case "promote_epic_spec_and_tickets": {
         const epicResult = await handleEpicPromotion(forge, repo, fresh, action, stateRoot);
-        clearFailure();
+        const clearErr = clearFailure();
+        if (clearErr) {
+          return {
+            issueNumber,
+            status: "failed",
+            error: clearErr,
+          };
+        }
         return {
           issueNumber,
           status: epicResult.status,
@@ -1640,7 +1719,14 @@ async function triageSingleIssue(
           );
         }
 
-        clearFailure();
+        const clearErr = clearFailure();
+        if (clearErr) {
+          return {
+            issueNumber,
+            status: "failed",
+            error: clearErr,
+          };
+        }
         return {
           issueNumber,
           status: "held",
@@ -1684,7 +1770,16 @@ export async function runTriagePass(options: RunTriagePassOptions): Promise<Tria
   let heldCount = 0;
 
   for (const num of targetIssues) {
-    const result = await triageSingleIssue(num, options);
+    let result: TriageIssueResult;
+    try {
+      result = await triageSingleIssue(num, options);
+    } catch (unhandledErr: any) {
+      result = {
+        issueNumber: num,
+        status: "failed",
+        error: unhandledErr?.message || String(unhandledErr),
+      };
+    }
     processed.push(result);
     if (result.status === "skipped") {
       skippedCount++;
