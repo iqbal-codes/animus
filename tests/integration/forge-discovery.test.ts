@@ -511,4 +511,155 @@ describe("SystemForgeAdapter discovery", () => {
     const forge = new SystemForgeAdapter(mock.runner);
     await expect(forge.getIssue("owner/repo", 42)).rejects.toThrow("GitHub GraphQL lookup failed");
   });
+
+  describe("SystemForgeAdapter Native Linking & Issue Dependencies", () => {
+    test("addSubIssue resolves child numeric database ID via REST and posts sub_issue_id", async () => {
+      const mock = transport([{ id: 90012, number: 12, title: "Child Ticket" }, ""]);
+      const forge = new SystemForgeAdapter(mock.runner);
+
+      await forge.addSubIssue("owner/repo", 10, 12);
+
+      expect(mock.calls).toHaveLength(2);
+      expect(mock.calls[0]).toEqual(["gh", "api", "repos/owner/repo/issues/12"]);
+      expect(mock.calls[1]).toEqual([
+        "gh",
+        "api",
+        "--method",
+        "POST",
+        "repos/owner/repo/issues/10/sub_issues",
+        "-F",
+        "sub_issue_id=90012",
+      ]);
+    });
+
+    test("addSubIssue propagates auth/500/schema failure and rejects invalid issue ID", async () => {
+      const authFail = transport([new Error("HTTP 401: Bad credentials")]);
+      await expect(
+        new SystemForgeAdapter(authFail.runner).addSubIssue("owner/repo", 10, 12),
+      ).rejects.toThrow("HTTP 401: Bad credentials");
+
+      const serverFail = transport([
+        { id: 90012, number: 12 },
+        new Error("HTTP 500: Internal Server Error"),
+      ]);
+      await expect(
+        new SystemForgeAdapter(serverFail.runner).addSubIssue("owner/repo", 10, 12),
+      ).rejects.toThrow("HTTP 500: Internal Server Error");
+
+      // Raw non-JSON output runner
+      const malformedRunner = async () => "not-json";
+      await expect(
+        new SystemForgeAdapter(malformedRunner).addSubIssue("owner/repo", 10, 12),
+      ).rejects.toThrow("Failed to parse issue #12 JSON");
+
+      const invalidShape = transport([{ number: 12 }]); // missing id
+      await expect(
+        new SystemForgeAdapter(invalidShape.runner).addSubIssue("owner/repo", 10, 12),
+      ).rejects.toThrow("Invalid or missing numeric database ID");
+    });
+
+    test("addIssueDependency resolves blocker numeric database ID via REST and posts issue_id", async () => {
+      const mock = transport([{ id: 90099, number: 99, title: "Blocker Ticket" }, ""]);
+      const forge = new SystemForgeAdapter(mock.runner);
+
+      await forge.addIssueDependency("owner/repo", 11, 99);
+
+      expect(mock.calls).toHaveLength(2);
+      expect(mock.calls[0]).toEqual(["gh", "api", "repos/owner/repo/issues/99"]);
+      expect(mock.calls[1]).toEqual([
+        "gh",
+        "api",
+        "--method",
+        "POST",
+        "repos/owner/repo/issues/11/dependencies/blocked_by",
+        "-F",
+        "issue_id=90099",
+      ]);
+    });
+
+    test("addIssueDependency propagates auth/500/schema failure", async () => {
+      const authFail = transport([new Error("HTTP 403: Rate limit exceeded")]);
+      await expect(
+        new SystemForgeAdapter(authFail.runner).addIssueDependency("owner/repo", 11, 99),
+      ).rejects.toThrow("HTTP 403: Rate limit exceeded");
+
+      const invalidId = transport([{ id: "string-id", number: 99 }]);
+      await expect(
+        new SystemForgeAdapter(invalidId.runner).addIssueDependency("owner/repo", 11, 99),
+      ).rejects.toThrow("Invalid or missing numeric database ID");
+    });
+
+    test("getSubIssues paginates complete arrays and extracts issue numbers without swallow", async () => {
+      // Slurped paginated response
+      const mock = transport([
+        [
+          [
+            { id: 90012, number: 12 },
+            { id: 90013, number: 13 },
+          ],
+          [{ id: 90014, number: 14 }],
+        ],
+      ]);
+      const forge = new SystemForgeAdapter(mock.runner);
+
+      const subs = await forge.getSubIssues("owner/repo", 10);
+      expect(subs).toEqual([12, 13, 14]);
+      expect(mock.calls[0]).toEqual([
+        "gh",
+        "api",
+        "--paginate",
+        "--slurp",
+        "repos/owner/repo/issues/10/sub_issues",
+      ]);
+    });
+
+    test("getSubIssues propagates errors and fails closed on malformed response", async () => {
+      const authFail = transport([new Error("HTTP 401: Unauthorized")]);
+      await expect(
+        new SystemForgeAdapter(authFail.runner).getSubIssues("owner/repo", 10),
+      ).rejects.toThrow("HTTP 401: Unauthorized");
+
+      const malformedRunner = async () => "invalid json";
+      await expect(
+        new SystemForgeAdapter(malformedRunner).getSubIssues("owner/repo", 10),
+      ).rejects.toThrow("Failed to parse sub_issues JSON");
+
+      const invalidShape = transport([{ error: "not an array" }]);
+      await expect(
+        new SystemForgeAdapter(invalidShape.runner).getSubIssues("owner/repo", 10),
+      ).rejects.toThrow("Invalid sub_issues response shape");
+    });
+
+    test("getIssueDependencies paginates complete arrays and extracts issue numbers without swallow", async () => {
+      const mock = transport([
+        [
+          { id: 90012, number: 12 },
+          { id: 90013, number: 13 },
+        ],
+      ]);
+      const forge = new SystemForgeAdapter(mock.runner);
+
+      const deps = await forge.getIssueDependencies("owner/repo", 11);
+      expect(deps).toEqual([12, 13]);
+      expect(mock.calls[0]).toEqual([
+        "gh",
+        "api",
+        "--paginate",
+        "--slurp",
+        "repos/owner/repo/issues/11/dependencies/blocked_by",
+      ]);
+    });
+
+    test("getIssueDependencies propagates errors and fails closed on malformed response", async () => {
+      const serverFail = transport([new Error("HTTP 500: Server Error")]);
+      await expect(
+        new SystemForgeAdapter(serverFail.runner).getIssueDependencies("owner/repo", 11),
+      ).rejects.toThrow("HTTP 500: Server Error");
+
+      const invalidShape = transport([[null]]);
+      await expect(
+        new SystemForgeAdapter(invalidShape.runner).getIssueDependencies("owner/repo", 11),
+      ).rejects.toThrow("Invalid dependency item shape");
+    });
+  });
 });

@@ -232,23 +232,25 @@ export function evaluateTriageEligibility(
     return { eligible: false, reason: `Issue #${issue.number} is not OPEN (${issue.state})` };
   }
 
-  // If a staged epic promotion is in progress for this issue, it is eligible to resume
-  if (stateRoot) {
-    const stagingFile = join(stateRoot, "triage-staging", `epic-${issue.number}.json`);
-    if (existsSync(stagingFile)) {
-      return {
-        eligible: true,
-        reason: `Issue #${issue.number} has in-progress epic staging recovery`,
-      };
-    }
-  }
-
+  // F1: Absolute exclusion labels have absolute precedence over staging recovery.
+  // wontfix, needs-owner, ready-for-agent, ready-for-human never run model or mutate even if checkpoint exists.
   const labels = normalizeLabels(issue.labels);
   for (const excluded of EXCLUDED_TRIAGE_LABELS) {
     if (labels.includes(excluded)) {
       return {
         eligible: false,
         reason: `Issue #${issue.number} has exclusion label '${excluded}'`,
+      };
+    }
+  }
+
+  // If a staged epic promotion is in progress for this issue, and it is not excluded, it is eligible to resume
+  if (stateRoot) {
+    const stagingFile = join(stateRoot, "triage-staging", `epic-${issue.number}.json`);
+    if (existsSync(stagingFile)) {
+      return {
+        eligible: true,
+        reason: `Issue #${issue.number} has in-progress epic staging recovery`,
       };
     }
   }
@@ -426,16 +428,6 @@ async function withIssueLockMutex<T>(
       break;
     } catch (err: any) {
       if (err?.code === "EEXIST") {
-        const ownerFile = join(mutexDir, "owner.json");
-        try {
-          if (existsSync(ownerFile)) {
-            const owner = JSON.parse(readFileSync(ownerFile, "utf-8"));
-            if (!isPidAlive(owner?.pid)) {
-              rmSync(mutexDir, { recursive: true, force: true });
-              continue;
-            }
-          }
-        } catch {}
         await new Promise((r) => setTimeout(r, 20));
       } else {
         throw err;
@@ -444,19 +436,28 @@ async function withIssueLockMutex<T>(
   }
 
   if (!acquired) {
-    throw new Error(`Timeout acquiring lock mutex for issue #${issueNumber}`);
+    throw new Error(
+      `Timeout acquiring lock mutex for issue #${issueNumber}: mutex is held (stale mutex requires operator intervention)`,
+    );
   }
 
+  const mutexToken = randomUUID();
   try {
     writeFileSync(
       join(mutexDir, "owner.json"),
-      JSON.stringify({ pid: process.pid, createdAt: Date.now() }),
+      JSON.stringify({ pid: process.pid, mutexToken, createdAt: Date.now() }),
       "utf-8",
     );
     return await fn();
   } finally {
     try {
-      rmSync(mutexDir, { recursive: true, force: true });
+      const ownerFile = join(mutexDir, "owner.json");
+      if (existsSync(ownerFile)) {
+        const owner = JSON.parse(readFileSync(ownerFile, "utf-8"));
+        if (owner?.pid === process.pid && owner?.mutexToken === mutexToken) {
+          rmSync(mutexDir, { recursive: true, force: true });
+        }
+      }
     } catch {}
   }
 }
@@ -481,68 +482,73 @@ export async function acquireIssueLock(
     ownerToken,
   });
 
-  return withIssueLockMutex(locksDir, issueNumber, async () => {
-    if (existsSync(lockFile)) {
-      let existing: any;
-      try {
-        const raw = readFileSync(lockFile, "utf-8");
-        existing = JSON.parse(raw);
-      } catch {
-        // Invalid or partial lock payload: fail closed!
-        return null;
-      }
-
-      if (
-        !existing ||
-        typeof existing.pid !== "number" ||
-        typeof existing.createdAt !== "number" ||
-        typeof existing.issueNumber !== "number"
-      ) {
-        // Invalid or partial lock payload: fail closed!
-        return null;
-      }
-
-      // Live PID check: if PID is still alive, NEVER steal, even if expired! "age never proves dead"
-      const alive = isPidAlive(existing.pid);
-      if (alive) {
-        return null;
-      }
-
-      // PID is dead (stale-dead): safely remove stale lock
-      try {
-        rmSync(lockFile, { force: true });
-      } catch {
-        return null;
-      }
-    }
-
-    try {
-      writeFileSync(lockFile, payload, { flag: "wx" });
-    } catch {
-      return null;
-    }
-
-    let released = false;
-    return {
-      release: async () => {
-        if (released) return;
-        released = true;
+  try {
+    return await withIssueLockMutex(locksDir, issueNumber, async () => {
+      if (existsSync(lockFile)) {
+        let existing: any;
         try {
-          await withIssueLockMutex(locksDir, issueNumber, async () => {
-            if (existsSync(lockFile)) {
-              try {
-                const raw = readFileSync(lockFile, "utf-8");
-                const current = JSON.parse(raw);
-                if (current?.pid === process.pid && current?.ownerToken === ownerToken) {
-                  rmSync(lockFile, { force: true });
-                }
-              } catch {}
-            }
-          });
-        } catch {}
-      },
-    };
-  });
+          const raw = readFileSync(lockFile, "utf-8");
+          existing = JSON.parse(raw);
+        } catch {
+          // Invalid or partial lock payload: fail closed!
+          return null;
+        }
+
+        if (
+          !existing ||
+          typeof existing.pid !== "number" ||
+          typeof existing.createdAt !== "number" ||
+          typeof existing.issueNumber !== "number"
+        ) {
+          // Invalid or partial lock payload: fail closed!
+          return null;
+        }
+
+        // Live PID check: if PID is still alive, NEVER steal, even if expired! "age never proves dead"
+        const alive = isPidAlive(existing.pid);
+        if (alive) {
+          return null;
+        }
+
+        // PID is dead (stale-dead): safely remove stale lock (mutex is exclusively held)
+        try {
+          rmSync(lockFile, { force: true });
+        } catch {
+          return null;
+        }
+      }
+
+      try {
+        writeFileSync(lockFile, payload, { flag: "wx" });
+      } catch {
+        return null;
+      }
+
+      let released = false;
+      return {
+        release: async () => {
+          if (released) return;
+          released = true;
+          try {
+            await withIssueLockMutex(locksDir, issueNumber, async () => {
+              if (existsSync(lockFile)) {
+                try {
+                  const raw = readFileSync(lockFile, "utf-8");
+                  const current = JSON.parse(raw);
+                  if (current?.pid === process.pid && current?.ownerToken === ownerToken) {
+                    rmSync(lockFile, { force: true });
+                  }
+                } catch {}
+              }
+            });
+          } catch {}
+        },
+      };
+    });
+  } catch {
+    // Mutex acquisition failed or timed out: fail closed without deleting live or stale mutex
+    return null;
+  }
 }
 
 export function getWorkspaceSnapshot(root: string): string {
@@ -719,12 +725,49 @@ export function renderTriagePrompt(
   );
 }
 
-interface StagedEpicRecord {
-  repo: string;
-  parentNumber: number;
-  planHash: string;
-  childNumbers: (number | null)[];
+export function replaceCanonicalDependsOn(body: string, depLine: string): string {
+  const lines = body.split("\n");
+  let inCodeBlock = false;
+  let targetIndex = -1;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const trimmed = line.trim();
+    if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+    if (!inCodeBlock && /^Depends on:\s*.+$/i.test(trimmed)) {
+      targetIndex = i;
+    }
+  }
+
+  if (targetIndex !== -1) {
+    lines[targetIndex] = depLine;
+    return lines.join("\n");
+  }
+
+  return `${body.trimEnd()}\n\n${depLine}\n`;
 }
+
+export const stagedEpicRecordSchema = z.strictObject({
+  repo: z.string().min(1),
+  parentNumber: z.number().int().positive(),
+  planHash: z.string().min(1),
+  childNumbers: z.array(z.number().int().positive().nullable()),
+  action: promoteEpicSchema,
+  phase: z
+    .enum([
+      "created_children",
+      "configured_children",
+      "promoted_children",
+      "posted_summary",
+      "completed",
+    ])
+    .optional(),
+});
+
+export type StagedEpicRecord = z.infer<typeof stagedEpicRecordSchema>;
 
 function computePlanHash(action: PromoteEpicAction): string {
   const content = {
@@ -746,12 +789,91 @@ function saveStagingRecord(stagingFile: string, record: StagedEpicRecord): void 
   renameSync(tmpFile, stagingFile);
 }
 
+function quarantineStagingFile(
+  stateRoot: string,
+  stagingFile: string,
+  issueNumber: number,
+): string {
+  const quarantineDir = join(stateRoot, "triage-staging", "quarantine");
+  mkdirSync(quarantineDir, { recursive: true });
+  const quarantinedPath = join(
+    quarantineDir,
+    `epic-${issueNumber}.${Date.now()}.${randomUUID()}.corrupt.json`,
+  );
+  try {
+    renameSync(stagingFile, quarantinedPath);
+  } catch {
+    try {
+      rmSync(stagingFile, { force: true });
+    } catch {}
+  }
+  return quarantinedPath;
+}
+
+function validateStagingRecord(
+  stagingFile: string,
+  repo: string,
+  issueNumber: number,
+): { valid: true; record: StagedEpicRecord } | { valid: false; reason: string } {
+  let raw: unknown;
+  try {
+    const text = readFileSync(stagingFile, "utf-8");
+    raw = JSON.parse(text);
+  } catch (err: any) {
+    return {
+      valid: false,
+      reason: `Failed to parse staging JSON: ${err?.message || String(err)}`,
+    };
+  }
+
+  const parsed = stagedEpicRecordSchema.safeParse(raw);
+  if (!parsed.success) {
+    return {
+      valid: false,
+      reason: `Staged epic plan mismatch or invalid schema: ${parsed.error.message}`,
+    };
+  }
+
+  const record = parsed.data;
+  if (record.repo.toLowerCase() !== repo.toLowerCase()) {
+    return {
+      valid: false,
+      reason: `Repo mismatch in staging record: expected '${repo}', found '${record.repo}'`,
+    };
+  }
+
+  if (record.parentNumber !== issueNumber) {
+    return {
+      valid: false,
+      reason: `Parent issue number mismatch in staging record: expected #${issueNumber}, found #${record.parentNumber}`,
+    };
+  }
+
+  const expectedPlanHash = computePlanHash(record.action);
+  if (record.planHash !== expectedPlanHash) {
+    return {
+      valid: false,
+      reason: `Staged epic plan mismatch in staging record: expected '${expectedPlanHash}', found '${record.planHash}'`,
+    };
+  }
+
+  if (record.childNumbers.length !== record.action.childTickets.length) {
+    return {
+      valid: false,
+      reason: `Child count mismatch: expected ${record.action.childTickets.length}, found ${record.childNumbers.length}`,
+    };
+  }
+
+  return { valid: true, record };
+}
+
 async function handleEpicPromotion(
   forge: IssueForgeAdapter,
   repo: string,
   issue: ForgeIssue,
   action: PromoteEpicAction,
   stateRoot: string,
+  resumedRecord?: StagedEpicRecord,
 ): Promise<{
   status: "promoted_epic" | "held";
   createdChildIssues?: number[];
@@ -798,30 +920,41 @@ async function handleEpicPromotion(
   mkdirSync(stagingDir, { recursive: true });
   const stagingFile = join(stagingDir, `epic-${issue.number}.json`);
 
-  let record: StagedEpicRecord = {
-    repo,
-    parentNumber: issue.number,
-    planHash: currentPlanHash,
-    childNumbers: action.childTickets.map(() => null),
-  };
+  let record: StagedEpicRecord;
 
-  if (existsSync(stagingFile)) {
-    try {
-      const raw = JSON.parse(readFileSync(stagingFile, "utf-8"));
-      if (
-        raw?.parentNumber === issue.number &&
-        raw?.repo?.toLowerCase() === repo.toLowerCase() &&
-        Array.isArray(raw?.childNumbers)
-      ) {
-        if (raw.planHash && raw.planHash !== currentPlanHash) {
-          return {
-            status: "held",
-            reason: `Staged epic plan mismatch on retry for issue #${issue.number}; held to prevent duplicate or orphaned child tickets.`,
-          };
-        }
-        record = raw;
-      }
-    } catch {}
+  if (resumedRecord) {
+    record = resumedRecord;
+  } else if (existsSync(stagingFile)) {
+    const validation = validateStagingRecord(stagingFile, repo, issue.number);
+    if (!validation.valid || validation.record.planHash !== currentPlanHash) {
+      quarantineStagingFile(stateRoot, stagingFile, issue.number);
+      const existingParentLabels = normalizeLabels(issue.labels).filter(
+        (l) => l !== NEEDS_TRIAGE && l !== NEEDS_INFO,
+      );
+      await forge.updateIssue(repo, issue.number, {
+        labels: Array.from(new Set([...existingParentLabels, NEEDS_OWNER])),
+      });
+      await forge.createIssueComment(
+        repo,
+        issue.number,
+        `Staged epic plan mismatch on retry for issue #${issue.number}; held in needs-owner to prevent duplicate or orphaned child tickets.\n\n${TRIAGE_AGENT_MARKER}`,
+      );
+      return {
+        status: "held",
+        reason: `Staged epic plan mismatch on retry for issue #${issue.number}; held to prevent duplicate or orphaned child tickets.`,
+      };
+    }
+    record = validation.record;
+  } else {
+    record = {
+      repo,
+      parentNumber: issue.number,
+      planHash: currentPlanHash,
+      childNumbers: action.childTickets.map(() => null),
+      action,
+      phase: undefined,
+    };
+    saveStagingRecord(stagingFile, record);
   }
 
   // Stage 1: Create all held child tickets in NEEDS_OWNER (not needs-triage eligible)
@@ -840,6 +973,8 @@ async function handleEpicPromotion(
     record.childNumbers[i] = created.number;
     saveStagingRecord(stagingFile, record);
   }
+  record.phase = "created_children";
+  saveStagingRecord(stagingFile, record);
 
   const createdNumbers = record.childNumbers as number[];
 
@@ -861,11 +996,8 @@ async function handleEpicPromotion(
       childBody = `Part of #${issue.number}\n\n${childBody}`;
     }
 
-    if (/^Depends on:\s*.+$/m.test(childBody)) {
-      childBody = childBody.replace(/^Depends on:\s*.+$/m, depLine);
-    } else {
-      childBody = `${childBody.trimEnd()}\n\n${depLine}\n`;
-    }
+    // Code-block-aware replacement using same canonical parser
+    childBody = replaceCanonicalDependsOn(childBody, depLine);
 
     await forge.updateIssue(repo, childNumber, {
       body: childBody,
@@ -895,6 +1027,8 @@ async function handleEpicPromotion(
       }
     }
   }
+  record.phase = "configured_children";
+  saveStagingRecord(stagingFile, record);
 
   // Stage 3: Only after all bodies, native hierarchy, and dependencies are staged, promote child tickets to ready-for-agent
   for (let i = 0; i < action.childTickets.length; i++) {
@@ -909,9 +1043,32 @@ async function handleEpicPromotion(
       labels: Array.from(new Set(childLabels)),
     });
   }
+  record.phase = "promoted_children";
+  saveStagingRecord(stagingFile, record);
 
-  // Stage 4: Promote parent spec issue
-  const existingParentLabels = normalizeLabels(issue.labels).filter(
+  // Stage 4: Post summary comment FIRST! (summary before parent promotion so parent is not excluded before completion)
+  const summaryComment = [
+    `Initiative decomposed into ${createdNumbers.length} sequential/parallel tickets:`,
+    ...createdNumbers.map((num, idx) => `- #${num}: ${action.childTickets[idx]!.title}`),
+    "",
+    TRIAGE_AGENT_MARKER,
+  ].join("\n");
+
+  const latestIssue = await forge.getIssue(repo, issue.number);
+  const commentsCurrent = latestIssue?.comments ?? issue.comments ?? [];
+  const alreadyHasSummary = commentsCurrent.some(
+    (c) =>
+      (c.body ?? "").includes(TRIAGE_AGENT_MARKER) &&
+      (c.body ?? "").includes("Initiative decomposed into"),
+  );
+  if (!alreadyHasSummary) {
+    await forge.createIssueComment(repo, issue.number, summaryComment);
+  }
+  record.phase = "posted_summary";
+  saveStagingRecord(stagingFile, record);
+
+  // Stage 5: Promote parent spec issue LAST!
+  const existingParentLabels = normalizeLabels(latestIssue?.labels ?? issue.labels).filter(
     (l) => l !== NEEDS_TRIAGE && l !== NEEDS_INFO && l !== NEEDS_OWNER,
   );
   const updatedParentLabels = Array.from(new Set([...existingParentLabels, SPEC, READY_FOR_HUMAN]));
@@ -921,16 +1078,7 @@ async function handleEpicPromotion(
     body: action.parentBody,
     labels: updatedParentLabels,
   });
-
-  // Stage 5: Post summary comment linking created child tickets
-  const summaryComment = [
-    `Initiative decomposed into ${createdNumbers.length} sequential/parallel tickets:`,
-    ...createdNumbers.map((num, idx) => `- #${num}: ${action.childTickets[idx]!.title}`),
-    "",
-    TRIAGE_AGENT_MARKER,
-  ].join("\n");
-
-  await forge.createIssueComment(repo, issue.number, summaryComment);
+  record.phase = "completed";
 
   try {
     rmSync(stagingFile, { force: true });
@@ -975,6 +1123,57 @@ async function triageSingleIssue(
         issueNumber,
         status: "skipped",
         reason: eligibility.reason,
+      };
+    }
+
+    // F2: Check if staged epic promotion recovery is in progress for this issue
+    const stagingDir = join(stateRoot, "triage-staging");
+    const stagingFile = join(stagingDir, `epic-${issue.number}.json`);
+
+    if (existsSync(stagingFile)) {
+      const validation = validateStagingRecord(stagingFile, repo, issue.number);
+      if (!validation.valid) {
+        quarantineStagingFile(stateRoot, stagingFile, issue.number);
+        const existingParentLabels = normalizeLabels(issue.labels).filter(
+          (l) => l !== NEEDS_TRIAGE && l !== NEEDS_INFO,
+        );
+        await forge.updateIssue(repo, issue.number, {
+          labels: Array.from(new Set([...existingParentLabels, NEEDS_OWNER])),
+        });
+        await forge.createIssueComment(
+          repo,
+          issue.number,
+          `Triage recovery held: epic staging record was invalid or corrupt and has been quarantined. Issue transitioned to needs-owner for operator review.\n\n${TRIAGE_AGENT_MARKER}`,
+        );
+        return {
+          issueNumber,
+          status: "held",
+          reason: `Invalid or corrupt epic staging checkpoint quarantined (${validation.reason}); issue #${issue.number} transitioned to ${NEEDS_OWNER}`,
+        };
+      }
+
+      // Valid checkpoint: resume host application directly under lock without fresh model invocation
+      const beforeSnapshot = getWorkspaceSnapshot(root);
+      const epicResult = await handleEpicPromotion(
+        forge,
+        repo,
+        issue,
+        validation.record.action,
+        stateRoot,
+        validation.record,
+      );
+      const afterSnapshot = getWorkspaceSnapshot(root);
+      if (beforeSnapshot !== afterSnapshot) {
+        throw new Error(
+          `TRIAGE SAFETY VIOLATION: Working tree in '${root}' was mutated during triage execution.\nBefore: ${beforeSnapshot}\nAfter: ${afterSnapshot}`,
+        );
+      }
+      return {
+        issueNumber,
+        status: epicResult.status,
+        action: "promote_epic_spec_and_tickets",
+        createdChildIssues: epicResult.createdChildIssues,
+        reason: epicResult.reason,
       };
     }
 
@@ -1202,6 +1401,27 @@ async function triageSingleIssue(
     }
 
     const existingLabels = normalizeLabels(fresh.labels);
+
+    if (existsSync(stagingFile) && action.action !== "promote_epic_spec_and_tickets") {
+      quarantineStagingFile(stateRoot, stagingFile, issueNumber);
+      const newLabels = existingLabels
+        .filter((l) => l !== NEEDS_TRIAGE && l !== NEEDS_INFO)
+        .concat(NEEDS_OWNER);
+      await forge.updateIssue(repo, issueNumber, {
+        labels: Array.from(new Set(newLabels)),
+      });
+      await forge.createIssueComment(
+        repo,
+        issueNumber,
+        `Triage recovery held: non-epic action received while epic staging exists; quarantined and transitioned to needs-owner.\n\n${TRIAGE_AGENT_MARKER}`,
+      );
+      return {
+        issueNumber,
+        status: "held",
+        reason:
+          "Non-epic action received while epic staging exists; quarantined and transitioned to needs-owner.",
+      };
+    }
 
     switch (action.action) {
       case "ask_clarification": {

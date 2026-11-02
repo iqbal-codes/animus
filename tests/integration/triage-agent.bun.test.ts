@@ -284,6 +284,28 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
       };
       expect(evaluateTriageEligibility(issue).eligible).toBe(false);
     });
+
+    test.each(["wontfix", "ready-for-agent", "ready-for-human", "needs-owner"])(
+      "exclusion label %s has absolute precedence over staging recovery checkpoint",
+      (label) => {
+        const stateRoot = makeStateRoot();
+        const stagingDir = join(stateRoot, "triage-staging");
+        mkdirSync(stagingDir, { recursive: true });
+        writeFileSync(join(stagingDir, "epic-99.json"), JSON.stringify({ repo: "owner/repo" }));
+
+        const issue: ForgeIssue = {
+          number: 99,
+          title: "Excluded ticket with staging checkpoint",
+          state: "OPEN",
+          body: "Body",
+          labels: [{ name: label }],
+          comments: [{ id: "c1", author: "alice", body: "Human comment" }],
+        };
+        const res = evaluateTriageEligibility(issue, stateRoot);
+        expect(res.eligible).toBe(false);
+        expect(res.reason).toContain(`exclusion label '${label}'`);
+      },
+    );
   });
 
   describe("Per-Issue Lock Management & Concurrency", () => {
@@ -428,6 +450,72 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
       expect(lock).toBeNull();
       // Corrupt file must still be present (fail closed)
       expect(existsSync(lockFile)).toBe(true);
+    });
+
+    test("stale mutex directory fails closed requiring operator intervention and is never deleted", async () => {
+      const stateRoot = makeStateRoot();
+      const locksDir = join(stateRoot, "triage-locks");
+      mkdirSync(locksDir, { recursive: true });
+      const mutexDir = join(locksDir, "issue-104.mutex");
+      mkdirSync(mutexDir, { recursive: true });
+      writeFileSync(
+        join(mutexDir, "owner.json"),
+        JSON.stringify({ pid: 99999999, mutexToken: "dead-mutex", createdAt: Date.now() - 60000 }),
+      );
+
+      // Attempt to acquire lock on issue 104; should fail closed and return null
+      const lock = await acquireIssueLock(stateRoot, 104);
+      expect(lock).toBeNull();
+
+      // The stale mutex directory MUST NOT be deleted (requires operator intervention)
+      expect(existsSync(mutexDir)).toBe(true);
+      const owner = JSON.parse(readFileSync(join(mutexDir, "owner.json"), "utf-8"));
+      expect(owner.mutexToken).toBe("dead-mutex");
+    });
+
+    test("multi-process lock acquisition serializes atomically across real OS processes", async () => {
+      const stateRoot = makeStateRoot();
+      const locksDir = join(stateRoot, "triage-locks");
+      mkdirSync(locksDir, { recursive: true });
+      const lockFile = join(locksDir, "issue-105.lock");
+
+      // Write dead PID in lock file
+      writeFileSync(
+        lockFile,
+        JSON.stringify({
+          pid: 99999999,
+          createdAt: Date.now() - 10000,
+          issueNumber: 105,
+          ownerToken: "dead-token",
+        }),
+      );
+
+      // Child script to acquire lock
+      const script = `
+        import { acquireIssueLock } from "./scripts/loop/triage.ts";
+        const lock = await acquireIssueLock(${JSON.stringify(stateRoot)}, 105);
+        if (lock) {
+          process.stdout.write("ACQUIRED\\n");
+          await new Promise((r) => setTimeout(r, 100));
+          await lock.release();
+          process.stdout.write("RELEASED\\n");
+        } else {
+          process.stdout.write("REJECTED\\n");
+        }
+      `;
+
+      const p1 = Bun.spawn(["bun", "-e", script], { stdout: "pipe", stderr: "pipe" });
+      const p2 = Bun.spawn(["bun", "-e", script], { stdout: "pipe", stderr: "pipe" });
+
+      const [out1, out2] = await Promise.all([
+        new Response(p1.stdout).text(),
+        new Response(p2.stdout).text(),
+      ]);
+
+      const outputs = [out1.trim(), out2.trim()];
+      expect(outputs).toContain("ACQUIRED\nRELEASED");
+      expect(outputs).toContain("REJECTED");
+      expect(existsSync(lockFile)).toBe(false);
     });
 
     test("triage execution never touches <stateRoot>/runs/ or creates builder lap state", async () => {
@@ -1896,7 +1984,11 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
       }
     });
 
-    test("staging resume completes summary comment when parent was already promoted", async () => {
+    // Judge correction (F1): The previous test expected an issue labeled with 'ready-for-human'
+    // to be re-triaged because a staging checkpoint existed. However, per source contract (Issue #116
+    // Invariant 4 & Issue #122 Invariants), exclusion labels ('wontfix', 'needs-owner', 'ready-for-agent',
+    // 'ready-for-human') have absolute precedence and must NEVER run model or mutate even if a checkpoint exists.
+    test("F1 judge correction: issue with ready-for-human is strictly excluded and skipped even if staging recovery checkpoint exists", async () => {
       const { root, acceptedRef } = makeGitRepo();
       const stateRoot = makeStateRoot();
       const forge = new SyntheticForgeAdapter();
@@ -1932,7 +2024,6 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
         reason: "Resume",
       };
 
-      // Compute plan hash matching the action
       const planHash = require("crypto")
         .createHash("sha256")
         .update(
@@ -1956,10 +2047,15 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
           parentNumber: 803,
           planHash,
           childNumbers: [child.number],
+          action,
         }),
       );
 
-      const transport = mockTransport(action);
+      const transportCalls: any[] = [];
+      const transport: AgentTransport = async (req) => {
+        transportCalls.push(req);
+        return { stdout: JSON.stringify(action), stderr: "", exitCode: 0 };
+      };
 
       const result = await runTriagePass({
         root,
@@ -1971,10 +2067,525 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
         issueNumber: 803,
       });
 
-      expect(result.processed[0]?.status).toBe("promoted_epic");
+      // Exclusion wins over staging: must be skipped
+      expect(result.processed[0]?.status).toBe("skipped");
+      expect(result.processed[0]?.reason).toContain("ready-for-human");
+
+      // Transport was never called
+      expect(transportCalls).toHaveLength(0);
+
+      // Parent issue was not mutated with agent summary comments
       const parent = await forge.getIssue("owner/repo", 803);
+      expect(parent?.comments?.some((c) => c.body?.includes(TRIAGE_AGENT_MARKER))).toBe(false);
+    });
+
+    test("staging recovery resumes directly under lock without fresh model invocation and promotes parent last", async () => {
+      const { root, acceptedRef } = makeGitRepo();
+      const stateRoot = makeStateRoot();
+      const forge = new SyntheticForgeAdapter();
+      forge.addRepository("owner/repo");
+      forge.addIssue("owner/repo", {
+        number: 804,
+        title: "Spec: In Progress Recovery",
+        state: "OPEN",
+        body: canonicalSingleBody,
+        labels: [{ name: "needs-triage" }],
+        comments: [{ id: "agree-resume-804", author: "maintainer", body: "Agreed" }],
+      });
+
+      // Child already created in stage 1
+      const child = await forge.createIssue("owner/repo", {
+        title: "Child Already Created",
+        body: canonicalSingleBody,
+        labels: ["needs-owner"],
+      });
+
+      const stagingDir = join(stateRoot, "triage-staging");
+      mkdirSync(stagingDir, { recursive: true });
+      const stagingFile = join(stagingDir, "epic-804.json");
+
+      const action = {
+        action: "promote_epic_spec_and_tickets" as const,
+        agreementCommentId: "agree-resume-804",
+        parentTitle: "Spec: In Progress Recovery Completed",
+        parentBody: canonicalSingleBody,
+        childTickets: [
+          { title: "Child Already Created", body: canonicalSingleBody, dependsOnIndices: [] },
+        ],
+        reason: "Resume and complete",
+      };
+
+      const planHash = require("crypto")
+        .createHash("sha256")
+        .update(
+          JSON.stringify({
+            parentTitle: action.parentTitle.trim(),
+            parentBody: action.parentBody.trim(),
+            childTickets: action.childTickets.map((c: any) => ({
+              title: c.title.trim(),
+              body: c.body.trim(),
+              dependsOnIndices: [...c.dependsOnIndices].sort((a: number, b: number) => a - b),
+              labels: (c.labels ?? []).slice().sort((a: string, b: string) => a.localeCompare(b)),
+            })),
+          }),
+        )
+        .digest("hex");
+
+      writeFileSync(
+        stagingFile,
+        JSON.stringify({
+          repo: "owner/repo",
+          parentNumber: 804,
+          planHash,
+          childNumbers: [child.number],
+          action,
+        }),
+      );
+
+      const transportCalls: any[] = [];
+      const transport: AgentTransport = async (req) => {
+        transportCalls.push(req);
+        return { stdout: JSON.stringify(action), stderr: "", exitCode: 0 };
+      };
+
+      const result = await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport,
+        acceptedRef,
+        issueNumber: 804,
+      });
+
+      // Completed successfully
+      expect(result.processed[0]?.status).toBe("promoted_epic");
+
+      // Zero transport calls on recovery (resumed directly from checkpoint under lock)
+      expect(transportCalls).toHaveLength(0);
+
+      // Child is promoted to ready-for-agent
+      const updatedChild = await forge.getIssue("owner/repo", child.number);
+      const childLabels = updatedChild?.labels?.map((l) => (typeof l === "string" ? l : l.name));
+      expect(childLabels).toContain("ready-for-agent");
+      expect(childLabels).not.toContain("needs-owner");
+
+      // Parent has summary comment posted
+      const parent = await forge.getIssue("owner/repo", 804);
       expect(parent?.comments?.some((c) => c.body?.includes(TRIAGE_AGENT_MARKER))).toBe(true);
+
+      // Parent is promoted last to ready-for-human and spec
+      const parentLabels = parent?.labels?.map((l) => (typeof l === "string" ? l : l.name));
+      expect(parentLabels).toContain("spec");
+      expect(parentLabels).toContain("ready-for-human");
+
+      // Staging checkpoint file is cleaned up
       expect(existsSync(stagingFile)).toBe(false);
+
+      // Subsequent triage pass skips this parent because ready-for-human is an exclusion label
+      const nextPass = await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport,
+        acceptedRef,
+        issueNumber: 804,
+      });
+      expect(nextPass.processed[0]?.status).toBe("skipped");
+      expect(nextPass.processed[0]?.reason).toContain("ready-for-human");
+      expect(transportCalls).toHaveLength(0);
+    });
+
+    test("consecutive runTriagePass calls verify 0 transport calls on valid recovery and no mutations when canceled", async () => {
+      const { root, acceptedRef } = makeGitRepo();
+      const stateRoot = makeStateRoot();
+      const forge = new SyntheticForgeAdapter();
+      forge.addRepository("owner/repo");
+      forge.addIssue("owner/repo", {
+        number: 805,
+        title: "Initiative to cancel",
+        state: "OPEN",
+        body: canonicalSingleBody,
+        labels: [{ name: "needs-triage" }],
+        comments: [{ id: "agree-805", author: "maintainer", body: "Agreed" }],
+      });
+
+      const child = await forge.createIssue("owner/repo", {
+        title: "Child 1",
+        body: canonicalSingleBody,
+        labels: ["needs-owner"],
+      });
+
+      const stagingDir = join(stateRoot, "triage-staging");
+      mkdirSync(stagingDir, { recursive: true });
+      const stagingFile = join(stagingDir, "epic-805.json");
+
+      const action = {
+        action: "promote_epic_spec_and_tickets" as const,
+        agreementCommentId: "agree-805",
+        parentTitle: "Spec: 805",
+        parentBody: canonicalSingleBody,
+        childTickets: [{ title: "Child 1", body: canonicalSingleBody, dependsOnIndices: [] }],
+        reason: "Decompose",
+      };
+
+      const planHash = require("crypto")
+        .createHash("sha256")
+        .update(
+          JSON.stringify({
+            parentTitle: action.parentTitle.trim(),
+            parentBody: action.parentBody.trim(),
+            childTickets: action.childTickets.map((c: any) => ({
+              title: c.title.trim(),
+              body: c.body.trim(),
+              dependsOnIndices: [...c.dependsOnIndices].sort((a: number, b: number) => a - b),
+              labels: (c.labels ?? []).slice().sort((a: string, b: string) => a.localeCompare(b)),
+            })),
+          }),
+        )
+        .digest("hex");
+
+      writeFileSync(
+        stagingFile,
+        JSON.stringify({
+          repo: "owner/repo",
+          parentNumber: 805,
+          planHash,
+          childNumbers: [child.number],
+          action,
+        }),
+      );
+
+      // Operator marks issue wontfix before pass runs
+      await forge.updateIssue("owner/repo", 805, {
+        labels: ["needs-triage", "wontfix"],
+      });
+
+      let transportCalls = 0;
+      const transport: AgentTransport = async () => {
+        transportCalls++;
+        return { stdout: JSON.stringify(action), stderr: "", exitCode: 0 };
+      };
+
+      // Consecutive call 1: Should be skipped immediately because wontfix wins over staging
+      const res1 = await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport,
+        acceptedRef,
+        issueNumber: 805,
+      });
+
+      expect(res1.processed[0]?.status).toBe("skipped");
+      expect(res1.processed[0]?.reason).toContain("wontfix");
+      expect(transportCalls).toBe(0);
+
+      // Consecutive call 2: Still skipped, 0 transport calls
+      const res2 = await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport,
+        acceptedRef,
+        issueNumber: 805,
+      });
+
+      expect(res2.processed[0]?.status).toBe("skipped");
+      expect(res2.processed[0]?.reason).toContain("wontfix");
+      expect(transportCalls).toBe(0);
+
+      // Staging file remains on disk untouched and forge issue was not mutated
+      const parent = await forge.getIssue("owner/repo", 805);
+      expect(parent?.comments?.some((c) => c.body?.includes(TRIAGE_AGENT_MARKER))).toBe(false);
+    });
+
+    test("corrupted staging checkpoint is quarantined outside repo and parent is transitioned to needs-owner once", async () => {
+      const { root, acceptedRef } = makeGitRepo();
+      const stateRoot = makeStateRoot();
+      const forge = new SyntheticForgeAdapter();
+      forge.addRepository("owner/repo");
+      forge.addIssue("owner/repo", {
+        number: 806,
+        title: "Epic with corrupt staging",
+        state: "OPEN",
+        body: canonicalSingleBody,
+        labels: [{ name: "needs-triage" }],
+        comments: [{ id: "agree-806", author: "maintainer", body: "Agreed" }],
+      });
+
+      const stagingDir = join(stateRoot, "triage-staging");
+      mkdirSync(stagingDir, { recursive: true });
+      const stagingFile = join(stagingDir, "epic-806.json");
+
+      // Corrupt JSON
+      writeFileSync(stagingFile, "{ invalid json content");
+
+      let transportCalls = 0;
+      const transport: AgentTransport = async () => {
+        transportCalls++;
+        return { stdout: "{}", stderr: "", exitCode: 0 };
+      };
+
+      // Pass 1: fails closed, quarantines checkpoint, transitions to needs-owner
+      const res1 = await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport,
+        acceptedRef,
+        issueNumber: 806,
+      });
+
+      expect(res1.processed[0]?.status).toBe("held");
+      expect(res1.processed[0]?.reason).toContain("quarantined");
+      expect(transportCalls).toBe(0);
+
+      // Staging file was moved to quarantine
+      expect(existsSync(stagingFile)).toBe(false);
+      const quarantineDir = join(stateRoot, "triage-staging", "quarantine");
+      expect(existsSync(quarantineDir)).toBe(true);
+
+      // Parent issue was transitioned to needs-owner
+      const parent = await forge.getIssue("owner/repo", 806);
+      const labels = parent?.labels?.map((l) => (typeof l === "string" ? l : l.name));
+      expect(labels).toContain("needs-owner");
+      expect(labels).not.toContain("needs-triage");
+
+      // Pass 2: immediately skipped because parent has needs-owner (no infinite token loop!)
+      const res2 = await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport,
+        acceptedRef,
+        issueNumber: 806,
+      });
+
+      expect(res2.processed[0]?.status).toBe("skipped");
+      expect(res2.processed[0]?.reason).toContain("needs-owner");
+      expect(transportCalls).toBe(0);
+    });
+
+    test("code-block-aware Depends on replacement preserves example in code fence and rewrites real footer to blocker", async () => {
+      const { root, acceptedRef } = makeGitRepo();
+      const stateRoot = makeStateRoot();
+      const forge = new SyntheticForgeAdapter();
+      forge.addRepository("owner/repo");
+      forge.addIssue("owner/repo", {
+        number: 807,
+        title: "Epic with fenced example",
+        state: "OPEN",
+        body: canonicalSingleBody,
+        labels: [{ name: "needs-triage" }],
+        comments: [{ id: "agree-807", author: "maintainer", body: "Agreed" }],
+      });
+
+      const child0Body = canonicalSingleBody;
+      const child1BodyWithFence = [
+        "## Source and problem",
+        "Problem statement with an example format:",
+        "```markdown",
+        "Depends on: None",
+        "```",
+        "",
+        "## Outcome",
+        "Outcome details.",
+        "",
+        "## Invariants",
+        "Invariant details.",
+        "",
+        "## Acceptance criteria",
+        "Criteria details.",
+        "",
+        "## Boundary",
+        "Boundary details.",
+        "",
+        "Depends on: None",
+      ].join("\n");
+
+      const action = {
+        action: "promote_epic_spec_and_tickets" as const,
+        agreementCommentId: "agree-807",
+        parentTitle: "Spec: Epic with fenced example",
+        parentBody: canonicalSingleBody,
+        childTickets: [
+          { title: "Child 0 Blocker", body: child0Body, dependsOnIndices: [] },
+          { title: "Child 1 Dependent", body: child1BodyWithFence, dependsOnIndices: [0] },
+        ],
+        reason: "Decomposition with fenced example",
+      };
+
+      const transport = mockTransport(action);
+
+      const result = await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport,
+        acceptedRef,
+        issueNumber: 807,
+      });
+
+      expect(result.processed[0]?.status).toBe("promoted_epic");
+      const [child0Num, child1Num] = result.processed[0]?.createdChildIssues ?? [];
+
+      const child1Issue = await forge.getIssue("owner/repo", child1Num!);
+      expect(child1Issue).not.toBeNull();
+      const body = child1Issue?.body ?? "";
+
+      // Code-fenced example MUST remain untouched:
+      expect(body).toContain("```markdown\nDepends on: None\n```");
+
+      // Actual outside-fence footer MUST be rewritten to the real blocker:
+      expect(body).toContain(`Depends on: #${child0Num}`);
+      const lines = body.split("\n");
+      let inFence = false;
+      const outsideDepLines: string[] = [];
+      for (const line of lines) {
+        if (line.trim().startsWith("```")) inFence = !inFence;
+        else if (!inFence && line.startsWith("Depends on:")) outsideDepLines.push(line);
+      }
+      expect(outsideDepLines).toEqual([`Depends on: #${child0Num}`]);
+    });
+
+    test("SystemForgeAdapter native linking resolves global database ID and links sub-issues and dependencies", async () => {
+      const { root, acceptedRef } = makeGitRepo();
+      const stateRoot = makeStateRoot();
+
+      const executedCommands: string[][] = [];
+      const runner = async (cmd: string[]) => {
+        executedCommands.push(cmd);
+        // GET issue GraphQL (for initial getIssue or listIssues)
+        if (cmd[0] === "gh" && cmd[1] === "api" && cmd[2] === "graphql") {
+          const numArg = cmd.find((a) => a.startsWith("number="));
+          const num = numArg ? parseInt(numArg.split("=")[1]!, 10) : 900;
+          return JSON.stringify({
+            data: {
+              repository: {
+                issue: {
+                  number: num,
+                  title: num === 900 ? "Epic to link natively" : `Child ${num}`,
+                  state: "OPEN",
+                  body: canonicalSingleBody,
+                  labels: {
+                    nodes: [{ name: num === 900 ? "needs-triage" : "needs-owner" }],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                  comments: {
+                    nodes:
+                      num === 900
+                        ? [{ id: "agree-900", author: "maintainer", body: "Agreed" }]
+                        : [],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                },
+              },
+            },
+          });
+        }
+        // issue create
+        if (cmd[0] === "gh" && cmd[1] === "issue" && cmd[2] === "create") {
+          const isChild2 = cmd.includes("Child 2");
+          return isChild2
+            ? "https://github.com/owner/repo/issues/902"
+            : "https://github.com/owner/repo/issues/901";
+        }
+        // issue edit
+        if (cmd[0] === "gh" && cmd[1] === "issue" && cmd[2] === "edit") {
+          return "";
+        }
+        // issue comment
+        if (cmd[0] === "gh" && cmd[1] === "issue" && cmd[2] === "comment") {
+          return JSON.stringify({ id: "comment-summary", author: { login: "animus-agent" } });
+        }
+        // REST getSubIssues
+        if (
+          cmd[0] === "gh" &&
+          cmd[1] === "api" &&
+          cmd.includes("repos/owner/repo/issues/900/sub_issues")
+        ) {
+          return JSON.stringify([]);
+        }
+        // REST getIssueDependencies
+        if (
+          cmd[0] === "gh" &&
+          cmd[1] === "api" &&
+          cmd.some((a) => a.includes("/dependencies/blocked_by") && !cmd.includes("--method"))
+        ) {
+          return JSON.stringify([]);
+        }
+        // REST resolveIssueDatabaseId for child 901 -> id 99001, child 902 -> id 99002
+        if (cmd[0] === "gh" && cmd[1] === "api" && cmd[2] === "repos/owner/repo/issues/901") {
+          return JSON.stringify({ id: 99001, number: 901 });
+        }
+        if (cmd[0] === "gh" && cmd[1] === "api" && cmd[2] === "repos/owner/repo/issues/902") {
+          return JSON.stringify({ id: 99002, number: 902 });
+        }
+        // POST sub_issues or dependencies
+        if (cmd[0] === "gh" && cmd[1] === "api" && cmd[2] === "--method" && cmd[3] === "POST") {
+          return "";
+        }
+        return "";
+      };
+
+      const systemForge = new SystemForgeAdapter(runner);
+      const action = {
+        action: "promote_epic_spec_and_tickets" as const,
+        agreementCommentId: "agree-900",
+        parentTitle: "Spec: Native Linking",
+        parentBody: canonicalSingleBody,
+        childTickets: [
+          { title: "Child 1", body: canonicalSingleBody, dependsOnIndices: [] },
+          { title: "Child 2", body: canonicalSingleBody, dependsOnIndices: [0] },
+        ],
+        reason: "Native linking test",
+      };
+
+      const transport = mockTransport(action);
+
+      const result = await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge: systemForge,
+        transport,
+        acceptedRef,
+        issueNumber: 900,
+      });
+
+      expect(result.processed[0]?.status).toBe("promoted_epic");
+
+      // Verify sub_issue POSTs used global database IDs (not issue numbers):
+      const subIssuePosts = executedCommands.filter(
+        (c) =>
+          c[0] === "gh" &&
+          c[1] === "api" &&
+          c[2] === "--method" &&
+          c[3] === "POST" &&
+          c[4]?.includes("/sub_issues"),
+      );
+      expect(subIssuePosts).toHaveLength(2);
+      expect(subIssuePosts[0]).toContain("sub_issue_id=99001");
+      expect(subIssuePosts[1]).toContain("sub_issue_id=99002");
+
+      // Verify dependency POST used global database ID of blocker (901 -> id 99001):
+      const depPosts = executedCommands.filter(
+        (c) =>
+          c[0] === "gh" &&
+          c[1] === "api" &&
+          c[2] === "--method" &&
+          c[3] === "POST" &&
+          c[4]?.includes("/dependencies/blocked_by"),
+      );
+      expect(depPosts).toHaveLength(1);
+      expect(depPosts[0]).toContain("issue_id=99001");
     });
   });
 

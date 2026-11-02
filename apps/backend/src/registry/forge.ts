@@ -701,45 +701,82 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
     return result;
   }
 
+  private async resolveIssueDatabaseId(cleanRepo: string, issueNumber: number): Promise<number> {
+    const num = validateIssueNumber(issueNumber);
+    const endpoint = `repos/${cleanRepo}/issues/${num}`;
+    const output = await this.runner(["gh", "api", endpoint]);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(output);
+    } catch (err: any) {
+      throw new Error(
+        `Failed to parse issue #${num} JSON from gh api: ${err?.message || String(err)}`,
+      );
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(`Invalid issue #${num} response shape: expected object`);
+    }
+    const id = (parsed as Record<string, unknown>).id;
+    if (typeof id !== "number" || !Number.isInteger(id) || id <= 0) {
+      throw new Error(
+        `Invalid or missing numeric database ID in issue #${num} response: ${JSON.stringify(id)}`,
+      );
+    }
+    return id;
+  }
+
   async addSubIssue(repo: string, parentNumber: number, childNumber: number): Promise<void> {
     const { owner, name } = this.repositoryVariables(repo);
     const cleanRepo = `${owner}/${name}`;
     const pNum = validateIssueNumber(parentNumber);
     const cNum = validateIssueNumber(childNumber);
-    try {
-      const cmd = [
-        "gh",
-        "issue",
-        "edit",
-        String(pNum),
-        "--repo",
-        cleanRepo,
-        "--add-sub-issue",
-        String(cNum),
-      ];
-      await this.runner(cmd);
-    } catch {
-      const endpoint = `repos/${cleanRepo}/issues/${pNum}/sub_issues`;
-      const cmd = ["gh", "api", "--method", "POST", endpoint, "-F", `sub_issue_id=${cNum}`];
-      await this.runner(cmd);
-    }
+
+    const childDatabaseId = await this.resolveIssueDatabaseId(cleanRepo, cNum);
+    const endpoint = `repos/${cleanRepo}/issues/${pNum}/sub_issues`;
+    const cmd = [
+      "gh",
+      "api",
+      "--method",
+      "POST",
+      endpoint,
+      "-F",
+      `sub_issue_id=${childDatabaseId}`,
+    ];
+    await this.runner(cmd);
   }
 
   async getSubIssues(repo: string, parentNumber: number): Promise<number[]> {
     const { owner, name } = this.repositoryVariables(repo);
     const cleanRepo = `${owner}/${name}`;
     const pNum = validateIssueNumber(parentNumber);
+    const endpoint = `repos/${cleanRepo}/issues/${pNum}/sub_issues`;
+    const output = await this.runner(["gh", "api", "--paginate", "--slurp", endpoint]);
+    let parsed: unknown;
     try {
-      const endpoint = `repos/${cleanRepo}/issues/${pNum}/sub_issues`;
-      const output = await this.runner(["gh", "api", endpoint]);
-      const parsed = JSON.parse(output);
-      if (Array.isArray(parsed)) {
-        return parsed
-          .map((item: any) => item.number || item.id)
-          .filter((n: any): n is number => typeof n === "number");
+      parsed = JSON.parse(output);
+    } catch (err: any) {
+      throw new Error(
+        `Failed to parse sub_issues JSON for issue #${pNum}: ${err?.message || String(err)}`,
+      );
+    }
+    if (!Array.isArray(parsed)) {
+      throw new Error(`Invalid sub_issues response shape for issue #${pNum}: expected array`);
+    }
+    const rawItems: unknown[] =
+      parsed.length > 0 && Array.isArray(parsed[0]) ? (parsed as unknown[][]).flat() : parsed;
+
+    const result: number[] = [];
+    for (const item of rawItems) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        throw new Error(`Invalid sub_issue item shape in #${pNum}: expected object`);
       }
-    } catch {}
-    return [];
+      const num = (item as Record<string, unknown>).number ?? (item as Record<string, unknown>).id;
+      if (typeof num !== "number" || !Number.isInteger(num) || num <= 0) {
+        throw new Error(`Invalid or missing issue number/id in sub_issue item for #${pNum}`);
+      }
+      result.push(num);
+    }
+    return result;
   }
 
   async addIssueDependency(
@@ -751,8 +788,10 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
     const cleanRepo = `${owner}/${name}`;
     const cNum = validateIssueNumber(childNumber);
     const bNum = validateIssueNumber(blockerNumber);
+
+    const blockerDatabaseId = await this.resolveIssueDatabaseId(cleanRepo, bNum);
     const endpoint = `repos/${cleanRepo}/issues/${cNum}/dependencies/blocked_by`;
-    const cmd = ["gh", "api", "--method", "POST", endpoint, "-F", `issue_id=${bNum}`];
+    const cmd = ["gh", "api", "--method", "POST", endpoint, "-F", `issue_id=${blockerDatabaseId}`];
     await this.runner(cmd);
   }
 
@@ -760,17 +799,34 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
     const { owner, name } = this.repositoryVariables(repo);
     const cleanRepo = `${owner}/${name}`;
     const cNum = validateIssueNumber(childNumber);
+    const endpoint = `repos/${cleanRepo}/issues/${cNum}/dependencies/blocked_by`;
+    const output = await this.runner(["gh", "api", "--paginate", "--slurp", endpoint]);
+    let parsed: unknown;
     try {
-      const endpoint = `repos/${cleanRepo}/issues/${cNum}/dependencies/blocked_by`;
-      const output = await this.runner(["gh", "api", endpoint]);
-      const parsed = JSON.parse(output);
-      if (Array.isArray(parsed)) {
-        return parsed
-          .map((item: any) => item.number || item.id)
-          .filter((n: any): n is number => typeof n === "number");
+      parsed = JSON.parse(output);
+    } catch (err: any) {
+      throw new Error(
+        `Failed to parse dependencies JSON for issue #${cNum}: ${err?.message || String(err)}`,
+      );
+    }
+    if (!Array.isArray(parsed)) {
+      throw new Error(`Invalid dependencies response shape for issue #${cNum}: expected array`);
+    }
+    const rawItems: unknown[] =
+      parsed.length > 0 && Array.isArray(parsed[0]) ? (parsed as unknown[][]).flat() : parsed;
+
+    const result: number[] = [];
+    for (const item of rawItems) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        throw new Error(`Invalid dependency item shape in #${cNum}: expected object`);
       }
-    } catch {}
-    return [];
+      const num = (item as Record<string, unknown>).number ?? (item as Record<string, unknown>).id;
+      if (typeof num !== "number" || !Number.isInteger(num) || num <= 0) {
+        throw new Error(`Invalid or missing issue number/id in dependency item for #${cNum}`);
+      }
+      result.push(num);
+    }
+    return result;
   }
 
   async createPullRequest(repo: string, input: CreatePullRequestInput): Promise<ForgePullRequest> {
