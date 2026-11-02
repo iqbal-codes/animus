@@ -7,6 +7,7 @@ the work requires a product or architectural decision outside that mandate, stop
 report the concrete contradiction and choices, and request owner alignment rather than guessing.
 
 The move:
+
 - Route: $INPUTS.route (`continue` addresses review findings on the PR below; `simple` implements the issue)
 - Work item: $INPUTS.target
 - Pull request: $INPUTS.pr
@@ -14,7 +15,8 @@ The move:
 
 ## 1. Ground the contract
 
-Read the issue body and comments completely before making changes:
+The host process has pre-packed the issue specification, description, and comments directly into this prompt context. Use the inlined issue contract directly without executing redundant `gh issue view` tool calls. Read the issue body and comments completely before making changes:
+
 - An issue comment headed `Contract` is the authoritative acceptance contract: build to it, criterion by criterion.
 - For `continue`: inspect the PR diff, CI checks (`gh pr checks <n>`), review comments (`Loop review:` comments first), and previous builder reports. Address every identified finding directly with concrete code fixes and verifiable evidence.
 - If a `Loop review: not merged` comment exists, inspect the refusal reason:
@@ -26,7 +28,7 @@ Read the issue body and comments completely before making changes:
 - **Verify callers & baseline first:** Locate every caller of a function or contract before changing its behavior, and run the narrowest existing check once before editing to establish a clean baseline. On `continue` laps or post-deadline continuations, treat prior builder handoff notes as unverified hints—verify the live state yourself and inspect `git range-diff` after merging base to confirm no landed fixes are regressed.
 - **Authoritative tooling & native delegation:** Validate file formats, syntax, line endings, and protocols by delegating directly to authoritative platform binaries, compilers, or established ecosystem libraries. Do not re-implement parsers, lexers, or specification engines inline.
 - **Continuation simplification:** On `continue` laps, treat repeated review friction on the same module as a directive to simplify. Check `git diff --shortstat`; if code complexity or line count expands across attempts, step back and refactor: replace ad-hoc logic with standard tools, or narrow the verified boundary.
-If the work item cannot be satisfied without changing what an in-repository check judges (adding skips, loosening thresholds, or ignoring edge cases) without owner approval, halt immediately: comment on the item, label it `needs-owner`, and report `PR: none`.
+  If the work item cannot be satisfied without changing what an in-repository check judges (adding skips, loosening thresholds, or ignoring edge cases) without owner approval, halt immediately: comment on the item, label it `needs-owner`, and report `PR: none`.
 
 ## 2. Implement with tight verification loops
 
@@ -41,6 +43,7 @@ If the work item cannot be satisfied without changing what an in-repository chec
 ## 3. Pull Request Evidence Contract
 
 Every pull request description must contain an `## Evidence` section before this step is complete:
+
 - Map each contract criterion to its concrete verification evidence (command output line, log path, or test assertion) on your pushed candidate commit.
 - If the change alters what an in-repository check samples or excuses, declare it under an explicit heading: `### Judge Alterations (Requires Approval)`.
 - Detail the delivered changes, how criteria were satisfied, and any remaining context.
@@ -59,6 +62,7 @@ Every pull request description must contain an `## Evidence` section before this
 Your turn is complete when all code changes are committed, pushed, project checks pass, the PR carries verified evidence, and you report your result.
 
 Return your final report in JSON (plain or within a single ```json code fence):
+
 ```json
 {
   "candidate": "<full committed HEAD sha>",
@@ -80,13 +84,16 @@ Return your final report in JSON (plain or within a single ```json code fence):
       "impact": "<old -> new contract; caller migration and compatibility impact>"
     }
   ],
-  "changes": [
-    "file/path: concise description of change"
-  ],
+  "changes": ["file/path: concise description of change"],
   "checks": [
-    { "criterion": "<criterion id or check name>", "result": "pass | fail | blocked | not_run", "evidence": "<concrete command output or test result>" }
+    {
+      "criterion": "<criterion id or check name>",
+      "result": "pass | fail | blocked | not_run",
+      "evidence": "<concrete command output or test result>"
+    }
   ],
   "captures": []
 }
 ```
+
 Or finish with: `PR: <full pull request URL>` or `PR: none` followed by the reason.

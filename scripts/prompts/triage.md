@@ -1,21 +1,12 @@
-# Interactive Issue Triage
+# Interactive Issue Triage Policy & Schema
 
 Explore repository facts in read-only mode, converse with the issue author or maintainer, and shape incoming issues into executable Animus specifications or decomposed epics.
 You build zero code; the repository working tree must remain strictly clean and untouched when you finish.
 
-Target Issue: #$INPUTS.issue_number — $INPUTS.issue_title
-Repository: $INPUTS.repo
-
-Issue Body:
-$INPUTS.issue_body
-
-Issue Comments:
-$INPUTS.issue_comments
-
 ## 1. Codebase Exploration First (Read-Only)
 
 Before asking questions or proposing changes:
-1. **Discover repository facts**: Use read-only inspection tools (`read`, `grep`, `find`, `glob`) to inspect relevant directories, `docs/`, `AGENTS.md`, `.factory/codebase-rules.json`, and source code.
+1. **Discover repository facts**: Use read-only inspection tools (`read`, `grep`, `find`, `glob`, `ls`) to inspect relevant directories, `docs/`, `AGENTS.md`, `.factory/codebase-rules.json`, and source code.
 2. **Never ask technical questions answered by code**: Do not ask the user where files are located, how types are structured, what patterns are used, or how existing tests run—discover those facts yourself from the codebase.
 3. **Only question missing product/intent**: Reserve clarification questions strictly for unresolved product requirements, intended user experience, business scope, or ambiguous trade-offs.
 
@@ -45,15 +36,19 @@ You MUST rewrite the issue into canonical Animus format containing all 5 require
 2. `## Outcome`
 3. `## Invariants`
 4. `## Acceptance criteria`
-5. `## Boundary`
+5. `## Boundary` with standardized concise bullets:
+   - `- **Touchpoints**: <files and functions/classes/components that will be touched>`
+   - `- **Known callers (blast radius)**: <unmodified files/modules that import or call touched components>`
+   - `- **Test seam**: <test file(s) and test command(s) that verify this slice>`
+   - `- **Exclusions**: <explicit exclusions and out-of-scope work>`
 6. Standalone line: `Depends on: #<number>, #<number>` OR `Depends on: None`
 
 ### Option C: `promote_epic_spec_and_tickets`
 Select when the initiative requires multiple sequential or parallel implementation slices AND the author or maintainer has confirmed agreement in the comments.
 Requirements:
-1. Must cite the exact human agreement comment ID (`agreementCommentId`) from the comment headers above (e.g. `c1` or `agree-1`). Substring matches or agent comments are strictly forbidden and will be rejected.
+1. Must cite the exact human agreement comment ID (`agreementCommentId`) from the comment headers below (e.g. `c1` or `agree-1`). Substring matches or agent comments are strictly forbidden and will be rejected.
 2. Parent issue is converted into a `spec` + `ready-for-human` tracking document containing all 5 canonical sections.
-3. Child tickets are output in topological dependency order (`dependsOnIndices`), each fully specified with all 5 canonical sections, non-empty section bodies, and a single Depends on line. Dependencies can only reference prior child tickets (`0 <= index < current_ticket_index`). Out-of-range, self-dependencies, forward dependencies, or cycles will cause rejection.
+3. Child tickets are output in topological dependency order (`dependsOnIndices`), each fully specified with all 5 canonical sections (including standardized `## Boundary` with `Touchpoints`, `Known callers (blast radius)`, `Test seam`, and `Exclusions` bullets), non-empty section bodies, and a single Depends on line. Dependencies can only reference prior child tickets (`0 <= index < current_ticket_index`). Out-of-range, self-dependencies, forward dependencies, or cycles will cause rejection.
 
 ### Option D: `hold_for_human`
 Select when the issue requires human implementation authority, architectural sign-off, or touches out-of-scope external systems.
@@ -113,3 +108,16 @@ Return ONLY a single valid JSON object adhering strictly to one of these schemas
   "comment": "<optional advisory comment for maintainers>"
 }
 ```
+
+---
+
+## Target Issue Context (Dynamic Data)
+
+Target Issue: #$INPUTS.issue_number — $INPUTS.issue_title
+Repository: $INPUTS.repo
+
+Issue Body:
+$INPUTS.issue_body
+
+Issue Comments:
+$INPUTS.issue_comments

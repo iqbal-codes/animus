@@ -28,10 +28,20 @@ export function processRun(
   if (stopping) throw new Error("Local loop host is shutting down");
   if (process.platform === "win32") throw new Error("Local loop requires POSIX process groups");
   return new Promise((resolve) => {
+    const resolvedPiCacheRetention =
+      env?.PI_CACHE_RETENTION !== undefined
+        ? env.PI_CACHE_RETENTION
+        : process.env.PI_CACHE_RETENTION !== undefined
+          ? process.env.PI_CACHE_RETENTION
+          : "long";
     const child = spawn(argv[0]!, argv.slice(1), {
       cwd,
       detached: true,
-      env: { ...process.env, ...env },
+      env: {
+        ...process.env,
+        PI_CACHE_RETENTION: resolvedPiCacheRetention,
+        ...env,
+      },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";

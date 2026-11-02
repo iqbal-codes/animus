@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import {
   runLocalLoop,
+  computeExternalBlastRadius,
   parseAgentReport,
   extractReport,
   renderPrompt,
@@ -985,4 +986,426 @@ test("holds subticket at waiting_approval (not sent_back) when critical impact (
   expect(res.autoMerge?.criticalImpacts).toContain("database_or_state_migration");
   // Integration branch was NOT advanced automatically; awaits human merge approval
   expect(git(root, "rev-parse", "refs/heads/factory/spec-200-integration")).toBe(baseSha);
+});
+
+test("computeExternalBlastRadius resolves relative imports accurately and avoids basename collisions", async () => {
+  const root = await fixture();
+  await mkdir(join(root, "src/auth"), { recursive: true });
+  await mkdir(join(root, "src/db"), { recursive: true });
+  await mkdir(join(root, "src/components"), { recursive: true });
+  await mkdir(join(root, "src/utils"), { recursive: true });
+  await mkdir(join(root, "src/routes"), { recursive: true });
+
+  // 1. Path collision: src/auth/config.ts vs src/db/config.ts
+  await Bun.write(
+    join(root, "src/auth/config.ts"),
+    "export const authConfig = { secret: 'xyz' };\n",
+  );
+  await Bun.write(
+    join(root, "src/db/config.ts"),
+    "export const dbConfig = { host: 'localhost' };\n",
+  );
+  await Bun.write(
+    join(root, "src/routes/login.ts"),
+    "import { authConfig } from '../auth/config';\nconsole.log(authConfig);\n",
+  );
+  await Bun.write(
+    join(root, "src/auth/service.ts"),
+    "import { authConfig } from './config';\nexport const svc = authConfig;\n",
+  );
+  await Bun.write(
+    join(root, "src/db-client.ts"),
+    "import { dbConfig } from './db/config';\nconsole.log(dbConfig);\n",
+  );
+  await Bun.write(
+    join(root, "src/unrelated-caller.ts"),
+    "import { dbConfig } from '../db/config';\nconsole.log(dbConfig);\n",
+  );
+
+  // 2. Index collision: src/components/index.ts vs src/utils/index.ts
+  await Bun.write(join(root, "src/components/index.ts"), "export const Component = 'comp';\n");
+  await Bun.write(join(root, "src/utils/index.ts"), "export const Util = 'util';\n");
+  await Bun.write(
+    join(root, "src/components/button.ts"),
+    "import { Util } from '../utils/index';\nexport const btn = Util;\n",
+  );
+  await Bun.write(
+    join(root, "src/components/header.ts"),
+    "import { Component } from './index';\nexport const header = Component;\n",
+  );
+  await Bun.write(
+    join(root, "src/components/footer.ts"),
+    "import { Component } from '.';\nexport const footer = Component;\n",
+  );
+  await Bun.write(
+    join(root, "src/page.ts"),
+    "import { Component } from './components';\nconsole.log(Component);\n",
+  );
+
+  git(root, "add", ".");
+  git(root, "commit", "-m", "setup collision test files");
+
+  // Changed file: src/auth/config.ts
+  // Must include: src/routes/login.ts (relative import ../auth/config), src/auth/service.ts (same-directory ./config)
+  // Must NOT include: src/db-client.ts (imports ./db/config), src/unrelated-caller.ts (imports ../db/config)
+  const authRadius = await computeExternalBlastRadius(root, ["src/auth/config.ts"]);
+  expect(authRadius).toContain("src/routes/login.ts");
+  expect(authRadius).toContain("src/auth/service.ts");
+  expect(authRadius).not.toContain("src/db-client.ts");
+  expect(authRadius).not.toContain("src/unrelated-caller.ts");
+
+  // Changed file: src/components/index.ts
+  // Must include: src/page.ts (directory import ./components), src/components/header.ts (same-dir ./index), src/components/footer.ts (same-dir .)
+  // Must NOT include: src/components/button.ts (imports ../utils/index)
+  const compRadius = await computeExternalBlastRadius(root, ["src/components/index.ts"]);
+  expect(compRadius).toContain("src/page.ts");
+  expect(compRadius).toContain("src/components/header.ts");
+  expect(compRadius).toContain("src/components/footer.ts");
+  expect(compRadius).not.toContain("src/components/button.ts");
+});
+
+test("computeExternalBlastRadius detects unmodified callers of changed files and falls back safely", async () => {
+  const root = await fixture();
+  await mkdir(join(root, "src"), { recursive: true });
+  await Bun.write(
+    join(root, "src/shared-component.ts"),
+    "export function sharedComponent() { return 'component'; }\n",
+  );
+  await Bun.write(
+    join(root, "src/caller-page.ts"),
+    "import { sharedComponent } from './shared-component';\nconsole.log(sharedComponent());\n",
+  );
+  await Bun.write(
+    join(root, "src/caller-service.ts"),
+    "import { sharedComponent } from './shared-component';\nexport const svc = sharedComponent();\n",
+  );
+  await Bun.write(join(root, "src/isolated.ts"), "export function isolated() { return 123; }\n");
+  git(root, "add", ".");
+  git(root, "commit", "-m", "initial codebase");
+
+  // 1. Detects callers when only shared-component is changed
+  const radius = await computeExternalBlastRadius(root, ["src/shared-component.ts"]);
+  expect(radius).toContain("- `src/shared-component.ts` is referenced outside the diff by:");
+  expect(radius).toContain("src/caller-page.ts");
+  expect(radius).toContain("src/caller-service.ts");
+
+  // 2. Excludes files that are already part of changedFiles
+  const radiusWithCaller = await computeExternalBlastRadius(root, [
+    "src/shared-component.ts",
+    "src/caller-page.ts",
+  ]);
+  expect(radiusWithCaller).toContain("src/caller-service.ts");
+  expect(radiusWithCaller).not.toContain("src/caller-page.ts");
+
+  // 3. Fallback when changed file has no external callers
+  const radiusIsolated = await computeExternalBlastRadius(root, ["src/isolated.ts"]);
+  expect(radiusIsolated).toBe("(No unmodified external callers detected)");
+
+  // 4. Safe fallback on non-code files
+  const radiusReadme = await computeExternalBlastRadius(root, ["README.md"]);
+  expect(radiusReadme).toBe("(No unmodified external callers detected)");
+
+  // 5. Index module reference detection without false positives
+  await mkdir(join(root, "src/components"), { recursive: true });
+  await Bun.write(
+    join(root, "src/components/index.ts"),
+    "export function Button() { return 'btn'; }\n",
+  );
+  await Bun.write(
+    join(root, "src/index-caller.ts"),
+    "import { Button } from './components';\nexport const b = Button();\n",
+  );
+  await Bun.write(
+    join(root, "src/index-sub-caller.ts"),
+    "import { Button } from './components/index';\nexport const b2 = Button();\n",
+  );
+  await Bun.write(join(root, "src/unrelated-index.ts"), "const index = 0; console.log(index);\n");
+  git(root, "add", ".");
+  git(root, "commit", "-m", "add index module components and callers");
+
+  const radiusIndex = await computeExternalBlastRadius(root, ["src/components/index.ts"]);
+  expect(radiusIndex).toContain("src/index-caller.ts");
+  expect(radiusIndex).toContain("src/index-sub-caller.ts");
+  expect(radiusIndex).not.toContain("src/unrelated-index.ts");
+
+  // 6. Adversarial collisions (log/run/app): substrings without import quotes must not trigger false positives
+  await Bun.write(join(root, "src/app.ts"), "export const app = 'app';\n");
+  await Bun.write(join(root, "src/log.ts"), "export const log = 'log';\n");
+  await Bun.write(join(root, "src/run.ts"), "export const run = 'run';\n");
+  await Bun.write(
+    join(root, "src/adversarial.ts"),
+    "console.log('running log');\napp.listen(8080);\nconst isRunning = run();\n",
+  );
+  git(root, "add", ".");
+  git(root, "commit", "-m", "add adversarial collision files");
+
+  const radiusCollisions = await computeExternalBlastRadius(root, [
+    "src/app.ts",
+    "src/log.ts",
+    "src/run.ts",
+  ]);
+  expect(radiusCollisions).toBe("(No unmodified external callers detected)");
+
+  // 7. Explicit unavailable state when ripgrep binary is absent
+  const radiusUnavailable = await computeExternalBlastRadius(root, ["src/app.ts"], {
+    rgBin: "nonexistent-rg-bin-12345",
+  });
+  expect(radiusUnavailable).toBe("(External blast radius scan unavailable: ripgrep not installed)");
+
+  // 8. Bounded operations and runtime on many changed files
+  const manyFiles = Array.from({ length: 30 }, (_, i) => `src/file-${i}.ts`);
+  const radiusMany = await computeExternalBlastRadius(root, manyFiles);
+  expect(radiusMany).toContain(
+    "[Notice: Changed source file list truncated: scanned 25 of 30 files]",
+  );
+  expect(radiusMany).toContain("(No unmodified external callers detected in scanned portion)");
+});
+
+test("computeExternalBlastRadius enforces streaming byte cap, terminates child process, and reports honest notices", async () => {
+  const root = await fixture();
+  await mkdir(join(root, "src"), { recursive: true });
+  await Bun.write(join(root, "src/mod.ts"), "export const x = 1;\n");
+  for (let i = 0; i < 20; i++) {
+    await Bun.write(
+      join(root, `src/consumer-${i}.ts`),
+      `import { x } from './mod';\nconsole.log(x + ${i});\n`,
+    );
+  }
+  git(root, "add", ".");
+  git(root, "commit", "-m", "add consumer files");
+
+  // 1. Output cap via small maxBytes on real streaming scan: terminates process and adds honest notice
+  const radiusCapped = await computeExternalBlastRadius(root, ["src/mod.ts"], {
+    maxBytes: 150,
+  });
+  expect(radiusCapped).toContain(
+    "[Notice: Scan output reached byte limit of 150 bytes; results may be partial]",
+  );
+  expect(radiusCapped).toContain("src/mod.ts");
+
+  // 2. Output cap via injectable bounded producer
+  const mockTruncatedProducer = async () => ({
+    stdout: "src/consumer-0.ts:1:import { x } from './mod';\n",
+    exitCode: 0,
+    truncated: true,
+  });
+  const radiusInjected = await computeExternalBlastRadius(root, ["src/mod.ts"], {
+    producer: mockTruncatedProducer,
+    maxBytes: 100,
+  });
+  expect(radiusInjected).toContain(
+    "[Notice: Scan output reached byte limit of 100 bytes; results may be partial]",
+  );
+  expect(radiusInjected).toContain("src/consumer-0.ts");
+
+  // 3. Injectable producer when truncated with 0 callers found: must NOT claim exhaustive scan
+  const mockTruncatedNoMatchProducer = async () => ({
+    stdout: "unrelated.ts:1:console.log('nothing');\n",
+    exitCode: 0,
+    truncated: true,
+  });
+  const radiusNoMatchTruncated = await computeExternalBlastRadius(root, ["src/mod.ts"], {
+    producer: mockTruncatedNoMatchProducer,
+    maxBytes: 100,
+  });
+  expect(radiusNoMatchTruncated).toContain(
+    "[Notice: Scan output reached byte limit of 100 bytes; results may be partial]",
+  );
+  expect(radiusNoMatchTruncated).toContain(
+    "(No unmodified external callers detected in scanned portion)",
+  );
+  expect(radiusNoMatchTruncated).not.toBe("(No unmodified external callers detected)");
+
+  // 4. Result line cap: emits honest notice when results exceed maxResultLines
+  const radiusLineCapped = await computeExternalBlastRadius(root, ["src/mod.ts"], {
+    maxResultLines: 5,
+  });
+  expect(radiusLineCapped).toContain("[Notice: External caller results truncated to 5 lines]");
+
+  // 5. File cap: emits honest notice when changed files exceed maxFiles
+  const filesList = Array.from({ length: 15 }, (_, i) => `src/changed-${i}.ts`);
+  const radiusFileCapped = await computeExternalBlastRadius(root, filesList, {
+    maxFiles: 5,
+  });
+  expect(radiusFileCapped).toContain(
+    "[Notice: Changed source file list truncated: scanned 5 of 15 files]",
+  );
+  expect(radiusFileCapped).toContain(
+    "(No unmodified external callers detected in scanned portion)",
+  );
+});
+
+test("computeExternalBlastRadius supports grounded tsconfig path aliases and workspace packages", async () => {
+  const root = await fixture();
+  await mkdir(join(root, "apps/web/src/pages"), { recursive: true });
+  await mkdir(join(root, "apps/web/src/components"), { recursive: true });
+  await Bun.write(
+    join(root, "apps/web/tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: {
+        baseUrl: ".",
+        paths: {
+          "@/*": ["./src/*"],
+        },
+      },
+    }),
+  );
+  await Bun.write(
+    join(root, "apps/web/src/components/Button.tsx"),
+    "export function Button() { return 'btn'; }\n",
+  );
+  await Bun.write(
+    join(root, "apps/web/src/pages/Home.tsx"),
+    "import { Button } from '@/components/Button';\nconsole.log(Button);\n",
+  );
+  git(root, "add", ".");
+  git(root, "commit", "-m", "add web app with path alias");
+
+  const radius = await computeExternalBlastRadius(root, ["apps/web/src/components/Button.tsx"]);
+  expect(radius).toContain("apps/web/src/pages/Home.tsx");
+});
+
+test("runLocalLoop pre-packs issue body, comments, blast radius, and reviewer diff context into role prompts", async () => {
+  const root = await fixture();
+  await mkdir(join(root, "src"), { recursive: true });
+  await Bun.write(
+    join(root, "src/auth-helper.ts"),
+    "export function checkToken(token: string) { return Boolean(token); }\n",
+  );
+  await Bun.write(
+    join(root, "src/auth-consumer.ts"),
+    "import { checkToken } from './auth-helper';\nexport const ok = checkToken('test');\n",
+  );
+  git(root, "add", ".");
+  git(root, "commit", "-m", "base commit");
+
+  const issue: LocalIssue = {
+    number: 777,
+    url: "https://github.com/example/repo/issues/777",
+    title: "Enhance auth helper validation",
+    body: "## Acceptance Criteria\n- AC1: Token must be non-empty\n- AC2: Throw on null",
+    comments: ["Contract: acceptance criteria are strict and mandatory."],
+    dependencies: [],
+    activeClaim: false,
+  };
+
+  const capturedPrompts: Record<string, string> = {};
+
+  const transport: PiTransport = async ({ argv, cwd, role }) => {
+    // Extract the rendered prompt from argv
+    const promptArgIdx = argv.indexOf("-p") !== -1 ? argv.indexOf("-p") : argv.indexOf("--");
+    const promptText = promptArgIdx !== -1 ? argv[promptArgIdx + 1] : argv[argv.length - 1];
+    capturedPrompts[role] = promptText || "";
+
+    if (role === "builder") {
+      // Modify auth-helper.ts so diff and blast radius exist
+      await Bun.write(
+        join(cwd, "src/auth-helper.ts"),
+        "export function checkToken(token: string) { if (!token) throw new Error('invalid'); return true; }\n",
+      );
+      git(cwd, "add", "src/auth-helper.ts");
+      git(cwd, "commit", "-m", "fix(auth): enforce non-empty token");
+      const candidate = git(cwd, "rev-parse", "HEAD");
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          candidate,
+          verdict: "pass",
+          summary: "Enhanced token validation",
+          outcome: "Enforced non-empty token check",
+          invariants: ["Token must be non-empty"],
+          risk: "Low risk change to auth helper",
+          changedSeams: ["auth-helper.ts"],
+          delivers: "all",
+          checks: [{ criterion: "lint", result: "pass", evidence: "typecheck clean" }],
+          captures: [],
+        }),
+        stderr: "",
+      };
+    }
+
+    if (role === "qa") {
+      const head = git(cwd, "rev-parse", "HEAD");
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          head,
+          overall: "PASS",
+          summary: "Black-box checks passed",
+          lines: [
+            { id: "AC1", kind: "criterion", verdict: "PASS", evidence: ["builder-checks.log"] },
+            { id: "AC2", kind: "criterion", verdict: "PASS", evidence: ["builder-checks.log"] },
+          ],
+          noticed: [],
+          captures: [],
+        }),
+        stderr: "",
+      };
+    }
+
+    // Reviewer role
+    const head = git(cwd, "rev-parse", "HEAD");
+    return {
+      exitCode: 0,
+      stdout: JSON.stringify({
+        sha: head,
+        outcome: "merge",
+        delivers: "all",
+        axes: {
+          standards: { status: "pass", summary: "Clean code standards" },
+          spec: { status: "pass", summary: "ACs verified" },
+        },
+        findings: [],
+        dispositions: [],
+        rechecks: [],
+        judge_changes: [],
+        auto_merge_judgement: {
+          eligible: true,
+          risk_level: "low",
+          scope_aligned: true,
+          critical_impacts: [],
+          rationale: "Clean patch",
+        },
+        reason: "Review passed cleanly",
+      }),
+      stderr: "",
+    };
+  };
+
+  const res = await runLocalLoop(root, issue, { pi: transport, push: false });
+  expect(res.status).toBe("waiting_approval");
+
+  // Verify Builder prompt has pre-packed issue body and comments
+  expect(capturedPrompts.builder).toBeDefined();
+  expect(capturedPrompts.builder).toContain("Enhance auth helper validation");
+  expect(capturedPrompts.builder).toContain("## Acceptance Criteria");
+  expect(capturedPrompts.builder).toContain("AC1: Token must be non-empty");
+  expect(capturedPrompts.builder).toContain(
+    "Contract: acceptance criteria are strict and mandatory.",
+  );
+
+  // Verify QA prompt has pre-packed issue body and blast-radius map
+  expect(capturedPrompts.qa).toBeDefined();
+  expect(capturedPrompts.qa).toContain("AC1: Token must be non-empty");
+  expect(capturedPrompts.qa).toContain(
+    "## Host-Computed Blast Radius (Unmodified Callers Outside the Diff)",
+  );
+  expect(capturedPrompts.qa).toContain("src/auth-consumer.ts");
+
+  // Verify Reviewer prompt has pre-packed issue body, blast-radius map, and reviewer diff context
+  expect(capturedPrompts.reviewer).toBeDefined();
+  expect(capturedPrompts.reviewer).toContain("AC1: Token must be non-empty");
+  expect(capturedPrompts.reviewer).toContain(
+    "## Host-Computed Blast Radius (Unmodified Callers Outside the Diff)",
+  );
+  expect(capturedPrompts.reviewer).toContain("src/auth-consumer.ts");
+  expect(capturedPrompts.reviewer).toContain("## QA structured report (handoff/app-check.json)");
+  expect(capturedPrompts.reviewer).toContain('"overall": "PASS"');
+  expect(capturedPrompts.reviewer).toContain('"id": "AC1"');
+  expect(capturedPrompts.reviewer).toContain("## Candidate Git Diff Stat");
+  expect(capturedPrompts.reviewer).toContain("src/auth-helper.ts");
+  expect(capturedPrompts.reviewer).toContain("## Candidate Git Diff (Bounded)");
+  const diffSection = capturedPrompts.reviewer.split("## Candidate Git Diff (Bounded)")[1] ?? "";
+  const diffLines = diffSection.split("\n");
+  expect(diffLines.length).toBeLessThanOrEqual(405);
 });

@@ -6,6 +6,7 @@ running app; your job is to inspect the code diff, verify evidence integrity, an
 A deterministic merge gate runs after you, landing the candidate only if your record and evidence hold.
 
 The move this run:
+
 - Route: $INPUTS.route
 - Work item: $INPUTS.target
 - Pull request: $INPUTS.pr
@@ -21,7 +22,7 @@ If QA reported `overall: "NO PR"`, no pull request was delivered. Leave one comm
 
 ## 2. Code Inspection & Verification (Standards & Spec Axes)
 
-In this unattended loop, you conduct the code inspection directly as the independent reviewer across two unified evaluation axes. Do NOT attempt to delegate to external subagents; you are already running in a clean, separate reviewer session isolated from the builder. Evaluate both axes directly:
+In this unattended loop, you conduct the code inspection directly as the independent reviewer across two unified evaluation axes. Do NOT attempt to delegate to external subagents; you are already running in a clean, separate reviewer session isolated from the builder. The host process has pre-packed the issue contract, candidate git diff (`diff_stat` and bounded diff), QA structured report (`handoff/app-check.json`), and the `## Host-Computed Blast Radius (Unmodified Callers Outside the Diff)` map directly into this prompt context. Inspect them immediately in Turn 1 without spending tool turns on redundant `gh issue view`, `git diff`, or exploratory `grep` searches. Evaluate both axes directly:
 
 1. **Standards Axis:**
    - Inspect diff across three reviewer lenses: **Correctness** (broken callers, state ownership), **Security & Edge Cases** (untrusted input boundary parsing, async teardown, error paths, and compliance with `.agents/skills/security-hardening/SKILL.md`), and **Simplicity** (`git diff --shortstat` discipline, single-caller wrappers, dead shims, narration comments).
@@ -45,6 +46,7 @@ In this unattended loop, you conduct the code inspection directly as the indepen
 ## 3. Mandatory Line Dispositions
 
 Assign exactly one disposition to every QA line that is not a plain `PASS` or `OK`:
+
 - `blocks`: Regressions or failures caused by this change that must be fixed. Triggers `sent-back`.
 - `rechecked`: You independently verified the app check was mistaken, citing your own fresh evidence file in `$ARTIFACTS_DIR`.
 - `pre-existing`: The failure reproduces identically on the default branch. Cite your base run file and the open tracking issue.
@@ -54,6 +56,7 @@ Assign exactly one disposition to every QA line that is not a plain `PASS` or `O
 ## 4. Decide Outcome & Critical Impact Auto-Merge Assessment
 
 Separate **Code/Spec Quality** from **Critical Impact Auto-Merge Safety**:
+
 - **`merge`:** Every criterion passed or was rechecked; zero blocking findings; zero regressions; project checks clean; AND the change is a bounded, low-risk slice (`risk_level` is `"trivial"` or `"low"`, `critical_impacts` is empty `[]`, `auto_merge_judgement.eligible` is `true`) safe to auto-merge into a spec integration branch without human review.
 - **`approved`:** Every criterion, test, QA check, and code standard passed (do NOT send back clean code!), **but** the change carries critical architectural or operational impact requiring human sign-off before merge (`auto_merge_judgement.eligible: false`). Always return `approved` (not `merge` and not `sent-back`) if the diff touches any of the 5 critical impact categories:
   1. `database_or_state_migration`: Modifies SQLite/database schemas, DDL statements, migrations, or persisted on-disk state formats.
@@ -74,6 +77,7 @@ Include all findings, dispositions, and your rationale in your final JSON report
 ## 6. Report Format
 
 Return your final decision in JSON (plain or within a single ```json code fence):
+
 ```json
 {
   "outcome": "merge | sent-back | needs-owner | approved | nothing",

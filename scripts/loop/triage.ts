@@ -22,11 +22,16 @@ import {
 } from "../../apps/backend/src/registry/forge";
 import { extractReportObject } from "./artifacts";
 import { resolveRoleConfig } from "./config";
-import { resolveAllowedSkills, resolveLoopExtensions } from "./harness-memory";
+import { resolveRoleBudgets } from "./deadlines";
+import {
+  buildCuratedAppendPrompts,
+  resolveAllowedSkills,
+  resolveLoopExtensions,
+} from "./harness-memory";
 import { processRun } from "./process";
 import { loadPrompt, renderPrompt } from "./prompts";
 import { buildProviderArgv, type EffortRung } from "./providers";
-import type { AgentTransport } from "./types";
+import type { AgentTransport, LoopRole, RoleBudget } from "./types";
 
 export const TRIAGE_AGENT_MARKER = "<!-- animus-triage-agent -->";
 
@@ -176,6 +181,15 @@ export interface TriageEligibilityResult {
   reason: string;
 }
 
+export const triageFailureRecordSchema = z.strictObject({
+  fingerprint: z.string().min(1, "Failure record fingerprint must not be empty"),
+  attempts: z.number().int().nonnegative().finite(),
+  failedAt: z.string().min(1, "Failure record timestamp must not be empty"),
+  lastError: z.string(),
+});
+
+export type TriageFailureRecord = z.infer<typeof triageFailureRecordSchema>;
+
 export interface TriageIssueResult {
   issueNumber: number;
   status:
@@ -210,6 +224,7 @@ export interface RunTriagePassOptions {
   dryRun?: boolean;
   acceptedRef?: string;
   timeoutMs?: number;
+  roleBudgets?: Partial<Record<LoopRole, RoleBudget>>;
   env?: Record<string, string>;
   limit?: number;
 }
@@ -246,6 +261,39 @@ export function evaluateTriageEligibility(
         eligible: true,
         reason: `Issue #${issue.number} has in-progress epic staging recovery`,
       };
+    }
+  }
+
+  // Triage failure fingerprint backoff
+  if (stateRoot) {
+    const failureFile = join(stateRoot, "triage-failures", `issue-${issue.number}.json`);
+    if (existsSync(failureFile)) {
+      try {
+        const raw = readFileSync(failureFile, "utf-8");
+        const parsed = JSON.parse(raw);
+        const parsedRecord = triageFailureRecordSchema.safeParse(parsed);
+        if (!parsedRecord.success) {
+          return {
+            eligible: false,
+            reason: `Issue #${issue.number} failure record is unreadable or corrupted: ${parsedRecord.error.message}`,
+          };
+        }
+        const record = parsedRecord.data;
+        const currentFingerprint = computeIssueFreshnessFingerprint(issue);
+        if (record.fingerprint === currentFingerprint) {
+          if (record.attempts >= 2) {
+            return {
+              eligible: false,
+              reason: `Issue #${issue.number} failed triage ${record.attempts} times and has not been updated since last failure`,
+            };
+          }
+        }
+      } catch (err: any) {
+        return {
+          eligible: false,
+          reason: `Issue #${issue.number} failure record is unreadable or corrupted: ${err?.message || String(err)}`,
+        };
+      }
     }
   }
 
@@ -670,6 +718,14 @@ export function validateTriagePassInputs(options: RunTriagePassOptions): void {
       throw new Error(`Invalid limit: '${options.limit}'; must be a positive integer`);
     }
   }
+
+  resolveRoleBudgets(
+    {
+      timeoutMs: options.timeoutMs,
+      roleBudgets: options.roleBudgets,
+    },
+    { ...process.env, ...(options.env ?? {}) },
+  );
 }
 
 export function computeIssueFreshnessFingerprint(issue: ForgeIssue): string {
@@ -1085,6 +1141,87 @@ async function handleEpicPromotion(
   };
 }
 
+function recordTriageFailure(
+  stateRoot: string,
+  issueNumber: number,
+  fingerprint: string,
+  lastError: string,
+): void {
+  const failuresDir = join(stateRoot, "triage-failures");
+  mkdirSync(failuresDir, { recursive: true });
+  const failureFile = join(failuresDir, `issue-${issueNumber}.json`);
+  let attempts = 1;
+  if (existsSync(failureFile)) {
+    try {
+      const raw = JSON.parse(readFileSync(failureFile, "utf-8"));
+      const parsedRecord = triageFailureRecordSchema.safeParse(raw);
+      if (parsedRecord.success && parsedRecord.data.fingerprint === fingerprint) {
+        attempts = parsedRecord.data.attempts + 1;
+      }
+    } catch {
+      attempts = 1;
+    }
+  }
+  const record: TriageFailureRecord = {
+    fingerprint,
+    attempts,
+    failedAt: new Date().toISOString(),
+    lastError,
+  };
+  const tmpFile = `${failureFile}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(tmpFile, JSON.stringify(record, null, 2), "utf-8");
+    renameSync(tmpFile, failureFile);
+  } catch (err) {
+    try {
+      if (existsSync(tmpFile)) {
+        rmSync(tmpFile, { force: true });
+      }
+    } catch {}
+    throw err;
+  }
+}
+
+function clearTriageFailure(stateRoot: string, issueNumber: number): void {
+  const failureFile = join(stateRoot, "triage-failures", `issue-${issueNumber}.json`);
+  if (existsSync(failureFile)) {
+    rmSync(failureFile, { force: true });
+  }
+}
+
+async function executeAskClarification(
+  forge: IssueForgeAdapter,
+  repo: string,
+  issueNumber: number,
+  existingLabels: Array<{ name: string } | string> | undefined,
+  question: string,
+  reason: string,
+): Promise<TriageIssueResult> {
+  const commentBody = `${question}\n\n${TRIAGE_AGENT_MARKER}`;
+  await forge.createIssueComment(repo, issueNumber, commentBody);
+  const normalized = normalizeLabels(existingLabels);
+  const newLabels = normalized.filter((l) => l !== NEEDS_TRIAGE);
+  if (!newLabels.includes(NEEDS_INFO)) {
+    newLabels.push(NEEDS_INFO);
+  }
+  const targetLabels = Array.from(new Set(newLabels));
+  const labelsChanged =
+    targetLabels.length !== normalized.length ||
+    targetLabels.some((l) => !normalized.includes(l)) ||
+    normalized.some((l) => !targetLabels.includes(l));
+  if (labelsChanged) {
+    await forge.updateIssue(repo, issueNumber, {
+      labels: targetLabels,
+    });
+  }
+  return {
+    issueNumber,
+    status: "clarification_requested",
+    action: "ask_clarification",
+    reason,
+  };
+}
+
 async function triageSingleIssue(
   issueNumber: number,
   options: RunTriagePassOptions,
@@ -1101,6 +1238,39 @@ async function triageSingleIssue(
     };
   }
 
+  let currentIssue: ForgeIssue | undefined;
+  let failurePersistenceError: string | undefined;
+
+  const recordFailure = (lastError: string) => {
+    try {
+      const fp = currentIssue ? computeIssueFreshnessFingerprint(currentIssue) : "";
+      recordTriageFailure(stateRoot, issueNumber, fp, lastError);
+    } catch (err: any) {
+      failurePersistenceError = err?.message || String(err);
+    }
+  };
+
+  const clearFailure = (): string | undefined => {
+    try {
+      clearTriageFailure(stateRoot, issueNumber);
+      return undefined;
+    } catch (err: any) {
+      return `Failed to clear triage failure record: ${err?.message || String(err)}`;
+    }
+  };
+
+  const fail = (error: string): TriageIssueResult => {
+    recordFailure(error);
+    const finalError = failurePersistenceError
+      ? `${error} (failed to persist triage failure record: ${failurePersistenceError})`
+      : error;
+    return {
+      issueNumber,
+      status: "failed",
+      error: finalError,
+    };
+  };
+
   try {
     const issue = await forge.getIssue(repo, issueNumber);
     if (!issue) {
@@ -1110,6 +1280,7 @@ async function triageSingleIssue(
         reason: `Issue #${issueNumber} not found on forge`,
       };
     }
+    currentIssue = issue;
 
     const eligibility = evaluateTriageEligibility(issue, stateRoot);
     if (!eligibility.eligible) {
@@ -1162,6 +1333,14 @@ async function triageSingleIssue(
           `TRIAGE SAFETY VIOLATION: Working tree in '${root}' was mutated during triage execution.\nBefore: ${beforeSnapshot}\nAfter: ${afterSnapshot}`,
         );
       }
+      const clearErr = clearFailure();
+      if (clearErr) {
+        return {
+          issueNumber,
+          status: "failed",
+          error: clearErr,
+        };
+      }
       return {
         issueNumber,
         status: epicResult.status,
@@ -1171,10 +1350,46 @@ async function triageSingleIssue(
       };
     }
 
-    const roleConfig = resolveRoleConfig(root, "triage");
-    const provider = options.env?.FACTORY_LOOP_PROVIDER ?? roleConfig.provider ?? "pi";
-    const model = options.env?.FACTORY_LOOP_MODEL ?? roleConfig.model;
-    const effort = (options.env?.FACTORY_LOOP_EFFORT as EffortRung) ?? roleConfig.effort;
+    // Deterministic Fast-Path for Empty / Stub Issues (AC3)
+    const trimmedBody = (issue.body ?? "").trim();
+    const commentCount = (issue.comments ?? []).length;
+    if (trimmedBody.length === 0 && commentCount === 0) {
+      if (options.dryRun) {
+        return {
+          issueNumber,
+          status: "planned",
+          action: "ask_clarification",
+          reason: "Issue body is empty with no comments; deterministic clarification requested.",
+        };
+      }
+
+      const res = await executeAskClarification(
+        forge,
+        repo,
+        issueNumber,
+        issue.labels,
+        "Please provide a description of the problem, intended outcome, and reproduction steps or acceptance criteria.",
+        "Issue body is empty with no comments; deterministic clarification requested.",
+      );
+      const clearErr = clearFailure();
+      if (clearErr) {
+        return {
+          issueNumber,
+          status: "failed",
+          error: clearErr,
+        };
+      }
+      return res;
+    }
+
+    const effectiveEnv: Record<string, string | undefined> = {
+      ...process.env,
+      ...(options.env ?? {}),
+    };
+    const roleConfig = resolveRoleConfig(root, "triage", effectiveEnv);
+    const provider = roleConfig.provider;
+    const model = roleConfig.model;
+    const effort = roleConfig.effort;
 
     // The domain playbook is required; exploratory planning skills are optional and selected by it.
     const skills = resolveAllowedSkills(root, "triage", options.acceptedRef);
@@ -1182,7 +1397,8 @@ async function triageSingleIssue(
       return {
         issueNumber,
         status: "held",
-        reason: "Triage execution requires the accepted triage playbook (animus-triage), but it is unavailable.",
+        reason:
+          "Triage execution requires the accepted triage playbook (animus-triage), but it is unavailable.",
       };
     }
 
@@ -1226,13 +1442,29 @@ async function triageSingleIssue(
 
     const promptText = renderTriagePrompt(root, issue, repo, artifactsDir);
 
+    const appendSystemPrompts = buildCuratedAppendPrompts(
+      root,
+      {
+        number: issue.number,
+        title: issue.title,
+        body: issue.body ?? "",
+        url: "",
+        comments: (issue.comments ?? []).map((c) => c.body ?? ""),
+        dependencies: [],
+        activeClaim: false,
+      },
+      "",
+      options.acceptedRef,
+    );
+
     const argv = buildProviderArgv(provider, {
       model,
       effort,
       prompt: promptText,
       skills,
+      appendSystemPrompts,
       extensions: provider === "pi" || provider === "omp" ? extensions : undefined,
-      tools: provider === "claude" ? "Read,Glob,Grep" : "read,grep,find",
+      tools: provider === "claude" ? "Read,Glob,Grep" : "read,grep,find,ls",
       allowedTools: provider === "claude" ? ["Read", "Glob", "Grep"] : undefined,
       disallowedTools: provider === "claude" ? ["Write", "Edit"] : undefined,
       strictMcp: provider === "claude" ? true : undefined,
@@ -1252,7 +1484,14 @@ async function triageSingleIssue(
     const transport: AgentTransport =
       options.transport ?? ((req) => processRun(req.argv, req.cwd, req.timeoutMs, req.env));
 
-    const timeoutMs = options.timeoutMs ?? 180000;
+    const budgets = resolveRoleBudgets(
+      {
+        timeoutMs: options.timeoutMs,
+        roleBudgets: options.roleBudgets,
+      },
+      env,
+    );
+    const timeoutMs = budgets.triage.hardMs;
     const response = await transport({
       argv,
       cwd: root,
@@ -1270,39 +1509,25 @@ async function triageSingleIssue(
     }
 
     if (response.timedOut || response.exitCode === 124) {
-      return {
-        issueNumber,
-        status: "failed",
-        error: `Triage agent execution timed out after ${timeoutMs}ms`,
-      };
+      return fail(`Triage agent execution timed out after ${timeoutMs}ms`);
     }
 
     if (response.exitCode !== 0) {
-      return {
-        issueNumber,
-        status: "failed",
-        error: `Triage agent transport exited with code ${response.exitCode}: ${response.stderr}`,
-      };
+      return fail(
+        `Triage agent transport exited with code ${response.exitCode}: ${response.stderr}`,
+      );
     }
 
     let parsed: unknown;
     try {
       parsed = extractReportObject(response.stdout);
     } catch (err: any) {
-      return {
-        issueNumber,
-        status: "failed",
-        error: `Malformed triage output: ${err?.message || String(err)}`,
-      };
+      return fail(`Malformed triage output: ${err?.message || String(err)}`);
     }
 
     const validated = triageOutputSchema.safeParse(parsed);
     if (!validated.success) {
-      return {
-        issueNumber,
-        status: "failed",
-        error: `Invalid triage output schema: ${validated.error.message}`,
-      };
+      return fail(`Invalid triage output schema: ${validated.error.message}`);
     }
 
     const action = validated.data;
@@ -1312,30 +1537,20 @@ async function triageSingleIssue(
       if (action.action === "promote_single_ticket") {
         const bodyCheck = validateCanonicalIssueBody(action.body);
         if (!bodyCheck.valid) {
-          return {
-            issueNumber,
-            status: "failed",
-            error: `Canonical markdown validation failed: ${bodyCheck.errors.join("; ")}`,
-          };
+          return fail(`Canonical markdown validation failed: ${bodyCheck.errors.join("; ")}`);
         }
       } else if (action.action === "promote_epic_spec_and_tickets") {
         const parentCheck = validateCanonicalIssueBody(action.parentBody);
         if (!parentCheck.valid) {
-          return {
-            issueNumber,
-            status: "failed",
-            error: `Parent spec fails canonical structure: ${parentCheck.errors.join("; ")}`,
-          };
+          return fail(`Parent spec fails canonical structure: ${parentCheck.errors.join("; ")}`);
         }
         for (let i = 0; i < action.childTickets.length; i++) {
           const child = action.childTickets[i]!;
           const check = validateCanonicalIssueBody(child.body);
           if (!check.valid) {
-            return {
-              issueNumber,
-              status: "failed",
-              error: `Child ticket #${i + 1} ('${child.title}') fails canonical structure: ${check.errors.join("; ")}`,
-            };
+            return fail(
+              `Child ticket #${i + 1} ('${child.title}') fails canonical structure: ${check.errors.join("; ")}`,
+            );
           }
         }
         const comments = issue.comments ?? [];
@@ -1348,11 +1563,9 @@ async function triageSingleIssue(
           return true;
         });
         if (!humanAgreement) {
-          return {
-            issueNumber,
-            status: "failed",
-            error: `Epic promotion rejected: could not find valid human agreement comment matching exact ID '${action.agreementCommentId}' without agent marker.`,
-          };
+          return fail(
+            `Epic promotion rejected: could not find valid human agreement comment matching exact ID '${action.agreementCommentId}' without agent marker.`,
+          );
         }
       }
 
@@ -1419,28 +1632,29 @@ async function triageSingleIssue(
 
     switch (action.action) {
       case "ask_clarification": {
-        const commentBody = `${action.question}\n\n${TRIAGE_AGENT_MARKER}`;
-        await forge.createIssueComment(repo, issueNumber, commentBody);
-        const newLabels = existingLabels.filter((l) => l !== NEEDS_TRIAGE).concat(NEEDS_INFO);
-        await forge.updateIssue(repo, issueNumber, {
-          labels: Array.from(new Set(newLabels)),
-        });
-        return {
+        const res = await executeAskClarification(
+          forge,
+          repo,
           issueNumber,
-          status: "clarification_requested",
-          action: "ask_clarification",
-          reason: action.reason,
-        };
+          fresh.labels,
+          action.question,
+          action.reason,
+        );
+        const clearErr = clearFailure();
+        if (clearErr) {
+          return {
+            issueNumber,
+            status: "failed",
+            error: clearErr,
+          };
+        }
+        return res;
       }
 
       case "promote_single_ticket": {
         const bodyCheck = validateCanonicalIssueBody(action.body);
         if (!bodyCheck.valid) {
-          return {
-            issueNumber,
-            status: "failed",
-            error: `Canonical markdown validation failed: ${bodyCheck.errors.join("; ")}`,
-          };
+          return fail(`Canonical markdown validation failed: ${bodyCheck.errors.join("; ")}`);
         }
         const targetLabel = action.authority === "human" ? READY_FOR_HUMAN : READY_FOR_AGENT;
         const newLabels = existingLabels
@@ -1453,6 +1667,14 @@ async function triageSingleIssue(
           labels: Array.from(new Set(newLabels)),
         });
 
+        const clearErr = clearFailure();
+        if (clearErr) {
+          return {
+            issueNumber,
+            status: "failed",
+            error: clearErr,
+          };
+        }
         return {
           issueNumber,
           status: "promoted_single",
@@ -1463,6 +1685,14 @@ async function triageSingleIssue(
 
       case "promote_epic_spec_and_tickets": {
         const epicResult = await handleEpicPromotion(forge, repo, fresh, action, stateRoot);
+        const clearErr = clearFailure();
+        if (clearErr) {
+          return {
+            issueNumber,
+            status: "failed",
+            error: clearErr,
+          };
+        }
         return {
           issueNumber,
           status: epicResult.status,
@@ -1489,6 +1719,14 @@ async function triageSingleIssue(
           );
         }
 
+        const clearErr = clearFailure();
+        if (clearErr) {
+          return {
+            issueNumber,
+            status: "failed",
+            error: clearErr,
+          };
+        }
         return {
           issueNumber,
           status: "held",
@@ -1498,11 +1736,7 @@ async function triageSingleIssue(
       }
     }
   } catch (err: any) {
-    return {
-      issueNumber,
-      status: "failed",
-      error: err?.message || String(err),
-    };
+    return fail(err?.message || String(err));
   } finally {
     await lock.release();
   }
@@ -1536,7 +1770,16 @@ export async function runTriagePass(options: RunTriagePassOptions): Promise<Tria
   let heldCount = 0;
 
   for (const num of targetIssues) {
-    const result = await triageSingleIssue(num, options);
+    let result: TriageIssueResult;
+    try {
+      result = await triageSingleIssue(num, options);
+    } catch (unhandledErr: any) {
+      result = {
+        issueNumber: num,
+        status: "failed",
+        error: unhandledErr?.message || String(unhandledErr),
+      };
+    }
     processed.push(result);
     if (result.status === "skipped") {
       skippedCount++;

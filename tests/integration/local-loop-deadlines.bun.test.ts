@@ -12,6 +12,7 @@ test("role budgets default independently and reject invalid or inverted deadline
   expect(budgets.builder).toEqual({ softMs: 1_200_000, hardMs: 1_500_000 });
   expect(budgets.qa).toEqual({ softMs: 900_000, hardMs: 1_200_000 });
   expect(budgets.reviewer).toEqual({ softMs: 900_000, hardMs: 1_200_000 });
+  expect(budgets.triage).toEqual({ softMs: 120_000, hardMs: 180_000 });
   expect(resolveRoleBudgets({ timeoutMs: 100 }).builder).toEqual({ softMs: 80, hardMs: 100 });
   expect(resolveRoleBudgets({ roleBudgets: { qa: { softMs: 10, hardMs: 20 } } }).qa).toEqual({
     softMs: 10,
@@ -34,6 +35,12 @@ test("CLI environment budgets are validated and explicit role options win", () =
   expect(
     resolveRoleBudgets({}, { FACTORY_LOOP_QA_SOFT_MS: "30", FACTORY_LOOP_QA_HARD_MS: "40" }).qa,
   ).toEqual({ softMs: 30, hardMs: 40 });
+  expect(
+    resolveRoleBudgets(
+      {},
+      { FACTORY_LOOP_TRIAGE_SOFT_MS: "60000", FACTORY_LOOP_TRIAGE_HARD_MS: "90000" },
+    ).triage,
+  ).toEqual({ softMs: 60000, hardMs: 90000 });
   expect(() => resolveRoleBudgets({}, { FACTORY_LOOP_QA_HARD_MS: "no" })).toThrow();
   expect(
     resolveRoleBudgets(
@@ -41,6 +48,12 @@ test("CLI environment budgets are validated and explicit role options win", () =
       { FACTORY_LOOP_QA_HARD_MS: "no" },
     ).qa,
   ).toEqual({ softMs: 10, hardMs: 20 });
+  expect(
+    resolveRoleBudgets(
+      { roleBudgets: { triage: { softMs: 40000, hardMs: 50000 } } },
+      { FACTORY_LOOP_TRIAGE_HARD_MS: "no" },
+    ).triage,
+  ).toEqual({ softMs: 40000, hardMs: 50000 });
 });
 
 test("timeoutMs overrides shadowed invalid environment budgets", () => {
@@ -74,6 +87,25 @@ test("owned execution drains large output exactly and forwards environment", asy
   expect(result.exitCode).toBe(0);
   expect(result.stdout).toBe("x".repeat(2_000_000));
   expect(result.stderr).toBe("forwarded");
+});
+
+test("processRun defaults PI_CACHE_RETENTION to long when unset, preserving explicit overrides", async () => {
+  const defaultRes = await processRun(
+    ["node", "-e", "process.stdout.write(process.env.PI_CACHE_RETENTION || '')"],
+    process.cwd(),
+    5000,
+  );
+  expect(defaultRes.exitCode).toBe(0);
+  expect(defaultRes.stdout).toBe("long");
+
+  const overrideRes = await processRun(
+    ["node", "-e", "process.stdout.write(process.env.PI_CACHE_RETENTION || '')"],
+    process.cwd(),
+    5000,
+    { PI_CACHE_RETENTION: "short" },
+  );
+  expect(overrideRes.exitCode).toBe(0);
+  expect(overrideRes.stdout).toBe("short");
 });
 
 test("hard timeout kills owned child and grandchild but preserves unrelated cwd reader", async () => {

@@ -6,6 +6,7 @@ or its builder's report beforehand. A second reviewer inspects the diff after yo
 merge gate lands only commits your evidence supports.
 
 The move this run:
+
 - Route: $INPUTS.route
 - Work item: $INPUTS.target
 - Pull request: $INPUTS.pr
@@ -13,6 +14,7 @@ The move this run:
 - Skip app launch: $INPUTS.skip_app_launch
 - Candidate head commit: $INPUTS.head, against default branch `$INPUTS.base`
 - Files changed:
+
 ```
 $INPUTS.files
 ```
@@ -21,11 +23,12 @@ If no pull request URL is provided above, report `overall: "NO PR"` with an empt
 
 ## 1. What to test
 
-Read the work item and its `Contract` comment (or acceptance criteria). Test whether the change satisfies the contract without breaking existing capabilities. Broad product exploration belongs to the manager on the default branch; focus your inspection on the behavior this change creates or affects.
+The host process has pre-packed the work item contract, issue comments, and the `## Host-Computed Blast Radius (Unmodified Callers Outside the Diff)` map directly into this prompt context. Inspect the inlined issue contract and blast-radius callers directly without redundant `gh issue view` tool calls. Read the work item and its `Contract` comment (or acceptance criteria). Test whether the change satisfies the contract without breaking existing capabilities or unmodified external callers. Broad product exploration belongs to the manager on the default branch; focus your inspection on the behavior this change creates or affects.
 
 ## 2. Test Depth: $INPUTS.depth
 
 Apply the depth selected for this work item's risk profile:
+
 - **`light`** (internal refactors, tests, tools, documentation where user-observable behavior is unchanged): Build the app, run declared ordinary checks once, confirm the service starts cleanly, and verify contract criteria. Skip exploratory probes and holdouts.
 - **`normal`** (default for user-visible features or fixes): Build, run ordinary checks once, and observe each contract criterion through the live app's public user surface. Execute up to three plausible user interaction variations beyond the criteria (`probes`). Run holdouts only if they exercise the modified behavior.
 - **`deep`** (core architectural changes, security, authentication, data models, or migrations): Probe all states the change introduces; evaluate both public UI/CLI interfaces and automated harnesses; run all holdout scenarios touched by the modified files.
@@ -35,6 +38,7 @@ Sample decisive states and edge transitions rather than attempting combinatorial
 ## 3. Host-Prepared Detached Base Merge
 
 Because the landed artifact is this pull request merged with the current default branch, the host loop executor has already checked out and prepared the detached integration state at `$INPUTS.head` (tested integration commit: `$INPUTS.tested_head`, merged with default branch tip `$INPUTS.base_tip`) in your current isolated verification checkout.
+
 1. Do NOT run `git checkout`, `git fetch`, or `git merge`. You are already running inside the disposable host-owned integration worktree.
 2. Verify that your current environment reflects the delivered changes.
 3. Record `$INPUTS.tested_head` as `head` and `$INPUTS.merged_with` (or base tip) as `merged_with`.
@@ -61,6 +65,7 @@ Because the landed artifact is this pull request merged with the current default
 ## 6. Report Format
 
 Return your structured report in JSON (plain or within a single ```json code fence):
+
 ```json
 {
   "pr": "$INPUTS.pr",
@@ -83,4 +88,5 @@ Return your structured report in JSON (plain or within a single ```json code fen
   "summary": "<concise summary of tested behaviors and depth>"
 }
 ```
+
 `overall` must be `PASS` only when every criterion passed and zero defect lines remain. Any caveat or unverified criterion mandates `FAIL`.

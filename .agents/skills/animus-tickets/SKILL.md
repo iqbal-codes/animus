@@ -22,7 +22,7 @@ Use this playbook when:
 
 2. **Draft the vertical task graph.**
    Create narrow, complete vertical slices that are independently verifiable and fit one delivery lap. A slice includes every layer necessary for its behavior, not every layer in the system. Keep issue-owned enabling refactors inside their slice. When `docs/architecture.md` defines foundation prerequisites (`S0`: repo scaffold, folder topology, or shared reusable UI/CRUD primitives consumed across multiple specs), draft explicit foundation prerequisite ticket(s) first and wire downstream feature slices to depend on them (`Depends on: #<foundation>`) so parallel builders reuse shared components rather than duplicating them.
-   Use the canonical ticket body template below. Include the source spec section (`Part of #<parent>` near the top when a parent spec issue exists) and stable parent-AC references; give child criteria local identifiers. For each dependency edge, explain why the blocker must finish first; use only genuine prerequisite edges and check for self-edges, cycles, and already-delivered outcomes. Show a numbered draft with title, complete body, delivery outcome, source-AC coverage, blocker reasons, and proposed labels. Ask approval of granularity, dependency graph, and publication/admission operations.
+   Use the canonical ticket body template below. Include the source spec section (`Part of #<parent>` near the top when a parent spec issue exists) and stable parent-AC references; give child criteria local identifiers. Standardize `## Boundary` with concise `Touchpoints`, `Known callers (blast radius)`, `Test seam`, and `Exclusions` pointers so downstream builders start with an immediate codebase navigation map without orphan files. For each dependency edge, explain why the blocker must finish first; use only genuine prerequisite edges and check for self-edges, cycles, and already-delivered outcomes. Show a numbered draft with title, complete body, delivery outcome, source-AC coverage, blocker reasons, and proposed labels. Ask approval of granularity, dependency graph, and publication/admission operations.
    *Completion Criterion*: Every parent requirement is accounted for in the numbered draft graph with acyclic dependencies, and the user approves the draft before publication.
 
 3. **Publish the approved graph in topological order.**
@@ -60,7 +60,10 @@ and why now. Use settled intent, not invented urgency.>
 
 ## Boundary
 
-<Explicit exclusions and any issue-owned enabling work.>
+- **Touchpoints**: <files and functions/classes/components that will be touched>
+- **Known callers (blast radius)**: <unmodified files/modules that import or call touched components>
+- **Test seam**: <test file(s) and test command(s) that verify this slice>
+- **Exclusions**: <explicit exclusions and out-of-scope work>
 
 Depends on: None
 ```
