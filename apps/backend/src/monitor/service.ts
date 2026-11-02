@@ -12,6 +12,7 @@ export class RegisteredProjectMonitor {
   private enabled = false;
   private stopped = false;
   private pending = new Map<string, Promise<void>>();
+  private pendingWake = new Set<string>();
   private statuses = new Map<string, ProjectMonitorStatus>();
   private brakes: BrakeService;
   private intervalMs: number;
@@ -29,17 +30,24 @@ export class RegisteredProjectMonitor {
   }
 
   status(): MonitoringStatus {
-    const projects = this.registry.listProjects().map(
-      (project) =>
-        this.statuses.get(project.id) ?? {
-          project_id: project.id,
-          state: "idle" as const,
-          reason:
-            project.status === "active" ? "not_checked" : (project.status_reason ?? project.status),
-          checked_at: null,
-          next_check_at: null,
-        },
-    );
+    const projects = this.registry.listProjects().map((project) => {
+      const existing = this.statuses.get(project.id);
+      if (existing) {
+        return {
+          ...existing,
+          pending_wake: this.pendingWake.has(project.id),
+        };
+      }
+      return {
+        project_id: project.id,
+        state: "idle" as const,
+        reason:
+          project.status === "active" ? "not_checked" : (project.status_reason ?? project.status),
+        checked_at: null,
+        next_check_at: null,
+        pending_wake: this.pendingWake.has(project.id),
+      };
+    });
     return {
       enabled: this.enabled,
       stopping: this.stopped,
@@ -47,6 +55,98 @@ export class RegisteredProjectMonitor {
       error: this.lastError,
       projects,
     };
+  }
+
+  isPendingWake(projectId: string): boolean {
+    return this.pendingWake.has(projectId);
+  }
+
+  wakeProject(projectId: string): { triggered: boolean; pending_wake: boolean } {
+    if (this.stopped) {
+      return { triggered: false, pending_wake: false };
+    }
+
+    let project: Project;
+    try {
+      project = this.registry.getProject(projectId);
+    } catch {
+      return { triggered: false, pending_wake: false };
+    }
+
+    if (project.status !== "active") {
+      return { triggered: false, pending_wake: false };
+    }
+
+    const isBusy =
+      this.pending.has(projectId) ||
+      this.registry.getActiveRunCount(projectId) > 0 ||
+      this.hasCapacityFull(project.checkout_path);
+
+    if (isBusy) {
+      this.pendingWake.add(projectId);
+      const current = this.statuses.get(projectId);
+      if (current) {
+        current.pending_wake = true;
+        if (this.hasCapacityFull(project.checkout_path)) {
+          current.reason = "capacity_full";
+        }
+      } else {
+        this.statuses.set(projectId, {
+          project_id: projectId,
+          state: this.hasCapacityFull(project.checkout_path) ? "skipped" : "idle",
+          reason: this.hasCapacityFull(project.checkout_path)
+            ? "capacity_full"
+            : this.registry.getActiveRunCount(projectId) > 0
+              ? "project_has_active_runs"
+              : "checking",
+          checked_at: new Date().toISOString(),
+          next_check_at: null,
+          pending_wake: true,
+        });
+      }
+      return { triggered: false, pending_wake: true };
+    }
+
+    const current = this.statuses.get(projectId);
+    if (current) {
+      current.next_check_at = null;
+    }
+    void this.triggerProjectCheck(project, true);
+    return { triggered: true, pending_wake: false };
+  }
+
+  notifyLapFinished(projectId: string): void {
+    if (this.stopped) return;
+    if (this.pendingWake.has(projectId) && !this.pending.has(projectId)) {
+      let project: Project;
+      try {
+        project = this.registry.getProject(projectId);
+      } catch {
+        return;
+      }
+      if (project.status === "active") {
+        const current = this.statuses.get(projectId);
+        if (current) {
+          current.next_check_at = null;
+        }
+        this.pendingWake.delete(projectId);
+        if (current) {
+          current.pending_wake = false;
+        }
+        void this.triggerProjectCheck(project, false);
+      }
+    }
+  }
+
+  private hasCapacityFull(checkoutPath: string): boolean {
+    if (this.options.runtime.hasCapacityFull) {
+      try {
+        return this.options.runtime.hasCapacityFull(checkoutPath);
+      } catch {
+        return false;
+      }
+    }
+    return false;
   }
 
   start(): void {
@@ -82,16 +182,54 @@ export class RegisteredProjectMonitor {
     for (const project of this.registry.listProjects()) {
       if (this.pending.has(project.id)) continue;
       const status = this.statuses.get(project.id);
-      if (status?.next_check_at && Date.parse(status.next_check_at) > Date.now()) continue;
-      const task = this.checkProject(project).finally(() => {
-        this.pending.delete(project.id);
-      });
-      this.pending.set(project.id, task);
+      if (
+        !this.pendingWake.has(project.id) &&
+        status?.next_check_at &&
+        Date.parse(status.next_check_at) > Date.now()
+      )
+        continue;
+      void this.triggerProjectCheck(project, false);
     }
   }
 
+  private triggerProjectCheck(project: Project, fromWake = false): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    const existing = this.pending.get(project.id);
+    if (existing) return existing;
+
+    const task = (async () => {
+      try {
+        await this.checkProject(project, fromWake);
+      } finally {
+        this.pending.delete(project.id);
+        this.onCheckFinished(project);
+      }
+    })();
+    this.pending.set(project.id, task);
+    return task;
+  }
+
+  private onCheckFinished(project: Project): void {
+    if (this.stopped) return;
+    if (!this.pendingWake.has(project.id)) return;
+
+    const status = this.statuses.get(project.id);
+    if (status?.reason === "capacity_full") {
+      return;
+    }
+
+    this.pendingWake.delete(project.id);
+    if (status) {
+      status.pending_wake = false;
+      status.next_check_at = null;
+    }
+    void this.triggerProjectCheck(project, false);
+  }
+
   async drain(): Promise<void> {
-    await Promise.all(this.pending.values());
+    while (this.pending.size > 0) {
+      await Promise.all(Array.from(this.pending.values()));
+    }
   }
 
   async stop(): Promise<void> {
@@ -99,6 +237,7 @@ export class RegisteredProjectMonitor {
     this.enabled = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    this.pendingWake.clear();
     if (this.scan) await this.scan;
     // In-flight laps finish safely. Stopping never abandons a live lock or starts another lap.
     await this.drain();
@@ -127,13 +266,14 @@ export class RegisteredProjectMonitor {
       throw new Error("checkout_identity_mismatch");
   }
 
-  private async checkProject(project: Project): Promise<void> {
+  private async checkProject(project: Project, fromWake = false): Promise<void> {
     const status: ProjectMonitorStatus = {
       project_id: project.id,
       state: "running",
       reason: "checking",
       checked_at: new Date().toISOString(),
       next_check_at: null,
+      pending_wake: this.pendingWake.has(project.id),
     };
     this.statuses.set(project.id, status);
     let lock: string | null = null;
@@ -147,6 +287,10 @@ export class RegisteredProjectMonitor {
       if (this.registry.getActiveRunCount(project.id) > 0) {
         status.state = "held";
         status.reason = "project_has_active_runs";
+        if (fromWake) {
+          this.pendingWake.add(project.id);
+          status.pending_wake = true;
+        }
         return;
       }
       const permitted = this.brakes.isScheduledLaunchPermitted(project.id);
@@ -177,6 +321,10 @@ export class RegisteredProjectMonitor {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
         status.state = "skipped";
         status.reason = "project_locked";
+        if (fromWake) {
+          this.pendingWake.add(project.id);
+          status.pending_wake = true;
+        }
         return;
       }
       this.assertDispatch(project);
@@ -218,6 +366,10 @@ export class RegisteredProjectMonitor {
       });
       status.tick = result;
       status.reason = result.reason;
+      if (result.reason === "capacity_full") {
+        this.pendingWake.add(project.id);
+        status.pending_wake = true;
+      }
       status.state =
         result.action === "launched" ? "completed" : result.error ? "error" : "skipped";
       if (result.error) status.error = result.error;

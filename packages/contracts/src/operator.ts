@@ -92,6 +92,7 @@ export const operatorErrorSchema = z.object({
     "unverified_candidate_blocked",
     "release_policy_incomplete",
     "verification_not_found",
+    "invalid_signature",
   ]),
 });
 export type OperatorErrorCode = z.infer<typeof operatorErrorSchema>["error"];
@@ -426,6 +427,7 @@ export const projectMonitorStatusSchema = z.object({
   reason: z.string(),
   checked_at: z.string().nullable(),
   next_check_at: z.string().nullable(),
+  pending_wake: z.boolean().optional(),
   run_id: z.string().optional(),
   run_status: z.string().optional(),
   error: z.string().optional(),
@@ -1017,3 +1019,15 @@ export const harnessVetoResultSchema = z.object({
   vetoed: z.boolean(),
 });
 export type HarnessVetoResult = z.infer<typeof harnessVetoResultSchema>;
+
+export const webhookDeliveryStatusSchema = z.enum(["accepted", "ignored"]);
+export type WebhookDeliveryStatus = z.infer<typeof webhookDeliveryStatusSchema>;
+
+export const webhookAckSchema = z.object({
+  status: webhookDeliveryStatusSchema,
+  delivery: z.string(),
+  reason: z.string().optional(),
+  project_id: z.string().optional(),
+  pending_wake: z.boolean().optional(),
+});
+export type WebhookAck = z.infer<typeof webhookAckSchema>;

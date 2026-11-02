@@ -162,4 +162,24 @@ describe("backend registration preparation", () => {
     ).rejects.toMatchObject({ code: "project_checkout_invalid" });
     expect(registry.listProjects()).toEqual([]);
   });
+
+  test("getProjectByRepoName looks up case-insensitively and ignores tombstones", async () => {
+    const project = await onboarding.register({
+      method: "github_clone",
+      name: "Repo",
+      repo: "Owner/Repo",
+    });
+
+    // Exact and case-insensitive match
+    expect(registry.getProjectByRepoName("Owner/Repo")?.id).toBe(project.id);
+    expect(registry.getProjectByRepoName("owner/repo")?.id).toBe(project.id);
+    expect(registry.getProjectByRepoName("OWNER/REPO")?.id).toBe(project.id);
+
+    // Non-existent repo returns null
+    expect(registry.getProjectByRepoName("NonExistent/Repo")).toBeNull();
+
+    // Tombstone project returns null
+    await registry.deregisterProject(project.id);
+    expect(registry.getProjectByRepoName("Owner/Repo")).toBeNull();
+  });
 });

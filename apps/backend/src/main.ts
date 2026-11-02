@@ -49,6 +49,7 @@ import { EvidenceService, handleProjectEvidenceRoute } from "./evidence";
 import { HarnessService, handleHarnessRoute } from "./harness";
 import { validateCsrfProtection, authenticateOperatorRequest } from "./security";
 import { handleStaticWebRoute } from "./web-static";
+import { GitHubWebhookService } from "./webhooks";
 
 try {
   const config = configuration();
@@ -170,6 +171,15 @@ try {
     }
     return evidenceServiceInstance;
   };
+  let githubWebhookServiceInstance: GitHubWebhookService | null = null;
+  const getGitHubWebhookService = (): GitHubWebhookService => {
+    if (!githubWebhookServiceInstance) {
+      githubWebhookServiceInstance = new GitHubWebhookService(getRegistryService(), {
+        onProjectWake: (projectId) => monitor.wakeProject(projectId),
+      });
+    }
+    return githubWebhookServiceInstance;
+  };
   // Bun 1.4.2 still resolves ambient proxies with fetch({ proxy: "" }).
   process.env.NO_PROXY = process.env.no_proxy = new URL(origin).hostname;
   const failure = (error: OperatorErrorCode, status = 503) => Response.json({ error }, { status });
@@ -279,7 +289,7 @@ try {
 
       const path = new URL(request.url).pathname;
 
-      if (path !== "/health" && path !== "/build-id") {
+      if (path !== "/health" && path !== "/build-id" && path !== "/api/v1/webhooks/github") {
         try {
           authenticateOperatorRequest(request, {
             remoteAccess: config.remoteAccess,
@@ -288,6 +298,16 @@ try {
         } catch {
           return Response.json({ error: "unauthorized" }, { status: 401 });
         }
+      }
+
+      if (path === "/api/v1/webhooks/github") {
+        if (request.method !== "POST") {
+          return Response.json(
+            { error: "method_not_allowed" },
+            { status: 405, headers: { Allow: "POST" } },
+          );
+        }
+        return await getGitHubWebhookService().handleWebhook(request);
       }
 
       if (

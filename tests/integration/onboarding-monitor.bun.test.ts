@@ -386,4 +386,203 @@ describe("registered project monitoring", () => {
       await peer.stop();
     }
   });
+
+  test("#118 AC1: wakeProject triggers immediate scheduler tick within 2 seconds even with large interval", async () => {
+    const alpha = await project("alpha");
+    await monitor.stop();
+    // 60-second timer interval - no background timer tick should happen before wakeProject
+    monitor = new RegisteredProjectMonitor(registry, { runtime, intervalMs: 60_000 });
+
+    expect(launches).toEqual([]);
+    const startTime = Date.now();
+    const wake = monitor.wakeProject(alpha.id);
+    expect(wake).toEqual({ triggered: true, pending_wake: false });
+
+    await monitor.drain();
+    const duration = Date.now() - startTime;
+    expect(duration).toBeLessThan(2000);
+    expect(launches).toEqual([{ root: alpha.checkout_path, issue: 1 }]);
+    expect(monitor.status().projects[0]?.reason).toBe("launch_successful");
+  });
+
+  test("#118 AC4 & AC5: wakeProject respects brakes and work window without launching laps", async () => {
+    const alpha = await project("alpha");
+    await monitor.stop();
+    monitor = new RegisteredProjectMonitor(registry, { runtime, intervalMs: 60_000 });
+
+    // AC4: .factory/STOP filesystem brake
+    mkdirSync(join(alpha.checkout_path, ".factory"), { recursive: true });
+    writeFileSync(join(alpha.checkout_path, ".factory/STOP"), "stopped");
+    const stopWake = monitor.wakeProject(alpha.id);
+    expect(stopWake.triggered).toBe(true);
+    await monitor.drain();
+    expect(launches).toEqual([]);
+    expect(monitor.status().projects[0]?.error).toContain("STOP brake is active");
+    rmSync(join(alpha.checkout_path, ".factory/STOP"));
+
+    // AC4: DB launch brake
+    const brakes = new BrakeService(db);
+    brakes.setProjectLaunchBrake(alpha.id, true, "test brake");
+    monitor.wakeProject(alpha.id);
+    await monitor.drain();
+    expect(launches).toEqual([]);
+    expect(monitor.status().projects[0]?.reason).toBe("launch_brake_set");
+    brakes.setProjectLaunchBrake(alpha.id, false, "test brake");
+
+    // AC5: Outside work window
+    writeFileSync(
+      join(alpha.checkout_path, ".factory/schedule.json"),
+      JSON.stringify({
+        work_window: { enabled: true, start_time: "00:00", end_time: "00:00", timezone: "UTC" },
+      }),
+    );
+    monitor.wakeProject(alpha.id);
+    await monitor.drain();
+    expect(launches).toEqual([]);
+    expect(monitor.status().projects[0]?.reason).toBe("outside_work_window");
+  });
+
+  test("#119 AC1, AC2, AC3, AC4: pending_wake coalesces while busy and triggers chained execution upon lap finish", async () => {
+    const alpha = await project("alpha");
+    await monitor.stop();
+
+    let lap1Resolve!: (res: { runId: string; status: string }) => void;
+    const lap1Running = new Promise<{ runId: string; status: string }>((resolve) => {
+      lap1Resolve = resolve;
+    });
+
+    let lap1Started!: () => void;
+    const lap1StartedPromise = new Promise<void>((resolve) => {
+      lap1Started = resolve;
+    });
+
+    let backlogIssueCount = 2;
+    const customRuntime = {
+      ...runtime,
+      fetchBacklog: async () => ({
+        issues:
+          backlogIssueCount > 0
+            ? [
+                {
+                  number: backlogIssueCount === 2 ? 1 : 2,
+                  title: "Implement contract",
+                  state: "OPEN",
+                  labels: ["ready-for-agent"],
+                  dependencies: [],
+                  activeClaim: false,
+                },
+              ]
+            : [],
+        closedNumbers: new Set<number>(),
+      }),
+      readContract: async (rootPath: string, num: number, repo: string) => {
+        return {
+          number: num,
+          url: `https://github.com/${repo}/issues/${num}`,
+          title: `Contract ${num}`,
+          body: "Deliver",
+          comments: [],
+          dependencies: [],
+          activeClaim: false,
+        };
+      },
+      launch: async (checkout: string, issue: { number: number }) => {
+        launches.push({ root: checkout, issue: issue.number });
+        if (issue.number === 1) {
+          lap1Started();
+          return lap1Running;
+        }
+        return { runId: "run-2", status: "completed" };
+      },
+    };
+
+    // Use a huge interval so timer does not fire on its own
+    monitor = new RegisteredProjectMonitor(registry, {
+      runtime: customRuntime,
+      intervalMs: 120_000,
+    });
+
+    // Start Lap 1
+    const wake1 = monitor.wakeProject(alpha.id);
+    expect(wake1).toEqual({ triggered: true, pending_wake: false });
+    await lap1StartedPromise;
+
+    // Lap 1 is now actively running
+    expect(launches).toHaveLength(1);
+    expect(monitor.isPendingWake(alpha.id)).toBe(false);
+
+    // AC1: Webhook arrives while capacity full / lap running -> pending_wake = true
+    const wakeWhileBusy1 = monitor.wakeProject(alpha.id);
+    expect(wakeWhileBusy1).toEqual({ triggered: false, pending_wake: true });
+    expect(monitor.isPendingWake(alpha.id)).toBe(true);
+    expect(monitor.status().projects[0]?.pending_wake).toBe(true);
+
+    // AC2: Multiple webhooks arriving coalesce into single pending_wake without extra launches
+    const wakeWhileBusy2 = monitor.wakeProject(alpha.id);
+    expect(wakeWhileBusy2).toEqual({ triggered: false, pending_wake: true });
+    expect(monitor.isPendingWake(alpha.id)).toBe(true);
+    expect(launches).toHaveLength(1);
+
+    // Decrement backlog so Lap 2 is issue #2
+    backlogIssueCount = 1;
+
+    // AC3: Lap 1 finishes (completed) -> monitor inspects pending_wake and immediately chains next tick
+    lap1Resolve({ runId: "run-1", status: "completed" });
+
+    // Wait for monitor drain (chained execution completes without waiting for 120_000ms timer)
+    await monitor.drain();
+
+    // Verify Lap 2 was launched via chained execution
+    expect(launches).toHaveLength(2);
+    expect(launches[1]).toEqual({ root: alpha.checkout_path, issue: 2 });
+
+    // AC4: Backlog is now exhausted (0 issues), pending_wake is cleared (false), returns to idle
+    backlogIssueCount = 0;
+    expect(monitor.isPendingWake(alpha.id)).toBe(false);
+    expect(monitor.status().projects[0]?.pending_wake).toBe(false);
+  });
+
+  test("#119 AC1 (external capacity): pending_wake is recorded when external capacity is full", async () => {
+    const alpha = await project("alpha");
+    mkdirSync(join(alpha.checkout_path, ".git/factory-local-loop/runs/existing"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(alpha.checkout_path, ".git/factory-local-loop/runs/existing/state.json"),
+      JSON.stringify({ status: "building" }),
+    );
+
+    const wake = monitor.wakeProject(alpha.id);
+    // Either synchronously detected or recorded in status
+    expect(wake.pending_wake).toBe(true);
+    await monitor.drain();
+    expect(launches).toEqual([]);
+    expect(monitor.status().projects[0]?.pending_wake).toBe(true);
+    expect(monitor.status().projects[0]?.reason).toBe("capacity_full");
+  });
+
+  test("#119 AC5: background interval scheduling runs uninterrupted alongside event-driven wake triggers", async () => {
+    const alpha = await project("alpha");
+    await monitor.stop();
+    // Fast interval (50ms) to verify timer ticks
+    monitor = new RegisteredProjectMonitor(registry, { runtime, intervalMs: 50 });
+    monitor.start();
+
+    // Allow periodic scan to launch issue 1
+    await Bun.sleep(150);
+    await monitor.drain();
+    expect(launches.length).toBeGreaterThanOrEqual(1);
+    expect(monitor.status().enabled).toBe(true);
+
+    // Event-driven wake also functions while periodic timer is active
+    const wake = monitor.wakeProject(alpha.id);
+    expect(wake.triggered || wake.pending_wake).toBe(true);
+    await monitor.drain();
+
+    // Verify timer is still active and monitoring status is healthy
+    const status = monitor.status();
+    expect(status.enabled).toBe(true);
+    expect(status.stopping).toBe(false);
+    expect(status.error).toBeNull();
+  });
 });

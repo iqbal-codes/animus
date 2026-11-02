@@ -96,7 +96,7 @@ export default defineConfig({
       "neutral-suite": { command: "vp test run", cache: false },
       "bun-suite": {
         command:
-          "bun test --timeout 30000 tests/integration/local-loop-deadlines.bun.test.ts tests/integration/scheduler-discovery.bun.test.ts tests/integration/onboarding-http.bun.test.ts tests/integration/loop-script.bun.test.ts tests/integration/loop-watch.bun.test.ts tests/integration/loop-modules.bun.test.ts tests/integration/health.bun.test.ts tests/integration/local-loop.bun.test.ts tests/integration/onboarding-monitor.bun.test.ts tests/integration/loop-ci.bun.test.ts tests/integration/loop-report-schema.bun.test.ts tests/integration/loop-pr-reporting.bun.test.ts tests/integration/loop-evidence-cli.bun.test.ts tests/integration/loop-dossier-findings.bun.test.ts tests/integration/loop-publication.bun.test.ts",
+          "bun test --timeout 30000 tests/integration/local-loop-deadlines.bun.test.ts tests/integration/scheduler-discovery.bun.test.ts tests/integration/onboarding-http.bun.test.ts tests/integration/webhooks-http.bun.test.ts tests/integration/loop-script.bun.test.ts tests/integration/loop-watch.bun.test.ts tests/integration/loop-modules.bun.test.ts tests/integration/health.bun.test.ts tests/integration/local-loop.bun.test.ts tests/integration/onboarding-monitor.bun.test.ts tests/integration/loop-ci.bun.test.ts tests/integration/loop-report-schema.bun.test.ts tests/integration/loop-pr-reporting.bun.test.ts tests/integration/loop-evidence-cli.bun.test.ts tests/integration/loop-dossier-findings.bun.test.ts tests/integration/loop-publication.bun.test.ts",
         cache: false,
       },
       "toolchain-check": { command: "node scripts/health/check-toolchain.mjs", cache: false },
