@@ -1,5 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { SystemForgeAdapter, SyntheticForgeAdapter } from "../../apps/backend/src/registry/forge";
+import {
+  SystemForgeAdapter,
+  SyntheticForgeAdapter,
+  assertIssueForge,
+  type ForgeAdapter,
+} from "../../apps/backend/src/registry/forge";
 
 const connection = (nodes: unknown[], endCursor: string | null = null) => ({
   nodes,
@@ -320,5 +325,190 @@ describe("SystemForgeAdapter discovery", () => {
     });
     expect(query(mock.calls[0]!)).toContain("states: OPEN");
     expect(mock.calls[1]).toContain("cursor=next-issues");
+  });
+
+  test("assertIssueForge rejects adapter missing createIssueComment", () => {
+    const incomplete: ForgeAdapter = {
+      getRepository: async () => ({ id: 1, repoName: "o/r" }),
+      createRepository: async () => ({ id: 1, repoName: "o/r" }),
+      cloneRepository: async () => {},
+      detectLocalCheckout: async () => ({ id: 1, repoName: "o/r" }),
+      listIssues: async () => [],
+      getIssue: async () => null,
+      createIssue: async () => ({}) as any,
+      updateIssue: async () => ({}) as any,
+    };
+    expect(() => assertIssueForge(incomplete)).toThrow(
+      "Configured forge adapter does not support issue operations",
+    );
+  });
+
+  test("SyntheticForgeAdapter creates, persists, and sequences issue comments preserving exact marker", async () => {
+    const forge = new SyntheticForgeAdapter();
+    forge.addRepository("owner/repo", 101);
+    forge.addIssue("owner/repo", {
+      number: 42,
+      title: "Interactive Triage",
+      state: "OPEN",
+      body: "Initial body",
+      comments: [],
+    });
+
+    const markerBody =
+      "<!-- animus-triage-agent -->\nCould you clarify the expected boundary for this component?";
+    const comment1 = await forge.createIssueComment("owner/repo", 42, markerBody);
+    expect(comment1.body).toBe(markerBody);
+    expect(comment1.id).toBeDefined();
+
+    const issueAfterFirst = await forge.getIssue("owner/repo", 42);
+    expect(issueAfterFirst?.comments).toHaveLength(1);
+    expect(issueAfterFirst?.comments?.[0]?.body).toBe(markerBody);
+    expect(issueAfterFirst?.comments?.[0]?.id).toBe(comment1.id);
+
+    const replyBody = "We need support for both mobile and desktop viewports.";
+    const comment2 = await forge.createIssueComment("owner/repo", 42, replyBody);
+    expect(comment2.body).toBe(replyBody);
+    expect(comment2.id).not.toBe(comment1.id);
+
+    const issueAfterSecond = await forge.getIssue("owner/repo", 42);
+    expect(issueAfterSecond?.comments).toHaveLength(2);
+    expect(issueAfterSecond?.comments?.[0]?.body).toBe(markerBody);
+    expect(issueAfterSecond?.comments?.[1]?.body).toBe(replyBody);
+
+    const listed = await forge.listIssues("owner/repo");
+    expect(listed[0]?.comments).toHaveLength(2);
+    expect(listed[0]?.comments?.[0]?.body).toBe(markerBody);
+    expect(listed[0]?.comments?.[1]?.body).toBe(replyBody);
+
+    // Failed operations throw
+    await expect(forge.createIssueComment("missing/repo", 42, "text")).rejects.toThrow();
+    await expect(forge.createIssueComment("owner/repo", 999, "text")).rejects.toThrow();
+    forge.failNextComment = true;
+    await expect(forge.createIssueComment("owner/repo", 42, "text")).rejects.toThrow(
+      "Synthetic forge comment creation failed",
+    );
+  });
+
+  test("SystemForgeAdapter creates issue comment via gh CLI preserving exact marker and metadata", async () => {
+    const markerBody =
+      "<!-- animus-triage-agent -->\nPlease confirm if this should be split into multiple slices.";
+    const mock = transport(["https://github.com/owner/repo/issues/42#issuecomment-987654321"]);
+    const forge = new SystemForgeAdapter(mock.runner);
+
+    const created = await forge.createIssueComment("owner/repo", 42, markerBody);
+    expect(created).toEqual({
+      id: "987654321",
+      body: markerBody,
+    });
+    expect(mock.calls).toHaveLength(1);
+    expect(mock.calls[0]).toEqual([
+      "gh",
+      "issue",
+      "comment",
+      "42",
+      "--repo",
+      "owner/repo",
+      "--body",
+      markerBody,
+    ]);
+  });
+
+  test("SystemForgeAdapter parses JSON comment output with author and id metadata", async () => {
+    const markerBody = "<!-- animus-triage-agent -->\nTurn-taking prompt";
+    const mock = transport([
+      {
+        id: "IC_kwDO_test",
+        author: { login: "animus-triage-agent[bot]" },
+        body: markerBody,
+      },
+    ]);
+    const forge = new SystemForgeAdapter(mock.runner);
+
+    const created = await forge.createIssueComment("owner/repo", 42, markerBody);
+    expect(created).toEqual({
+      id: "IC_kwDO_test",
+      author: "animus-triage-agent[bot]",
+      body: markerBody,
+    });
+  });
+
+  test("SystemForgeAdapter createIssueComment fails closed on runner error or invalid input", async () => {
+    const failingMock = transport([new Error("gh command failed: network timeout")]);
+    const forge = new SystemForgeAdapter(failingMock.runner);
+
+    await expect(forge.createIssueComment("owner/repo", 42, "test")).rejects.toThrow(
+      "gh command failed: network timeout",
+    );
+
+    // Invalid repo name rejects before transport
+    await expect(forge.createIssueComment("invalid repo", 42, "test")).rejects.toThrow(
+      "Invalid GitHub repository name",
+    );
+
+    // Invalid issue number rejects before transport
+    for (const invalidNumber of [0, -1, 1.5, NaN, Infinity]) {
+      await expect(forge.createIssueComment("owner/repo", invalidNumber, "test")).rejects.toThrow(
+        "Invalid issue number",
+      );
+    }
+  });
+
+  test("SystemForgeAdapter paginates comments beyond 100 preserving latest comment and metadata", async () => {
+    const commentsPage1 = Array.from({ length: 100 }, (_, i) => ({
+      id: `comment_${i + 1}`,
+      author: { login: `user_${i + 1}` },
+      body: `Comment ${i + 1}`,
+    }));
+    const latestMarkerBody = "<!-- animus-triage-agent -->\nLatest question beyond 100";
+    const commentsPage2 = [
+      {
+        id: "comment_101",
+        author: { login: "animus-bot" },
+        body: latestMarkerBody,
+      },
+    ];
+
+    const rawIssue = {
+      ...issue(42),
+      labels: connection([{ name: "needs-info" }]),
+      comments: connection(commentsPage1, "comments-cursor-100"),
+    };
+
+    const mock = transport([
+      { data: { repository: { issue: rawIssue } } },
+      { data: { repository: { issue: { comments: connection(commentsPage2, null) } } } },
+    ]);
+    const forge = new SystemForgeAdapter(mock.runner);
+
+    const fetched = await forge.getIssue("owner/repo", 42);
+    expect(fetched).not.toBeNull();
+    expect(fetched?.comments).toHaveLength(101);
+    expect(fetched?.comments?.[0]).toEqual({
+      id: "comment_1",
+      author: "user_1",
+      body: "Comment 1",
+    });
+    expect(fetched?.comments?.[100]).toEqual({
+      id: "comment_101",
+      author: "animus-bot",
+      body: latestMarkerBody,
+    });
+    expect(mock.calls[1]).toContain("cursor=comments-cursor-100");
+  });
+
+  test("SystemForgeAdapter fails closed when comment pagination encounters GraphQL errors", async () => {
+    const rawIssue = {
+      ...issue(42),
+      comments: connection([{ body: "Comment 1" }], "cursor-fail"),
+    };
+    const mock = transport([
+      { data: { repository: { issue: rawIssue } } },
+      {
+        data: { repository: { issue: { comments: null } } },
+        errors: [{ type: "FORBIDDEN", path: ["repository", "issue", "comments"] }],
+      },
+    ]);
+    const forge = new SystemForgeAdapter(mock.runner);
+    await expect(forge.getIssue("owner/repo", 42)).rejects.toThrow("GitHub GraphQL lookup failed");
   });
 });

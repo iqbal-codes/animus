@@ -112,6 +112,13 @@ export function resolveAllowedSkills(root: string, role: LoopRole, acceptedRef?:
       candidateNames.add("writing-for-agents");
       candidateNames.add("skill-creator");
       break;
+    case "triage":
+      candidateNames.add("animus-brainstorm");
+      candidateNames.add("animus-grill");
+      candidateNames.add("animus-architecture");
+      candidateNames.add("animus-spec");
+      candidateNames.add("animus-tickets");
+      break;
     default:
       break;
   }

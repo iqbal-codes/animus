@@ -23,7 +23,8 @@ export type LoopRole =
   | "investigator"
   | "manager"
   | "auditor"
-  | "simplifier";
+  | "simplifier"
+  | "triage";
 
 export interface ProcessResult {
   exitCode: number;
