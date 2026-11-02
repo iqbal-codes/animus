@@ -1,5 +1,12 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  readdirSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -287,4 +294,84 @@ test("mixed learning requires explicitly separate delivery categories", async ()
   expect(structural.status).toBe("proposed");
   expect(existsSync(join(lightweight.worktree!, ".factory/codebase-rules.json"))).toBe(false);
   expect(existsSync(join(structural.worktree!, ".factory/lessons.jsonl"))).toBe(false);
+});
+
+test("default harness evaluator in delivery executes via agentTransport and delivers proposal", async () => {
+  const f = await fixture();
+  const animusDir = join(f.root, ".animus");
+  mkdirSync(animusDir, { recursive: true });
+  writeFileSync(
+    join(animusDir, "config.yaml"),
+    `tiers:
+  large:
+    provider: pi
+    model: test-large-model
+`,
+  );
+
+  let evaluationCalls = 0;
+  const agentTransport = async (req: { argv: string[]; cwd: string; role: string }) => {
+    evaluationCalls++;
+    expect(req.role).toBe("reflector");
+    expect(req.argv).toContain("--model");
+    expect(req.argv).toContain("test-large-model");
+    return {
+      exitCode: 0,
+      stdout: JSON.stringify({
+        grounding: { approved: true, confidence: 0.95 },
+        quality: { approved: true, confidence: 0.9 },
+        hallucinationRisk: "grounded_in_logs",
+        reason: "Valid delivery evidence",
+      }),
+      stderr: "",
+    };
+  };
+
+  const result = await deliverLearningProposal({
+    ...f,
+    verifiedCandidate: f.candidate,
+    baseBranch: "main",
+    publish: false,
+    proposalEvaluator: undefined,
+    agentTransport,
+  });
+
+  expect(evaluationCalls).toBe(1);
+  expect(result.status).toBe("proposed");
+});
+
+test("default harness evaluator in delivery fails closed when agentTransport returns low confidence", async () => {
+  const f = await fixture();
+  const animusDir = join(f.root, ".animus");
+  mkdirSync(animusDir, { recursive: true });
+  writeFileSync(
+    join(animusDir, "config.yaml"),
+    `tiers:
+  large:
+    provider: pi
+    model: test-large-model
+`,
+  );
+
+  const agentTransport = async () => ({
+    exitCode: 0,
+    stdout: JSON.stringify({
+      grounding: { approved: true, confidence: 0.5 },
+      quality: { approved: true, confidence: 0.5 },
+      hallucinationRisk: "grounded_in_logs",
+    }),
+    stderr: "",
+  });
+
+  const result = await deliverLearningProposal({
+    ...f,
+    verifiedCandidate: f.candidate,
+    baseBranch: "main",
+    publish: false,
+    proposalEvaluator: undefined,
+    agentTransport,
+  });
+
+  expect(result.status).toBe("held");
+  expect(result.reasons).toContain("delivery_evaluation_rejected");
 });

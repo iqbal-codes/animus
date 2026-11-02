@@ -24,7 +24,7 @@ import {
 import type { ForgeAdapter, IssueForgeAdapter } from "../registry/forge";
 import { SystemForgeAdapter, assertIssueForge } from "../registry/forge";
 import { ProjectRegistryError } from "../registry/service";
-import { evaluateIssueAdmission, type RawIssue, type JevSystemOneResponse } from "./admission";
+import { evaluateIssueAdmission, type RawIssue } from "./admission";
 import { parseDependencies, isActiveClaim, computeDiff, computeLabelEffects } from "./parser";
 import { verifyTargetBinding, TargetBindingError } from "./binding";
 
@@ -42,14 +42,12 @@ export interface IntakeServiceOptions {
   repo?: string;
   ttlSeconds?: number;
   runner?: (cmd: string[]) => Promise<string>;
-  jevFetcher?: (payload: unknown) => Promise<JevSystemOneResponse>;
 }
 
 export class IntakeService {
   private cache = new Map<string, { result: IntakeResult; cachedAt: number }>();
   private readonly ttlSeconds: number;
   private readonly defaultRepo: string;
-  private readonly jevFetcher?: (payload: unknown) => Promise<JevSystemOneResponse>;
   private forge: ForgeAdapter;
   private db?: DatabaseSync;
 
@@ -69,7 +67,6 @@ export class IntakeService {
     this.forge = forge ?? new SystemForgeAdapter(resolvedOptions?.runner);
     this.defaultRepo = resolvedOptions?.repo || "animus";
     this.ttlSeconds = resolvedOptions?.ttlSeconds ?? 60.0;
-    this.jevFetcher = resolvedOptions?.jevFetcher;
   }
 
   setForge(forge: ForgeAdapter): void {
@@ -198,7 +195,6 @@ export class IntakeService {
       project.repo_name,
       [simulatedIssue],
       branchIntegrations,
-      true,
     );
     if (!simulatedAdmission) throw new Error("Admission preview unavailable");
 
@@ -369,7 +365,6 @@ export class IntakeService {
     repo: string,
     issues: RawIssue[],
     integrations = new Map<number, string>(),
-    advisory = false,
   ): Promise<EvaluatedIssue[]> {
     const byNumber = new Map(issues.map((issue) => [issue.number, issue]));
     const dependencies = new Set<number>();
@@ -413,21 +408,17 @@ export class IntakeService {
         );
       }
     }
-    return Promise.all(
-      issues.map(async (issue) => {
-        const result = await evaluateIssueAdmission(issue, byNumber, {
-          integratedBranchIssues: integrations,
-          advisory,
-          jevFetcher: this.jevFetcher,
-        });
-        const unavailable = result.unsatisfied_dependencies.filter((number) => failed.has(number));
-        if (unavailable.length && result.reason.startsWith("waiting_on_dependency:")) {
-          result.reason =
-            "dependency_lookup_failed:" + unavailable.map((number) => "#" + number).join(",");
-        }
-        return result;
-      }),
-    );
+    return issues.map((issue) => {
+      const result = evaluateIssueAdmission(issue, byNumber, {
+        integratedBranchIssues: integrations,
+      });
+      const unavailable = result.unsatisfied_dependencies.filter((number) => failed.has(number));
+      if (unavailable.length && result.reason.startsWith("waiting_on_dependency:")) {
+        result.reason =
+          "dependency_lookup_failed:" + unavailable.map((number) => "#" + number).join(",");
+      }
+      return result;
+    });
   }
 
   async evaluateBacklog(forceRefresh = false): Promise<IntakeResult> {

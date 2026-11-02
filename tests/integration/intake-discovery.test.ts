@@ -53,9 +53,8 @@ test("single issue lookup bypasses backlog and rechecks dependency state on each
   expect((await service.getIssue(201))?.admission_status).toBe("held");
 });
 
-test("backlog admission never waits on advisory for unlabeled or triage issues", async () => {
+test("backlog admission evaluates unlabeled or triage issues deterministically without advisory", async () => {
   const forge = new SyntheticForgeAdapter({ "owner/repo": 1 });
-  let advisoryCalls = 0;
   forge.listIssues = async () => [
     { ...issue(1), labels: [] },
     { ...issue(2), labels: [{ name: "needs-triage" }] },
@@ -64,19 +63,16 @@ test("backlog admission never waits on advisory for unlabeled or triage issues",
   const service = new IntakeService(
     {
       repo: "owner/repo",
-      jevFetcher: async () => {
-        advisoryCalls++;
-        throw new Error("unavailable");
-      },
     },
     forge,
   );
   const result = await service.evaluateBacklog();
   expect(result.issues.map((item) => item.admission_status)).toEqual(["held", "held", "admitted"]);
-  expect(advisoryCalls).toBe(0);
+  expect(result.issues[0].reason).toBe("unlabeled_awaiting_triage");
+  expect(result.issues[1].reason).toBe("held_by_label");
 });
 
-test("dependency lookup outages hold candidates without invoking advisory", async () => {
+test("dependency lookup outages hold candidates deterministically", async () => {
   const forge = new SyntheticForgeAdapter({ "owner/repo": 1 });
   forge.listIssues = async () => [issue(201, "Depends on: #1")];
   forge.getIssue = async () => {
@@ -85,9 +81,6 @@ test("dependency lookup outages hold candidates without invoking advisory", asyn
   const service = new IntakeService(
     {
       repo: "owner/repo",
-      jevFetcher: async () => {
-        throw new Error("advisory must not run");
-      },
     },
     forge,
   );

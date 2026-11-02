@@ -115,18 +115,6 @@ export const controlStateSchema = z.object({
 });
 export type ControlState = z.infer<typeof controlStateSchema>;
 
-export const jevEvaluationSchema = z.object({
-  id: z.string().optional(),
-  model: z.string().optional(),
-  is_actionable: z.number().optional(),
-  choice: z.string().optional(),
-  confidence: z.number().optional(),
-  complexity: z.number().nullable().optional(),
-  probabilities: z.record(z.string(), z.number()).nullable().optional(),
-  recommendation_reason: z.string().optional(),
-});
-export type JevEvaluation = z.infer<typeof jevEvaluationSchema>;
-
 export const evaluatedIssueSchema = z.object({
   number: z.number().int().positive(),
   title: z.string(),
@@ -138,11 +126,6 @@ export const evaluatedIssueSchema = z.object({
   unsatisfied_dependencies: z.array(z.number().int()),
   body: z.string().nullable().optional(),
   integrated_to_branch: z.string().nullable().optional(),
-  recommended_label: z.string().nullable().optional(),
-  confidence: z.number().nullable().optional(),
-  complexity: z.number().nullable().optional(),
-  probabilities: z.record(z.string(), z.number()).nullable().optional(),
-  jev_evaluation: jevEvaluationSchema.nullable().optional(),
 });
 export type EvaluatedIssue = z.infer<typeof evaluatedIssueSchema>;
 

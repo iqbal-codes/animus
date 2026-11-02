@@ -151,7 +151,7 @@ test("portable client exposes only classified errors, never raw transport/upstre
 test("portable client reads backlog intake and individual evaluated issues", async () => {
   const issueData: EvaluatedIssue = {
     number: 31,
-    title: "Inspect canonical admission and Jev advisory results end to end",
+    title: "Inspect canonical admission results end to end",
     state: "OPEN",
     admission_status: "admitted",
     reason: "admitted_ready",

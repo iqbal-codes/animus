@@ -7,7 +7,9 @@ import { tmpdir } from "node:os";
 import { z } from "zod";
 import type { IssueDossier } from "./dossier";
 import { learningMutationSchema, learningVerdictSchema, type LearningCommandRecord, type LearningEvaluator, type LearningMutation } from "./learning-schema";
-import { evaluateLearningWithJev, resolveLearningEvidence, validateLearningMutation } from "./learning-gates";
+import { evaluateLearningWithHarness, resolveLearningEvidence, validateLearningMutation } from "./learning-gates";
+import { processRun } from "./process";
+import type { AgentTransport } from "./types";
 
 export interface LearningDeliveryRequest {
   root: string; proposalPath: string; verifiedCandidate: string; baseBranch: string;
@@ -18,6 +20,7 @@ export interface LearningDeliveryRequest {
   category?: "lightweight" | "structural";
   checks?: string[][];
   transport?: LearningDeliveryTransport;
+  agentTransport?: AgentTransport;
 }
 export type LearningDeliveryTransport = (request: { argv: string[]; cwd: string }) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
 export interface LearningDeliveryOutcome {
@@ -105,6 +108,21 @@ export async function deliverLearningProposal(options: LearningDeliveryRequest):
     const raw: unknown = JSON.parse(readFileSync(options.proposalPath, "utf8"));
     const artifact = raw as { schema_version?: unknown; status?: unknown; issueNumber?: unknown; accepted?: unknown[] };
     if (artifact.schema_version !== 1 || artifact.status !== "proposed" || artifact.issueNumber !== options.dossier.issueNumber || !Array.isArray(artifact.accepted) || !artifact.accepted.length || artifact.accepted.length > 50) throw new Error("invalid_delivery_proposal");
+    const agentTransport: AgentTransport =
+      options.agentTransport ??
+      (options.transport
+        ? async (req) => {
+            const res = await options.transport!({ argv: req.argv, cwd: req.cwd });
+            return { ...res, timedOut: false };
+          }
+        : (req) => processRun(req.argv, req.cwd, req.timeoutMs, req.env));
+    const defaultEvaluator: LearningEvaluator = (m, ev) =>
+      evaluateLearningWithHarness(m, ev, {
+        root: options.root,
+        cwd: options.root,
+        transport: agentTransport,
+      });
+    const evaluator = options.proposalEvaluator ?? defaultEvaluator;
     const mutations: LearningMutation[] = [];
     for (const item of artifact.accepted) {
       const mutation = learningMutationSchema.parse((item as { mutation?: unknown })?.mutation);
@@ -112,7 +130,7 @@ export async function deliverLearningProposal(options: LearningDeliveryRequest):
       const stored = (item as { evidence?: Array<{ sha256?: string }> }).evidence;
       if (!stored || stored.length !== evidence.length || evidence.some((e, i) => e.sha256 !== stored[i]?.sha256)) throw new Error("evidence_changed_since_reflection");
       validateLearningMutation(mutation, options.commandRecords ?? [], options.dossier, options.evidenceRoots);
-      const verdict = learningVerdictSchema.parse(await (options.proposalEvaluator ?? evaluateLearningWithJev)(mutation, evidence));
+      const verdict = learningVerdictSchema.parse(await evaluator(mutation, evidence));
       if (!verdict.grounding.approved || verdict.grounding.confidence < .7 || !verdict.quality.approved || verdict.quality.confidence < .7 || verdict.hallucinationRisk !== "grounded_in_logs") throw new Error("delivery_evaluation_rejected");
       mutations.push(mutation);
     }
