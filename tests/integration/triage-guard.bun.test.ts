@@ -5,6 +5,7 @@ import {
   resolveModelForRole,
   resolveModelTier,
   resolveProviderForRole,
+  resolveRoleConfig,
   serializeAnimusConfigYaml,
   type AnimusConfig,
 } from "../../scripts/loop/config";
@@ -156,6 +157,14 @@ describe("Triage Role Configuration & Tier Resolution", () => {
     expect(resolveEffortForRole(root, "qa")).toBe("minimal");
     // Builder has no role-specific override, so it gets global FACTORY_LOOP_EFFORT="high"
     expect(resolveEffortForRole(root, "builder")).toBe("high");
+
+    // Explicit env parameter precedence: role override wins over global effort
+    const explicitEnv = {
+      FACTORY_LOOP_EFFORT: "max",
+      FACTORY_LOOP_TRIAGE_EFFORT: "low",
+    };
+    expect(resolveEffortForRole(root, "triage", explicitEnv)).toBe("low");
+    expect(resolveRoleConfig(root, "triage", explicitEnv).effort).toBe("low");
   });
 
   test("serializeAnimusConfigYaml and parseYamlSimple round-trip roles configuration cleanly", () => {
@@ -792,5 +801,34 @@ describe("buildProviderArgv Triage Skill Optimization & Lazy Materialization", (
 
     expect(argv[0]).toBe("claude");
     expect(argv.some((arg) => arg.includes("Full content when standalone."))).toBe(true);
+  });
+
+  test("non-Pi provider materialized system ordering places static skills before dynamic append prompts", () => {
+    const triageSkill = makeSkill("animus-triage", "# Animus Triage\nStatic triage instructions.");
+    const dynamicLesson = "Dynamic curated lesson matching target files.";
+
+    const argv = buildProviderArgv("claude", {
+      prompt: "Triage this issue",
+      skills: [triageSkill],
+      appendSystemPrompts: [dynamicLesson],
+    });
+
+    expect(argv[0]).toBe("claude");
+    // Collect all arguments following --append-system-prompt
+    const appendPromptValues: string[] = [];
+    for (let i = 0; i < argv.length - 1; i++) {
+      if (argv[i] === "--append-system-prompt") {
+        appendPromptValues.push(argv[i + 1]!);
+      }
+    }
+    expect(appendPromptValues.length).toBeGreaterThanOrEqual(2);
+    const staticSkillIdx = appendPromptValues.findIndex((val) =>
+      val.includes("Static triage instructions."),
+    );
+    const dynamicLessonIdx = appendPromptValues.findIndex((val) => val.includes(dynamicLesson));
+    expect(staticSkillIdx).toBeGreaterThan(-1);
+    expect(dynamicLessonIdx).toBeGreaterThan(-1);
+    // Static skill must precede dynamic append prompts for prefix caching
+    expect(staticSkillIdx).toBeLessThan(dynamicLessonIdx);
   });
 });

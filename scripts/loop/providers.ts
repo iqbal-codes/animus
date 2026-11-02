@@ -1,13 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-export const SUPPORTED_PROVIDERS = [
-  "pi",
-  "claude",
-  "omp",
-  "codex",
-  "opencode",
-] as const;
+export const SUPPORTED_PROVIDERS = ["pi", "claude", "omp", "codex", "opencode"] as const;
 
 export const ACTIVE_PROVIDERS = ["pi", "claude", "omp"] as const;
 export const COMING_SOON_PROVIDERS = ["codex", "opencode"] as const;
@@ -232,11 +226,8 @@ function getSkillName(skillPath: string): string {
  * Builds standard CLI arguments for running an autonomous lap step across
  * any supported Animus SDLC provider harness with reasoning effort mapping.
  */
-export function buildProviderArgv(
-  provider: string,
-  options: BuildProviderArgvOptions,
-): string[] {
-  const norm = (provider.toLowerCase() as SupportedProvider);
+export function buildProviderArgv(provider: string, options: BuildProviderArgvOptions): string[] {
+  const norm = provider.toLowerCase() as SupportedProvider;
   const descriptor = isSupportedProvider(norm) ? PROVIDER_DESCRIPTORS[norm] : undefined;
   const clamped =
     options.effort && descriptor
@@ -273,12 +264,11 @@ export function buildProviderArgv(
           return contents;
         })();
 
-  const materializedSystemPrompts =
-    isPi
-      ? []
-      : (options.appendSystemPrompts ?? [])
-          .map((p) => materializeContextText(p))
-          .concat(skillContents);
+  const materializedSystemPrompts = isPi
+    ? []
+    : skillContents.concat(
+        (options.appendSystemPrompts ?? []).map((p) => materializeContextText(p)),
+      );
 
   switch (norm) {
     case "claude": {
@@ -307,7 +297,7 @@ export function buildProviderArgv(
         "--dangerously-skip-permissions",
         ...(model ? ["--model", model] : []),
         ...(clamped ? ["--effort", clamped] : []),
-        ...(materializedSystemPrompts.flatMap((p) => ["--append-system-prompt", p])),
+        ...materializedSystemPrompts.flatMap((p) => ["--append-system-prompt", p]),
         "-p",
         options.prompt,
       ];
@@ -325,7 +315,7 @@ export function buildProviderArgv(
         "--no-skills",
         "--no-context-files",
         ...(options.tools !== undefined ? ["--tools", options.tools] : []),
-        ...(materializedSystemPrompts.flatMap((p) => ["--append-system-prompt", p])),
+        ...materializedSystemPrompts.flatMap((p) => ["--append-system-prompt", p]),
         "--auto-approve",
         ...(model ? ["--model", model] : []),
         ...(clamped ? ["--thinking", clamped] : []),

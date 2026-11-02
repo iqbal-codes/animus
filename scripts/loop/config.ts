@@ -168,11 +168,18 @@ export function resolveModelTier(role: LoopRole, rootOrConfig?: string | AnimusC
   if (rootOrConfig) {
     const config = typeof rootOrConfig === "string" ? readAnimusConfig(rootOrConfig) : rootOrConfig;
     const roleOverride = config.roles?.[role];
-    if (typeof roleOverride === "string" && (roleOverride === "small" || roleOverride === "medium" || roleOverride === "large")) {
+    if (
+      typeof roleOverride === "string" &&
+      (roleOverride === "small" || roleOverride === "medium" || roleOverride === "large")
+    ) {
       return roleOverride;
     }
     if (roleOverride && typeof roleOverride === "object" && typeof roleOverride.tier === "string") {
-      if (roleOverride.tier === "small" || roleOverride.tier === "medium" || roleOverride.tier === "large") {
+      if (
+        roleOverride.tier === "small" ||
+        roleOverride.tier === "medium" ||
+        roleOverride.tier === "large"
+      ) {
         return roleOverride.tier;
       }
     }
@@ -196,8 +203,12 @@ export function resolveModelTier(role: LoopRole, rootOrConfig?: string | AnimusC
   }
 }
 
-export function resolveModelForRole(root: string, role: LoopRole): string | undefined {
-  if (process.env.FACTORY_LOOP_MODEL) return process.env.FACTORY_LOOP_MODEL;
+export function resolveModelForRole(
+  root: string,
+  role: LoopRole,
+  env: Record<string, string | undefined> = process.env,
+): string | undefined {
+  if (env.FACTORY_LOOP_MODEL) return env.FACTORY_LOOP_MODEL;
   const config = readAnimusConfig(root);
   const roleOverride = config.roles?.[role];
   if (roleOverride && typeof roleOverride === "object" && roleOverride.model) {
@@ -220,8 +231,12 @@ export function resolveModelForRole(root: string, role: LoopRole): string | unde
   return undefined;
 }
 
-export function resolveProviderForRole(root: string, role: LoopRole): string {
-  if (process.env.FACTORY_LOOP_PROVIDER) return process.env.FACTORY_LOOP_PROVIDER;
+export function resolveProviderForRole(
+  root: string,
+  role: LoopRole,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  if (env.FACTORY_LOOP_PROVIDER) return env.FACTORY_LOOP_PROVIDER;
   const config = readAnimusConfig(root);
   const roleOverride = config.roles?.[role];
   if (roleOverride && typeof roleOverride === "object" && roleOverride.provider) {
@@ -244,18 +259,27 @@ export function resolveProviderForRole(root: string, role: LoopRole): string {
   return "pi";
 }
 
-export function resolveEffortForRole(root: string, role: LoopRole): EffortRung | undefined {
+export function resolveEffortForRole(
+  root: string,
+  role: LoopRole,
+  env: Record<string, string | undefined> = process.env,
+): EffortRung | undefined {
   const roleEnvKey = `FACTORY_LOOP_${role.toUpperCase()}_EFFORT`;
-  const roleEffort = process.env[roleEnvKey];
+  const roleEffort = env[roleEnvKey];
   if (roleEffort && isEffortRung(roleEffort)) {
     return roleEffort;
   }
-  if (process.env.FACTORY_LOOP_EFFORT && isEffortRung(process.env.FACTORY_LOOP_EFFORT)) {
-    return process.env.FACTORY_LOOP_EFFORT;
+  if (env.FACTORY_LOOP_EFFORT && isEffortRung(env.FACTORY_LOOP_EFFORT)) {
+    return env.FACTORY_LOOP_EFFORT;
   }
   const config = readAnimusConfig(root);
   const roleOverride = config.roles?.[role];
-  if (roleOverride && typeof roleOverride === "object" && roleOverride.effort && isEffortRung(roleOverride.effort)) {
+  if (
+    roleOverride &&
+    typeof roleOverride === "object" &&
+    roleOverride.effort &&
+    isEffortRung(roleOverride.effort)
+  ) {
     return roleOverride.effort;
   }
   const tier = resolveModelTier(role, config);
@@ -278,10 +302,11 @@ export function resolveEffortForRole(root: string, role: LoopRole): EffortRung |
 export function resolveRoleConfig(
   root: string,
   role: LoopRole,
+  env: Record<string, string | undefined> = process.env,
 ): { provider: string; model?: string; effort?: EffortRung } {
   return {
-    provider: resolveProviderForRole(root, role),
-    model: resolveModelForRole(root, role),
-    effort: resolveEffortForRole(root, role),
+    provider: resolveProviderForRole(root, role, env),
+    model: resolveModelForRole(root, role, env),
+    effort: resolveEffortForRole(root, role, env),
   };
 }

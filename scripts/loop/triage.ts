@@ -22,6 +22,7 @@ import {
 } from "../../apps/backend/src/registry/forge";
 import { extractReportObject } from "./artifacts";
 import { resolveRoleConfig } from "./config";
+import { resolveRoleBudgets } from "./deadlines";
 import {
   buildCuratedAppendPrompts,
   resolveAllowedSkills,
@@ -30,7 +31,7 @@ import {
 import { processRun } from "./process";
 import { loadPrompt, renderPrompt } from "./prompts";
 import { buildProviderArgv, type EffortRung } from "./providers";
-import type { AgentTransport } from "./types";
+import type { AgentTransport, LoopRole, RoleBudget } from "./types";
 
 export const TRIAGE_AGENT_MARKER = "<!-- animus-triage-agent -->";
 
@@ -221,6 +222,7 @@ export interface RunTriagePassOptions {
   dryRun?: boolean;
   acceptedRef?: string;
   timeoutMs?: number;
+  roleBudgets?: Partial<Record<LoopRole, RoleBudget>>;
   env?: Record<string, string>;
   limit?: number;
 }
@@ -275,12 +277,13 @@ export function evaluateTriageEligibility(
               reason: `Issue #${issue.number} failed triage ${record.attempts} times and has not been updated since last failure`,
             };
           }
-        } else {
-          try {
-            rmSync(failureFile, { force: true });
-          } catch {}
         }
-      } catch {}
+      } catch (err: any) {
+        return {
+          eligible: false,
+          reason: `Issue #${issue.number} failure record is unreadable or corrupted: ${err?.message || String(err)}`,
+        };
+      }
     }
   }
 
@@ -705,6 +708,14 @@ export function validateTriagePassInputs(options: RunTriagePassOptions): void {
       throw new Error(`Invalid limit: '${options.limit}'; must be a positive integer`);
     }
   }
+
+  resolveRoleBudgets(
+    {
+      timeoutMs: options.timeoutMs,
+      roleBudgets: options.roleBudgets,
+    },
+    { ...process.env, ...(options.env ?? {}) },
+  );
 }
 
 export function computeIssueFreshnessFingerprint(issue: ForgeIssue): string {
@@ -1126,38 +1137,36 @@ function recordTriageFailure(
   fingerprint: string,
   lastError: string,
 ): void {
-  try {
-    const failuresDir = join(stateRoot, "triage-failures");
-    mkdirSync(failuresDir, { recursive: true });
-    const failureFile = join(failuresDir, `issue-${issueNumber}.json`);
-    let attempts = 1;
-    if (existsSync(failureFile)) {
-      try {
-        const raw = JSON.parse(readFileSync(failureFile, "utf-8"));
-        if (raw && raw.fingerprint === fingerprint && typeof raw.attempts === "number") {
-          attempts = raw.attempts + 1;
-        }
-      } catch {}
+  const failuresDir = join(stateRoot, "triage-failures");
+  mkdirSync(failuresDir, { recursive: true });
+  const failureFile = join(failuresDir, `issue-${issueNumber}.json`);
+  let attempts = 1;
+  if (existsSync(failureFile)) {
+    try {
+      const raw = JSON.parse(readFileSync(failureFile, "utf-8"));
+      if (raw && raw.fingerprint === fingerprint && typeof raw.attempts === "number") {
+        attempts = raw.attempts + 1;
+      }
+    } catch {
+      attempts = 1;
     }
-    const record: TriageFailureRecord = {
-      fingerprint,
-      attempts,
-      failedAt: new Date().toISOString(),
-      lastError,
-    };
-    const tmpFile = `${failureFile}.${randomUUID()}.tmp`;
-    writeFileSync(tmpFile, JSON.stringify(record, null, 2), "utf-8");
-    renameSync(tmpFile, failureFile);
-  } catch {}
+  }
+  const record: TriageFailureRecord = {
+    fingerprint,
+    attempts,
+    failedAt: new Date().toISOString(),
+    lastError,
+  };
+  const tmpFile = `${failureFile}.${randomUUID()}.tmp`;
+  writeFileSync(tmpFile, JSON.stringify(record, null, 2), "utf-8");
+  renameSync(tmpFile, failureFile);
 }
 
 function clearTriageFailure(stateRoot: string, issueNumber: number): void {
-  try {
-    const failureFile = join(stateRoot, "triage-failures", `issue-${issueNumber}.json`);
-    if (existsSync(failureFile)) {
-      rmSync(failureFile, { force: true });
-    }
-  } catch {}
+  const failureFile = join(stateRoot, "triage-failures", `issue-${issueNumber}.json`);
+  if (existsSync(failureFile)) {
+    rmSync(failureFile, { force: true });
+  }
 }
 
 async function triageSingleIssue(
@@ -1268,7 +1277,6 @@ async function triageSingleIssue(
     const commentCount = (issue.comments ?? []).length;
     if (trimmedBody.length === 0 && commentCount === 0) {
       if (options.dryRun) {
-        clearFailure();
         return {
           issueNumber,
           status: "planned",
@@ -1280,10 +1288,20 @@ async function triageSingleIssue(
       const commentBody = `Please provide a description of the problem, intended outcome, and reproduction steps or acceptance criteria.\n\n${TRIAGE_AGENT_MARKER}`;
       await forge.createIssueComment(repo, issueNumber, commentBody);
       const existingLabels = normalizeLabels(issue.labels);
-      const newLabels = existingLabels.filter((l) => l !== NEEDS_TRIAGE).concat(NEEDS_INFO);
-      await forge.updateIssue(repo, issueNumber, {
-        labels: Array.from(new Set(newLabels)),
-      });
+      const newLabels = existingLabels.filter((l) => l !== NEEDS_TRIAGE);
+      if (!newLabels.includes(NEEDS_INFO)) {
+        newLabels.push(NEEDS_INFO);
+      }
+      const targetLabels = Array.from(new Set(newLabels));
+      const labelsChanged =
+        targetLabels.length !== existingLabels.length ||
+        targetLabels.some((l) => !existingLabels.includes(l)) ||
+        existingLabels.some((l) => !targetLabels.includes(l));
+      if (labelsChanged) {
+        await forge.updateIssue(repo, issueNumber, {
+          labels: targetLabels,
+        });
+      }
       clearFailure();
       return {
         issueNumber,
@@ -1293,10 +1311,14 @@ async function triageSingleIssue(
       };
     }
 
-    const roleConfig = resolveRoleConfig(root, "triage");
-    const provider = options.env?.FACTORY_LOOP_PROVIDER ?? roleConfig.provider ?? "pi";
-    const model = options.env?.FACTORY_LOOP_MODEL ?? roleConfig.model;
-    const effort = (options.env?.FACTORY_LOOP_EFFORT as EffortRung) ?? roleConfig.effort;
+    const effectiveEnv: Record<string, string | undefined> = {
+      ...process.env,
+      ...(options.env ?? {}),
+    };
+    const roleConfig = resolveRoleConfig(root, "triage", effectiveEnv);
+    const provider = roleConfig.provider;
+    const model = roleConfig.model;
+    const effort = roleConfig.effort;
 
     // The domain playbook is required; exploratory planning skills are optional and selected by it.
     const skills = resolveAllowedSkills(root, "triage", options.acceptedRef);
@@ -1391,7 +1413,14 @@ async function triageSingleIssue(
     const transport: AgentTransport =
       options.transport ?? ((req) => processRun(req.argv, req.cwd, req.timeoutMs, req.env));
 
-    const timeoutMs = options.timeoutMs ?? 180000;
+    const budgets = resolveRoleBudgets(
+      {
+        timeoutMs: options.timeoutMs,
+        roleBudgets: options.roleBudgets,
+      },
+      env,
+    );
+    const timeoutMs = budgets.triage.hardMs;
     const response = await transport({
       argv,
       cwd: root,
@@ -1469,7 +1498,6 @@ async function triageSingleIssue(
         }
       }
 
-      clearFailure();
       return {
         issueNumber,
         status: "planned",
@@ -1535,10 +1563,20 @@ async function triageSingleIssue(
       case "ask_clarification": {
         const commentBody = `${action.question}\n\n${TRIAGE_AGENT_MARKER}`;
         await forge.createIssueComment(repo, issueNumber, commentBody);
-        const newLabels = existingLabels.filter((l) => l !== NEEDS_TRIAGE).concat(NEEDS_INFO);
-        await forge.updateIssue(repo, issueNumber, {
-          labels: Array.from(new Set(newLabels)),
-        });
+        const newLabels = existingLabels.filter((l) => l !== NEEDS_TRIAGE);
+        if (!newLabels.includes(NEEDS_INFO)) {
+          newLabels.push(NEEDS_INFO);
+        }
+        const targetLabels = Array.from(new Set(newLabels));
+        const labelsChanged =
+          targetLabels.length !== existingLabels.length ||
+          targetLabels.some((l) => !existingLabels.includes(l)) ||
+          existingLabels.some((l) => !targetLabels.includes(l));
+        if (labelsChanged) {
+          await forge.updateIssue(repo, issueNumber, {
+            labels: targetLabels,
+          });
+        }
         clearFailure();
         return {
           issueNumber,

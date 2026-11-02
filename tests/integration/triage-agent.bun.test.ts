@@ -14,6 +14,7 @@ import {
   evaluateTriageEligibility,
   isIssueEligibleForTriage,
   promoteEpicSchema,
+  renderTriagePrompt,
   runTriagePass,
   TRIAGE_AGENT_MARKER,
   type TriageFailureRecord,
@@ -2940,29 +2941,42 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
 
   describe("Issue #127: Boundary Codebase Pointers, Cache-First Triage Prompt, and Failure Backoff", () => {
     test("AC1: scripts/prompts/triage.md places static instructions before dynamic $INPUTS.* tokens and documents Boundary pointers", () => {
-      const promptPath = join(process.cwd(), "scripts/prompts/triage.md");
-      const promptText = readFileSync(promptPath, "utf-8");
+      const issue: ForgeIssue = {
+        number: 42,
+        title: "Deterministic render test title",
+        state: "OPEN",
+        body: "Deterministic render test body",
+        comments: [
+          {
+            id: "comment-1",
+            body: "First test comment",
+            author: "tester",
+          },
+        ],
+      };
 
-      // Verify standardized Boundary pointers are documented
-      expect(promptText).toContain("Touchpoints");
-      expect(promptText).toContain("Known callers (blast radius)");
-      expect(promptText).toContain("Test seam");
-      expect(promptText).toContain("Exclusions");
+      const rendered = renderTriagePrompt(process.cwd(), issue, "owner/repo", "/tmp/artifacts");
 
-      // Verify static sections come before dynamic $INPUTS tokens
-      const staticExplorationIdx = promptText.indexOf(
-        "## 1. Codebase Exploration First (Read-Only)",
-      );
-      const staticOutputIdx = promptText.indexOf("## 4. Strict Output Format");
-      const dynamicIssueNumberIdx = promptText.indexOf("$INPUTS.issue_number");
-      const dynamicIssueBodyIdx = promptText.indexOf("$INPUTS.issue_body");
-      const dynamicIssueCommentsIdx = promptText.indexOf("$INPUTS.issue_comments");
+      // Verify standardized Boundary pointers are documented in rendered instructions
+      expect(rendered).toContain("Touchpoints");
+      expect(rendered).toContain("Known callers (blast radius)");
+      expect(rendered).toContain("Test seam");
+      expect(rendered).toContain("Exclusions");
+
+      // Verify static sections come before rendered dynamic issue content
+      const staticExplorationIdx = rendered.indexOf("## 1. Codebase Exploration First (Read-Only)");
+      const staticOutputIdx = rendered.indexOf("## 4. Strict Output Format");
+      const dynamicIssueSectionIdx = rendered.indexOf("## Target Issue Context (Dynamic Data)");
+      const dynamicIssueTitleIdx = rendered.indexOf("Deterministic render test title");
+      const dynamicIssueBodyIdx = rendered.indexOf("Deterministic render test body");
+      const dynamicIssueCommentIdx = rendered.indexOf("First test comment");
 
       expect(staticExplorationIdx).toBeGreaterThan(-1);
       expect(staticOutputIdx).toBeGreaterThan(staticExplorationIdx);
-      expect(dynamicIssueNumberIdx).toBeGreaterThan(staticOutputIdx);
-      expect(dynamicIssueBodyIdx).toBeGreaterThan(staticOutputIdx);
-      expect(dynamicIssueCommentsIdx).toBeGreaterThan(staticOutputIdx);
+      expect(dynamicIssueSectionIdx).toBeGreaterThan(staticOutputIdx);
+      expect(dynamicIssueTitleIdx).toBeGreaterThan(dynamicIssueSectionIdx);
+      expect(dynamicIssueBodyIdx).toBeGreaterThan(dynamicIssueTitleIdx);
+      expect(dynamicIssueCommentIdx).toBeGreaterThan(dynamicIssueBodyIdx);
     });
 
     test("AC1: animus-tickets and animus-triage skills document standardized Boundary pointers", () => {
@@ -3266,19 +3280,31 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
       await forge.createIssueComment("owner/repo", 810, "Here is more context from the author");
       const updatedIssue = (await forge.getIssue("owner/repo", 810))!;
 
-      // Eligibility restored automatically
+      // Eligibility restored automatically, but failure file is NOT deleted by the query
       const elig3 = evaluateTriageEligibility(updatedIssue, stateRoot);
       expect(elig3.eligible).toBe(true);
-      // Stale failure file should be cleaned up
-      expect(existsSync(failureFile)).toBe(false);
+      expect(existsSync(failureFile)).toBe(true);
 
-      // Now successful triage runs and clears failure state
       const successfulTransport = mockTransport({
         action: "ask_clarification",
         question: "Can you confirm the version?",
         reason: "Author comment added context",
       });
 
+      // Dry-run pass also does NOT delete the failure file
+      await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport: successfulTransport,
+        acceptedRef,
+        issueNumber: 810,
+        dryRun: true,
+      });
+      expect(existsSync(failureFile)).toBe(true);
+
+      // Now successful triage runs and clears failure state
       const result4 = await runTriagePass({
         root,
         repo: "owner/repo",
@@ -3291,6 +3317,235 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
 
       expect(result4.processed[0]?.status).toBe("clarification_requested");
       expect(existsSync(failureFile)).toBe(false);
+    });
+
+    test("corrupted or unreadable failure file fails closed in evaluateTriageEligibility", () => {
+      const stateRoot = makeStateRoot();
+      const failuresDir = join(stateRoot, "triage-failures");
+      mkdirSync(failuresDir, { recursive: true });
+      const failureFile = join(failuresDir, "issue-999.json");
+      writeFileSync(failureFile, "not-valid-json{--corrupted", "utf-8");
+
+      const issue: ForgeIssue = {
+        number: 999,
+        title: "Test corrupted failure file",
+        state: "OPEN",
+        body: "Some body",
+        labels: [{ name: "needs-triage" }],
+      };
+
+      const result = evaluateTriageEligibility(issue, stateRoot);
+      expect(result.eligible).toBe(false);
+      expect(result.reason).toContain("failure record is unreadable or corrupted");
+    });
+
+    test("triage honors role budgets and passes resolved timeout to transport", async () => {
+      const { root, acceptedRef } = makeGitRepo();
+      const stateRoot = makeStateRoot();
+      const forge = new SyntheticForgeAdapter();
+      forge.addRepository("owner/repo");
+      forge.addIssue("owner/repo", {
+        number: 850,
+        title: "Budget test issue",
+        state: "OPEN",
+        body: "Body",
+        labels: [{ name: "needs-triage" }],
+      });
+
+      let capturedTimeoutMs: number | undefined;
+      const transport: AgentTransport = async (req) => {
+        capturedTimeoutMs = req.timeoutMs;
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            action: "ask_clarification",
+            question: "Question?",
+            reason: "Reason",
+          }),
+          stderr: "",
+        };
+      };
+
+      // Custom role budget: softMs 50_000, hardMs 80_000
+      await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport,
+        acceptedRef,
+        issueNumber: 850,
+        roleBudgets: {
+          triage: { softMs: 50_000, hardMs: 80_000 },
+        },
+      });
+
+      expect(capturedTimeoutMs).toBe(80_000);
+    });
+
+    test("triage rejects invalid role budgets where softMs >= hardMs", async () => {
+      const { root, acceptedRef } = makeGitRepo();
+      const stateRoot = makeStateRoot();
+      const forge = new SyntheticForgeAdapter();
+
+      expect(
+        runTriagePass({
+          root,
+          repo: "owner/repo",
+          stateRoot,
+          forge,
+          acceptedRef,
+          issueNumber: 851,
+          roleBudgets: {
+            triage: { softMs: 100_000, hardMs: 50_000 },
+          },
+        }),
+      ).rejects.toThrow("Soft deadline must precede hard deadline: triage");
+    });
+
+    test("triage transport timeout error message reflects resolved timeout", async () => {
+      const { root, acceptedRef } = makeGitRepo();
+      const stateRoot = makeStateRoot();
+      const forge = new SyntheticForgeAdapter();
+      forge.addRepository("owner/repo");
+      forge.addIssue("owner/repo", {
+        number: 852,
+        title: "Timeout message test",
+        state: "OPEN",
+        body: "Body",
+        labels: [{ name: "needs-triage" }],
+      });
+
+      const timeoutTransport: AgentTransport = async () => {
+        return {
+          exitCode: 124,
+          stdout: "",
+          stderr: "timed out",
+          timedOut: true,
+        };
+      };
+
+      const result = await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport: timeoutTransport,
+        acceptedRef,
+        issueNumber: 852,
+        roleBudgets: {
+          triage: { softMs: 40_000, hardMs: 60_000 },
+        },
+      });
+
+      expect(result.processed[0]?.status).toBe("failed");
+      expect(result.processed[0]?.error).toBe("Triage agent execution timed out after 60000ms");
+    });
+
+    test("duplicate ask_clarification label update is suppressed when labels have not changed", async () => {
+      const { root, acceptedRef } = makeGitRepo();
+      const stateRoot = makeStateRoot();
+      let updateIssueCalls = 0;
+      const forge = new SyntheticForgeAdapter();
+      forge.addRepository("owner/repo");
+      // Issue already has needs-info and a human comment after an agent marker
+      forge.addIssue("owner/repo", {
+        number: 860,
+        title: "Clarification follow-up",
+        state: "OPEN",
+        body: "Initial problem",
+        labels: [{ name: "needs-info" }, { name: "bug" }],
+        comments: [
+          {
+            id: "comment-1",
+            body: `Initial question?\n\n${TRIAGE_AGENT_MARKER}`,
+            author: "agent",
+          },
+          {
+            id: "comment-2",
+            body: "Human reply providing partial info",
+            author: "human-dev",
+          },
+        ],
+      });
+
+      const origUpdate = forge.updateIssue.bind(forge);
+      forge.updateIssue = async (repo, num, input) => {
+        updateIssueCalls++;
+        return origUpdate(repo, num, input);
+      };
+
+      const transport = mockTransport({
+        action: "ask_clarification",
+        question: "Can you provide one more detail?",
+        reason: "Still missing exact log snippet.",
+      });
+
+      const result = await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport,
+        acceptedRef,
+        issueNumber: 860,
+      });
+
+      expect(result.processed[0]?.status).toBe("clarification_requested");
+      // Because issue already had needs-info and did not have needs-triage, labels did not change
+      expect(updateIssueCalls).toBe(0);
+
+      // But comment was still posted!
+      const updated = await forge.getIssue("owner/repo", 860);
+      expect(updated?.comments).toHaveLength(3);
+      expect(updated?.comments![2]?.body).toContain("Can you provide one more detail?");
+    });
+
+    test("options.env role effort takes precedence over global effort in triage transport", async () => {
+      const { root, acceptedRef } = makeGitRepo();
+      const stateRoot = makeStateRoot();
+      const forge = new SyntheticForgeAdapter();
+      forge.addRepository("owner/repo");
+      forge.addIssue("owner/repo", {
+        number: 870,
+        title: "Effort precedence test",
+        state: "OPEN",
+        body: "Body",
+        labels: [{ name: "needs-triage" }],
+      });
+
+      let capturedArgv: string[] | undefined;
+      const transport: AgentTransport = async (req) => {
+        capturedArgv = req.argv;
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            action: "ask_clarification",
+            question: "Question?",
+            reason: "Reason",
+          }),
+          stderr: "",
+        };
+      };
+
+      await runTriagePass({
+        root,
+        repo: "owner/repo",
+        stateRoot,
+        forge,
+        transport,
+        acceptedRef,
+        issueNumber: 870,
+        env: {
+          FACTORY_LOOP_EFFORT: "max",
+          FACTORY_LOOP_TRIAGE_EFFORT: "low",
+        },
+      });
+
+      expect(capturedArgv).toBeDefined();
+      const thinkingIdx = capturedArgv!.indexOf("--thinking");
+      expect(thinkingIdx).toBeGreaterThan(-1);
+      expect(capturedArgv![thinkingIdx + 1]).toBe("low");
     });
   });
 });
