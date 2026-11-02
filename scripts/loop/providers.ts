@@ -180,6 +180,11 @@ export interface BuildProviderArgvOptions {
   skills?: string[];
   extensions?: string[];
   appendSystemPrompts?: string[];
+  allowedTools?: string[];
+  disallowedTools?: string[];
+  tools?: string;
+  strictMcp?: boolean;
+  settingSources?: string;
 }
 
 export function materializeSkillContent(skillPath: string): string | null {
@@ -235,12 +240,29 @@ export function buildProviderArgv(
     .concat(skillContents);
 
   switch (norm) {
-    case "claude":
+    case "claude": {
+      const toolFlags: string[] = [];
+      if (options.tools !== undefined) {
+        toolFlags.push("--tools", options.tools);
+      }
+      if (options.allowedTools && options.allowedTools.length > 0) {
+        toolFlags.push("--allowed-tools", options.allowedTools.join(","));
+      }
+      if (options.disallowedTools && options.disallowedTools.length > 0) {
+        toolFlags.push("--disallowed-tools", options.disallowedTools.join(","));
+      }
+      if (options.strictMcp) {
+        toolFlags.push("--strict-mcp-config");
+      }
+      if (options.settingSources !== undefined) {
+        toolFlags.push("--setting-sources", options.settingSources);
+      }
       return [
         "claude",
         "--print",
         "--output-format",
         "json",
+        ...toolFlags,
         "--dangerously-skip-permissions",
         ...(model ? ["--model", model] : []),
         ...(clamped ? ["--effort", clamped] : []),
@@ -248,6 +270,7 @@ export function buildProviderArgv(
         "-p",
         options.prompt,
       ];
+    }
 
     case "omp":
       return [
@@ -260,6 +283,7 @@ export function buildProviderArgv(
         ...(options.extensions?.flatMap((e) => ["-e", e]) ?? []),
         "--no-skills",
         "--no-context-files",
+        ...(options.tools !== undefined ? ["--tools", options.tools] : []),
         ...(materializedSystemPrompts.flatMap((p) => ["--append-system-prompt", p])),
         "--auto-approve",
         ...(model ? ["--model", model] : []),
@@ -311,6 +335,7 @@ export function buildProviderArgv(
         ...(options.extensions?.flatMap((e) => ["-e", e]) ?? []),
         "--no-mcp",
         "--no-skills",
+        ...(options.tools !== undefined ? ["--tools", options.tools] : []),
         ...(options.skills?.flatMap((s) => ["--skill", s]) ?? []),
         "--no-prompt-templates",
         "--no-context-files",

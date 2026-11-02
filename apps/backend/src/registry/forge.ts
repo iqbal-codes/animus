@@ -82,6 +82,10 @@ export interface ForgeAdapter {
   createIssue?(repo: string, input: CreateIssueInput): Promise<ForgeIssue>;
   updateIssue?(repo: string, issueNumber: number, input: UpdateIssueInput): Promise<ForgeIssue>;
   createIssueComment?(repo: string, issueNumber: number, body: string): Promise<ForgeComment>;
+  addSubIssue?(repo: string, parentNumber: number, childNumber: number): Promise<void>;
+  addIssueDependency?(repo: string, childNumber: number, blockerNumber: number): Promise<void>;
+  getSubIssues?(repo: string, parentNumber: number): Promise<number[]>;
+  getIssueDependencies?(repo: string, childNumber: number): Promise<number[]>;
   createPullRequest?(repo: string, input: CreatePullRequestInput): Promise<ForgePullRequest>;
   listPullRequests?(repo: string): Promise<ForgePullRequest[]>;
   getPullRequest?(repo: string, prNumber: number): Promise<ForgePullRequest | null>;
@@ -94,6 +98,10 @@ export interface IssueForgeAdapter extends ForgeAdapter {
   createIssue(repo: string, input: CreateIssueInput): Promise<ForgeIssue>;
   updateIssue(repo: string, issueNumber: number, input: UpdateIssueInput): Promise<ForgeIssue>;
   createIssueComment(repo: string, issueNumber: number, body: string): Promise<ForgeComment>;
+  addSubIssue?(repo: string, parentNumber: number, childNumber: number): Promise<void>;
+  addIssueDependency?(repo: string, childNumber: number, blockerNumber: number): Promise<void>;
+  getSubIssues?(repo: string, parentNumber: number): Promise<number[]>;
+  getIssueDependencies?(repo: string, childNumber: number): Promise<number[]>;
   createPullRequest(repo: string, input: CreatePullRequestInput): Promise<ForgePullRequest>;
   listPullRequests(repo: string): Promise<ForgePullRequest[]>;
   getPullRequest(repo: string, prNumber: number): Promise<ForgePullRequest | null>;
@@ -539,10 +547,7 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
       args.push("--label", label);
     }
     try {
-      const output = execFileSync("gh", args, {
-        encoding: "utf-8",
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+      const output = await this.runner(["gh", ...args]);
       const match = output.match(/\/issues\/(\d+)/);
       if (!match || !match[1]) {
         throw new Error(`Failed to parse created issue number from gh output: ${output}`);
@@ -591,20 +596,14 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
     }
     try {
       if (args.length > 5) {
-        execFileSync("gh", args, { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+        await this.runner(["gh", ...args]);
       }
       if (input.state) {
         const stateLower = input.state.toLowerCase();
         if (stateLower === "closed") {
-          execFileSync("gh", ["issue", "close", String(issueNumber), "--repo", cleanRepo], {
-            encoding: "utf-8",
-            stdio: ["ignore", "pipe", "pipe"],
-          });
+          await this.runner(["gh", "issue", "close", String(issueNumber), "--repo", cleanRepo]);
         } else if (stateLower === "open") {
-          execFileSync("gh", ["issue", "reopen", String(issueNumber), "--repo", cleanRepo], {
-            encoding: "utf-8",
-            stdio: ["ignore", "pipe", "pipe"],
-          });
+          await this.runner(["gh", "issue", "reopen", String(issueNumber), "--repo", cleanRepo]);
         }
       }
       const updated = await this.getIssue(repo, issueNumber);
@@ -700,6 +699,78 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
       result.author = author;
     }
     return result;
+  }
+
+  async addSubIssue(repo: string, parentNumber: number, childNumber: number): Promise<void> {
+    const { owner, name } = this.repositoryVariables(repo);
+    const cleanRepo = `${owner}/${name}`;
+    const pNum = validateIssueNumber(parentNumber);
+    const cNum = validateIssueNumber(childNumber);
+    try {
+      const cmd = [
+        "gh",
+        "issue",
+        "edit",
+        String(pNum),
+        "--repo",
+        cleanRepo,
+        "--add-sub-issue",
+        String(cNum),
+      ];
+      await this.runner(cmd);
+    } catch {
+      const endpoint = `repos/${cleanRepo}/issues/${pNum}/sub_issues`;
+      const cmd = ["gh", "api", "--method", "POST", endpoint, "-F", `sub_issue_id=${cNum}`];
+      await this.runner(cmd);
+    }
+  }
+
+  async getSubIssues(repo: string, parentNumber: number): Promise<number[]> {
+    const { owner, name } = this.repositoryVariables(repo);
+    const cleanRepo = `${owner}/${name}`;
+    const pNum = validateIssueNumber(parentNumber);
+    try {
+      const endpoint = `repos/${cleanRepo}/issues/${pNum}/sub_issues`;
+      const output = await this.runner(["gh", "api", endpoint]);
+      const parsed = JSON.parse(output);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((item: any) => item.number || item.id)
+          .filter((n: any): n is number => typeof n === "number");
+      }
+    } catch {}
+    return [];
+  }
+
+  async addIssueDependency(
+    repo: string,
+    childNumber: number,
+    blockerNumber: number,
+  ): Promise<void> {
+    const { owner, name } = this.repositoryVariables(repo);
+    const cleanRepo = `${owner}/${name}`;
+    const cNum = validateIssueNumber(childNumber);
+    const bNum = validateIssueNumber(blockerNumber);
+    const endpoint = `repos/${cleanRepo}/issues/${cNum}/dependencies/blocked_by`;
+    const cmd = ["gh", "api", "--method", "POST", endpoint, "-F", `issue_id=${bNum}`];
+    await this.runner(cmd);
+  }
+
+  async getIssueDependencies(repo: string, childNumber: number): Promise<number[]> {
+    const { owner, name } = this.repositoryVariables(repo);
+    const cleanRepo = `${owner}/${name}`;
+    const cNum = validateIssueNumber(childNumber);
+    try {
+      const endpoint = `repos/${cleanRepo}/issues/${cNum}/dependencies/blocked_by`;
+      const output = await this.runner(["gh", "api", endpoint]);
+      const parsed = JSON.parse(output);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((item: any) => item.number || item.id)
+          .filter((n: any): n is number => typeof n === "number");
+      }
+    } catch {}
+    return [];
   }
 
   async createPullRequest(repo: string, input: CreatePullRequestInput): Promise<ForgePullRequest> {
@@ -821,6 +892,8 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
   private issuesByRepo = new Map<string, Map<number, ForgeIssue>>();
   private pullRequestsByRepo = new Map<string, Map<number, ForgePullRequest>>();
   private labelsByRepo = new Map<string, Map<string, ForgeLabel>>();
+  private subIssues = new Map<string, Map<number, Set<number>>>();
+  private issueDependencies = new Map<string, Map<number, Set<number>>>();
   public failNextLabel = false;
 
   async listLabels(repo: string): Promise<ForgeLabel[]> {
@@ -927,6 +1000,74 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
     }
     issue.comments.push({ ...comment });
     return { ...comment };
+  }
+
+  editIssueComment(repo: string, issueNumber: number, commentId: string, newBody: string): void {
+    const key = repo.toLowerCase();
+    const repoMap = this.issuesByRepo.get(key);
+    const issue = repoMap?.get(issueNumber);
+    if (issue && issue.comments) {
+      const comment = issue.comments.find((c) => c.id === commentId);
+      if (comment) {
+        comment.body = newBody;
+      }
+    }
+  }
+
+  async addSubIssue(repo: string, parentNumber: number, childNumber: number): Promise<void> {
+    const key = repo.toLowerCase();
+    const repoMap = this.issuesByRepo.get(key);
+    if (!repoMap || !repoMap.has(parentNumber) || !repoMap.has(childNumber)) {
+      throw new Error(
+        `Parent #${parentNumber} or child #${childNumber} not found in repository ${repo}`,
+      );
+    }
+    let repoSub = this.subIssues.get(key);
+    if (!repoSub) {
+      repoSub = new Map();
+      this.subIssues.set(key, repoSub);
+    }
+    let subs = repoSub.get(parentNumber);
+    if (!subs) {
+      subs = new Set();
+      repoSub.set(parentNumber, subs);
+    }
+    subs.add(childNumber);
+  }
+
+  async getSubIssues(repo: string, parentNumber: number): Promise<number[]> {
+    const key = repo.toLowerCase();
+    return Array.from(this.subIssues.get(key)?.get(parentNumber) ?? []);
+  }
+
+  async addIssueDependency(
+    repo: string,
+    childNumber: number,
+    blockerNumber: number,
+  ): Promise<void> {
+    const key = repo.toLowerCase();
+    const repoMap = this.issuesByRepo.get(key);
+    if (!repoMap || !repoMap.has(childNumber) || !repoMap.has(blockerNumber)) {
+      throw new Error(
+        `Child #${childNumber} or blocker #${blockerNumber} not found in repository ${repo}`,
+      );
+    }
+    let repoDeps = this.issueDependencies.get(key);
+    if (!repoDeps) {
+      repoDeps = new Map();
+      this.issueDependencies.set(key, repoDeps);
+    }
+    let deps = repoDeps.get(childNumber);
+    if (!deps) {
+      deps = new Set();
+      repoDeps.set(childNumber, deps);
+    }
+    deps.add(blockerNumber);
+  }
+
+  async getIssueDependencies(repo: string, childNumber: number): Promise<number[]> {
+    const key = repo.toLowerCase();
+    return Array.from(this.issueDependencies.get(key)?.get(childNumber) ?? []);
   }
 
   async createIssue(repo: string, input: CreateIssueInput): Promise<ForgeIssue> {

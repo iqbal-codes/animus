@@ -727,6 +727,7 @@ Code review completed across Standards and Spec axes.
       "plan",
       "simplify",
       "slice-backlog",
+      "triage",
     ];
 
     expect(Object.keys(BUNDLED_PROMPTS).sort()).toEqual(expectedPrompts.sort());
