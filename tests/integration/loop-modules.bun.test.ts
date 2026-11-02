@@ -29,6 +29,8 @@ import {
   writeHoldoutScenarios,
   runManagerPass,
   assessMergeBatchDeterministic,
+  analyzeCriticalDiffImpact,
+  evaluateSubticketAutoMerge,
   analyzeDiffComplexity,
   verifyDeployment,
   auditDiscoveries,
@@ -46,6 +48,7 @@ import {
   resolveVerificationProfile,
   getProfileInstructions,
   getIssuesWaitingApproval,
+  getMergedIssueNumbers,
   countActiveLaps,
   type BacklogCandidate,
 } from "../../scripts/loop/index";
@@ -505,7 +508,7 @@ test("11. Multiple Provider Harness Support: resolves and formats argv for Pi, C
   expect(claudeWithDefaultModel).toContain("high");
 });
 
-test("post-loop self-improving harness: curated injection, dossier terminal trigger, Jev curation, and skill promotion", async () => {
+test("accepted harness injection, terminal trigger, and fail-closed legacy learning proposals", async () => {
   const dir = mkdtempSync(join(tmpdir(), "harness-evolution-"));
   try {
     mkdirSync(join(dir, ".factory/hooks"), { recursive: true });
@@ -544,7 +547,7 @@ test("post-loop self-improving harness: curated injection, dossier terminal trig
       JSON.stringify({
         id: "lsn-20261028-01",
         topic: "port-binding",
-        trigger_patterns: ["apps/backend/*"],
+        trigger_patterns: ["apps/backend/**"],
         rule: "Assign an explicit non-zero port before passing FACTORY_HOST_URL.",
         evidence: "Lap #1 failed on port 0.",
         vetoed: false,
@@ -552,6 +555,17 @@ test("post-loop self-improving harness: curated injection, dossier terminal trig
         created_at: "2026-10-28T00:00:00Z",
       }) + "\n",
     );
+
+    for (const args of [
+      ["init", "-b", "main"],
+      ["config", "user.email", "test@example.invalid"],
+      ["config", "user.name", "Offline Test"],
+      ["add", "."],
+      ["commit", "-m", "Accepted harness"],
+    ]) {
+      const result = Bun.spawnSync(["git", ...args], { cwd: dir });
+      expect(result.exitCode).toBe(0);
+    }
 
     // 1. Curated hermetic injection
     const builderSkills = resolveAllowedSkills(dir, "builder");
@@ -652,7 +666,7 @@ test("post-loop self-improving harness: curated injection, dossier terminal trig
       reviewFindings: ["Port 0 causes crash"],
       qaFailures: [],
     });
-    expect(shouldTriggerReflection(dossierAfterLap0, { maxRejections: 2 })).toBe(false);
+    expect(shouldTriggerReflection(dossierAfterLap0)).toBe(false);
 
     // Lap 1: Approved after prior failure -> SHOULD trigger contrastive reflection!
     const dossierAfterLap1 = recordLapAttempt(stateRoot, meta, {
@@ -663,76 +677,35 @@ test("post-loop self-improving harness: curated injection, dossier terminal trig
       reviewFindings: [],
       qaFailures: [],
     });
-    expect(shouldTriggerReflection(dossierAfterLap1, { maxRejections: 2 })).toBe(true);
+    expect(shouldTriggerReflection(dossierAfterLap1)).toBe(true);
 
-    // 3. Run Post-Issue Reflection with mock transport & Jev curation
+    // Legacy free-form updates must never activate memory.
     const reflectionOutcome = await runPostIssueReflection({
       root: dir,
       worktree: dir,
       dossier: dossierAfterLap1,
       artifactsDir: join(dir, "artifacts"),
-      transport: async ({ role }) => {
-        expect(role).toBe("reflector");
-        return {
-          exitCode: 0,
-          stdout: JSON.stringify({
-            attribution: "helped",
-            tool_guidance_updates: { verify: "bun harness/ci.ts" },
-            component_registry_updates: {
-              form: "Use useAppForm() and <FormField /> from @/components/ui/form",
+      transport: async () => ({
+        exitCode: 0,
+        stdout: JSON.stringify({
+          attribution: "helped",
+          tool_guidance_updates: { verify: "bun harness/ci.ts" },
+          candidate_lessons: [
+            {
+              topic: "port-binding",
+              trigger_patterns: ["*"],
+              rule: "Resolve ports.",
+              evidence: "Claim",
             },
-            candidate_lessons: [
-              {
-                topic: "port-binding",
-                trigger_patterns: ["apps/launcher/*"],
-                rule: "Resolve dynamic port before passing FACTORY_HOST_URL to backend.",
-                evidence: "Lap 0 failed with port 0; Lap 1 succeeded with resolved port.",
-              },
-              {
-                topic: "bad-negative-rule",
-                trigger_patterns: ["*"],
-                rule: "Do not ever write bad code in this repo.",
-                evidence: "Guess",
-              },
-            ],
-            skill_promotion: {
-              skill_name: "port-resolution",
-              description:
-                "Use when configuring dynamic ports across launcher and backend services.",
-              agents_md_pointer:
-                "- When configuring dynamic ports across launcher and backend, read `.agents/skills/port-resolution/SKILL.md`.",
-              skill_markdown:
-                "---\nname: port-resolution\ndescription: Use when configuring dynamic ports.\n---\n\n# Port Resolution\n\n## Steps\n1. Bind port.\n   *Completion Criterion*: Port is > 0.\n",
-            },
-          }),
-          stderr: "",
-        };
-      },
+          ],
+        }),
+        stderr: "",
+      }),
     });
-
-    expect(reflectionOutcome.triggered).toBe(true);
-    expect(reflectionOutcome.persistedLessons).toHaveLength(1);
-    expect(reflectionOutcome.persistedLessons[0]?.occurrence_count).toBe(3); // Incremented from 2 -> 3
-    expect(reflectionOutcome.rejectedLessons).toHaveLength(1); // Rejected negative phrasing rule
-    expect(reflectionOutcome.updatedTools).toEqual(["verify"]);
-    expect(reflectionOutcome.updatedComponents).toEqual(["form"]);
-    expect(reflectionOutcome.promotedSkill?.skillName).toBe("port-resolution");
-    expect(existsSync(join(dir, ".agents/skills/port-resolution/SKILL.md"))).toBe(true);
-    const promotedSkillContent = readFileSync(
-      join(dir, ".agents/skills/port-resolution/SKILL.md"),
-      "utf-8",
-    );
-    expect(promotedSkillContent).toContain("origin: learned");
-
-    // Promoted skill without disable-model-invocation is dynamically exposed to builder on next lap
-    const builderSkillsAfterPromotion = resolveAllowedSkills(dir, "builder");
-    expect(
-      builderSkillsAfterPromotion.some((s) => s.endsWith(".agents/skills/port-resolution")),
-    ).toBe(true);
-
-    const updatedAgentsMd = readFileSync(join(dir, "AGENTS.md"), "utf-8");
-    expect(updatedAgentsMd).toContain("port-resolution");
-    expect(updatedAgentsMd.split("\n").length).toBeLessThanOrEqual(150);
+    expect(reflectionOutcome.status).toBe("held");
+    expect(reflectionOutcome.persistedLessons).toEqual([]);
+    expect(reflectionOutcome.updatedTools).toEqual([]);
+    expect(existsSync(join(dir, ".agents/skills/port-resolution/SKILL.md"))).toBe(false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1102,6 +1075,204 @@ test("18. Scheduler dossier max_laps gate: drops candidates whose dossier attemp
     });
     expect(admitted).toHaveLength(1);
     expect(admitted[0]?.number).toBe(86);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("19. Two-Layer Critical Impact & Subticket Auto-Merge Gate: authorizes bounded subtickets and holds critical impact PRs for human review", () => {
+  // 1. Clean bounded subticket change -> no critical impact
+  const cleanImpact = analyzeCriticalDiffImpact(
+    ["apps/web/src/features/intake/filter-badge.tsx", "tests/integration/intake.test.ts"],
+    "+export function FilterBadge() { return null; }\n",
+  );
+  expect(cleanImpact.hasCriticalImpact).toBe(false);
+  expect(cleanImpact.categories).toEqual([]);
+
+  // 2. Database migration / schema DDL -> database_or_state_migration
+  const dbImpact = analyzeCriticalDiffImpact(
+    ["apps/backend/src/coordination/db.ts"],
+    "+CREATE TABLE IF NOT EXISTS new_table (id TEXT PRIMARY KEY);\n",
+  );
+  expect(dbImpact.hasCriticalImpact).toBe(true);
+  expect(dbImpact.categories).toContain("database_or_state_migration");
+
+  // 3. Shared contract / cross-domain refactor -> cross_domain_or_shared_contract
+  const contractImpact = analyzeCriticalDiffImpact([
+    "packages/contracts/src/operator.ts",
+    "apps/backend/src/intake/service.ts",
+  ]);
+  expect(contractImpact.hasCriticalImpact).toBe(true);
+  expect(contractImpact.categories).toContain("cross_domain_or_shared_contract");
+
+  // 4. Security / auth / hook guard -> security_auth_or_trust_boundary
+  const secImpact = analyzeCriticalDiffImpact(["apps/backend/src/security.ts"]);
+  expect(secImpact.hasCriticalImpact).toBe(true);
+  expect(secImpact.categories).toContain("security_auth_or_trust_boundary");
+
+  // 5. Dependency / toolchain / CI workflow -> dependency_toolchain_or_infra
+  const depImpact = analyzeCriticalDiffImpact(["package.json", "bun.lock"]);
+  expect(depImpact.hasCriticalImpact).toBe(true);
+  expect(depImpact.categories).toContain("dependency_toolchain_or_infra");
+
+  // 6. Subticket targeting integration branch with clean bounded change + reviewer eligible -> authorized: true
+  const authorizedEval = evaluateSubticketAutoMerge({
+    isSubticket: true,
+    targetBranch: "factory/spec-100-integration",
+    baseBranch: "main",
+    readinessReady: true,
+    changedFiles: ["apps/web/src/features/intake/filter-badge.tsx"],
+    diffContent: "+export const badge = true;\n",
+    reviewerReport: {
+      sha: "abc1234",
+      outcome: "merge",
+      delivers: "all",
+      findings: [],
+      dispositions: [],
+      rechecks: [],
+      judge_changes: [],
+      auto_merge_judgement: {
+        eligible: true,
+        risk_level: "low",
+        scope_aligned: true,
+        critical_impacts: [],
+        rationale: "Bounded UI component slice within intake feature.",
+      },
+    },
+  });
+  expect(authorizedEval.authorized).toBe(true);
+  expect(authorizedEval.decision).toBe("auto_merge");
+  expect(authorizedEval.criticalImpacts).toEqual([]);
+
+  // 7. Subticket passing all quality checks, but deterministic diff touches DB migration -> held for human review (authorized: false)
+  const heldByDeterministicDb = evaluateSubticketAutoMerge({
+    isSubticket: true,
+    targetBranch: "factory/spec-100-integration",
+    baseBranch: "main",
+    readinessReady: true,
+    changedFiles: ["apps/backend/src/registry/db.ts"],
+    diffContent: "+ALTER TABLE projects ADD COLUMN tier TEXT;\n",
+    reviewerReport: {
+      sha: "abc1234",
+      outcome: "merge",
+      delivers: "all",
+      findings: [],
+      dispositions: [],
+      rechecks: [],
+      judge_changes: [],
+      auto_merge_judgement: {
+        eligible: true,
+        risk_level: "low",
+        scope_aligned: true,
+        critical_impacts: [],
+        rationale: "Reviewer missed DDL impact.",
+      },
+    },
+  });
+  expect(heldByDeterministicDb.authorized).toBe(false);
+  expect(heldByDeterministicDb.decision).toBe("hold_for_human");
+  expect(heldByDeterministicDb.criticalImpacts).toContain("database_or_state_migration");
+
+  // 8. Subticket with clean file names, but Reviewer flags foundational_direction_or_irreversible -> held for human review
+  const heldByReviewerSemantic = evaluateSubticketAutoMerge({
+    isSubticket: true,
+    targetBranch: "factory/spec-100-integration",
+    baseBranch: "main",
+    readinessReady: true,
+    changedFiles: ["apps/backend/src/coordination/service.ts"],
+    reviewerReport: {
+      sha: "abc1234",
+      outcome: "approved",
+      delivers: "all",
+      findings: [],
+      dispositions: [],
+      rechecks: [],
+      judge_changes: [],
+      auto_merge_judgement: {
+        eligible: false,
+        risk_level: "high",
+        scope_aligned: true,
+        critical_impacts: ["foundational_direction_or_irreversible"],
+        rationale:
+          "Changes core DAG scheduling state machine that downstream subtickets depend on.",
+      },
+    },
+  });
+  expect(heldByReviewerSemantic.authorized).toBe(false);
+  expect(heldByReviewerSemantic.decision).toBe("hold_for_human");
+  expect(heldByReviewerSemantic.criticalImpacts).toContain(
+    "foundational_direction_or_irreversible",
+  );
+
+  // 9. Standalone PR targeting main -> never auto-merged even if reviewer says eligible: true
+  const standaloneEval = evaluateSubticketAutoMerge({
+    isSubticket: false,
+    targetBranch: "main",
+    baseBranch: "main",
+    readinessReady: true,
+    changedFiles: ["apps/web/src/features/intake/filter-badge.tsx"],
+    reviewerReport: {
+      sha: "abc1234",
+      outcome: "merge",
+      delivers: "all",
+      findings: [],
+      dispositions: [],
+      rechecks: [],
+      judge_changes: [],
+      auto_merge_judgement: {
+        eligible: true,
+        risk_level: "trivial",
+        scope_aligned: true,
+        critical_impacts: [],
+        rationale: "Trivial fix.",
+      },
+    },
+  });
+  expect(standaloneEval.authorized).toBe(false);
+  expect(standaloneEval.decision).toBe("hold_for_human");
+});
+
+test("20. Scheduler auto-merged subticket unblocking: getMergedIssueNumbers satisfies Depends on and prevents re-dispatch", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "scheduler-merged-"));
+  try {
+    const runsDir = join(tmp, "runs");
+    await mkdir(join(runsDir, "run-201"), { recursive: true });
+    writeFileSync(
+      join(runsDir, "run-201", "state.json"),
+      JSON.stringify({
+        runId: "run-201",
+        issue: "https://github.com/org/repo/issues/201",
+        status: "merged",
+        partOf: 200,
+        integrationBranch: "factory/spec-200-integration",
+      }),
+    );
+
+    const mergedSet = getMergedIssueNumbers(runsDir);
+    expect(mergedSet.has(201)).toBe(true);
+
+    const candidates: BacklogCandidate[] = [
+      {
+        number: 201,
+        title: "Subticket 201 (already auto-merged into integration branch)",
+        state: "OPEN",
+        labels: ["ready-for-agent"],
+        dependencies: [],
+      },
+      {
+        number: 202,
+        title: "Subticket 202 (depends on #201)",
+        state: "OPEN",
+        labels: ["ready-for-agent"],
+        dependencies: [201],
+      },
+    ];
+
+    const admitted = filterAdmittedIssues(candidates, new Set(), {
+      mergedIssueNumbers: mergedSet,
+    });
+    expect(admitted).toHaveLength(1);
+    expect(admitted[0]?.number).toBe(202);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

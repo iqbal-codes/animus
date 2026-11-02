@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { processRun } from "./loop/process";
 import { resolveRoleBudgets, interruptionReport, RoleInterrupted } from "./loop/deadlines";
 import type {
@@ -39,8 +39,12 @@ import {
   saveIssueDossier,
   loadIssueDossier,
   syncDossierFindings,
+  type IssueDossier,
+  type LapAttemptRecord,
 } from "./loop/dossier";
 import { runPostIssueReflection } from "./loop/reflector";
+import { deliverLearningProposal, type LearningDeliveryTransport } from "./loop/learning-delivery";
+import type { LearningCommandRecord, LearningEvaluator } from "./loop/learning-schema";
 import {
   loadPrompt,
   renderPrompt,
@@ -67,6 +71,8 @@ import {
   publishComment,
   syncExistingEvidenceBindings,
 } from "./loop/pr-publication";
+import { evaluateSubticketAutoMerge } from "./loop/merge-queue";
+import { parsePartOf } from "../apps/backend/src/intake/parser";
 
 export type {
   LocalIssue,
@@ -233,14 +239,24 @@ export function formatEscalationHandoff(
 export async function runLocalLoop(
   root: string,
   issue: LocalIssue,
-  options: LocalLoopOptions = {},
+  options: LocalLoopOptions & {
+    reflection?: { proposalEvaluator?: LearningEvaluator; deliveryTransport?: LearningDeliveryTransport };
+  } = {},
 ): Promise<LocalLoopResult> {
   validateIssue(issue);
   const roleBudgets = resolveRoleBudgets(options);
   const timeout = options.timeoutMs ?? 20 * 60_000;
   const { common } = await inspectLocalLoop(root);
   const animusConfig = readAnimusConfig(root);
-  const baseBranch = options.baseBranch ?? animusConfig.worktree?.baseBranch ?? "main";
+  const defaultBaseBranch = options.baseBranch ?? animusConfig.worktree?.baseBranch ?? "main";
+  const parsedPartOf = parsePartOf([issue.body, ...(issue.comments ?? [])].join("\n"));
+  const partOf =
+    parsedPartOf !== null && parsedPartOf > 0 && parsedPartOf !== issue.number
+      ? parsedPartOf
+      : undefined;
+  const integrationBranch =
+    partOf !== undefined ? `factory/spec-${partOf}-integration` : undefined;
+  const baseBranch = integrationBranch ?? defaultBaseBranch;
 
   let remotes: string[] = [];
   try {
@@ -249,31 +265,57 @@ export async function runLocalLoop(
   } catch {}
   const hasOrigin = remotes.includes("origin");
 
-  let base = "";
+  let defaultBaseSha = "";
   if (hasOrigin) {
     try {
-      await git(root, "fetch", "origin", baseBranch);
-      base = await git(root, "rev-parse", `origin/${baseBranch}`);
+      await git(root, "fetch", "origin", defaultBaseBranch);
+      defaultBaseSha = await git(root, "rev-parse", `origin/${defaultBaseBranch}`);
 
-      // Fast-forward root baseBranch if root is clean and on baseBranch
+      // Fast-forward root defaultBaseBranch if root is clean and on defaultBaseBranch
       try {
         const currentBranch = await git(root, "symbolic-ref", "--short", "HEAD");
-        if (currentBranch === baseBranch) {
+        if (currentBranch === defaultBaseBranch) {
           const status = await git(root, "status", "--porcelain");
           if (!status.trim()) {
-            await git(root, "merge", "--ff-only", `origin/${baseBranch}`);
+            await git(root, "merge", "--ff-only", `origin/${defaultBaseBranch}`);
           }
         }
       } catch {}
     } catch {}
   }
 
-  if (!base) {
+  if (!defaultBaseSha) {
     try {
-      base = await git(root, "rev-parse", baseBranch);
+      defaultBaseSha = await git(root, "rev-parse", defaultBaseBranch);
     } catch {
-      base = await git(root, "rev-parse", "HEAD");
+      defaultBaseSha = await git(root, "rev-parse", "HEAD");
     }
+  }
+
+  let base = "";
+  if (integrationBranch) {
+    if (hasOrigin) {
+      try {
+        await git(root, "fetch", "origin", integrationBranch);
+        base = await git(root, "rev-parse", `origin/${integrationBranch}`);
+        await git(root, "update-ref", `refs/heads/${integrationBranch}`, base);
+      } catch {}
+    }
+    if (!base) {
+      try {
+        base = await git(root, "rev-parse", "--verify", `refs/heads/${integrationBranch}`);
+      } catch {
+        await git(root, "update-ref", `refs/heads/${integrationBranch}`, defaultBaseSha);
+        base = defaultBaseSha;
+      }
+    }
+    if (hasOrigin && options.push !== false) {
+      try {
+        await git(root, "push", "-u", "origin", `${integrationBranch}:${integrationBranch}`);
+      } catch {}
+    }
+  } else {
+    base = defaultBaseSha;
   }
   const config = await Bun.file(join(root, "harness/harness.config.json")).json();
   const checks = [config.static, config.unit].filter(
@@ -374,6 +416,8 @@ export async function runLocalLoop(
     worktree: existingWorktree ?? join(stateRoot, "worktrees", runId),
     branch,
     base,
+    partOf,
+    integrationBranch,
     pr: existingPr?.url,
     verificationProfile: initialProfile,
     evidence: [],
@@ -386,6 +430,10 @@ export async function runLocalLoop(
 
   const transport =
     options.transport ?? options.pi ?? ((req) => processRun(req.argv, req.cwd, req.timeoutMs, req.env));
+
+  const recoveries: NonNullable<LapAttemptRecord["recoveries"]> = [];
+  const commandRecords: LearningCommandRecord[] = [];
+  const acceptedRef = defaultBaseSha;
 
   // Reflection uses its own report parser, but must not bypass role deadlines or checkpoints.
   const reflectionTransport: typeof transport = async (request) => {
@@ -439,6 +487,68 @@ export async function runLocalLoop(
       }
     }
     throw new RoleInterrupted("reflector continuation budget exhausted");
+  };
+
+  const reflectTerminal = async (dossier: IssueDossier) => {
+    if (!shouldTriggerReflection(dossier)) return;
+    const terminalStatus = state.status;
+    const reflectionWorktree = join(runDirectory, "reflection-worktree");
+    const fingerprint = async () => {
+      const untracked = (await git(state.worktree, "ls-files", "--others", "--exclude-standard", "-z"))
+        .split("\0").filter(Boolean).map(path => [path, createHash("sha256").update(readFileSync(join(state.worktree, path))).digest("hex")]);
+      return JSON.stringify([
+        await git(state.worktree, "rev-parse", "HEAD"),
+        await git(state.worktree, "status", "--porcelain=v1", "--untracked-files=all"),
+        await git(state.worktree, "diff", "HEAD", "--binary"), untracked,
+      ]);
+    };
+    let before: string | undefined;
+    try {
+      before = await fingerprint();
+      const pinnedHead = await git(state.worktree, "rev-parse", "HEAD");
+      await git(root, "worktree", "add", "--detach", reflectionWorktree, pinnedHead);
+      state.status = "reflecting";
+      await save();
+      const evidenceRoots = Object.fromEntries(dossier.attempts
+        .filter((attempt) => attempt.artifactsDir)
+        .map((attempt) => [attempt.runId, attempt.artifactsDir!]));
+      const historicalCommands = dossier.attempts.flatMap(attempt => attempt.commandRecords ?? []);
+      const reflection = await runPostIssueReflection({
+        root, worktree: reflectionWorktree, dossier, artifactsDir,
+        transport: reflectionTransport, timeoutMs: roleBudgets.reflector.hardMs,
+        evidenceRoots, commandRecords: historicalCommands, acceptedRef,
+        proposalEvaluator: options.reflection?.proposalEvaluator,
+      });
+      await Bun.write(join(artifactsDir, "reflection.json"), JSON.stringify(reflection, null, 2));
+      let delivered = false;
+      if (reflection.status === "proposed" && reflection.proposalPath && state.candidate) {
+        const delivery = await deliverLearningProposal({
+          root, proposalPath: reflection.proposalPath, verifiedCandidate: state.candidate,
+          baseBranch: defaultBaseBranch, dossier, evidenceRoots, commandRecords: historicalCommands,
+          proposalEvaluator: options.reflection?.proposalEvaluator,
+          sourceDeliveryPr: state.pr,
+          transport: options.reflection?.deliveryTransport, publish: options.push !== false,
+        });
+        await Bun.write(join(artifactsDir, "learning-delivery.json"), JSON.stringify(delivery, null, 2));
+        delivered = delivery.status === "proposed" && (options.push === false || Boolean(delivery.prUrl));
+      }
+      if (before !== await fingerprint()) throw new Error("Reflection changed the verified candidate or dirty state; delivery held");
+      if (delivered || reflection.status === "no_entry") {
+        dossier.reflectedAt = new Date().toISOString();
+        saveIssueDossier(stateRoot, dossier);
+      }
+    } catch (error) {
+      await Bun.write(join(artifactsDir, "reflection.json"), JSON.stringify({
+        status: "error", error: error instanceof Error ? error.message : String(error),
+      }, null, 2));
+    } finally {
+      state.status = terminalStatus;
+      // Git refuses removal of dirty/interrupted reflection worktrees; preserve their evidence.
+      await git(root, "worktree", "remove", reflectionWorktree).catch(() => {});
+    }
+    if (before !== undefined && before !== await fingerprint()) {
+      throw new Error("Reflection changed the verified candidate or dirty state; delivery held");
+    }
   };
 
   try {
@@ -638,6 +748,14 @@ export async function runLocalLoop(
       const budget = roleBudgets[role];
       for (let attempt = 0; attempt <= (options.maxContinuations ?? 1); attempt++) {
         await inspectLocalLoop(root);
+        const skills = resolveAllowedSkills(root, role, acceptedRef);
+        const extensions = resolveLoopExtensions(root, acceptedRef);
+        const appendSystemPrompts = buildCuratedAppendPrompts(root, issue, changedFilesList, acceptedRef);
+        const stepNum = role === "builder" ? 0 : role === "qa" ? 1 : 2;
+        const sessionDirectory = join(runDirectory, attempt === 0
+          ? `${stepNum}-${role}-session` : `${stepNum}-${role}-attempt-${attempt}-session`);
+        await mkdir(sessionDirectory, { recursive: true });
+
         const startedAt = Date.now();
         const softDeadline = startedAt + budget.softMs;
         const hardDeadline = startedAt + budget.hardMs;
@@ -653,18 +771,14 @@ export async function runLocalLoop(
           'If incomplete, return {"verdict":"interrupted"}; never report pass for incomplete work.',
           ...(attempt ? [`Continuation ${attempt}: resume the SAME role in the SAME worktree. Read ${checkpointPath} and prior attempt artifacts first, run the baseline check yourself before editing, skip any failed approaches recorded in the checkpoint, and retain all verified work.`] : []),
         ].join("\n");
-        const stepNum = role === "builder" ? 0 : role === "qa" ? 1 : 2;
-        const sessionDirectory = join(runDirectory, attempt === 0
-          ? `${stepNum}-${role}-session` : `${stepNum}-${role}-attempt-${attempt}-session`);
-        await mkdir(sessionDirectory, { recursive: true });
         const argv = buildProviderArgv(roleProvider, {
           model: roleModel,
           effort: roleEffort,
           prompt: deadlinePrompt,
           sessionDir: sessionDirectory,
-          skills: resolveAllowedSkills(root, role),
-          extensions: resolveLoopExtensions(root),
-          appendSystemPrompts: buildCuratedAppendPrompts(root, issue, changedFilesList),
+          skills,
+          extensions,
+          appendSystemPrompts,
         });
         const result = await transport({
           argv,
@@ -701,7 +815,10 @@ export async function runLocalLoop(
           const previous = existsSync(checkpointPath) ? readFileSync(checkpointPath, "utf8") : "# Interrupted role checkpoint";
           await Bun.write(checkpointPath, previous + facts);
           await Bun.write(join(handoffDir, `${role}-attempt-${attempt}-checkpoint.md`), previous + facts);
-          if (attempt < (options.maxContinuations ?? 1)) continue;
+          if (attempt < (options.maxContinuations ?? 1)) {
+            recoveries.push({ role, artifact, reason });
+            continue;
+          }
           throw new RoleInterrupted(`${role} interrupted: ${reason}; continuation budget exhausted; see ${checkpointPath}`);
         }
         if (result.exitCode !== 0) throw new Error(`${roleProvider} ${role} process failed; see ${artifact}`);
@@ -751,7 +868,18 @@ export async function runLocalLoop(
           });
 
           const prCreate = await processRun(
-            ["gh", "pr", "create", "--head", branch, "--title", issue.title, "--body", body],
+            [
+              "gh",
+              "pr",
+              "create",
+              ...(integrationBranch ? ["--base", integrationBranch] : []),
+              "--head",
+              branch,
+              "--title",
+              issue.title,
+              "--body",
+              body,
+            ],
             state.worktree,
             30_000,
           );
@@ -815,9 +943,20 @@ export async function runLocalLoop(
     const checkOutputs: string[] = [];
     for (let i = 0; i < checks.length; i++) {
       await inspectLocalLoop(root);
+      const startedAt = new Date().toISOString();
       const result = await processRun(["sh", "-c", checks[i]!], state.worktree, timeout);
+      const completedAt = new Date().toISOString();
       const artifact = join(runDirectory, `check-${i}.json`);
-      await Bun.write(artifact, JSON.stringify({ command: checks[i], ...result }));
+      const recordPath = `command-${i}.json`;
+      const recordContent = JSON.stringify({ command: checks[i], ...result });
+      await Bun.write(artifact, recordContent);
+      await Bun.write(join(artifactsDir, recordPath), recordContent);
+      commandRecords.push({
+        executionId: `${runId}:check-${i}`, runId, candidate: state.candidate!,
+        command: checks[i]!, cwd: state.worktree, exitCode: result.exitCode, startedAt, completedAt,
+        artifact: { runId, candidate: state.candidate!, path: recordPath, lineStart: 1, lineEnd: 1, quote: recordContent },
+      });
+      await Bun.write(join(artifactsDir, "host-command-records.json"), JSON.stringify(commandRecords, null, 2));
       checkOutputs.push(`Check [${checks[i]}]: exit ${result.exitCode}\n${result.stdout}\n${result.stderr}`);
       state.evidence.push({
         kind: "check",
@@ -1013,6 +1152,10 @@ export async function runLocalLoop(
             timestamp: new Date().toISOString(),
             status: ciStatus,
             candidateHead: state.candidate,
+            artifactsDir,
+            evidence: [...state.evidence],
+            commandRecords: [...commandRecords],
+            recoveries: [...recoveries],
             changedFiles: changedFilesFinal,
             failedStage: "ci",
             reviewFindings: ciAssessment.failedChecks.map(
@@ -1022,22 +1165,7 @@ export async function runLocalLoop(
           },
         );
 
-        if (shouldTriggerReflection(dossier, { maxRejections })) {
-          state.status = "reflecting";
-          await save();
-          const reflection = await runPostIssueReflection({
-            root,
-            worktree: state.worktree,
-            dossier,
-            artifactsDir,
-            transport: reflectionTransport,
-            timeoutMs: roleBudgets.reflector.hardMs,
-          });
-          await Bun.write(join(artifactsDir, "reflection.json"), JSON.stringify(reflection, null, 2));
-          dossier.reflectedAt = new Date().toISOString();
-          saveIssueDossier(stateRoot, dossier);
-          state.status = ciStatus;
-        }
+        await reflectTerminal(dossier);
 
         const ciComment = formatCiCheckComment({
           route,
@@ -1152,17 +1280,196 @@ export async function runLocalLoop(
     const isMaxLapsExceeded = !isApproved && lap >= maxLaps;
     const isNeedsOwner = !isApproved && (isExplicitNeedsOwner || isMaxLapsExceeded);
 
-    const reviewOutcome = isApproved
+    let reviewOutcome = isApproved
       ? "approved"
       : isNeedsOwner
         ? "needs owner"
         : "sent back";
-    const finalStatus: LocalLoopStatus = isApproved
+    let finalStatus: LocalLoopStatus = isApproved
       ? "waiting_approval"
       : isNeedsOwner
         ? "needs_owner"
         : "sent_back";
     state.findings = syncedFindings;
+
+    const changedFilesFinal = (
+      await git(state.worktree, "diff", "--name-only", "--no-renames", base, state.candidate)
+    )
+      .split("\n")
+      .filter(Boolean);
+
+    const diffContentFinal = await git(
+      state.worktree,
+      "diff",
+      "--no-renames",
+      base,
+      state.candidate,
+    );
+
+    const autoMergeEval = evaluateSubticketAutoMerge({
+      isSubticket: partOf !== undefined,
+      targetBranch: baseBranch,
+      baseBranch: defaultBaseBranch,
+      readinessReady: isApproved,
+      reviewerReport: reviewReport,
+      changedFiles: changedFilesFinal,
+      diffContent: diffContentFinal,
+      protectedPaths,
+    });
+    state.autoMerge = autoMergeEval;
+    await Bun.write(
+      join(artifactsDir, "auto-merge-judgement.json"),
+      JSON.stringify(autoMergeEval, null, 2),
+    );
+
+    if (isApproved && autoMergeEval.authorized && integrationBranch) {
+      try {
+        await assertCandidate(state.candidate);
+        const currentIntTip = (
+          await git(root, "rev-parse", `refs/heads/${integrationBranch}`)
+        ).trim();
+        if (currentIntTip !== state.identities.targetBaseTip) {
+          throw new Error(
+            `Integration branch '${integrationBranch}' drifted from '${state.identities.targetBaseTip}' to '${currentIntTip}' during verification; holding for human merge.`,
+          );
+        }
+
+        const rootHeadBranch = await git(root, "symbolic-ref", "--short", "HEAD").catch(() => "");
+        if (rootHeadBranch === integrationBranch) {
+          await git(root, "merge", "--ff-only", state.candidate);
+        } else {
+          await git(
+            root,
+            "update-ref",
+            `refs/heads/${integrationBranch}`,
+            state.candidate,
+            state.identities.targetBaseTip,
+          );
+        }
+
+        if (options.push !== false) {
+          if (state.pr) {
+            await processRun(
+              [
+                "gh",
+                "pr",
+                "merge",
+                state.pr,
+                "--squash",
+                "--match-head-commit",
+                state.candidate,
+              ],
+              state.worktree,
+              30_000,
+            ).catch(() => {});
+          }
+          if (hasOrigin) {
+            await git(
+              root,
+              "push",
+              "origin",
+              `refs/heads/${integrationBranch}:refs/heads/${integrationBranch}`,
+            ).catch(() => {});
+          }
+          await processRun(
+            [
+              "gh",
+              "issue",
+              "close",
+              String(issue.number),
+              "--comment",
+              `Auto-merged into integration branch \`${integrationBranch}\` at commit \`${state.candidate}\`.`,
+            ],
+            state.worktree,
+            15_000,
+          ).catch(() => {});
+
+          if (partOf !== undefined) {
+            try {
+              const openIssuesRes = await processRun(
+                ["gh", "issue", "list", "--state", "open", "--json", "number,body"],
+                root,
+                15_000,
+              );
+              if (openIssuesRes.exitCode === 0) {
+                const openIssues = JSON.parse(openIssuesRes.stdout) as Array<{
+                  number: number;
+                  body?: string;
+                }>;
+                const remainingSiblings = openIssues.filter(
+                  (i) =>
+                    i.number !== issue.number &&
+                    i.number !== partOf &&
+                    parsePartOf(i.body ?? "") === partOf,
+                );
+                if (remainingSiblings.length === 0) {
+                  const existingFinalPr = await processRun(
+                    [
+                      "gh",
+                      "pr",
+                      "list",
+                      "--state",
+                      "open",
+                      "--head",
+                      integrationBranch,
+                      "--base",
+                      defaultBaseBranch,
+                      "--json",
+                      "url",
+                    ],
+                    root,
+                    15_000,
+                  );
+                  let finalPrUrl: string | undefined;
+                  if (existingFinalPr.exitCode === 0) {
+                    const parsedPrs = JSON.parse(existingFinalPr.stdout) as Array<{ url?: string }>;
+                    finalPrUrl = parsedPrs[0]?.url;
+                  }
+                  if (!finalPrUrl) {
+                    const createFinal = await processRun(
+                      [
+                        "gh",
+                        "pr",
+                        "create",
+                        "--base",
+                        defaultBaseBranch,
+                        "--head",
+                        integrationBranch,
+                        "--title",
+                        `feat(spec-${partOf}): integrated delivery for spec #${partOf}`,
+                        "--body",
+                        `Closes #${partOf}\n\nAll subticket PRs for spec #${partOf} have been verified and integrated into \`${integrationBranch}\`. Ready for human review.`,
+                      ],
+                      root,
+                      30_000,
+                    );
+                    if (createFinal.exitCode === 0) {
+                      finalPrUrl = createFinal.stdout.trim();
+                    }
+                  }
+                  if (finalPrUrl) {
+                    state.finalIntegrationPr = finalPrUrl;
+                  }
+                }
+              }
+            } catch {}
+          }
+        }
+
+        finalStatus = "merged";
+        reviewOutcome = "merged";
+      } catch (mergeErr: unknown) {
+        const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
+        autoMergeEval.authorized = false;
+        autoMergeEval.decision = "hold_for_human";
+        autoMergeEval.reasons.push(msg);
+        state.autoMerge = autoMergeEval;
+        await Bun.write(
+          join(artifactsDir, "auto-merge-judgement.json"),
+          JSON.stringify(autoMergeEval, null, 2),
+        );
+      }
+    }
 
     if (finalStatus === "needs_owner") {
       try {
@@ -1185,11 +1492,6 @@ export async function runLocalLoop(
         console.error("Warning: Failed to update GitHub issue labels on escalation:", msg);
       }
     }
-    const changedFilesFinal = (
-      await git(state.worktree, "diff", "--name-only", "--no-renames", base, state.candidate)
-    )
-      .split("\n")
-      .filter(Boolean);
 
     const dossier = recordLapAttempt(
       stateRoot,
@@ -1205,6 +1507,10 @@ export async function runLocalLoop(
         timestamp: new Date().toISOString(),
         status: finalStatus,
         candidateHead: state.candidate,
+        artifactsDir,
+        evidence: [...state.evidence],
+        commandRecords: [...commandRecords],
+        recoveries: [...recoveries],
         changedFiles: changedFilesFinal,
         failedStage: isApproved ? undefined : !qaReport.passed ? "qa" : "reviewer",
         reviewFindings: syncedFindings.map((f) => (typeof f === "string" ? f : `[${f.id}] ${f.title}`)),
@@ -1217,23 +1523,8 @@ export async function runLocalLoop(
       },
     );
 
-    if (shouldTriggerReflection(dossier, { maxRejections })) {
-      state.status = "reflecting";
-      await save();
-      const reflection = await runPostIssueReflection({
-        root,
-        worktree: state.worktree,
-        dossier,
-        artifactsDir,
-        transport: reflectionTransport,
-        timeoutMs: roleBudgets.reflector.hardMs,
-      });
-      await Bun.write(join(artifactsDir, "reflection.json"), JSON.stringify(reflection, null, 2));
-      dossier.reflectedAt = new Date().toISOString();
-      saveIssueDossier(stateRoot, dossier);
-    }
-
     state.status = finalStatus;
+    await reflectTerminal(dossier);
 
     const reviewComment = formatReviewComment({
       outcome: reviewOutcome,
@@ -1245,6 +1536,7 @@ export async function runLocalLoop(
       dossierFindings: syncedFindings,
       isNeedsOwner,
       handoffProse: isNeedsOwner ? formatEscalationHandoff(issue, lap, maxLaps, branch, isMaxLapsExceeded, reviewReport) : undefined,
+      autoMerge: state.autoMerge,
     });
 
     if (state.pr) {
@@ -1283,6 +1575,7 @@ export async function runLocalLoop(
             captures: syncedCaptures,
             outstanding,
             judgeAlterations,
+            autoMerge: state.autoMerge,
           });
           await publishPrEvidenceUpdate({
             repoRoot: state.worktree,
@@ -1366,6 +1659,10 @@ export async function runLocalLoop(
           timestamp: new Date().toISOString(),
           status: finalErrorStatus,
           candidateHead: state.candidate,
+          artifactsDir,
+          evidence: [...state.evidence],
+          commandRecords: [...commandRecords],
+          recoveries: [...recoveries],
           changedFiles: [],
           failedStage: state.evidence.some((e) => e.kind === "check" && e.exitCode !== 0)
             ? "ordinary_checks"
@@ -1375,19 +1672,7 @@ export async function runLocalLoop(
           qaFailures: [],
         },
       );
-      if (shouldTriggerReflection(dossier, { maxRejections: Math.max(1, maxLaps - 1) })) {
-        const reflection = await runPostIssueReflection({
-          root,
-          worktree: existsSync(state.worktree) ? state.worktree : root,
-          dossier,
-          artifactsDir,
-          transport: reflectionTransport,
-          timeoutMs: roleBudgets.reflector.hardMs,
-        });
-        await Bun.write(join(artifactsDir, "reflection.json"), JSON.stringify(reflection, null, 2));
-        dossier.reflectedAt = new Date().toISOString();
-        saveIssueDossier(stateRoot, dossier);
-      }
+      await reflectTerminal(dossier);
     } catch (reflectionError: unknown) {
       if (reflectionError instanceof RoleInterrupted) {
         state.status = "interrupted";
