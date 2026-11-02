@@ -3,6 +3,8 @@ import { join, resolve } from "node:path";
 import { getProjectRunsDir, resolveAnimusHome, getProjectSlug } from "../../packages/contracts/src/paths";
 import { loadIssueDossier } from "./dossier";
 import { reconcileWaitingApprovalPrCi, type GhRunner, type checkPrCiStatus } from "./ci";
+import { runTriagePass } from "./triage";
+import { resolveTriageStateRoot } from "./triage-state";
 
 export interface WorkWindowConfig {
   enabled: boolean;
@@ -39,6 +41,24 @@ export type TickSkipReason =
 
 export type TickLaunchReason = "launch_successful";
 
+export interface SchedulerTriageStatus {
+  status: "scheduled" | "inflight" | "skipped" | "completed" | "error";
+  reason?: string;
+  error?: string;
+}
+
+export interface TriagePassContext {
+  root: string;
+  repo: string;
+  stateRoot: string;
+}
+
+export type TriagePassHandler = (context: TriagePassContext) => Promise<unknown>;
+
+export interface BrakeChecker {
+  isScheduledLaunchPermitted(projectId?: string | null): { permitted: boolean; reason?: string };
+}
+
 export interface SchedulerTickResult {
   action: "launched" | "skipped";
   reason: TickSkipReason | TickLaunchReason;
@@ -48,6 +68,8 @@ export interface SchedulerTickResult {
   admittedIssuesCount?: number;
   detail?: string;
   error?: string;
+  triage?: SchedulerTriageStatus;
+  triageStatus?: SchedulerTriageStatus["status"];
 }
 
 export const BLOCKING_LABELS = new Set([
@@ -57,33 +79,70 @@ export const BLOCKING_LABELS = new Set([
   "wontfix",
   "needs-owner",
 ]);
-function parseScheduleJson(filePath: string): Partial<ScheduleConfig> | null {
+export function parseScheduleJson(filePath: string): Partial<ScheduleConfig> | null {
   if (!existsSync(filePath)) return null;
+  let raw: any;
   try {
-    const raw = JSON.parse(readFileSync(filePath, "utf-8"));
-    if (typeof raw !== "object" || raw === null) return null;
-    return {
-      ...(typeof raw.workflow === "string" ? { workflow: raw.workflow } : {}),
-      ...(typeof raw.parallel === "number" && raw.parallel > 0 ? { parallel: raw.parallel } : {}),
-      ...(typeof raw.max_laps === "number" && raw.max_laps > 0 ? { max_laps: raw.max_laps } : {}),
-      ...(typeof raw.interval_seconds === "number" && raw.interval_seconds > 0
-        ? { interval_seconds: raw.interval_seconds }
-        : {}),
-      ...(typeof raw.inputs === "object" && raw.inputs !== null ? { inputs: raw.inputs } : {}),
-      ...(typeof raw.work_window === "object" && raw.work_window !== null
-        ? {
-            work_window: {
-              enabled: Boolean(raw.work_window.enabled),
-              start_time: raw.work_window.start_time || "20:00",
-              end_time: raw.work_window.end_time || "05:00",
-              timezone: raw.work_window.timezone || "Asia/Jakarta",
-            },
-          }
-        : {}),
-    };
-  } catch {
-    return null;
+    raw = JSON.parse(readFileSync(filePath, "utf-8"));
+  } catch (err: any) {
+    throw new Error(`Malformed schedule config in '${filePath}': ${err?.message || "invalid JSON"}`);
   }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new Error(`Invalid schedule config in '${filePath}': expected an object`);
+  }
+
+  if (raw.interval_seconds !== undefined && (!Number.isFinite(raw.interval_seconds) || raw.interval_seconds <= 0)) {
+    throw new Error(`Invalid schedule interval in '${filePath}': must be a positive number`);
+  }
+  if (raw.parallel !== undefined && (!Number.isSafeInteger(raw.parallel) || raw.parallel <= 0)) {
+    throw new Error(`Invalid schedule parallel capacity in '${filePath}': must be a positive integer`);
+  }
+  if (raw.max_laps !== undefined && (!Number.isSafeInteger(raw.max_laps) || raw.max_laps <= 0)) {
+    throw new Error(`Invalid schedule max_laps in '${filePath}': must be a positive integer`);
+  }
+
+  if (raw.work_window !== undefined && raw.work_window !== null) {
+    if (typeof raw.work_window !== "object" || Array.isArray(raw.work_window)) {
+      throw new Error(`Invalid schedule work_window in '${filePath}': expected an object`);
+    }
+    const window = raw.work_window;
+    if (window.enabled) {
+      if (
+        typeof window.start_time !== "string" ||
+        typeof window.end_time !== "string" ||
+        !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(window.start_time) ||
+        !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(window.end_time)
+      ) {
+        throw new Error(`Invalid schedule work window times in '${filePath}': expected HH:MM format`);
+      }
+      const tz = window.timezone || "Asia/Jakarta";
+      try {
+        new Intl.DateTimeFormat("en-US", { timeZone: tz }).format();
+      } catch {
+        throw new Error(`Invalid timezone in schedule config '${filePath}': '${tz}'`);
+      }
+    }
+  }
+
+  return {
+    ...(typeof raw.workflow === "string" ? { workflow: raw.workflow } : {}),
+    ...(typeof raw.parallel === "number" && raw.parallel > 0 ? { parallel: raw.parallel } : {}),
+    ...(typeof raw.max_laps === "number" && raw.max_laps > 0 ? { max_laps: raw.max_laps } : {}),
+    ...(typeof raw.interval_seconds === "number" && raw.interval_seconds > 0
+      ? { interval_seconds: raw.interval_seconds }
+      : {}),
+    ...(typeof raw.inputs === "object" && raw.inputs !== null ? { inputs: raw.inputs } : {}),
+    ...(typeof raw.work_window === "object" && raw.work_window !== null
+      ? {
+          work_window: {
+            enabled: Boolean(raw.work_window.enabled),
+            start_time: raw.work_window.start_time || "20:00",
+            end_time: raw.work_window.end_time || "05:00",
+            timezone: raw.work_window.timezone || "Asia/Jakarta",
+          },
+        }
+      : {}),
+  };
 }
 
 export function loadScheduleConfig(root: string): ScheduleConfig {
@@ -171,32 +230,27 @@ export function checkBrakes(
 export function isWithinWorkWindow(window?: WorkWindowConfig, now = new Date()): boolean {
   if (!window || !window.enabled) return true;
 
-  try {
-    const formatter = new Intl.DateTimeFormat("en-US", {
-      timeZone: window.timezone,
-      hour: "2-digit",
-      minute: "2-digit",
-      hourCycle: "h23",
-    });
-    const parts = formatter.formatToParts(now);
-    const hour = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
-    const minute = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
-    const currentMinutes = hour * 60 + minute;
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: window.timezone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
+  const parts = formatter.formatToParts(now);
+  const hour = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
+  const minute = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
+  const currentMinutes = hour * 60 + minute;
 
-    const [startH, startM] = window.start_time.split(":").map(Number);
-    const [endH, endM] = window.end_time.split(":").map(Number);
-    const startMinutes = (startH ?? 0) * 60 + (startM ?? 0);
-    const endMinutes = (endH ?? 0) * 60 + (endM ?? 0);
+  const [startH, startM] = window.start_time.split(":").map(Number);
+  const [endH, endM] = window.end_time.split(":").map(Number);
+  const startMinutes = (startH ?? 0) * 60 + (startM ?? 0);
+  const endMinutes = (endH ?? 0) * 60 + (endM ?? 0);
 
-    if (startMinutes <= endMinutes) {
-      return currentMinutes >= startMinutes && currentMinutes < endMinutes;
-    } else {
-      // Overnight window (e.g. 20:00 to 05:00)
-      return currentMinutes >= startMinutes || currentMinutes < endMinutes;
-    }
-  } catch {
-    // If timezone parsing fails, fail open
-    return true;
+  if (startMinutes <= endMinutes) {
+    return currentMinutes >= startMinutes && currentMinutes < endMinutes;
+  } else {
+    // Overnight window (e.g. 20:00 to 05:00)
+    return currentMinutes >= startMinutes || currentMinutes < endMinutes;
   }
 }
 function isProcessAlive(pid: number): boolean {
@@ -342,15 +396,307 @@ export function filterAdmittedIssues(
   });
 }
 
+export function detectRepo(root: string): string | undefined {
+  try {
+    const res = Bun.spawnSync(["git", "config", "--get", "remote.origin.url"], { cwd: root });
+    if (res.exitCode === 0) {
+      const url = res.stdout.toString().trim();
+      const match = /(?:github\.com[:/]|git@github\.com:)([^/]+)\/([^/.]+)(?:\.git)?$/.exec(url);
+      if (match && match[1] && match[2]) {
+        return `${match[1]}/${match[2]}`;
+      }
+    }
+  } catch {}
+  try {
+    const res = Bun.spawnSync(["gh", "repo", "view", "--json", "nameWithOwner"], { cwd: root });
+    if (res.exitCode === 0) {
+      const data = JSON.parse(res.stdout.toString()) as { nameWithOwner?: string };
+      if (data.nameWithOwner) return data.nameWithOwner;
+    }
+  } catch {}
+  return undefined;
+}
+
+export async function defaultSafeTriagePass(context: TriagePassContext): Promise<unknown> {
+  if (!context.repo || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(context.repo.trim())) {
+    return {
+      status: "skipped",
+      reason: "no_repo_identity",
+    };
+  }
+  return await runTriagePass({
+    root: context.root,
+    repo: context.repo,
+    stateRoot: context.stateRoot,
+  });
+}
+
+interface InFlightTriageEntry {
+  promise: Promise<unknown>;
+  status: "inflight" | "completed" | "error";
+  startedAt: Date;
+  completedAt?: Date;
+  error?: string;
+  result?: unknown;
+}
+
+export interface TriageResultState {
+  status: "completed" | "error" | "skipped" | "held";
+  error?: string;
+  reason?: string;
+  counters?: {
+    processed: number;
+    success: number;
+    failure: number;
+    held: number;
+    skipped: number;
+  };
+}
+
+const inFlightTriageMap = new Map<string, InFlightTriageEntry>();
+const lastTriageErrorMap = new Map<string, string>();
+const lastTriageStateMap = new Map<string, TriageResultState>();
+
+export function getInFlightTriage(root?: string): Promise<unknown> | null {
+  if (root) {
+    const key = resolve(root);
+    const entry = inFlightTriageMap.get(key);
+    return entry && entry.status === "inflight" ? entry.promise : null;
+  }
+  for (const entry of inFlightTriageMap.values()) {
+    if (entry.status === "inflight") return entry.promise;
+  }
+  return null;
+}
+
+export function getLastTriageError(root: string): string | undefined {
+  return lastTriageErrorMap.get(resolve(root));
+}
+
+export function getLastTriageState(root: string): TriageResultState | undefined {
+  return lastTriageStateMap.get(resolve(root));
+}
+
+export function clearTriageTracking(root?: string): void {
+  if (root) {
+    const key = resolve(root);
+    inFlightTriageMap.delete(key);
+    lastTriageErrorMap.delete(key);
+    lastTriageStateMap.delete(key);
+  } else {
+    inFlightTriageMap.clear();
+    lastTriageErrorMap.clear();
+    lastTriageStateMap.clear();
+  }
+}
+
+export async function awaitInFlightTriage(root?: string): Promise<void> {
+  if (root) {
+    const key = resolve(root);
+    const entry = inFlightTriageMap.get(key);
+    if (entry && entry.status === "inflight") {
+      try {
+        await entry.promise;
+      } catch {}
+    }
+  } else {
+    const entries = Array.from(inFlightTriageMap.values()).filter((e) => e.status === "inflight");
+    await Promise.all(entries.map((e) => e.promise.catch(() => {})));
+  }
+}
+
+function dispatchTriagePass(params: {
+  root: string;
+  repo: string;
+  stateRoot?: string;
+  triageFn?: TriagePassHandler | null;
+}): SchedulerTriageStatus {
+  const key = resolve(params.root);
+
+  // If triage is explicitly disabled with null
+  if (params.triageFn === null) {
+    const pendingError = lastTriageErrorMap.get(key);
+    if (pendingError) {
+      return {
+        status: "error",
+        error: pendingError,
+        reason: "previous_triage_failed",
+      };
+    }
+    return {
+      status: "skipped",
+      reason: "triage_disabled",
+    };
+  }
+
+  // Check if there is already an in-flight pass for this root
+  const existing = inFlightTriageMap.get(key);
+  if (existing && existing.status === "inflight") {
+    return {
+      status: "inflight",
+      reason: "triage_pass_already_in_flight",
+    };
+  }
+
+  // Check if a previous background triage errored
+  const pendingError = lastTriageErrorMap.get(key);
+  if (pendingError) {
+    return {
+      status: "error",
+      error: pendingError,
+      reason: "previous_triage_failed",
+    };
+  }
+
+  // If default triage and repo cannot be resolved, skip safely
+  if (
+    params.triageFn === undefined &&
+    (!params.repo || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(params.repo.trim()))
+  ) {
+    return {
+      status: "skipped",
+      reason: "no_repo_identity",
+    };
+  }
+
+  const fn = params.triageFn ?? defaultSafeTriagePass;
+  const triageStateRoot = resolveTriageStateRoot(params.root, params.stateRoot);
+
+  // A new triage pass is starting: reset previous error/state
+  lastTriageErrorMap.delete(key);
+  lastTriageStateMap.delete(key);
+
+  let rawPromise: Promise<unknown>;
+  try {
+    rawPromise = fn({
+      root: params.root,
+      repo: params.repo,
+      stateRoot: triageStateRoot,
+    });
+  } catch (syncErr) {
+    const errStr = syncErr instanceof Error ? syncErr.message : String(syncErr);
+    lastTriageErrorMap.set(key, errStr);
+    lastTriageStateMap.set(key, {
+      status: "error",
+      error: errStr,
+      reason: "triage_launch_failed",
+    });
+    return {
+      status: "error",
+      error: errStr,
+      reason: "triage_launch_failed",
+    };
+  }
+
+  const entry: InFlightTriageEntry = {
+    promise: Promise.resolve(),
+    status: "inflight",
+    startedAt: new Date(),
+  };
+
+  const trackedPromise = Promise.resolve(rawPromise)
+    .then((res: any) => {
+      entry.completedAt = new Date();
+      entry.result = res;
+
+      if (res && typeof res === "object") {
+        const failureCount = typeof res.failureCount === "number" ? res.failureCount : 0;
+        const heldCount = typeof res.heldCount === "number" ? res.heldCount : 0;
+        const successCount = typeof res.successCount === "number" ? res.successCount : 0;
+        const skippedCount = typeof res.skippedCount === "number" ? res.skippedCount : 0;
+        const processedCount = Array.isArray(res.processed) ? res.processed.length : 0;
+
+        if (failureCount > 0) {
+          entry.status = "error";
+          const firstErr = Array.isArray(res.processed)
+            ? res.processed.find((p: any) => p.error)?.error
+            : undefined;
+          const errMsg = firstErr ?? `Triage pass failed for ${failureCount} issue(s)`;
+          entry.error = errMsg;
+          lastTriageErrorMap.set(key, errMsg);
+          lastTriageStateMap.set(key, {
+            status: "error",
+            error: errMsg,
+            reason: "triage_pass_failed",
+            counters: {
+              processed: processedCount,
+              success: successCount,
+              failure: failureCount,
+              held: heldCount,
+              skipped: skippedCount,
+            },
+          });
+        } else if (res.status === "held" || (heldCount > 0 && successCount === 0 && processedCount > 0)) {
+          entry.status = "completed";
+          lastTriageStateMap.set(key, {
+            status: "held",
+            reason: res.reason ?? "triage_issues_held",
+            counters: {
+              processed: processedCount,
+              success: successCount,
+              failure: failureCount,
+              held: heldCount,
+              skipped: skippedCount,
+            },
+          });
+        } else {
+          entry.status = "completed";
+          lastTriageStateMap.set(key, {
+            status: "completed",
+            counters: {
+              processed: processedCount,
+              success: successCount,
+              failure: failureCount,
+              held: heldCount,
+              skipped: skippedCount,
+            },
+          });
+        }
+      } else {
+        entry.status = "completed";
+        lastTriageStateMap.set(key, { status: "completed" });
+      }
+
+      inFlightTriageMap.delete(key);
+      return res;
+    })
+    .catch((err) => {
+      const errStr = err instanceof Error ? err.message : String(err);
+      entry.status = "error";
+      entry.error = errStr;
+      entry.completedAt = new Date();
+      lastTriageErrorMap.set(key, errStr);
+      lastTriageStateMap.set(key, {
+        status: "error",
+        error: errStr,
+        reason: "triage_pass_threw",
+      });
+      inFlightTriageMap.delete(key);
+      return undefined;
+    });
+
+  entry.promise = trackedPromise;
+  inFlightTriageMap.set(key, entry);
+
+  return {
+    status: "scheduled",
+  };
+}
+
 export interface SchedulerTickOptions {
   root: string;
   config?: Partial<ScheduleConfig>;
   sharedRoot?: string;
   now?: Date;
   runsDir?: string;
+  stateRoot?: string;
+  repo?: string;
+  projectId?: string;
+  brakes?: BrakeChecker;
   reconcileCi?: boolean;
   ghRun?: GhRunner;
   checkPrCi?: typeof checkPrCiStatus;
+  triage?: TriagePassHandler | null;
   fetchBacklog: () => Promise<{ issues: BacklogCandidate[]; closedNumbers: Set<number> }>;
   launchLap: (issue: BacklogCandidate) => Promise<{ runId: string }>;
 }
@@ -362,15 +708,47 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
     ...options.config,
   };
 
-  // 1. Check brakes
+  // 1. Check file brakes (root and sharedRoot)
   const brake = checkBrakes(root, sharedRoot);
   if (brake.active) {
+    const skipReason: TickSkipReason = brake.type === "stop" ? "stop_brake_set" : "pause_brake_set";
     return {
       action: "skipped",
-      reason: brake.type === "stop" ? "stop_brake_set" : "pause_brake_set",
+      reason: skipReason,
       activeLapsCount: 0,
       detail: brake.path,
+      triage: {
+        status: "skipped",
+        reason: skipReason,
+      },
+      triageStatus: "skipped",
     };
+  }
+
+  // 1b. Check BrakeService (if provided)
+  const brakeService = options.brakes;
+  if (brakeService) {
+    let permitted: { permitted: boolean; reason?: string };
+    try {
+      permitted = brakeService.isScheduledLaunchPermitted(options.projectId);
+    } catch {
+      permitted = { permitted: false, reason: "brake_state_unknown" };
+    }
+    if (!permitted.permitted) {
+      const skipReason: TickSkipReason =
+        permitted.reason === "schedule_paused" ? "pause_brake_set" : "stop_brake_set";
+      return {
+        action: "skipped",
+        reason: skipReason,
+        activeLapsCount: 0,
+        detail: permitted.reason ?? "brake_service_disallowed",
+        triage: {
+          status: "skipped",
+          reason: skipReason,
+        },
+        triageStatus: "skipped",
+      };
+    }
   }
 
   // 2. Check work window
@@ -380,10 +758,15 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
       reason: "outside_work_window",
       activeLapsCount: 0,
       detail: `Outside work window (${mergedConfig.work_window?.start_time}-${mergedConfig.work_window?.end_time} in ${mergedConfig.work_window?.timezone})`,
+      triage: {
+        status: "skipped",
+        reason: "outside_work_window",
+      },
+      triageStatus: "skipped",
     };
   }
 
-  // 3. Count capacity & check waiting-approval items
+  // 3. Resolve runsDir, stateRoot, and repo
   const runsDir =
     options.runsDir ??
     (() => {
@@ -403,7 +786,10 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
       return join(root, ".factory-local-loop", "runs");
     })();
 
-  // 3. Reconcile PR CI status for runs waiting approval
+  const stateRoot = options.stateRoot ?? resolve(runsDir, "..");
+  const repo = options.repo ?? detectRepo(root) ?? "";
+
+  // 4. Reconcile PR CI status for runs waiting approval
   if (options.reconcileCi !== false) {
     try {
       await reconcileWaitingApprovalPrCi(runsDir, root, {
@@ -416,6 +802,16 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
     }
   }
 
+  // 5. Dispatch non-blocking triage pass BEFORE builder capacity check so triage
+  // executes regardless of builder capacity without blocking builder scheduling
+  const triageResult = dispatchTriagePass({
+    root,
+    repo,
+    stateRoot,
+    triageFn: options.triage,
+  });
+
+  // 6. Check active builder laps & capacity
   const activeCount = countActiveLaps(runsDir);
   const waitingApprovalNumbers = getIssuesWaitingApproval(runsDir);
   const mergedNumbers = getMergedIssueNumbers(runsDir);
@@ -425,10 +821,12 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
       reason: "capacity_full",
       activeLapsCount: activeCount,
       detail: `Active laps (${activeCount}) reached parallel limit (${mergedConfig.parallel})`,
+      triage: triageResult,
+      triageStatus: triageResult.status,
     };
   }
 
-  // 4. Fetch & filter backlog
+  // 7. Fetch & filter backlog
   let backlog: { issues: BacklogCandidate[]; closedNumbers: Set<number> };
   try {
     backlog = await options.fetchBacklog();
@@ -438,10 +836,11 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
       reason: "launch_failed",
       activeLapsCount: activeCount,
       error: `Failed to fetch backlog: ${String(err)}`,
+      triage: triageResult,
+      triageStatus: triageResult.status,
     };
   }
 
-  const stateRoot = resolve(runsDir, "..");
   const admitted = filterAdmittedIssues(backlog.issues, backlog.closedNumbers, {
     waitingApprovalIssueNumbers: waitingApprovalNumbers,
     mergedIssueNumbers: mergedNumbers,
@@ -454,13 +853,15 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
       reason: "no_admitted_issues",
       activeLapsCount: activeCount,
       admittedIssuesCount: 0,
+      triage: triageResult,
+      triageStatus: triageResult.status,
     };
   }
 
-  // 5. Select frontier issue
+  // 8. Select frontier issue
   const target = admitted[0]!;
 
-  // 6. Launch lap
+  // 9. Launch lap
   try {
     const ack = await options.launchLap(target);
     return {
@@ -470,6 +871,8 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
       runId: ack.runId,
       activeLapsCount: activeCount + 1,
       admittedIssuesCount: admitted.length,
+      triage: triageResult,
+      triageStatus: triageResult.status,
     };
   } catch (err) {
     return {
@@ -479,6 +882,8 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
       activeLapsCount: activeCount,
       admittedIssuesCount: admitted.length,
       error: err instanceof Error ? err.message : String(err),
+      triage: triageResult,
+      triageStatus: triageResult.status,
     };
   }
 }
@@ -488,7 +893,13 @@ export interface SchedulerLoopOptions {
   config?: Partial<ScheduleConfig>;
   intervalMs?: number;
   runsDir?: string;
+  stateRoot?: string;
+  repo?: string;
   sharedRoot?: string;
+  projectId?: string;
+  brakes?: BrakeChecker;
+  triage?: TriagePassHandler | null;
+  awaitTriageOnStop?: boolean;
   fetchBacklog: () => Promise<{ issues: BacklogCandidate[]; closedNumbers: Set<number> }>;
   launchLap: (issue: BacklogCandidate) => Promise<{ runId: string }>;
   onTick?: (result: SchedulerTickResult) => void;
@@ -534,7 +945,12 @@ export function startSchedulerLoop(options: SchedulerLoopOptions): SchedulerLoop
           root: options.root,
           config: options.config,
           runsDir: options.runsDir,
+          stateRoot: options.stateRoot,
+          repo: options.repo,
           sharedRoot: options.sharedRoot,
+          projectId: options.projectId,
+          brakes: options.brakes,
+          triage: options.triage,
           fetchBacklog: options.fetchBacklog,
           launchLap: options.launchLap,
         });
@@ -562,6 +978,10 @@ export function startSchedulerLoop(options: SchedulerLoopOptions): SchedulerLoop
           resolve();
         }, interval);
       });
+    }
+
+    if (options.awaitTriageOnStop !== false) {
+      await awaitInFlightTriage(options.root);
     }
   })();
 

@@ -10,186 +10,15 @@ export interface RawIssue {
   comments?: Array<{ body?: string | null }>;
 }
 
-export const JEV_TRIAGE_QUESTIONS = {
-  is_actionable: {
-    type: "noul",
-    instructions: "Does the issue have clear and unambiguous acceptance criteria?",
-  },
-  triage_category: {
-    type: "choice",
-    instructions: "Categorize the issue",
-    criteria: {
-      ready_for_agent: "Fully specified with unambiguous acceptance criteria",
-      needs_info: "Vague or missing acceptance criteria",
-      ready_for_human: "Requires human decision or high-level architecture",
-    },
-  },
-  complexity: {
-    type: "score",
-    instructions: "Rate complexity of the task",
-    criteria: [
-      "trivial_single_line",
-      "small_single_file",
-      "medium_multi_file",
-      "large_system_wide",
-    ],
-  },
-};
-
-export interface JevSystemOneResponse {
-  id?: string;
-  model?: string;
-  answers?: {
-    is_actionable?: { noul?: number };
-    triage_category?: {
-      choice?: string;
-      confidence?: number;
-      probabilities?: Record<string, number>;
-    };
-    complexity?: {
-      score?: number;
-      confidence?: number;
-    };
-  };
-}
-
-export async function runJevAdvisory(
-  title: string,
-  body: string,
-  labels: string[],
-  fetcher?: (payload: unknown) => Promise<JevSystemOneResponse>,
-  enabled = true,
-): Promise<{
-  rec_label: string | null;
-  conf: number | null;
-  comp: number | null;
-  probs: Record<string, number> | null;
-  rec_reason: string;
-  jev_meta: Record<string, any> | null;
-  error?: string;
-}> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!enabled || (!apiKey && !fetcher)) {
-    return {
-      rec_label: null,
-      conf: null,
-      comp: null,
-      probs: null,
-      rec_reason: "unconfigured",
-      jev_meta: null,
-    };
-  }
-
-  const stateText = `Title: ${title}\nBody: ${body}\nLabels: ${labels.join(", ")}`;
-  const payload = {
-    model: "typesafe/jev-1.14",
-    state: stateText,
-    questions: JEV_TRIAGE_QUESTIONS,
-  };
-
-  try {
-    let result: JevSystemOneResponse;
-    if (fetcher) {
-      result = await fetcher(payload);
-    } else {
-      const res = await fetch("https://openrouter.ai/api/v1/systemone", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "User-Agent": "Animus/1.0",
-        },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!res.ok) {
-        return {
-          rec_label: null,
-          conf: null,
-          comp: null,
-          probs: null,
-          rec_reason: "evaluation_error:jev_unreachable",
-          jev_meta: null,
-          error: "evaluation_error:jev_unreachable",
-        };
-      }
-      result = (await res.json()) as JevSystemOneResponse;
-    }
-
-    const noulAns = result.answers?.is_actionable;
-    const choiceAns = result.answers?.triage_category;
-    const scoreAns = result.answers?.complexity;
-
-    const isActionable = typeof noulAns?.noul === "number" ? noulAns.noul : 0.0;
-    const choice = choiceAns?.choice || "";
-    const confidence = typeof choiceAns?.confidence === "number" ? choiceAns.confidence : 0.0;
-    const probabilities = choiceAns?.probabilities || null;
-    const complexity = typeof scoreAns?.score === "number" ? scoreAns.score : null;
-
-    let rec_label: string;
-    let rec_reason: string;
-
-    if (choice === "ready_for_agent" && confidence >= 0.7 && isActionable >= 0.7) {
-      rec_label = "ready-for-agent";
-      rec_reason = "clear_acceptance_criteria";
-    } else if (choice === "ready_for_human" && confidence >= 0.7) {
-      rec_label = "ready-for-human";
-      rec_reason = "requires_human_architecture";
-    } else {
-      rec_label = "needs-info";
-      rec_reason = "unclear_acceptance_criteria";
-    }
-
-    const jev_meta = {
-      id: result.id,
-      model: result.model,
-      is_actionable: isActionable,
-      choice,
-      confidence,
-      complexity,
-      probabilities,
-      recommendation_reason: rec_reason,
-    };
-
-    return {
-      rec_label,
-      conf: confidence,
-      comp: complexity,
-      probs: probabilities,
-      rec_reason,
-      jev_meta,
-    };
-  } catch {
-    return {
-      rec_label: null,
-      conf: null,
-      comp: null,
-      probs: null,
-      rec_reason: "evaluation_error:jev_unreachable",
-      jev_meta: null,
-      error: "evaluation_error:jev_unreachable",
-    };
-  }
-}
-
 export interface AdmissionOptions {
-  advisory?: boolean;
   integratedBranchIssues?: Set<number> | Map<number, string>;
-  jevFetcher?: (payload: unknown) => Promise<JevSystemOneResponse>;
 }
 
-export async function evaluateIssueAdmission(
+export function evaluateIssueAdmission(
   issue: RawIssue,
   allIssuesByNumber: Map<number, RawIssue>,
-  optionsOrJevFetcher?: AdmissionOptions | ((payload: unknown) => Promise<JevSystemOneResponse>),
-): Promise<EvaluatedIssue> {
-  let options: AdmissionOptions = {};
-  if (typeof optionsOrJevFetcher === "function") {
-    options = { jevFetcher: optionsOrJevFetcher };
-  } else if (optionsOrJevFetcher) {
-    options = optionsOrJevFetcher;
-  }
-
+  options: AdmissionOptions = {},
+): EvaluatedIssue {
   const number = Number(issue.number) || 0;
   const title = String(issue.title || "");
   const state = String(issue.state || "OPEN").toUpperCase();
@@ -276,27 +105,6 @@ export async function evaluateIssueAdmission(
 
   // 2. Unlabeled check
   if (labelNames.length === 0) {
-    const jev = await runJevAdvisory(
-      title,
-      body,
-      labelNames,
-      options.jevFetcher,
-      options.advisory !== false,
-    );
-    if (jev.error) {
-      return {
-        number,
-        title,
-        state,
-        admission_status: "held",
-        reason: jev.error,
-        labels: labelNames,
-        dependencies: deps,
-        unsatisfied_dependencies: unsatisfied,
-        body,
-        integrated_to_branch: integratedBranch,
-      };
-    }
     return {
       number,
       title,
@@ -308,11 +116,6 @@ export async function evaluateIssueAdmission(
       unsatisfied_dependencies: unsatisfied,
       body,
       integrated_to_branch: integratedBranch,
-      recommended_label: jev.rec_label,
-      confidence: jev.conf,
-      complexity: jev.comp,
-      probabilities: jev.probs,
-      jev_evaluation: jev.jev_meta,
     };
   }
 
@@ -335,37 +138,6 @@ export async function evaluateIssueAdmission(
   // 4. Hold check: canonical needs-info, ready-for-human, needs-triage block admission
   const blockingLabels = ["needs-info", "ready-for-human", "needs-triage"];
   if (blockingLabels.some((lbl) => lowerCanonicalLabels.has(lbl))) {
-    let jev: Awaited<ReturnType<typeof runJevAdvisory>> = {
-      rec_label: null,
-      conf: null,
-      comp: null,
-      probs: null,
-      rec_reason: "",
-      jev_meta: null,
-    };
-    if (lowerCanonicalLabels.has("needs-triage")) {
-      jev = await runJevAdvisory(
-        title,
-        body,
-        labelNames,
-        options.jevFetcher,
-        options.advisory !== false,
-      );
-      if (jev.error) {
-        return {
-          number,
-          title,
-          state,
-          admission_status: "held",
-          reason: jev.error,
-          labels: labelNames,
-          dependencies: deps,
-          unsatisfied_dependencies: unsatisfied,
-          body,
-          integrated_to_branch: integratedBranch,
-        };
-      }
-    }
     return {
       number,
       title,
@@ -377,11 +149,6 @@ export async function evaluateIssueAdmission(
       unsatisfied_dependencies: unsatisfied,
       body,
       integrated_to_branch: integratedBranch,
-      recommended_label: jev.rec_label,
-      confidence: jev.conf,
-      complexity: jev.comp,
-      probabilities: jev.probs,
-      jev_evaluation: jev.jev_meta,
     };
   }
 

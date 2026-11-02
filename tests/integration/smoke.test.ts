@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { evaluateIssueAdmission, type RawIssue } from "../../apps/backend/src/intake";
 
 describe("Issue #42 E2E Admission & Engine Dispatch Smoke", () => {
-  test("intake accurately admits independent issue #42 as ready-for-agent", async () => {
+  test("intake accurately admits independent issue #42 as ready-for-agent", () => {
     const rawIssue: RawIssue = {
       number: 42,
       title: "Test: verify end-to-end admission and engine dispatch in TypeScript monorepo",
@@ -13,7 +13,7 @@ describe("Issue #42 E2E Admission & Engine Dispatch Smoke", () => {
     };
 
     const issuesMap = new Map([[42, rawIssue]]);
-    const evaluated = await evaluateIssueAdmission(rawIssue, issuesMap);
+    const evaluated = evaluateIssueAdmission(rawIssue, issuesMap);
 
     expect(evaluated.number).toBe(42);
     expect(evaluated.state).toBe("OPEN");
@@ -23,7 +23,7 @@ describe("Issue #42 E2E Admission & Engine Dispatch Smoke", () => {
     expect(evaluated.unsatisfied_dependencies).toEqual([]);
   });
 
-  test("intake holds issue when blocking label or dependency is introduced", async () => {
+  test("intake holds issue when blocking label or dependency is introduced", () => {
     const blockedIssue: RawIssue = {
       number: 42,
       title: "Test: verify end-to-end admission and engine dispatch in TypeScript monorepo",
@@ -34,7 +34,7 @@ describe("Issue #42 E2E Admission & Engine Dispatch Smoke", () => {
     };
 
     const issuesMap = new Map([[42, blockedIssue]]);
-    const evaluated = await evaluateIssueAdmission(blockedIssue, issuesMap);
+    const evaluated = evaluateIssueAdmission(blockedIssue, issuesMap);
 
     expect(evaluated.admission_status).toBe("held");
     expect(evaluated.reason).toBe("held_by_label");

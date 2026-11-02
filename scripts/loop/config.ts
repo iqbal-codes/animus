@@ -9,11 +9,19 @@ export interface TierBinding {
   effort?: EffortRung;
 }
 
+export interface RoleBinding {
+  tier?: ModelTier;
+  provider?: string;
+  model?: string;
+  effort?: EffortRung;
+}
+
 export interface AnimusConfig {
   assistant?: string;
   assistants?: Record<string, { model: string }>;
   tiers?: Partial<Record<ModelTier, TierBinding>>;
   aliases?: Record<string, TierBinding>;
+  roles?: Partial<Record<LoopRole, RoleBinding | ModelTier>>;
   worktree?: { baseBranch?: string };
 }
 
@@ -112,6 +120,23 @@ export function serializeAnimusConfigYaml(config: AnimusConfig): string {
     lines.push("");
   }
 
+  if (config.roles && Object.keys(config.roles).length > 0) {
+    lines.push("roles:");
+    for (const [role, binding] of Object.entries(config.roles)) {
+      if (!binding) continue;
+      lines.push(`  ${role}:`);
+      if (typeof binding === "string") {
+        lines.push(`    tier: ${binding}`);
+      } else {
+        if (binding.tier) lines.push(`    tier: ${binding.tier}`);
+        if (binding.provider) lines.push(`    provider: ${binding.provider}`);
+        if (binding.model) lines.push(`    model: ${binding.model}`);
+        if (binding.effort) lines.push(`    effort: ${binding.effort}`);
+      }
+    }
+    lines.push("");
+  }
+
   if (config.worktree?.baseBranch) {
     lines.push("worktree:");
     lines.push(`  baseBranch: ${config.worktree.baseBranch}`);
@@ -139,7 +164,20 @@ export function writeAnimusConfig(root: string, config: AnimusConfig): string {
   return configPath;
 }
 
-export function resolveModelTier(role: LoopRole): ModelTier {
+export function resolveModelTier(role: LoopRole, rootOrConfig?: string | AnimusConfig): ModelTier {
+  if (rootOrConfig) {
+    const config = typeof rootOrConfig === "string" ? readAnimusConfig(rootOrConfig) : rootOrConfig;
+    const roleOverride = config.roles?.[role];
+    if (typeof roleOverride === "string" && (roleOverride === "small" || roleOverride === "medium" || roleOverride === "large")) {
+      return roleOverride;
+    }
+    if (roleOverride && typeof roleOverride === "object" && typeof roleOverride.tier === "string") {
+      if (roleOverride.tier === "small" || roleOverride.tier === "medium" || roleOverride.tier === "large") {
+        return roleOverride.tier;
+      }
+    }
+  }
+
   switch (role) {
     case "reviewer":
     case "reflector":
@@ -149,6 +187,7 @@ export function resolveModelTier(role: LoopRole): ModelTier {
     case "builder":
     case "investigator":
     case "simplifier":
+    case "triage":
       return "medium";
     case "qa":
     case "auditor":
@@ -160,7 +199,11 @@ export function resolveModelTier(role: LoopRole): ModelTier {
 export function resolveModelForRole(root: string, role: LoopRole): string | undefined {
   if (process.env.FACTORY_LOOP_MODEL) return process.env.FACTORY_LOOP_MODEL;
   const config = readAnimusConfig(root);
-  const tier = resolveModelTier(role);
+  const roleOverride = config.roles?.[role];
+  if (roleOverride && typeof roleOverride === "object" && roleOverride.model) {
+    return roleOverride.model;
+  }
+  const tier = resolveModelTier(role, config);
 
   if ((role === "reviewer" || role === "reflector") && config.aliases?.["@reasoning"]?.model) {
     return config.aliases["@reasoning"].model;
@@ -180,7 +223,11 @@ export function resolveModelForRole(root: string, role: LoopRole): string | unde
 export function resolveProviderForRole(root: string, role: LoopRole): string {
   if (process.env.FACTORY_LOOP_PROVIDER) return process.env.FACTORY_LOOP_PROVIDER;
   const config = readAnimusConfig(root);
-  const tier = resolveModelTier(role);
+  const roleOverride = config.roles?.[role];
+  if (roleOverride && typeof roleOverride === "object" && roleOverride.provider) {
+    return roleOverride.provider;
+  }
+  const tier = resolveModelTier(role, config);
 
   if ((role === "reviewer" || role === "reflector") && config.aliases?.["@reasoning"]?.provider) {
     return config.aliases["@reasoning"].provider;
@@ -202,7 +249,11 @@ export function resolveEffortForRole(root: string, role: LoopRole): EffortRung |
     return process.env.FACTORY_LOOP_EFFORT;
   }
   const config = readAnimusConfig(root);
-  const tier = resolveModelTier(role);
+  const roleOverride = config.roles?.[role];
+  if (roleOverride && typeof roleOverride === "object" && roleOverride.effort && isEffortRung(roleOverride.effort)) {
+    return roleOverride.effort;
+  }
+  const tier = resolveModelTier(role, config);
 
   if (
     (role === "reviewer" || role === "reflector") &&

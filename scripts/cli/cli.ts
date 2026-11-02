@@ -266,7 +266,10 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       return await runIntakeCommand({
         subcommand,
         positionals,
+        repoRoot,
         issue: values.issue,
+        dryRun: values["dry-run"],
+        stateDir: values["state-dir"],
         refresh: values.refresh,
         json: values.json,
       });

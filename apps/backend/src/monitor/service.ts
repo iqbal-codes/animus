@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdir, rmdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
@@ -13,6 +14,7 @@ export class RegisteredProjectMonitor {
   private stopped = false;
   private pending = new Map<string, Promise<void>>();
   private pendingWake = new Set<string>();
+  private inFlightTriage = new Map<string, Promise<void>>();
   private statuses = new Map<string, ProjectMonitorStatus>();
   private brakes: BrakeService;
   private intervalMs: number;
@@ -180,7 +182,31 @@ export class RegisteredProjectMonitor {
 
   private async scanProjects(): Promise<void> {
     for (const project of this.registry.listProjects()) {
-      if (this.pending.has(project.id)) continue;
+      try {
+        this.triggerTriage(project);
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        let status = this.statuses.get(project.id);
+        if (!status) {
+          status = {
+            project_id: project.id,
+            state: "idle",
+            reason: "checking",
+            checked_at: null,
+            next_check_at: null,
+          };
+          this.statuses.set(project.id, status);
+        }
+        status.triage = {
+          state: "error",
+          checked_at: new Date().toISOString(),
+          error: errMsg,
+        };
+      }
+
+      if (this.pending.has(project.id)) {
+        continue;
+      }
       const status = this.statuses.get(project.id);
       if (
         !this.pendingWake.has(project.id) &&
@@ -227,8 +253,8 @@ export class RegisteredProjectMonitor {
   }
 
   async drain(): Promise<void> {
-    while (this.pending.size > 0) {
-      await Promise.all(Array.from(this.pending.values()));
+    while (this.pending.size > 0 || this.inFlightTriage.size > 0) {
+      await Promise.all([...this.pending.values(), ...this.inFlightTriage.values()]);
     }
   }
 
@@ -266,7 +292,166 @@ export class RegisteredProjectMonitor {
       throw new Error("checkout_identity_mismatch");
   }
 
+  private triggerTriage(project: Project): void {
+    if (this.stopped) return;
+    if (this.inFlightTriage.has(project.id)) {
+      // Avoid duplicate per-project in-flight triage
+      return;
+    }
+
+    const runtime = this.options.runtime;
+    if (!runtime.triage) return;
+
+    // Isolate all sync checks per project into caught status
+    try {
+      // Must verify current active registry before dispatch
+      const currentProject = this.registry.getProject(project.id);
+      if (!currentProject || currentProject.status !== "active") return;
+
+      // Check checkout directory exists on disk
+      if (!existsSync(project.checkout_path)) {
+        return;
+      }
+
+      // Honor BrakeService brakes
+      const permitted = this.brakes.isScheduledLaunchPermitted(project.id);
+      if (!permitted.permitted) return;
+
+      // Honor filesystem brakes in project checkout
+      for (const brake of ["STOP", "PAUSE"]) {
+        if (existsSync(join(project.checkout_path, ".factory", brake))) {
+          return;
+        }
+      }
+
+      // Honor work window (sync checkWorkWindow may throw on malformed schedule/timezone - isolated in try/catch)
+      if (runtime.checkWorkWindow && !runtime.checkWorkWindow(project.checkout_path)) {
+        return;
+      }
+    } catch (preErr) {
+      const errMsg = preErr instanceof Error ? preErr.message : String(preErr);
+      let status = this.statuses.get(project.id);
+      if (!status) {
+        status = {
+          project_id: project.id,
+          state: "idle",
+          reason: "checking",
+          checked_at: null,
+          next_check_at: null,
+        };
+        this.statuses.set(project.id, status);
+      }
+      status.triage = {
+        state: "error",
+        checked_at: new Date().toISOString(),
+        error: errMsg,
+      };
+      return;
+    }
+
+    let status = this.statuses.get(project.id);
+    if (!status) {
+      status = {
+        project_id: project.id,
+        state: "idle",
+        reason: "checking",
+        checked_at: null,
+        next_check_at: null,
+      };
+      this.statuses.set(project.id, status);
+    }
+
+    status.triage = {
+      state: "running",
+      checked_at: new Date().toISOString(),
+    };
+
+    const triagePromise = (async () => {
+      try {
+        // Verify forge identity before dispatch
+        await this.verifyCheckout(project);
+
+        const { common, primary } = await runtime.inspect(project.checkout_path);
+
+        // RECHECK EVERYTHING immediately before dispatch after awaits!
+        if (this.stopped) return;
+
+        // Current active registry
+        const recheckProject = this.registry.getProject(project.id);
+        if (!recheckProject || recheckProject.status !== "active") return;
+
+        // Forge identity
+        await this.verifyCheckout(project);
+
+        // BrakeService
+        const recheckPermitted = this.brakes.isScheduledLaunchPermitted(project.id);
+        if (!recheckPermitted.permitted) return;
+
+        // Both primary and project checkout STOP/PAUSE
+        for (const dir of new Set([project.checkout_path, primary, common])) {
+          for (const brake of ["STOP", "PAUSE"]) {
+            if (existsSync(join(dir, ".factory", brake))) {
+              return;
+            }
+          }
+        }
+
+        // Work window verified immediately before dispatch
+        if (runtime.checkWorkWindow && !runtime.checkWorkWindow(project.checkout_path)) {
+          return;
+        }
+
+        const stateRoot = runtime.resolveTriageStateRoot
+          ? runtime.resolveTriageStateRoot(project.checkout_path)
+          : join(common, "factory-local-loop");
+
+        const result = await runtime.triage!({
+          root: project.checkout_path,
+          repo: project.repo_name,
+          stateRoot,
+        });
+
+        const current = this.statuses.get(project.id);
+        if (current) {
+          if (result.failureCount > 0) {
+            const firstErr =
+              result.processed.find((p) => p.error)?.error ||
+              `Triage failed for ${result.failureCount} issue(s)`;
+            current.triage = {
+              state: "error",
+              checked_at: new Date().toISOString(),
+              processed_count: result.processed.length,
+              error: firstErr,
+            };
+          } else {
+            current.triage = {
+              state: "completed",
+              checked_at: new Date().toISOString(),
+              processed_count: result.processed.length,
+            };
+          }
+        }
+      } catch (error) {
+        // Honest status errors inspectable no unhandled promises
+        const current = this.statuses.get(project.id);
+        const errMsg = error instanceof Error ? error.message : String(error);
+        if (current) {
+          current.triage = {
+            state: "error",
+            checked_at: new Date().toISOString(),
+            error: errMsg,
+          };
+        }
+      } finally {
+        this.inFlightTriage.delete(project.id);
+      }
+    })();
+
+    this.inFlightTriage.set(project.id, triagePromise);
+  }
+
   private async checkProject(project: Project, fromWake = false): Promise<void> {
+    const existing = this.statuses.get(project.id);
     const status: ProjectMonitorStatus = {
       project_id: project.id,
       state: "running",
@@ -274,6 +459,7 @@ export class RegisteredProjectMonitor {
       checked_at: new Date().toISOString(),
       next_check_at: null,
       pending_wake: this.pendingWake.has(project.id),
+      ...(existing?.triage ? { triage: existing.triage } : {}),
     };
     this.statuses.set(project.id, status);
     let lock: string | null = null;
@@ -291,6 +477,8 @@ export class RegisteredProjectMonitor {
           this.pendingWake.add(project.id);
           status.pending_wake = true;
         }
+        // Monitor must trigger triage even when registry.activeRunCount > 0
+        this.triggerTriage(project);
         return;
       }
       const permitted = this.brakes.isScheduledLaunchPermitted(project.id);
@@ -311,6 +499,10 @@ export class RegisteredProjectMonitor {
       }
       interval = runtime.interval(project.checkout_path);
       const { common, primary } = await runtime.inspect(project.checkout_path);
+
+      // Trigger triage as a separate background operation
+      this.triggerTriage(project);
+
       const stateRoot = join(common, "factory-local-loop");
       await mkdir(stateRoot, { recursive: true });
       const candidateLock = join(stateRoot, "registered-project-monitor.lock");
@@ -333,6 +525,11 @@ export class RegisteredProjectMonitor {
         root: project.checkout_path,
         sharedRoot: primary,
         runsDir: join(stateRoot, "runs"),
+        stateRoot,
+        repo: project.repo_name,
+        projectId: project.id,
+        brakes: this.brakes,
+        triage: null,
         fetchBacklog: () => runtime.fetchBacklog(project.checkout_path, project.repo_name),
         launchLap: async (candidate) => {
           const issue = await runtime.readContract(

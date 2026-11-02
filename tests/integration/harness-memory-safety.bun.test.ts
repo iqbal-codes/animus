@@ -83,6 +83,37 @@ test("dirty and staged lessons and AGENTS never replace accepted committed conte
   expect(prompts.join("\n")).not.toContain("UNACCEPTED");
 });
 
+test("triage role injects the triage playbook and planning skills from accepted baseline", () => {
+  const root = repository();
+  const triageSkills = [
+    "animus-triage",
+    "animus-brainstorm",
+    "animus-grill",
+    "animus-architecture",
+    "animus-spec",
+    "animus-tickets",
+  ];
+  for (const skill of triageSkills) {
+    put(root, `.agents/skills/${skill}/SKILL.md`, `Accepted ${skill}`);
+  }
+  const accepted = commit(root);
+  const resolved = resolveAllowedSkills(root, "triage", accepted);
+  expect(resolved).toEqual(triageSkills.map((s) => join(root, ".agents/skills", s)));
+
+  // Fails closed if safe mode is enabled
+  put(root, ".factory/NO_HARNESS_MEMORY", "");
+  expect(resolveAllowedSkills(root, "triage", accepted)).toEqual([]);
+  rmSync(join(root, ".factory/NO_HARNESS_MEMORY"));
+
+  // Fails closed if any skill is tampered
+  put(root, ".agents/skills/animus-brainstorm/SKILL.md", "TAMPERED");
+  expect(resolveAllowedSkills(root, "triage", accepted)).toEqual(
+    [...triageSkills.slice(0, 1), ...triageSkills.slice(2)].map((s) =>
+      join(root, ".agents/skills", s),
+    ),
+  );
+});
+
 test("skills and executable hooks are returned only when disk matches the accepted baseline", () => {
   const root = repository();
   put(root, ".agents/skills/tdd/SKILL.md", "Accepted TDD");

@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 
@@ -773,7 +774,10 @@ test("13. Verification Profiles: resolves appropriate profile and generates tune
   expect(uiInst.runtimeInstructions).toContain("390px");
   expect(uiInst.runtimeInstructions).toContain(".agents/skills/ui-quality/SKILL.md");
 
-  const repoBuilderSkills = resolveAllowedSkills(root, "builder");
+  const acceptedRef = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+  }).trim();
+  const repoBuilderSkills = resolveAllowedSkills(root, "builder", acceptedRef);
   expect(repoBuilderSkills.some((s) => s.endsWith(".agents/skills/unstick"))).toBe(true);
   expect(repoBuilderSkills.some((s) => s.endsWith(".agents/skills/blueprint"))).toBe(true);
   expect(repoBuilderSkills.some((s) => s.endsWith(".agents/skills/ui-quality"))).toBe(true);
@@ -803,16 +807,25 @@ test("13. Verification Profiles: resolves appropriate profile and generates tune
     expect(skillText).toContain("*Completion Criterion*:");
   }
 
+  const triageSkillText = readFileSync(
+    join(root, ".agents/skills/animus-triage/SKILL.md"),
+    "utf-8",
+  );
+  expect(triageSkillText).not.toContain("disable-model-invocation: true");
+  expect(triageSkillText).toContain("## When to Use");
+  expect(triageSkillText).toContain("## Steps");
+  expect(triageSkillText).toContain("*Completion Criterion*:");
+
   const secText = readFileSync(join(root, ".agents/skills/security-hardening/SKILL.md"), "utf-8");
   expect(secText).not.toContain("disable-model-invocation: true");
   expect(secText).toContain("## When to Use");
   expect(secText).toContain("## Steps");
   expect(secText).toContain("*Completion Criterion*:");
 
-  const repoQaSkills = resolveAllowedSkills(root, "qa");
+  const repoQaSkills = resolveAllowedSkills(root, "qa", acceptedRef);
   expect(repoQaSkills.some((s) => s.endsWith(".agents/skills/ui-quality"))).toBe(true);
 
-  const repoPlannerSkills = resolveAllowedSkills(root, "planner");
+  const repoPlannerSkills = resolveAllowedSkills(root, "planner", acceptedRef);
   expect(repoPlannerSkills.some((s) => s.endsWith(".agents/skills/blueprint"))).toBe(true);
 
   // Core auth / security

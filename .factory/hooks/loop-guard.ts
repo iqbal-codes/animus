@@ -10,6 +10,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { evaluateTriageToolCall } from "../../scripts/loop/triage-policy";
 
 export interface CodebaseRule {
   id: string;
@@ -172,6 +173,16 @@ export default function registerLoopGuard(api: any) {
   api.on("tool_call", async (event: any) => {
     const toolName = String(event?.toolName ?? "");
     const args = (event?.input ?? event?.args ?? {}) as Record<string, any>;
+
+    if (process.env.FACTORY_LOOP_ROLE === "triage") {
+      const triageCheck = evaluateTriageToolCall(toolName, args);
+      if (!triageCheck.allowed) {
+        return {
+          block: true,
+          reason: triageCheck.reason ?? "TRIAGE GUARD: Operation forbidden during triage passes.",
+        };
+      }
+    }
 
     const now = Date.now();
     const hardDeadline = Number(process.env.FACTORY_LOOP_HARD_DEADLINE_MS);

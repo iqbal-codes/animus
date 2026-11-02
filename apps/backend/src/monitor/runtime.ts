@@ -32,6 +32,31 @@ export interface MonitorTickResult {
   admittedIssuesCount?: number;
   detail?: string;
   error?: string;
+  triage?: {
+    status: string;
+    reason?: string;
+    error?: string;
+  };
+}
+export interface MonitorTriageOptions {
+  root: string;
+  repo: string;
+  stateRoot: string;
+  issueNumber?: number;
+  dryRun?: boolean;
+}
+export interface MonitorTriageResult {
+  processed: Array<{
+    issueNumber: number;
+    status: string;
+    action?: string;
+    reason?: string;
+    error?: string;
+  }>;
+  skippedCount: number;
+  successCount: number;
+  failureCount: number;
+  heldCount: number;
 }
 export interface MonitorRuntime {
   inspect(this: void, root: string): Promise<{ common: string; primary: string }>;
@@ -43,6 +68,11 @@ export interface MonitorRuntime {
       root: string;
       sharedRoot: string;
       runsDir: string;
+      stateRoot?: string;
+      repo?: string;
+      projectId?: string;
+      brakes?: any;
+      triage?: any;
       fetchBacklog: () => Promise<MonitorBacklog>;
       launchLap: (issue: MonitorCandidate) => Promise<{ runId: string }>;
     },
@@ -55,6 +85,9 @@ export interface MonitorRuntime {
     issue: MonitorIssue,
   ): Promise<{ runId: string; status: string; error?: string }>;
   hasCapacityFull?(this: void, root: string): boolean;
+  triage?(this: void, options: MonitorTriageOptions): Promise<MonitorTriageResult>;
+  checkWorkWindow?(this: void, root: string): boolean;
+  resolveTriageStateRoot?(this: void, root: string, customStateRoot?: string): string;
 }
 
 async function githubWorker(
@@ -62,6 +95,8 @@ async function githubWorker(
   root: string,
   repo: string,
   number?: number,
+  stateRoot?: string,
+  dryRun?: boolean,
 ): Promise<unknown> {
   const child = Bun.spawn(
     [
@@ -71,10 +106,15 @@ async function githubWorker(
       root,
       repo,
       String(number ?? ""),
+      stateRoot ?? "",
+      String(dryRun ?? false),
     ],
     { stdout: "pipe", stderr: "pipe" },
   );
-  const timer = setTimeout(() => child.kill(), 120_000);
+  // Triage has its own harness deadline bounds and lifecycle management.
+  // Do NOT impose a 120s worker timeout on triage which would kill the worker while
+  // leaving child/grandchild processes and locks orphaned.
+  const timer = operation === "triage" ? null : setTimeout(() => child.kill(), 120_000);
   try {
     const [code, output, error] = await Promise.all([
       child.exited,
@@ -84,7 +124,7 @@ async function githubWorker(
     if (code !== 0) throw new Error(`GitHub ${operation} failed: ${error.trim()}`);
     return JSON.parse(output);
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -94,15 +134,17 @@ export async function loadMonitorRuntime(
     fetchBacklog?: MonitorRuntime["fetchBacklog"];
     launch?: MonitorRuntime["launch"];
     hasCapacityFull?: MonitorRuntime["hasCapacityFull"];
+    triage?: MonitorRuntime["triage"];
   } = {},
 ): Promise<MonitorRuntime> {
   // Resolve from the installed factory, never from a registered project's source tree.
   const factory = new URL("../../../../", import.meta.url);
-  const [scheduler, loop, contracts, config] = await Promise.all([
+  const [scheduler, loop, contracts, config, triageState] = await Promise.all([
     import(new URL("scripts/loop/scheduler.ts", factory).href),
     import(new URL("scripts/local-loop.ts", factory).href),
     import(new URL("scripts/loop.ts", factory).href),
     import(new URL("scripts/loop/config.ts", factory).href),
+    import(new URL("scripts/loop/triage-state.ts", factory).href),
   ]);
   return {
     inspect: loop.inspectLocalLoop,
@@ -178,5 +220,24 @@ export async function loadMonitorRuntime(
         }
         return false;
       }),
+    triage:
+      overrides.triage ??
+      (async (options) => {
+        const data = (await githubWorker(
+          "triage",
+          options.root,
+          options.repo,
+          options.issueNumber,
+          options.stateRoot,
+          options.dryRun,
+        )) as MonitorTriageResult;
+        return data;
+      }),
+    checkWorkWindow: (root) => {
+      const scheduleConfig = scheduler.loadScheduleConfig(root);
+      return scheduler.isWithinWorkWindow(scheduleConfig.work_window);
+    },
+    resolveTriageStateRoot: (root, customStateRoot) =>
+      triageState.resolveTriageStateRoot(root, customStateRoot),
   };
 }

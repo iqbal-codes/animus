@@ -1,8 +1,14 @@
+import { existsSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { applyControlAction, readControlState } from "../../../apps/engine-host/src/native";
 import { PromotionService } from "../../../apps/engine-host/src/promotion";
 import { IntakeService } from "../../../apps/backend/src/intake";
 import { initializeDatabase } from "../../../apps/backend/src/registry";
+import { ProjectRegistryService } from "../../../apps/backend/src/registry/service";
+import { BrakeService } from "../../../apps/backend/src/command/brakes";
+import { resolveAnimusStateDir } from "../../../packages/contracts/src/paths";
+import { resolveTriageStateRoot } from "../../loop/triage-state";
+import type { RunTriagePassOptions, TriagePassResult } from "../../loop/triage";
 import {
   createRegistrationClient,
   registerRepository,
@@ -10,7 +16,7 @@ import {
   type FactoryConnectionOptions,
 } from "./onboarding-registration";
 import { CommandService } from "../../../apps/backend/src/command";
-import type { ControlAction } from "@animus/contracts/operator";
+import type { ControlAction, Project } from "@animus/contracts/operator";
 
 export async function runControlCommand(opts: {
   subcommand?: string;
@@ -109,17 +115,325 @@ export async function runPromotionCommand(opts: {
   }
 }
 
-export async function runIntakeCommand(opts: {
+export interface IntakeCommandOptions {
   subcommand?: string;
   positionals: string[];
+  repoRoot?: string;
   issue?: string;
+  dryRun?: boolean;
+  stateDir?: string;
   refresh?: boolean;
   json?: boolean;
-}): Promise<number> {
+  triageRunner?: (options: RunTriagePassOptions) => Promise<TriagePassResult>;
+}
+
+function findConsoleDb(
+  repoRoot: string,
+  stateDir?: string,
+): { path: string | null; explicit: boolean } {
+  if (stateDir) {
+    const candidate = join(stateDir, "console.db");
+    if (existsSync(candidate)) return { path: candidate, explicit: true };
+    throw new Error(`Explicit state directory '${stateDir}' does not contain console.db`);
+  }
+  const inRepo = join(repoRoot, ".factory/state/console.db");
+  if (existsSync(inRepo)) return { path: inRepo, explicit: false };
+
+  const inAnimusState = join(resolveAnimusStateDir(), "console.db");
+  if (existsSync(inAnimusState)) return { path: inAnimusState, explicit: false };
+
+  try {
+    const gitRes = Bun.spawnSync(["git", "rev-parse", "--git-common-dir"], { cwd: repoRoot });
+    if (gitRes.exitCode === 0) {
+      const common = resolve(repoRoot, gitRes.stdout.toString().trim());
+      const inCommon = join(common, "factory-local-loop", "console.db");
+      if (existsSync(inCommon)) return { path: inCommon, explicit: false };
+      const inCommonState = join(common, "state", "console.db");
+      if (existsSync(inCommonState)) return { path: inCommonState, explicit: false };
+    }
+  } catch {}
+
+  const inParentState = join(resolve(repoRoot, ".."), ".factory/state/console.db");
+  if (existsSync(inParentState)) return { path: inParentState, explicit: false };
+
+  return { path: null, explicit: false };
+}
+
+async function handleIntakeTriage(opts: IntakeCommandOptions): Promise<number> {
+  const root = resolve(opts.repoRoot ?? process.cwd());
+  const stateRoot = resolveTriageStateRoot(root, opts.stateDir);
+
+  let db: ReturnType<typeof initializeDatabase> | null = null;
+  let project: Project | null = null;
+
+  try {
+    const dbInfo = findConsoleDb(root, opts.stateDir);
+    if (dbInfo.path) {
+      try {
+        db = initializeDatabase(dbInfo.path);
+      } catch (err: any) {
+        throw new Error(
+          `Failed to initialize registry database at '${dbInfo.path}': ${err?.message || String(err)}`,
+        );
+      }
+
+      const registry = new ProjectRegistryService(db);
+      let realRoot = root;
+      try {
+        realRoot = realpathSync(root);
+      } catch {}
+      for (const p of registry.listProjects()) {
+        try {
+          if (realpathSync(p.checkout_path) === realRoot || resolve(p.checkout_path) === root) {
+            project = p;
+            break;
+          }
+        } catch {}
+      }
+
+      if (project) {
+        // Identity verify project actual origin against registry; held/disabled project don't run
+        if (project.status !== "active") {
+          const reason = project.status_reason ? ` (${project.status_reason})` : "";
+          throw new Error(
+            `Registered project '${project.repo_name}' is not active (status: ${project.status}${reason})`,
+          );
+        }
+
+        let actualOrigin: string | null = null;
+        try {
+          const originRes = Bun.spawnSync(["git", "config", "--get", "remote.origin.url"], {
+            cwd: root,
+          });
+          if (originRes.exitCode === 0) {
+            const url = originRes.stdout.toString().trim();
+            const match = /(?:github\.com[:/]|git@github\.com:)([^/]+)\/([^/.]+)(?:\.git)?$/.exec(
+              url,
+            );
+            if (match && match[1] && match[2]) {
+              actualOrigin = `${match[1]}/${match[2]}`;
+            }
+          }
+        } catch {}
+
+        if (actualOrigin && actualOrigin.toLowerCase() !== project.repo_name.toLowerCase()) {
+          throw new Error(
+            `Project origin mismatch: registry expects '${project.repo_name}' but checkout origin is '${actualOrigin}'`,
+          );
+        }
+      }
+    }
+
+    // Check database brakes
+    if (db) {
+      const brakes = new BrakeService(db);
+      const permitted = brakes.isScheduledLaunchPermitted(project ? project.id : null);
+      if (!permitted.permitted) {
+        const reason = permitted.reason ?? "brake_state_unknown";
+        if (opts.json) {
+          console.log(
+            JSON.stringify(
+              { ok: false, action: "skipped", reason, error: `Triage blocked by brake: ${reason}` },
+              null,
+              2,
+            ),
+          );
+        } else {
+          console.error(`Error: Triage blocked by brake: ${reason}`);
+        }
+        return 1;
+      }
+    }
+
+    // Check root and primary filesystem brakes
+    let primaryRoot = root;
+    try {
+      const wtRes = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], { cwd: root });
+      if (wtRes.exitCode === 0) {
+        const firstLine = wtRes.stdout.toString().split("\n")[0];
+        if (firstLine && firstLine.startsWith("worktree ")) {
+          primaryRoot = firstLine.replace(/^worktree /, "").trim();
+        }
+      }
+    } catch {}
+
+    for (const dir of new Set([root, primaryRoot])) {
+      for (const brake of ["STOP", "PAUSE"]) {
+        if (existsSync(join(dir, ".factory", brake))) {
+          const reason = `${brake.toLowerCase()}_brake_set`;
+          const error = `${brake} brake is active${dir !== root ? " in primary checkout" : ""}`;
+          if (opts.json) {
+            console.log(JSON.stringify({ ok: false, action: "skipped", reason, error }, null, 2));
+          } else {
+            console.error(`Error: ${error}`);
+          }
+          return 1;
+        }
+      }
+    }
+
+    // Check work window using shared schedule validation resolver
+    const { loadScheduleConfig, isWithinWorkWindow } = await import("../../loop/scheduler");
+    let sched;
+    try {
+      sched = loadScheduleConfig(root);
+    } catch (schedErr: any) {
+      const error = schedErr instanceof Error ? schedErr.message : String(schedErr);
+      if (opts.json) {
+        console.log(
+          JSON.stringify(
+            { ok: false, action: "skipped", reason: "invalid_schedule_config", error },
+            null,
+            2,
+          ),
+        );
+      } else {
+        console.error(`Error: ${error}`);
+      }
+      return 1;
+    }
+
+    if (sched.work_window?.enabled) {
+      let within = false;
+      try {
+        within = isWithinWorkWindow(sched.work_window);
+      } catch (tzErr: any) {
+        const error = tzErr instanceof Error ? tzErr.message : String(tzErr);
+        if (opts.json) {
+          console.log(
+            JSON.stringify(
+              { ok: false, action: "skipped", reason: "invalid_work_window_timezone", error },
+              null,
+              2,
+            ),
+          );
+        } else {
+          console.error(`Error: ${error}`);
+        }
+        return 1;
+      }
+      if (!within) {
+        const reason = "outside_work_window";
+        const error = `Outside work window (${sched.work_window.start_time}-${sched.work_window.end_time} in ${sched.work_window.timezone})`;
+        if (opts.json) {
+          console.log(JSON.stringify({ ok: false, action: "skipped", reason, error }, null, 2));
+        } else {
+          console.error(`Error: ${error}`);
+        }
+        return 1;
+      }
+    }
+
+    // Resolve repository identity
+    let repo = project?.repo_name;
+    if (!repo) {
+      try {
+        const originRes = Bun.spawnSync(["git", "config", "--get", "remote.origin.url"], {
+          cwd: root,
+        });
+        if (originRes.exitCode === 0) {
+          const url = originRes.stdout.toString().trim();
+          const match = /(?:github\.com[:/]|git@github\.com:)([^/]+)\/([^/.]+)(?:\.git)?$/.exec(
+            url,
+          );
+          if (match && match[1] && match[2]) {
+            repo = `${match[1]}/${match[2]}`;
+          }
+        }
+      } catch {}
+    }
+    if (!repo) {
+      try {
+        const ghRes = Bun.spawnSync(["gh", "repo", "view", "--json", "nameWithOwner"], {
+          cwd: root,
+        });
+        if (ghRes.exitCode === 0) {
+          const data = JSON.parse(ghRes.stdout.toString()) as { nameWithOwner?: string };
+          if (data.nameWithOwner) repo = data.nameWithOwner;
+        }
+      } catch {}
+    }
+    if (!repo) {
+      throw new Error(
+        "Unable to identify GitHub repository from registered projects, git remote, or gh CLI",
+      );
+    }
+
+    // Parse issue number if provided
+    const rawIssue =
+      opts.issue ??
+      (opts.positionals[2] && !opts.positionals[2].startsWith("-")
+        ? opts.positionals[2]
+        : undefined);
+    let issueNumber: number | undefined;
+    if (rawIssue) {
+      const parsed = Number(rawIssue);
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new Error(`Invalid issue number: ${rawIssue}`);
+      }
+      issueNumber = parsed;
+    }
+
+    const runner =
+      opts.triageRunner ??
+      (async (triageOpts: RunTriagePassOptions) => {
+        const { runTriagePass } = await import("../../loop/triage");
+        return runTriagePass(triageOpts);
+      });
+
+    const result = await runner({
+      root,
+      repo,
+      stateRoot,
+      issueNumber,
+      dryRun: Boolean(opts.dryRun),
+    });
+
+    if (opts.json) {
+      console.log(JSON.stringify({ ok: result.failureCount === 0, ...result }, null, 2));
+    } else {
+      console.log(
+        `Triage pass complete for ${repo}: ${result.successCount} succeeded, ${result.heldCount} held, ${result.skippedCount} skipped, ${result.failureCount} failed`,
+      );
+      for (const item of result.processed) {
+        const detail = item.action
+          ? `action=${item.action}`
+          : item.reason
+            ? `reason=${item.reason}`
+            : "";
+        const err = item.error ? ` [ERROR: ${item.error}]` : "";
+        console.log(
+          `  #${String(item.issueNumber).padEnd(5)} [${item.status.padEnd(8)}] ${detail}${err}`,
+        );
+      }
+    }
+    return result.failureCount > 0 ? 1 : 0;
+  } catch (err: any) {
+    const error = err instanceof Error ? err.message : String(err);
+    if (opts.json) {
+      console.log(JSON.stringify({ ok: false, error }, null, 2));
+    } else {
+      console.error(`Error: ${error}`);
+    }
+    return 1;
+  } finally {
+    if (db) {
+      try {
+        db.close();
+      } catch {}
+    }
+  }
+}
+
+export async function runIntakeCommand(opts: IntakeCommandOptions): Promise<number> {
   const sub = opts.subcommand ?? "list";
   const intake = new IntakeService();
 
   try {
+    if (sub === "triage") {
+      return await handleIntakeTriage(opts);
+    }
+
     if (sub === "list") {
       const backlog = await intake.evaluateBacklog(Boolean(opts.refresh));
       if (opts.json) {

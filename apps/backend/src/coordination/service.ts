@@ -183,7 +183,7 @@ export class SpecCoordinatorService {
           comments: child.comments,
         };
 
-        const admission = await evaluateIssueAdmission(raw, allIssuesMap);
+        const admission = evaluateIssueAdmission(raw, allIssuesMap);
         if (admission.admission_status === "excluded") {
           // Skip or mark excluded
           continue;

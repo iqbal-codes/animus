@@ -91,9 +91,8 @@ export async function verifyTargetBinding(
   }
 
   // 4. Fresh admission evaluation
-  const admission = await evaluateIssueAdmission(liveIssue, allByNumber, {
+  const admission = evaluateIssueAdmission(liveIssue, allByNumber, {
     integratedBranchIssues: integratedMap,
-    advisory: false,
   });
 
   // 5. Verify state

@@ -19,10 +19,10 @@ describe("Intake admission policy (canonical)", () => {
     expect(isActiveClaim([{ body: "Loop claim: run 1234-abcd" }])).toBe(true);
   });
 
-  test("AC1: canonical ready-for-agent admits, legacy labels have no authority", async () => {
+  test("AC1: canonical ready-for-agent admits, legacy labels have no authority", () => {
     const all = new Map<number, RawIssue>();
     // Canonical ready-for-agent admits
-    const ready = await evaluateIssueAdmission(
+    const ready = evaluateIssueAdmission(
       { number: 1, title: "Feature", state: "OPEN", labels: ["ready-for-agent"] },
       all,
     );
@@ -30,7 +30,7 @@ describe("Intake admission policy (canonical)", () => {
     expect(ready.reason).toBe("admitted_ready");
 
     // Legacy factory:ready alone is not admitted (held due to missing_ready_label)
-    const legacyReady = await evaluateIssueAdmission(
+    const legacyReady = evaluateIssueAdmission(
       { number: 2, title: "Legacy", state: "OPEN", labels: ["factory:ready"] },
       all,
     );
@@ -39,7 +39,7 @@ describe("Intake admission policy (canonical)", () => {
 
     // Blocking labels: needs-info, ready-for-human, needs-triage
     for (const label of ["needs-info", "ready-for-human", "needs-triage"]) {
-      const held = await evaluateIssueAdmission(
+      const held = evaluateIssueAdmission(
         { number: 3, title: "Held", state: "OPEN", labels: [label, "ready-for-agent"] },
         all,
       );
@@ -48,7 +48,7 @@ describe("Intake admission policy (canonical)", () => {
     }
 
     // wontfix excludes even if ready-for-agent is present
-    const excluded = await evaluateIssueAdmission(
+    const excluded = evaluateIssueAdmission(
       { number: 4, title: "Wontfix", state: "OPEN", labels: ["wontfix", "ready-for-agent"] },
       all,
     );
@@ -56,7 +56,7 @@ describe("Intake admission policy (canonical)", () => {
     expect(excluded.reason).toBe("excluded_by_label");
 
     // Unlabeled holds
-    const unlabeled = await evaluateIssueAdmission(
+    const unlabeled = evaluateIssueAdmission(
       { number: 5, title: "Unlabeled", state: "OPEN", labels: [] },
       all,
     );
@@ -64,13 +64,13 @@ describe("Intake admission policy (canonical)", () => {
     expect(unlabeled.reason).toBe("unlabeled_awaiting_triage");
   });
 
-  test("AC2: dependencies and active claims hold work", async () => {
+  test("AC2: dependencies and active claims hold work", () => {
     const all = new Map<number, RawIssue>();
     all.set(10, { number: 10, title: "Prereq open", state: "OPEN" });
     all.set(11, { number: 11, title: "Prereq closed", state: "CLOSED" });
 
     // Open dependency holds
-    const waitingOpen = await evaluateIssueAdmission(
+    const waitingOpen = evaluateIssueAdmission(
       {
         number: 1,
         title: "Waiting",
@@ -85,7 +85,7 @@ describe("Intake admission policy (canonical)", () => {
     expect(waitingOpen.unsatisfied_dependencies).toEqual([10]);
 
     // Missing dependency holds
-    const waitingMissing = await evaluateIssueAdmission(
+    const waitingMissing = evaluateIssueAdmission(
       {
         number: 2,
         title: "Waiting missing",
@@ -99,7 +99,7 @@ describe("Intake admission policy (canonical)", () => {
     expect(waitingMissing.reason).toBe("waiting_on_dependency:#99");
 
     // Closed dependency admits
-    const satisfied = await evaluateIssueAdmission(
+    const satisfied = evaluateIssueAdmission(
       {
         number: 3,
         title: "Satisfied",
@@ -113,7 +113,7 @@ describe("Intake admission policy (canonical)", () => {
     expect(satisfied.unsatisfied_dependencies).toEqual([]);
 
     // Active claim holds
-    const claimed = await evaluateIssueAdmission(
+    const claimed = evaluateIssueAdmission(
       {
         number: 4,
         title: "Claimed",
@@ -127,23 +127,9 @@ describe("Intake admission policy (canonical)", () => {
     expect(claimed.reason).toBe("actively_claimed");
   });
 
-  test("AC3: Jev advisory evaluation integrates without mutating labels", async () => {
+  test("AC3: Admission evaluates needs-triage deterministically without Jev advisory fields", () => {
     const all = new Map<number, RawIssue>();
-    const mockFetcher = async () => ({
-      id: "jev-123",
-      model: "typesafe/jev-1.14",
-      answers: {
-        is_actionable: { noul: 0.95 },
-        triage_category: {
-          choice: "ready_for_agent",
-          confidence: 0.88,
-          probabilities: { ready_for_agent: 0.88, needs_info: 0.1, ready_for_human: 0.02 },
-        },
-        complexity: { score: 2.5, confidence: 0.9 },
-      },
-    });
-
-    const evaluated = await evaluateIssueAdmission(
+    const evaluated = evaluateIssueAdmission(
       {
         number: 1,
         title: "Needs Triage Task",
@@ -152,17 +138,40 @@ describe("Intake admission policy (canonical)", () => {
         body: "Fully specified feature with ACs",
       },
       all,
-      mockFetcher,
     );
 
-    // Advisory recommendation is populated
-    expect(evaluated.recommended_label).toBe("ready-for-agent");
-    expect(evaluated.confidence).toBe(0.88);
-    expect(evaluated.complexity).toBe(2.5);
-    expect(evaluated.jev_evaluation?.id).toBe("jev-123");
-    // But admission status remains strictly held!
+    // Admission status remains strictly held without Jev advisory fields
     expect(evaluated.admission_status).toBe("held");
+    expect(evaluated.reason).toBe("held_by_label");
     expect(evaluated.labels).toEqual(["needs-triage"]);
+    expect((evaluated as any).recommended_label).toBeUndefined();
+    expect((evaluated as any).confidence).toBeUndefined();
+    expect((evaluated as any).complexity).toBeUndefined();
+    expect((evaluated as any).probabilities).toBeUndefined();
+    expect((evaluated as any).jev_evaluation).toBeUndefined();
+  });
+
+  test("AC3b: Admission evaluates unlabeled issues deterministically without Jev advisory fields", () => {
+    const all = new Map<number, RawIssue>();
+    const evaluated = evaluateIssueAdmission(
+      {
+        number: 2,
+        title: "Unlabeled Task",
+        state: "OPEN",
+        labels: [],
+        body: "Unlabeled task description",
+      },
+      all,
+    );
+
+    expect(evaluated.admission_status).toBe("held");
+    expect(evaluated.reason).toBe("unlabeled_awaiting_triage");
+    expect(evaluated.labels).toEqual([]);
+    expect((evaluated as any).recommended_label).toBeUndefined();
+    expect((evaluated as any).confidence).toBeUndefined();
+    expect((evaluated as any).complexity).toBeUndefined();
+    expect((evaluated as any).probabilities).toBeUndefined();
+    expect((evaluated as any).jev_evaluation).toBeUndefined();
   });
 
   test("AC4: IntakeService caches and refresh invalidates cache", async () => {

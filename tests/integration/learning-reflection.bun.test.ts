@@ -90,7 +90,7 @@ test("invented evidence and unsafe symlink or path are held", async () => {
   }
 });
 
-test("malformed Jev, unsupported hallucinations and missing evaluation fail closed", async () => {
+test("malformed evaluator, unsupported hallucinations and missing evaluation fail closed", async () => {
   for (const verdict of [
     null,
     { ...approved, hallucinationRisk: "unsupported_claim" },
@@ -201,4 +201,100 @@ test("host successful command and valid guard independently admit while failed e
     },
   });
   expect((await runPostIssueReflection(f.options)).status).toBe("proposed");
+});
+
+test("default harness evaluator executes via transport and admits valid proposals when approved", async () => {
+  const f = fixture();
+  const animusDir = join(f.root, ".animus");
+  mkdirSync(animusDir, { recursive: true });
+  writeFileSync(
+    join(animusDir, "config.yaml"),
+    `tiers:
+  large:
+    provider: pi
+    model: test-large-model
+`,
+  );
+
+  let reflectionCalls = 0;
+  let evaluationCalls = 0;
+  const transport = async (req: { argv: string[]; cwd: string; role: string }) => {
+    if (req.role === "reflector" && req.argv.some((a) => a.includes("Candidate Mutation:"))) {
+      evaluationCalls++;
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          grounding: { approved: true, confidence: 0.95 },
+          quality: { approved: true, confidence: 0.9 },
+          hallucinationRisk: "grounded_in_logs",
+          reason: "Supported by logs",
+        }),
+        stderr: "",
+      };
+    }
+    reflectionCalls++;
+    return { exitCode: 0, stdout: JSON.stringify(f.proposal), stderr: "" };
+  };
+
+  const result = await runPostIssueReflection({
+    ...f.options,
+    transport,
+    proposalEvaluator: undefined,
+  });
+
+  expect(reflectionCalls).toBe(1);
+  expect(evaluationCalls).toBe(1);
+  expect(result.status).toBe("proposed");
+});
+
+test("default harness evaluator holds when transport fails or confidence is low", async () => {
+  const f = fixture();
+  const animusDir = join(f.root, ".animus");
+  mkdirSync(animusDir, { recursive: true });
+  writeFileSync(
+    join(animusDir, "config.yaml"),
+    `tiers:
+  large:
+    provider: pi
+    model: test-large-model
+`,
+  );
+
+  // Transport failure on evaluation
+  const failingTransport = async (req: { argv: string[]; cwd: string; role: string }) => {
+    if (req.argv.some((a) => a.includes("Candidate Mutation:"))) {
+      return { exitCode: 1, stdout: "", stderr: "CLI crash" };
+    }
+    return { exitCode: 0, stdout: JSON.stringify(f.proposal), stderr: "" };
+  };
+
+  const failedResult = await runPostIssueReflection({
+    ...f.options,
+    transport: failingTransport,
+    proposalEvaluator: undefined,
+  });
+  expect(failedResult.status).toBe("held");
+
+  // Low confidence on evaluation
+  const lowConfTransport = async (req: { argv: string[]; cwd: string; role: string }) => {
+    if (req.argv.some((a) => a.includes("Candidate Mutation:"))) {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          grounding: { approved: true, confidence: 0.5 },
+          quality: { approved: true, confidence: 0.5 },
+          hallucinationRisk: "grounded_in_logs",
+        }),
+        stderr: "",
+      };
+    }
+    return { exitCode: 0, stdout: JSON.stringify(f.proposal), stderr: "" };
+  };
+
+  const lowConfResult = await runPostIssueReflection({
+    ...f.options,
+    transport: lowConfTransport,
+    proposalEvaluator: undefined,
+  });
+  expect(lowConfResult.status).toBe("held");
 });

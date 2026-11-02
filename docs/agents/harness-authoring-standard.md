@@ -62,7 +62,7 @@ Each line in `.factory/lessons.jsonl` must be a valid JSON object matching this 
 1. `id`: Unique identifier prefixed with `lsn-` followed by UTC date and sequence.
 2. `rule`: Strictly positive imperative (no leading `do not`, `don't`, `never`, or `avoid`), maximum 2 sentences.
 3. `trigger_patterns`: Non-empty array of file globs selecting when the lesson is injected.
-4. `evidence`: Verifiable execution evidence grounded in lap logs or commits (calibrated Jev confidence $ge 0.70$).
+4. `evidence`: Verifiable execution evidence grounded in lap logs or commits (harness-evaluated grounding and quality confidence each at least 0.70).
 5. `vetoed`: Boolean flag indicating whether an operator deprecated the lesson.
 
 ## 4. Tool Guidance Schema (`.factory/tool-guidance.json`)

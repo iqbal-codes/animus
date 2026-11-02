@@ -13,6 +13,7 @@ import managePrompt from "../prompts/manage.md" with { type: "text" };
 import planPrompt from "../prompts/plan.md" with { type: "text" };
 import simplifyPrompt from "../prompts/simplify.md" with { type: "text" };
 import sliceBacklogPrompt from "../prompts/slice-backlog.md" with { type: "text" };
+import triagePrompt from "../prompts/triage.md" with { type: "text" };
 
 export const BUNDLED_PROMPTS: Record<string, string> = {
   "assess-merge-queue": assessMergeQueuePrompt,
@@ -29,4 +30,5 @@ export const BUNDLED_PROMPTS: Record<string, string> = {
   plan: planPrompt,
   simplify: simplifyPrompt,
   "slice-backlog": sliceBacklogPrompt,
+  triage: triagePrompt,
 };

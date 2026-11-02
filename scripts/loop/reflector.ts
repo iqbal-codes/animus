@@ -8,8 +8,8 @@ import { loadPrompt, renderPrompt } from "./prompts";
 import { resolveRoleConfig } from "./config";
 import { buildProviderArgv } from "./providers";
 import type { AgentTransport } from "./types";
-import { learningProposalSchema, learningVerdictSchema, lessonDraftSchema, type LearningEvaluator, type LearningCommandRecord, type LearningProposalArtifact } from "./learning-schema";
-import { evaluateLearningWithJev, resolveLearningEvidence, validateLearningMutation } from "./learning-gates";
+import { learningProposalSchema, learningVerdictSchema, type LearningEvaluator, type LearningCommandRecord, type LearningProposalArtifact } from "./learning-schema";
+import { evaluateLearningWithHarness, resolveLearningEvidence, validateLearningMutation } from "./learning-gates";
 
 export interface CandidateLessonDraft {
   topic: string;
@@ -45,18 +45,6 @@ export interface ReflectionProposal {
   skill_promotion?: SkillPromotionDraft | null;
 }
 
-export interface JevLessonVerdict {
-  approved: boolean;
-  confidence: number;
-  hallucinationRisk: "grounded_in_logs" | "plausible_inference" | "unsupported_claim";
-  reason?: string;
-}
-
-export type JevLessonEvaluator = (
-  draft: CandidateLessonDraft,
-  dossier: IssueDossier,
-) => Promise<JevLessonVerdict>;
-
 export interface ReflectionOutcome {
   triggered: boolean;
   status: "held" | "proposed" | "no_entry" | "skipped" | "error";
@@ -74,17 +62,6 @@ export interface ReflectionOutcome {
     agentsMdUpdated: boolean;
     prUrl?: string;
   };
-}
-
-/** Fail closed when either grounding or quality cannot be evaluated. */
-export async function defaultEvaluateCandidateLesson(draft: CandidateLessonDraft, _dossier: IssueDossier): Promise<JevLessonVerdict> {
-  try {
-    lessonDraftSchema.parse(draft);
-    // Legacy draft strings contain no resolvable provenance and cannot authorize activation.
-    return { approved: false, confidence: 0, hallucinationRisk: "unsupported_claim", reason: "structured_evidence_required" };
-  } catch {
-    return { approved: false, confidence: 0, hallucinationRisk: "unsupported_claim", reason: "invalid_lesson" };
-  }
 }
 
 export function persistCodebaseRulesUpdates(
@@ -156,7 +133,6 @@ export interface RunPostIssueReflectionOptions {
   dossier: IssueDossier;
   artifactsDir: string;
   transport: AgentTransport;
-  jevEvaluator?: JevLessonEvaluator;
   proposalEvaluator?: LearningEvaluator;
   evidenceRoots?: Record<string, string>;
   commandRecords?: LearningCommandRecord[];
@@ -186,14 +162,22 @@ export async function runPostIssueReflection(options: RunPostIssueReflectionOpti
     const parsed = learningProposalSchema.safeParse(parseAgentReport(raw));
     if (!parsed.success) return { ...empty, triggered: true, status: "held", reasons: ["invalid_proposal_schema"] };
     const proposal = parsed.data;
+    const defaultEvaluator: LearningEvaluator = (m, ev) =>
+      evaluateLearningWithHarness(m, ev, {
+        root: options.root,
+        cwd: options.worktree,
+        transport: options.transport,
+        timeoutMs: options.timeoutMs,
+      });
+    const evaluator = options.proposalEvaluator ?? defaultEvaluator;
     const artifact: LearningProposalArtifact = { schema_version: 1, status: "held", issueNumber: dossier.issueNumber, accepted: [], held: [] };
     for (const mutation of proposal.mutations) {
       try {
         if (proposal.attribution === "confounded") throw new Error("confounded_attribution");
         const evidence = mutation.evidence.map(ref => resolveLearningEvidence(ref, dossier, options.evidenceRoots ?? {}));
         validateLearningMutation(mutation, options.commandRecords ?? [], dossier, options.evidenceRoots ?? {});
-        const verdict = learningVerdictSchema.parse(await (options.proposalEvaluator ?? evaluateLearningWithJev)(mutation, evidence));
-        if (!verdict.grounding.approved || verdict.grounding.confidence < .7 || !verdict.quality.approved || verdict.quality.confidence < .7 || verdict.hallucinationRisk !== "grounded_in_logs") throw new Error("jev_rejected");
+        const verdict = learningVerdictSchema.parse(await evaluator(mutation, evidence));
+        if (!verdict.grounding.approved || verdict.grounding.confidence < .7 || !verdict.quality.approved || verdict.quality.confidence < .7 || verdict.hallucinationRisk !== "grounded_in_logs") throw new Error("evaluation_rejected");
         artifact.accepted.push({ mutation, evidence, verdict });
       } catch (error) { artifact.held.push({ key: mutation.key, reason: error instanceof Error ? error.message : "evaluation_failed" }); }
     }
