@@ -8,10 +8,8 @@ import {
   serializeAnimusConfigYaml,
   type AnimusConfig,
 } from "../../scripts/loop/config";
-import registerLoopGuard, {
-  evaluateTriageToolCall,
-  isTriageCommandAllowed,
-} from "../../.factory/hooks/loop-guard";
+import registerLoopGuard from "../../.factory/hooks/loop-guard";
+import { evaluateTriageToolCall, isTriageCommandAllowed } from "../../scripts/loop/triage-policy";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -275,6 +273,33 @@ describe("Triage Read-Only & Command Guard (.factory/hooks/loop-guard.ts)", () =
   });
 
   describe("Hostile Shell Commands Blocked", () => {
+    test("registered hook blocks shell expansion and option smuggling before execution", async () => {
+      const call = setupHook();
+      const commands = [
+        "find . -maxdepth 0 $'\\x2d'exec touch pwned {} $'\\x3b'",
+        'git log $"--output=pwned" -n 1',
+        "git log {--output=pwned,} -n 1",
+        "git log --format --output=pwned",
+        "git show --pretty --output=pwned",
+        "git log -n --output=pwned",
+        "git log --format HEAD",
+        "rg -m --pre=touch pattern",
+        "diff -U --output=pwned a b",
+        "find . -maxdepth -delete",
+        "git log *",
+        "git log ?",
+        "git log [a-z]*",
+        'git log "$1"',
+        "git log $@",
+        "git log $0",
+        "git log --format",
+        "git -C",
+      ];
+      for (const command of commands) {
+        expect((await call({ toolName: "bash", input: { command } }))?.block).toBe(true);
+      }
+    });
+
     test("blocks mutating git branch creation (git branch NEW)", () => {
       const branchCreationCommands = [
         "git branch new-feature",
