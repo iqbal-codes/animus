@@ -988,6 +988,82 @@ test("holds subticket at waiting_approval (not sent_back) when critical impact (
   expect(git(root, "rev-parse", "refs/heads/factory/spec-200-integration")).toBe(baseSha);
 });
 
+test("computeExternalBlastRadius resolves relative imports accurately and avoids basename collisions", async () => {
+  const root = await fixture();
+  await mkdir(join(root, "src/auth"), { recursive: true });
+  await mkdir(join(root, "src/db"), { recursive: true });
+  await mkdir(join(root, "src/components"), { recursive: true });
+  await mkdir(join(root, "src/utils"), { recursive: true });
+  await mkdir(join(root, "src/routes"), { recursive: true });
+
+  // 1. Path collision: src/auth/config.ts vs src/db/config.ts
+  await Bun.write(
+    join(root, "src/auth/config.ts"),
+    "export const authConfig = { secret: 'xyz' };\n",
+  );
+  await Bun.write(
+    join(root, "src/db/config.ts"),
+    "export const dbConfig = { host: 'localhost' };\n",
+  );
+  await Bun.write(
+    join(root, "src/routes/login.ts"),
+    "import { authConfig } from '../auth/config';\nconsole.log(authConfig);\n",
+  );
+  await Bun.write(
+    join(root, "src/auth/service.ts"),
+    "import { authConfig } from './config';\nexport const svc = authConfig;\n",
+  );
+  await Bun.write(
+    join(root, "src/db-client.ts"),
+    "import { dbConfig } from './db/config';\nconsole.log(dbConfig);\n",
+  );
+  await Bun.write(
+    join(root, "src/unrelated-caller.ts"),
+    "import { dbConfig } from '../db/config';\nconsole.log(dbConfig);\n",
+  );
+
+  // 2. Index collision: src/components/index.ts vs src/utils/index.ts
+  await Bun.write(join(root, "src/components/index.ts"), "export const Component = 'comp';\n");
+  await Bun.write(join(root, "src/utils/index.ts"), "export const Util = 'util';\n");
+  await Bun.write(
+    join(root, "src/components/button.ts"),
+    "import { Util } from '../utils/index';\nexport const btn = Util;\n",
+  );
+  await Bun.write(
+    join(root, "src/components/header.ts"),
+    "import { Component } from './index';\nexport const header = Component;\n",
+  );
+  await Bun.write(
+    join(root, "src/components/footer.ts"),
+    "import { Component } from '.';\nexport const footer = Component;\n",
+  );
+  await Bun.write(
+    join(root, "src/page.ts"),
+    "import { Component } from './components';\nconsole.log(Component);\n",
+  );
+
+  git(root, "add", ".");
+  git(root, "commit", "-m", "setup collision test files");
+
+  // Changed file: src/auth/config.ts
+  // Must include: src/routes/login.ts (relative import ../auth/config), src/auth/service.ts (same-directory ./config)
+  // Must NOT include: src/db-client.ts (imports ./db/config), src/unrelated-caller.ts (imports ../db/config)
+  const authRadius = await computeExternalBlastRadius(root, ["src/auth/config.ts"]);
+  expect(authRadius).toContain("src/routes/login.ts");
+  expect(authRadius).toContain("src/auth/service.ts");
+  expect(authRadius).not.toContain("src/db-client.ts");
+  expect(authRadius).not.toContain("src/unrelated-caller.ts");
+
+  // Changed file: src/components/index.ts
+  // Must include: src/page.ts (directory import ./components), src/components/header.ts (same-dir ./index), src/components/footer.ts (same-dir .)
+  // Must NOT include: src/components/button.ts (imports ../utils/index)
+  const compRadius = await computeExternalBlastRadius(root, ["src/components/index.ts"]);
+  expect(compRadius).toContain("src/page.ts");
+  expect(compRadius).toContain("src/components/header.ts");
+  expect(compRadius).toContain("src/components/footer.ts");
+  expect(compRadius).not.toContain("src/components/button.ts");
+});
+
 test("computeExternalBlastRadius detects unmodified callers of changed files and falls back safely", async () => {
   const root = await fixture();
   await mkdir(join(root, "src"), { recursive: true });
@@ -1079,7 +1155,114 @@ test("computeExternalBlastRadius detects unmodified callers of changed files and
   // 8. Bounded operations and runtime on many changed files
   const manyFiles = Array.from({ length: 30 }, (_, i) => `src/file-${i}.ts`);
   const radiusMany = await computeExternalBlastRadius(root, manyFiles);
-  expect(radiusMany).toBe("(No unmodified external callers detected)");
+  expect(radiusMany).toContain(
+    "[Notice: Changed source file list truncated: scanned 25 of 30 files]",
+  );
+  expect(radiusMany).toContain("(No unmodified external callers detected in scanned portion)");
+});
+
+test("computeExternalBlastRadius enforces streaming byte cap, terminates child process, and reports honest notices", async () => {
+  const root = await fixture();
+  await mkdir(join(root, "src"), { recursive: true });
+  await Bun.write(join(root, "src/mod.ts"), "export const x = 1;\n");
+  for (let i = 0; i < 20; i++) {
+    await Bun.write(
+      join(root, `src/consumer-${i}.ts`),
+      `import { x } from './mod';\nconsole.log(x + ${i});\n`,
+    );
+  }
+  git(root, "add", ".");
+  git(root, "commit", "-m", "add consumer files");
+
+  // 1. Output cap via small maxBytes on real streaming scan: terminates process and adds honest notice
+  const radiusCapped = await computeExternalBlastRadius(root, ["src/mod.ts"], {
+    maxBytes: 150,
+  });
+  expect(radiusCapped).toContain(
+    "[Notice: Scan output reached byte limit of 150 bytes; results may be partial]",
+  );
+  expect(radiusCapped).toContain("src/mod.ts");
+
+  // 2. Output cap via injectable bounded producer
+  const mockTruncatedProducer = async () => ({
+    stdout: "src/consumer-0.ts:1:import { x } from './mod';\n",
+    exitCode: 0,
+    truncated: true,
+  });
+  const radiusInjected = await computeExternalBlastRadius(root, ["src/mod.ts"], {
+    producer: mockTruncatedProducer,
+    maxBytes: 100,
+  });
+  expect(radiusInjected).toContain(
+    "[Notice: Scan output reached byte limit of 100 bytes; results may be partial]",
+  );
+  expect(radiusInjected).toContain("src/consumer-0.ts");
+
+  // 3. Injectable producer when truncated with 0 callers found: must NOT claim exhaustive scan
+  const mockTruncatedNoMatchProducer = async () => ({
+    stdout: "unrelated.ts:1:console.log('nothing');\n",
+    exitCode: 0,
+    truncated: true,
+  });
+  const radiusNoMatchTruncated = await computeExternalBlastRadius(root, ["src/mod.ts"], {
+    producer: mockTruncatedNoMatchProducer,
+    maxBytes: 100,
+  });
+  expect(radiusNoMatchTruncated).toContain(
+    "[Notice: Scan output reached byte limit of 100 bytes; results may be partial]",
+  );
+  expect(radiusNoMatchTruncated).toContain(
+    "(No unmodified external callers detected in scanned portion)",
+  );
+  expect(radiusNoMatchTruncated).not.toBe("(No unmodified external callers detected)");
+
+  // 4. Result line cap: emits honest notice when results exceed maxResultLines
+  const radiusLineCapped = await computeExternalBlastRadius(root, ["src/mod.ts"], {
+    maxResultLines: 5,
+  });
+  expect(radiusLineCapped).toContain("[Notice: External caller results truncated to 5 lines]");
+
+  // 5. File cap: emits honest notice when changed files exceed maxFiles
+  const filesList = Array.from({ length: 15 }, (_, i) => `src/changed-${i}.ts`);
+  const radiusFileCapped = await computeExternalBlastRadius(root, filesList, {
+    maxFiles: 5,
+  });
+  expect(radiusFileCapped).toContain(
+    "[Notice: Changed source file list truncated: scanned 5 of 15 files]",
+  );
+  expect(radiusFileCapped).toContain(
+    "(No unmodified external callers detected in scanned portion)",
+  );
+});
+
+test("computeExternalBlastRadius supports grounded tsconfig path aliases and workspace packages", async () => {
+  const root = await fixture();
+  await mkdir(join(root, "apps/web/src/pages"), { recursive: true });
+  await mkdir(join(root, "apps/web/src/components"), { recursive: true });
+  await Bun.write(
+    join(root, "apps/web/tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: {
+        baseUrl: ".",
+        paths: {
+          "@/*": ["./src/*"],
+        },
+      },
+    }),
+  );
+  await Bun.write(
+    join(root, "apps/web/src/components/Button.tsx"),
+    "export function Button() { return 'btn'; }\n",
+  );
+  await Bun.write(
+    join(root, "apps/web/src/pages/Home.tsx"),
+    "import { Button } from '@/components/Button';\nconsole.log(Button);\n",
+  );
+  git(root, "add", ".");
+  git(root, "commit", "-m", "add web app with path alias");
+
+  const radius = await computeExternalBlastRadius(root, ["apps/web/src/components/Button.tsx"]);
+  expect(radius).toContain("apps/web/src/pages/Home.tsx");
 });
 
 test("runLocalLoop pre-packs issue body, comments, blast radius, and reviewer diff context into role prompts", async () => {
