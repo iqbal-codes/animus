@@ -5,6 +5,7 @@ import {
   loadScheduleConfig,
   runSchedulerTick,
   startSchedulerLoop,
+  awaitInFlightTriage,
   type BacklogCandidate,
   type SchedulerTickResult,
 } from "./loop/scheduler";
@@ -88,14 +89,17 @@ export async function fetchGithubBacklog(
 
 export function logTickResult(res: SchedulerTickResult): void {
   const time = new Date().toISOString();
+  const triagePart = res.triage
+    ? ` [triage: ${res.triage.status}${res.triage.reason ? ` (${res.triage.reason})` : ""}${res.triage.error ? ` (error: ${res.triage.error})` : ""}]`
+    : "";
   if (res.action === "launched") {
     console.log(
-      `[${time}] SCHEDULER LAUNCH: target=#${res.targetIssueNumber} runId=${res.runId} (active=${res.activeLapsCount}, admitted=${res.admittedIssuesCount})`,
+      `[${time}] SCHEDULER LAUNCH: target=#${res.targetIssueNumber} runId=${res.runId} (active=${res.activeLapsCount}, admitted=${res.admittedIssuesCount})${triagePart}`,
     );
   } else {
     const detail = res.detail ? ` (${res.detail})` : res.error ? ` [ERROR: ${res.error}]` : "";
     console.log(
-      `[${time}] SCHEDULER TICK: skipped reason=${res.reason} active=${res.activeLapsCount}${detail}`,
+      `[${time}] SCHEDULER TICK: skipped reason=${res.reason} active=${res.activeLapsCount}${detail}${triagePart}`,
     );
   }
 }
@@ -138,11 +142,13 @@ if (import.meta.main) {
         root,
         sharedRoot,
         runsDir,
+        repo,
         config: interval ? { interval_seconds: interval } : undefined,
         fetchBacklog,
         launchLap,
       });
       logTickResult(result);
+      await awaitInFlightTriage(root);
     } else {
       console.log(
         `Starting Factory Autonomous Scheduler (repository: ${repo}, interval: ${interval ?? loadScheduleConfig(root).interval_seconds}s)...`,
@@ -163,6 +169,7 @@ if (import.meta.main) {
         root,
         sharedRoot,
         runsDir,
+        repo,
         config: interval ? { interval_seconds: interval } : undefined,
         intervalMs: interval ? interval * 1000 : undefined,
         fetchBacklog,
@@ -172,6 +179,7 @@ if (import.meta.main) {
       });
 
       await loop.done;
+      await awaitInFlightTriage(root);
     }
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));

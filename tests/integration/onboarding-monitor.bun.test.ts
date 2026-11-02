@@ -26,20 +26,21 @@ describe("registered project monitoring", () => {
     forge = new SyntheticForgeAdapter({ "owner/alpha": 101, "owner/beta": 102 });
     registry = new ProjectRegistryService(db, forge);
     launches.length = 0;
+    const defaultGithubRead = (args: string[]) => {
+      if (args[0] === "api") return [[]];
+      const repo = args[args.indexOf("--repo") + 1]!;
+      return {
+        number: 1,
+        url: `https://github.com/${repo}/issues/1`,
+        title: "Implement contract",
+        body: "Deliver the requested behavior",
+        comments: [],
+        state: "OPEN",
+        labels: [{ name: "ready-for-agent" }],
+      };
+    };
     runtime = await loadMonitorRuntime({
-      githubRead(args) {
-        if (args[0] === "api") return [[]];
-        const repo = args[args.indexOf("--repo") + 1]!;
-        return {
-          number: 1,
-          url: `https://github.com/${repo}/issues/1`,
-          title: "Implement contract",
-          body: "Deliver the requested behavior",
-          comments: [],
-          state: "OPEN",
-          labels: [{ name: "ready-for-agent" }],
-        };
-      },
+      githubRead: defaultGithubRead,
       fetchBacklog: async () => ({
         issues: [
           {
@@ -57,6 +58,13 @@ describe("registered project monitoring", () => {
         launches.push({ root: checkout, issue: issue.number });
         return { runId: `run-${launches.length}`, status: "waiting_approval" };
       },
+      triage: async () => ({
+        processed: [],
+        skippedCount: 0,
+        successCount: 0,
+        failureCount: 0,
+        heldCount: 0,
+      }),
     });
     monitor = new RegisteredProjectMonitor(registry, { runtime, intervalMs: 100 });
   });
@@ -584,5 +592,533 @@ describe("registered project monitoring", () => {
     expect(status.enabled).toBe(true);
     expect(status.stopping).toBe(false);
     expect(status.error).toBeNull();
+  });
+
+  test("monitoring triggers non-blocking triage pass even when active builder runs exist, without recording builder runs in registry", async () => {
+    const alpha = await project("alpha");
+    registry.recordRun("builder-run-alpha", alpha.id);
+    expect(registry.getActiveRunCount(alpha.id)).toBe(1);
+
+    const triageCalls: Array<{ root: string; repo: string; stateRoot: string }> = [];
+    const triageRuntime = await loadMonitorRuntime({
+      fetchBacklog: runtime.fetchBacklog,
+      launch: runtime.launch,
+      triage: async (opts) => {
+        triageCalls.push(opts);
+        return {
+          processed: [
+            {
+              issueNumber: 1,
+              status: "promoted",
+              action: "promote_single_ticket",
+            },
+          ],
+          skippedCount: 0,
+          successCount: 1,
+          failureCount: 0,
+          heldCount: 0,
+        };
+      },
+    });
+    await monitor.stop();
+    monitor = new RegisteredProjectMonitor(registry, { runtime: triageRuntime });
+
+    await monitor.tick();
+    await monitor.drain();
+
+    expect(triageCalls.length).toBe(1);
+    expect(triageCalls[0]?.root).toBe(alpha.checkout_path);
+    expect(triageCalls[0]?.repo).toBe("owner/alpha");
+    expect(triageCalls[0]?.stateRoot).toBe(runtime.resolveTriageStateRoot!(alpha.checkout_path));
+
+    // Builder scheduling is held because of active run
+    const projectStatus = monitor.status().projects.find((p) => p.project_id === alpha.id);
+    expect(projectStatus?.reason).toBe("project_has_active_runs");
+    expect(projectStatus?.state).toBe("held");
+
+    // Triage completed successfully in background
+    expect(projectStatus?.triage?.state).toBe("completed");
+    expect(projectStatus?.triage?.processed_count).toBe(1);
+
+    // Active run count is still 1 (no fake lap recorded for triage)
+    expect(registry.getActiveRunCount(alpha.id)).toBe(1);
+    expect(registry.getProjectRunIds(alpha.id)).toEqual(["builder-run-alpha"]);
+    expect(launches).toEqual([]);
+  });
+
+  test("triage background operation runs concurrently with long builder laps and next poll without blocking", async () => {
+    const alpha = await project("alpha");
+    let releaseBuilder!: () => void;
+    const builderGate = new Promise<void>((r) => {
+      releaseBuilder = r;
+    });
+    let releaseTriage!: () => void;
+    const triageGate = new Promise<void>((r) => {
+      releaseTriage = r;
+    });
+
+    let builderStarted = false;
+    let triageStarted = false;
+    let triageCompleted = false;
+
+    const slowRuntime = await loadMonitorRuntime({
+      githubRead: (args) =>
+        args[0] === "api"
+          ? [[]]
+          : {
+              number: 1,
+              url: `https://github.com/owner/alpha/issues/1`,
+              title: "Implement contract",
+              body: "Deliver the requested behavior",
+              comments: [],
+              state: "OPEN",
+              labels: [{ name: "ready-for-agent" }],
+            },
+      fetchBacklog: runtime.fetchBacklog,
+      launch: async (checkout, issue) => {
+        builderStarted = true;
+        launches.push({ root: checkout, issue: issue.number });
+        await builderGate;
+        return { runId: "lap-slow", status: "completed" };
+      },
+      triage: async () => {
+        triageStarted = true;
+        await triageGate;
+        triageCompleted = true;
+        return {
+          processed: [],
+          skippedCount: 0,
+          successCount: 0,
+          failureCount: 0,
+          heldCount: 0,
+        };
+      },
+    });
+
+    await monitor.stop();
+    monitor = new RegisteredProjectMonitor(registry, { runtime: slowRuntime });
+
+    await monitor.tick();
+    while (!builderStarted || !triageStarted) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(Boolean(builderStarted)).toBe(true);
+    expect(Boolean(triageStarted)).toBe(true);
+    expect(Boolean(triageCompleted)).toBe(false);
+
+    // Next poll arrives while builder lap and triage are still running
+    await monitor.tick();
+
+    // Release triage first: triage finishes while builder lap remains held
+    releaseTriage();
+    let tries = 0;
+    while (!triageCompleted && tries++ < 50) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(Boolean(triageCompleted)).toBe(true);
+    const alphaStatus = monitor.status().projects.find((p) => p.project_id === alpha.id);
+    expect(alphaStatus?.triage?.state).toBe("completed");
+
+    // Release builder lap and drain
+    releaseBuilder();
+    await monitor.drain();
+    expect(monitor.status().projects.find((p) => p.project_id === alpha.id)?.run_id).toBe(
+      "lap-slow",
+    );
+  });
+
+  test("deferred slow triage on one project does not block builder scheduling or other projects", async () => {
+    const alpha = await project("alpha");
+    const beta = await project("beta");
+
+    let releaseAlphaTriage!: () => void;
+    const alphaTriageGate = new Promise<void>((r) => {
+      releaseAlphaTriage = r;
+    });
+
+    const deferredRuntime = await loadMonitorRuntime({
+      githubRead: (args) => {
+        if (args[0] === "api") return [[]];
+        const repo = args[args.indexOf("--repo") + 1]!;
+        return {
+          number: 1,
+          url: `https://github.com/${repo}/issues/1`,
+          title: "Implement contract",
+          body: "Deliver the requested behavior",
+          comments: [],
+          state: "OPEN",
+          labels: [{ name: "ready-for-agent" }],
+        };
+      },
+      fetchBacklog: runtime.fetchBacklog,
+      launch: runtime.launch,
+      triage: async (opts) => {
+        if (opts.repo === "owner/alpha") {
+          await alphaTriageGate;
+        }
+        return {
+          processed: [],
+          skippedCount: 0,
+          successCount: 0,
+          failureCount: 0,
+          heldCount: 0,
+        };
+      },
+    });
+
+    await monitor.stop();
+    monitor = new RegisteredProjectMonitor(registry, { runtime: deferredRuntime });
+
+    try {
+      await monitor.tick();
+      let waitCount = 0;
+      while (launches.length < 2 && waitCount++ < 50) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      // Both alpha and beta builder laps launched despite alpha's triage being deferred!
+      expect(launches.map((l) => l.root).sort()).toEqual(
+        [alpha.checkout_path, beta.checkout_path].sort(),
+      );
+    } finally {
+      releaseAlphaTriage();
+      await monitor.drain();
+    }
+  });
+
+  test("duplicate in-flight triage passes are avoided for the same project", async () => {
+    const _alpha = await project("alpha");
+    let triageInvocations = 0;
+    let releaseTriage!: () => void;
+    const triageGate = new Promise<void>((r) => {
+      releaseTriage = r;
+    });
+
+    const countingRuntime = await loadMonitorRuntime({
+      githubRead: (args) =>
+        args[0] === "api"
+          ? [[]]
+          : {
+              number: 1,
+              url: `https://github.com/owner/alpha/issues/1`,
+              title: "Implement contract",
+              body: "Deliver the requested behavior",
+              comments: [],
+              state: "OPEN",
+              labels: [{ name: "ready-for-agent" }],
+            },
+      fetchBacklog: runtime.fetchBacklog,
+      launch: runtime.launch,
+      triage: async () => {
+        triageInvocations++;
+        await triageGate;
+        return {
+          processed: [],
+          skippedCount: 0,
+          successCount: 0,
+          failureCount: 0,
+          heldCount: 0,
+        };
+      },
+    });
+
+    await monitor.stop();
+    monitor = new RegisteredProjectMonitor(registry, { runtime: countingRuntime });
+
+    try {
+      await monitor.tick();
+      let tries = 0;
+      while (triageInvocations === 0 && tries++ < 50) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(triageInvocations).toBe(1);
+
+      // Subsequent ticks while triage is in flight must not start a second triage
+      await monitor.tick();
+      await monitor.tick();
+      expect(triageInvocations).toBe(1);
+    } finally {
+      releaseTriage();
+      await monitor.drain();
+    }
+  });
+
+  test("database brakes, filesystem STOP/PAUSE brakes, and work window stop triage execution", async () => {
+    const alpha = await project("alpha");
+    let triageExecuted = false;
+    const brakingRuntime = await loadMonitorRuntime({
+      fetchBacklog: runtime.fetchBacklog,
+      launch: runtime.launch,
+      triage: async () => {
+        triageExecuted = true;
+        return {
+          processed: [],
+          skippedCount: 0,
+          successCount: 0,
+          failureCount: 0,
+          heldCount: 0,
+        };
+      },
+    });
+
+    const brakes = new BrakeService(db);
+
+    // 1. Database global launch brake stops triage
+    brakes.setGlobalLaunchBrake(true, "test-global-brake");
+    await monitor.stop();
+    monitor = new RegisteredProjectMonitor(registry, { runtime: brakingRuntime });
+    await monitor.tick();
+    await monitor.drain();
+    expect(triageExecuted).toBe(false);
+    brakes.setGlobalLaunchBrake(false, "test-global-brake");
+
+    // 2. Database project schedule pause stops triage
+    brakes.setProjectSchedulePause(alpha.id, true, "test-proj-pause");
+    await monitor.stop();
+    monitor = new RegisteredProjectMonitor(registry, { runtime: brakingRuntime });
+    await monitor.tick();
+    await monitor.drain();
+    expect(triageExecuted).toBe(false);
+    brakes.setProjectSchedulePause(alpha.id, false, "test-proj-pause");
+
+    // 3. Filesystem STOP brake stops triage
+    mkdirSync(join(alpha.checkout_path, ".factory"), { recursive: true });
+    writeFileSync(join(alpha.checkout_path, ".factory/STOP"), "stop");
+    await monitor.stop();
+    monitor = new RegisteredProjectMonitor(registry, { runtime: brakingRuntime });
+    await monitor.tick();
+    await monitor.drain();
+    expect(triageExecuted).toBe(false);
+    rmSync(join(alpha.checkout_path, ".factory/STOP"));
+
+    // 4. Filesystem PAUSE brake stops triage
+    writeFileSync(join(alpha.checkout_path, ".factory/PAUSE"), "pause");
+    await monitor.stop();
+    monitor = new RegisteredProjectMonitor(registry, { runtime: brakingRuntime });
+    await monitor.tick();
+    await monitor.drain();
+    expect(triageExecuted).toBe(false);
+    rmSync(join(alpha.checkout_path, ".factory/PAUSE"));
+
+    // 5. Outside work window stops triage
+    writeFileSync(
+      join(alpha.checkout_path, ".factory/schedule.json"),
+      JSON.stringify({
+        work_window: { enabled: true, start_time: "00:00", end_time: "00:00", timezone: "UTC" },
+      }),
+    );
+    await monitor.stop();
+    monitor = new RegisteredProjectMonitor(registry, { runtime: brakingRuntime });
+    await monitor.tick();
+    await monitor.drain();
+    expect(triageExecuted).toBe(false);
+    rmSync(join(alpha.checkout_path, ".factory/schedule.json"));
+  });
+
+  test("honest triage status errors are inspectable without unhandled promise rejections", async () => {
+    const alpha = await project("alpha");
+    const failingRuntime = await loadMonitorRuntime({
+      fetchBacklog: runtime.fetchBacklog,
+      launch: runtime.launch,
+      triage: async () => {
+        throw new Error("GitHub rate limit exceeded for triage inspection");
+      },
+    });
+
+    await monitor.stop();
+    monitor = new RegisteredProjectMonitor(registry, { runtime: failingRuntime });
+
+    await monitor.tick();
+    await monitor.drain();
+
+    const status = monitor.status().projects.find((p) => p.project_id === alpha.id);
+    expect(status?.triage?.state).toBe("error");
+    expect(status?.triage?.error).toContain("GitHub rate limit exceeded for triage inspection");
+  });
+
+  test("monitor reports error when result.failureCount > 0 instead of silent completion", async () => {
+    const alpha = await project("alpha");
+    const failingResultRuntime = await loadMonitorRuntime({
+      fetchBacklog: runtime.fetchBacklog,
+      launch: runtime.launch,
+      triage: async () => ({
+        processed: [
+          {
+            issueNumber: 1,
+            status: "failed",
+            error: "Failed to parse model clarification output",
+          },
+        ],
+        skippedCount: 0,
+        successCount: 0,
+        failureCount: 1,
+        heldCount: 0,
+      }),
+    });
+
+    await monitor.stop();
+    monitor = new RegisteredProjectMonitor(registry, { runtime: failingResultRuntime });
+
+    await monitor.tick();
+    await monitor.drain();
+
+    const status = monitor.status().projects.find((p) => p.project_id === alpha.id);
+    expect(status?.triage?.state).toBe("error");
+    expect(status?.triage?.error).toContain("Failed to parse model clarification output");
+    expect(status?.triage?.processed_count).toBe(1);
+  });
+
+  test("primary checkout STOP/PAUSE brake in linked worktree stops triage", async () => {
+    const alpha = await project("alpha");
+    let triageExecuted = false;
+    const trackingRuntime = await loadMonitorRuntime({
+      fetchBacklog: runtime.fetchBacklog,
+      launch: runtime.launch,
+      triage: async () => {
+        triageExecuted = true;
+        return {
+          processed: [],
+          skippedCount: 0,
+          successCount: 0,
+          failureCount: 0,
+          heldCount: 0,
+        };
+      },
+    });
+
+    // Create a worktree of alpha and register it
+    execFileSync("git", [
+      "-C",
+      alpha.checkout_path,
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "init",
+    ]);
+    const worktreeDir = join(alpha.checkout_path, "../alpha-worktree");
+    execFileSync("git", [
+      "-C",
+      alpha.checkout_path,
+      "worktree",
+      "add",
+      "-b",
+      "wt-branch",
+      worktreeDir,
+    ]);
+
+    // Point alpha's registration to the linked worktree
+    db.prepare("UPDATE projects SET checkout_path = ? WHERE id = ?").run(worktreeDir, alpha.id);
+
+    // Put STOP brake in primary checkout (alpha.checkout_path)
+    mkdirSync(join(alpha.checkout_path, ".factory"), { recursive: true });
+    writeFileSync(join(alpha.checkout_path, ".factory/STOP"), "stop in primary");
+
+    await monitor.stop();
+    monitor = new RegisteredProjectMonitor(registry, { runtime: trackingRuntime });
+
+    await monitor.tick();
+    await monitor.drain();
+
+    // Triage must not execute on either the primary or the worktree
+    expect(triageExecuted).toBe(false);
+
+    rmSync(join(alpha.checkout_path, ".factory/STOP"));
+  });
+
+  test("rechecking BrakeService immediately before dispatch after awaits stops triage", async () => {
+    const alpha = await project("alpha");
+    let triageExecuted = false;
+
+    let inspectResolved!: () => void;
+    const inspectGate = new Promise<void>((r) => {
+      inspectResolved = r;
+    });
+
+    const brakes = new BrakeService(db);
+
+    const delayingRuntime = await loadMonitorRuntime({
+      fetchBacklog: runtime.fetchBacklog,
+      launch: runtime.launch,
+      triage: async () => {
+        triageExecuted = true;
+        return {
+          processed: [],
+          skippedCount: 0,
+          successCount: 0,
+          failureCount: 0,
+          heldCount: 0,
+        };
+      },
+    });
+
+    const origInspect = delayingRuntime.inspect;
+    delayingRuntime.inspect = async (root) => {
+      const res = await origInspect(root);
+      // Wait for test to engage brake while in inspect
+      await inspectGate;
+      return res;
+    };
+
+    await monitor.stop();
+    monitor = new RegisteredProjectMonitor(registry, { runtime: delayingRuntime });
+
+    const tickPromise = monitor.tick();
+
+    // Engage brake while inspect is awaiting
+    brakes.setProjectLaunchBrake(alpha.id, true, "engaged-during-inspect");
+    inspectResolved();
+
+    await tickPromise;
+    await monitor.drain();
+
+    expect(triageExecuted).toBe(false);
+    brakes.setProjectLaunchBrake(alpha.id, false, "engaged-during-inspect");
+  });
+
+  test("malformed schedule throw in checkWorkWindow is caught and isolated per project", async () => {
+    const alpha = await project("alpha");
+    const _beta = await project("beta");
+
+    // Alpha has malformed schedule JSON
+    mkdirSync(join(alpha.checkout_path, ".factory"), { recursive: true });
+    writeFileSync(join(alpha.checkout_path, ".factory/schedule.json"), "invalid json {");
+
+    let betaTriageRan = false;
+    const isolatingRuntime = await loadMonitorRuntime({
+      fetchBacklog: runtime.fetchBacklog,
+      launch: runtime.launch,
+      triage: async (opts) => {
+        if (opts.repo === "owner/beta") {
+          betaTriageRan = true;
+        }
+        return {
+          processed: [],
+          skippedCount: 0,
+          successCount: 0,
+          failureCount: 0,
+          heldCount: 0,
+        };
+      },
+    });
+
+    await monitor.stop();
+    monitor = new RegisteredProjectMonitor(registry, { runtime: isolatingRuntime });
+
+    // Tick should not throw unhandled exception
+    await monitor.tick();
+    await monitor.drain();
+
+    // Alpha status records the error
+    const alphaStatus = monitor.status().projects.find((p) => p.project_id === alpha.id);
+    expect(alphaStatus?.triage?.state).toBe("error");
+    expect(alphaStatus?.triage?.error).toContain("Malformed schedule config");
+
+    // Beta triage ran despite alpha's malformed schedule
+    expect(betaTriageRan).toBe(true);
+
+    rmSync(join(alpha.checkout_path, ".factory/schedule.json"));
   });
 });

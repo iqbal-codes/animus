@@ -426,7 +426,17 @@ export const projectMonitorStatusSchema = z.object({
       error: z.string().optional(),
     })
     .optional(),
+  triage: z
+    .object({
+      state: z.enum(["idle", "running", "completed", "skipped", "error"]),
+      reason: z.string().optional(),
+      checked_at: z.string().nullable().optional(),
+      processed_count: z.number().int().nonnegative().optional(),
+      error: z.string().optional(),
+    })
+    .optional(),
 });
+export type ProjectTriageStatus = NonNullable<ProjectMonitorStatus["triage"]>;
 export type ProjectMonitorStatus = z.infer<typeof projectMonitorStatusSchema>;
 
 export const monitoringStatusSchema = z.object({

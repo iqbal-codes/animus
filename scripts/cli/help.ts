@@ -78,8 +78,8 @@ export const helpEntries: readonly HelpEntry[] = [
   },
   {
     command: "intake",
-    spec: "intake [list|get <issue>]",
-    description: "Evaluate GitHub issue backlog and admission readiness",
+    spec: "intake [list|get <issue>|triage] [--issue <number>] [--dry-run]",
+    description: "Evaluate GitHub issue backlog and run on-demand triage passes",
   },
   {
     command: "promotion",
@@ -251,7 +251,7 @@ export const orderedFlags: readonly FlagHelp[] = [
   {
     spec: "--dry-run",
     description: "Run preflight validation or simulation without executing changes",
-    commands: ["loop", "scheduler"],
+    commands: ["loop", "scheduler", "intake"],
   },
   {
     spec: "--no-push",
@@ -330,7 +330,10 @@ export const orderedExamples: readonly ExampleHelp[] = [
   { text: 'animus lap run "Fix login validation for issue #42"', command: "lap" },
   { text: "animus loop run --issue 72 --dry-run", command: "loop" },
   { text: "animus loop evidence --issue 72", command: "loop" },
-  { text: "animus loop evidence --issue 72 --mapping evidence-map.json --publish", command: "loop" },
+  {
+    text: "animus loop evidence --issue 72 --mapping evidence-map.json --publish",
+    command: "loop",
+  },
   { text: "animus scheduler --once --dry-run", command: "scheduler" },
 ];
 
