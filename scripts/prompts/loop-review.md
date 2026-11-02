@@ -51,10 +51,17 @@ Assign exactly one disposition to every QA line that is not a plain `PASS` or `O
 - `issue`: A non-blocking question or defect to be tracked in a future issue.
 - `accepted`: A question confirmed not to be a defect and invisible to end-users.
 
-## 4. Decide Outcome
+## 4. Decide Outcome & Critical Impact Auto-Merge Assessment
 
-- **`merge` / `approved`:** Every criterion passed or was rechecked; holdouts passed or are tracked pre-existing; all defects resolved; zero regressions; zero protected paths touched; project checks clean. (Return `merge` when merge mode is auto; return `approved` when merge is human-gated).
-- **`sent-back`:** The change has fixable defects. Detail exact required corrections with reproducible evidence. If the item has accumulated $INPUTS.rejections send-backs, return it to the owner instead.
+Separate **Code/Spec Quality** from **Critical Impact Auto-Merge Safety**:
+- **`merge`:** Every criterion passed or was rechecked; zero blocking findings; zero regressions; project checks clean; AND the change is a bounded, low-risk slice (`risk_level` is `"trivial"` or `"low"`, `critical_impacts` is empty `[]`, `auto_merge_judgement.eligible` is `true`) safe to auto-merge into a spec integration branch without human review.
+- **`approved`:** Every criterion, test, QA check, and code standard passed (do NOT send back clean code!), **but** the change carries critical architectural or operational impact requiring human sign-off before merge (`auto_merge_judgement.eligible: false`). Always return `approved` (not `merge` and not `sent-back`) if the diff touches any of the 5 critical impact categories:
+  1. `database_or_state_migration`: Modifies SQLite/database schemas, DDL statements, migrations, or persisted on-disk state formats.
+  2. `cross_domain_or_shared_contract`: Refactors across multiple domain modules or mutates shared public contracts (`packages/contracts/**`, `packages/client/**`).
+  3. `security_auth_or_trust_boundary`: Alters authentication, authorization, secret sanitization, permissions, or execution guards.
+  4. `dependency_toolchain_or_infra`: Modifies `package.json`, lockfiles, `tsconfig`, CI workflows, or protected paths.
+  5. `foundational_direction_or_irreversible`: Introduces foundational design decisions that could misdirect downstream dependent subtickets (`Depends on:`) or cause irreversible side effects.
+- **`sent-back`:** The change has fixable code/spec defects. Detail exact required corrections with reproducible evidence. If the item has accumulated $INPUTS.rejections send-backs, return it to the owner instead.
 - **`needs-owner`:** The work item requires human product direction, scope clarification, changes protected files, alters judge constants without approval, or hit the send-back limit.
 
 ## 5. Unified PR Review Comment
@@ -121,6 +128,13 @@ Return your final decision in JSON (plain or within a single ```json code fence)
     }
   ],
   "judge_changes": [],
+  "auto_merge_judgement": {
+    "eligible": true,
+    "risk_level": "trivial | low | moderate | high",
+    "scope_aligned": true,
+    "critical_impacts": [],
+    "rationale": "Bounded slice within ticket contract with zero schema, cross-domain, security, or infra mutations."
+  },
   "reason": "<concise decision rationale>"
 }
 ```

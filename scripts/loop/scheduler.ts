@@ -261,8 +261,30 @@ export function getIssuesWaitingApproval(runsDir: string): Set<number> {
   return waiting;
 }
 
+export function getMergedIssueNumbers(runsDir: string): Set<number> {
+  const merged = new Set<number>();
+  if (!existsSync(runsDir)) return merged;
+  try {
+    for (const entry of readdirSync(runsDir)) {
+      const statePath = join(runsDir, entry, "state.json");
+      if (!existsSync(statePath)) continue;
+      try {
+        const state = JSON.parse(readFileSync(statePath, "utf-8"));
+        if (state.status === "merged") {
+          const match = /\/issues\/(\d+)$/.exec(state.issue ?? "");
+          if (match && match[1]) {
+            merged.add(Number(match[1]));
+          }
+        }
+      } catch {}
+    }
+  } catch {}
+  return merged;
+}
+
 export interface FilterAdmittedIssuesOptions {
   waitingApprovalIssueNumbers?: Set<number>;
+  mergedIssueNumbers?: Set<number>;
   stateRoot?: string;
   maxLaps?: number;
 }
@@ -273,6 +295,9 @@ export function filterAdmittedIssues(
   options: FilterAdmittedIssuesOptions = {},
 ): BacklogCandidate[] {
   const admitted: BacklogCandidate[] = [];
+  const mergedSet =
+    options.mergedIssueNumbers ??
+    (options.stateRoot ? getMergedIssueNumbers(join(options.stateRoot, "runs")) : new Set<number>());
 
   for (const issue of issues) {
     if (issue.state.toUpperCase() !== "OPEN") continue;
@@ -286,8 +311,10 @@ export function filterAdmittedIssues(
 
     if (issue.activeClaim) continue;
 
-    // Skip issues already delivered and waiting for human approval or owner escalation
-    if (options.waitingApprovalIssueNumbers?.has(issue.number)) continue;
+    // Skip issues already delivered and waiting for human approval, already auto-merged, or escalated
+    if (options.waitingApprovalIssueNumbers?.has(issue.number) || mergedSet.has(issue.number)) {
+      continue;
+    }
 
     // Skip issues that have reached or exceeded maxLaps in their issue dossier
     if (options.stateRoot && options.maxLaps !== undefined) {
@@ -296,8 +323,10 @@ export function filterAdmittedIssues(
         continue;
       }
     }
-    // Verify all dependencies are in closedIssueNumbers
-    const allDepsSatisfied = issue.dependencies.every((dep) => closedIssueNumbers.has(dep));
+    // Verify all dependencies are in closedIssueNumbers or mergedSet
+    const allDepsSatisfied = issue.dependencies.every(
+      (dep) => closedIssueNumbers.has(dep) || mergedSet.has(dep),
+    );
     if (!allDepsSatisfied) continue;
 
     admitted.push(issue);
@@ -389,6 +418,7 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
 
   const activeCount = countActiveLaps(runsDir);
   const waitingApprovalNumbers = getIssuesWaitingApproval(runsDir);
+  const mergedNumbers = getMergedIssueNumbers(runsDir);
   if (activeCount >= mergedConfig.parallel) {
     return {
       action: "skipped",
@@ -414,6 +444,7 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
   const stateRoot = resolve(runsDir, "..");
   const admitted = filterAdmittedIssues(backlog.issues, backlog.closedNumbers, {
     waitingApprovalIssueNumbers: waitingApprovalNumbers,
+    mergedIssueNumbers: mergedNumbers,
     stateRoot,
     maxLaps: mergedConfig.max_laps,
   });

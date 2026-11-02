@@ -115,7 +115,7 @@ export async function resolveRunLap(
 }
 
 export function terminalSummary(state: WatchedRunState): string[] {
-  if (!state.status || !["waiting_approval", "sent_back", "failed", "interrupted", "needs_owner"].includes(state.status)) return [];
+  if (!state.status || !["waiting_approval", "merged", "sent_back", "failed", "interrupted", "needs_owner"].includes(state.status)) return [];
   const evidence = Array.isArray(state.evidence) ? state.evidence : [];
   const last = evidence.at(-1);
   const lapText = typeof state.lap === "number" ? ` (Lap ${state.lap})` : "";
@@ -169,7 +169,7 @@ export async function watchRun(directory: string, once = false, signal?: AbortSi
         }
       }
     }
-    if (firstPoll && !history && !once && !["waiting_approval", "failed", "interrupted"].includes(state.status)) console.log("LIVE: historical events skipped. Waiting for new completed messages/tool results. Use --history to replay.");
+    if (firstPoll && !history && !once && !["waiting_approval", "merged", "failed", "interrupted"].includes(state.status)) console.log("LIVE: historical events skipped. Waiting for new completed messages/tool results. Use --history to replay.");
     firstPoll = false;
     if (activity) lastActivity = Date.now();
     // Re-read after draining logs: the run may have ended while events were read.

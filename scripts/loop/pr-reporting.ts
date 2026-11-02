@@ -7,7 +7,7 @@ import type {
   ReviewFinding,
   ReviewerReport,
 } from "./report-schema";
-import type { LocalIssue } from "./types";
+import type { AutoMergeEvaluationResult, LocalIssue } from "./types";
 
 export const EVIDENCE_SECTION_START = "<!-- BEGIN_FACTORY_EVIDENCE_INDEX -->";
 export const EVIDENCE_SECTION_END = "<!-- END_FACTORY_EVIDENCE_INDEX -->";
@@ -45,8 +45,17 @@ export function renderEvidenceContent(params: {
   captures?: CaptureRecord[];
   outstanding?: string[];
   judgeAlterations?: string[];
+  autoMerge?: AutoMergeEvaluationResult;
 }): string {
-  const { identities, qaReport, builderReport, captures, outstanding, judgeAlterations } = params;
+  const {
+    identities,
+    qaReport,
+    builderReport,
+    captures,
+    outstanding,
+    judgeAlterations,
+    autoMerge,
+  } = params;
 
   const lines: string[] = [];
 
@@ -194,6 +203,28 @@ export function renderEvidenceContent(params: {
     for (const alt of judgeAlterations) lines.push(`- ${alt}`);
   } else {
     lines.push("None.");
+  }
+
+  // 7. Auto-Merge & Critical Impact Gate
+  if (autoMerge) {
+    lines.push("");
+    lines.push("### Auto-Merge & Critical Impact Gate");
+    lines.push(
+      `- **Decision**: \`${autoMerge.decision}\` (risk: \`${autoMerge.riskLevel}\`, target: \`${autoMerge.targetBranch}\`)`,
+    );
+    if (autoMerge.criticalImpacts.length > 0) {
+      lines.push(
+        `- **Critical Impact Categories**: ${autoMerge.criticalImpacts.map((c) => `\`${c}\``).join(", ")}`,
+      );
+    }
+    if (autoMerge.reasons.length > 0) {
+      for (const reason of autoMerge.reasons) {
+        lines.push(`- ${reason}`);
+      }
+    }
+    if (autoMerge.rationale) {
+      lines.push(`- **Rationale**: ${autoMerge.rationale}`);
+    }
   }
 
   const rawSection = lines.join("\n");
@@ -393,6 +424,7 @@ export function formatReviewComment(params: {
   dossierFindings?: ReviewFinding[];
   isNeedsOwner?: boolean;
   handoffProse?: string;
+  autoMerge?: AutoMergeEvaluationResult;
 }): string {
   const {
     outcome,
@@ -404,6 +436,7 @@ export function formatReviewComment(params: {
     dossierFindings,
     isNeedsOwner,
     handoffProse,
+    autoMerge,
   } = params;
 
   const lines = [
@@ -490,12 +523,44 @@ export function formatReviewComment(params: {
     lines.push("");
   }
 
+  // Auto-Merge & Critical Impact Gate
+  if (autoMerge) {
+    lines.push("#### 🛡️ Auto-Merge & Critical Impact Gate:");
+    lines.push(
+      `- **Decision**: \`${autoMerge.decision}\` (risk: \`${autoMerge.riskLevel}\`, target: \`${autoMerge.targetBranch}\`, scope aligned: \`${autoMerge.scopeAligned}\`)`,
+    );
+    if (autoMerge.criticalImpacts.length > 0) {
+      lines.push(
+        `- **Critical Impacts**: ${autoMerge.criticalImpacts.map((c) => `\`${c}\``).join(", ")}`,
+      );
+    }
+    if (autoMerge.reasons.length > 0) {
+      for (const reason of autoMerge.reasons) {
+        lines.push(`- **Reason**: ${reason}`);
+      }
+    }
+    if (autoMerge.rationale) {
+      lines.push(`- **Rationale**: ${autoMerge.rationale}`);
+    }
+    lines.push("");
+  }
+
   // Status conclusion
   if (isNeedsOwner) {
     if (handoffProse) lines.push(handoffProse);
     else lines.push("⛔ **Work item escalated to human owner (`ready-for-human`).**");
+  } else if (autoMerge?.authorized || outcome === "merged") {
+    lines.push(
+      `🚀 **Candidate verified and Auto-merged into integration branch (\`${autoMerge?.targetBranch ?? "integration"}\`).**`,
+    );
   } else if (outcome === "approved" || outcome === "merge") {
-    lines.push("✅ **Candidate verified and approved.** Awaiting human merge approval (`merge=approve`).");
+    if (autoMerge && !autoMerge.authorized && autoMerge.criticalImpacts.length > 0) {
+      lines.push(
+        `⚠️ **Candidate verified and approved (Code & AC Passed) — Auto-Merge Held for Human Review** due to critical impact (${autoMerge.criticalImpacts.map((c) => `\`${c}\``).join(", ")}). Awaiting human merge approval (\`merge=approve\`).`,
+      );
+    } else {
+      lines.push("✅ **Candidate verified and approved.** Awaiting human merge approval (`merge=approve`).");
+    }
   } else {
     lines.push("⚠️ **Work item sent back.** Review feedback has been recorded for the next lap.");
   }
