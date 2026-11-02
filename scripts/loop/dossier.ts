@@ -7,7 +7,7 @@ export interface LapAttemptRecord {
   lapIndex: number;
   runId: string;
   timestamp: string;
-  status: "waiting_approval" | "sent_back" | "failed" | "needs_owner";
+  status: "waiting_approval" | "merged" | "sent_back" | "failed" | "needs_owner";
   candidateHead?: string;
   changedFiles: string[];
   failedStage?: "builder" | "ordinary_checks" | "qa" | "reviewer" | "ci";
@@ -17,6 +17,11 @@ export interface LapAttemptRecord {
   structuredFindings?: ReviewFinding[];
   dispositions?: ReviewDisposition[];
   rechecks?: RemediationRecheckRecord[];
+  /** Host-recorded recovery within this lap, not a model's claim of friction. */
+  recoveries?: Array<{ role: string; artifact: string; reason: string }>;
+  artifactsDir?: string;
+  commandRecords?: import("./learning-schema").LearningCommandRecord[];
+  evidence?: Array<{ candidate: string; artifact: string; exitCode: number }>;
 }
 
 export interface IssueDossier {
@@ -191,35 +196,24 @@ export function recordLapAttempt(
  * Reflection triggers ONLY at terminal state:
  * 1. Approved (`waiting_approval`) after experiencing friction (previous failed/sent_back laps,
  *    or recorded review findings / QA notices).
- * 2. Exhausted / Escalated (`needs_owner` or consecutive failures >= maxRejections).
+ * 2. Explicitly escalated (`needs_owner`). Failure history alone is not terminal.
  */
-export function shouldTriggerReflection(
-  dossier: IssueDossier,
-  options: { maxRejections?: number } = {},
-): boolean {
+export function shouldTriggerReflection(dossier: IssueDossier): boolean {
   if (dossier.reflectedAt) return false;
   if (dossier.attempts.length === 0) return false;
 
-  const maxRejections = options.maxRejections ?? 2;
   const latest = dossier.attempts[dossier.attempts.length - 1]!;
 
-  // Case A: Approved after friction (Lap 0 failed/sent_back -> Lap N approved)
-  if (latest.status === "waiting_approval") {
+  // Case A: Approved/merged after friction (Lap 0 failed/sent_back -> Lap N approved/merged)
+  if (latest.status === "waiting_approval" || latest.status === "merged") {
     const hadPriorFailure = dossier.attempts
       .slice(0, -1)
       .some((a) => a.status === "sent_back" || a.status === "failed");
-    return hadPriorFailure;
+    return hadPriorFailure || (latest.recoveries?.length ?? 0) > 0;
   }
 
   // Case B: Escalated to owner or exhausted rejection budget
   if (latest.status === "needs_owner") {
-    return true;
-  }
-
-  const failureCount = dossier.attempts.filter(
-    (a) => a.status === "sent_back" || a.status === "failed",
-  ).length;
-  if (failureCount >= maxRejections) {
     return true;
   }
 

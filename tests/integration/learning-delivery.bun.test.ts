@@ -1,0 +1,290 @@
+import { test, expect } from "bun:test";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { deliverLearningProposal } from "../../scripts/loop/learning-delivery";
+import { runPostIssueReflection } from "../../scripts/loop/reflector";
+
+async function fixture(
+  category = "lesson",
+  value: unknown = {
+    topic: "port",
+    trigger_patterns: ["tests/*"],
+    rule: "Assign an explicit port.",
+    evidence: "transition",
+  },
+) {
+  const root = mkdtempSync(join(tmpdir(), "learning-git-"));
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+  git("init", "-b", "main");
+  git("config", "user.email", "test@example.test");
+  git("config", "user.name", "Test");
+  writeFileSync(join(root, "README.md"), "feature\n");
+  git("add", ".");
+  git("commit", "-m", "feature");
+  const candidate = git("rev-parse", "HEAD");
+  const artifacts = mkdtempSync(join(tmpdir(), "learning-evidence-"));
+  writeFileSync(join(artifacts, "check.log"), "failed\npassed\n");
+  const dossier = {
+    issueNumber: 1,
+    issueTitle: "Port",
+    issueUrl: "https://example.test/1",
+    branch: "main",
+    attempts: [
+      {
+        runId: "run1",
+        candidateHead: candidate,
+        lapIndex: 0,
+        timestamp: new Date().toISOString(),
+        status: "failed" as const,
+        changedFiles: [],
+        reviewFindings: [],
+        qaFailures: [],
+      },
+    ],
+  };
+  const proposal = {
+    schema_version: 1,
+    attribution: "helped",
+    mutations: [
+      {
+        category,
+        key: "port",
+        value,
+        evidence: [
+          {
+            runId: "run1",
+            candidate,
+            path: "check.log",
+            lineStart: 1,
+            lineEnd: 2,
+            quote: "failed\npassed",
+          },
+        ],
+      },
+    ],
+  };
+  const evidenceRoots = { run1: artifacts };
+  const reflected = await runPostIssueReflection({
+    root,
+    worktree: root,
+    artifactsDir: artifacts,
+    dossier,
+    evidenceRoots,
+    transport: async () => ({ exitCode: 0, stdout: JSON.stringify(proposal), stderr: "" }),
+    proposalEvaluator: async () => ({
+      grounding: { approved: true, confidence: 0.9 },
+      quality: { approved: true, confidence: 0.9 },
+      hallucinationRisk: "grounded_in_logs",
+    }),
+  });
+  return {
+    root,
+    candidate,
+    git,
+    dossier,
+    evidenceRoots,
+    proposal,
+    artifacts,
+    proposalPath: reflected.proposalPath!,
+    proposalEvaluator: async () => ({
+      grounding: { approved: true, confidence: 0.9 },
+      quality: { approved: true, confidence: 0.9 },
+      hallucinationRisk: "grounded_in_logs",
+    }),
+  };
+}
+
+test("lightweight delivery opens draft review on isolated commit without changing verified candidate", async () => {
+  const f = await fixture();
+  const result = await deliverLearningProposal({
+    ...f,
+    verifiedCandidate: f.candidate,
+    baseBranch: "main",
+    transport: async ({ argv, cwd }) => {
+      if (argv[0] === "gh") {
+        expect(argv).toContain("--draft");
+        return { exitCode: 0, stdout: "https://github.com/test/repo/pull/1\n", stderr: "" };
+      }
+      if (argv[1] === "push") return { exitCode: 0, stdout: "", stderr: "" };
+      return {
+        exitCode: 0,
+        stdout: execFileSync(argv[0]!, argv.slice(1), { cwd, encoding: "utf8" }),
+        stderr: "",
+      };
+    },
+  });
+  expect(result.status).toBe("proposed");
+  expect(result.prUrl).toContain("/pull/1");
+  expect(f.git("rev-parse", "HEAD")).toBe(f.candidate);
+  expect(f.git("status", "--porcelain")).toBe("");
+  expect(existsSync(join(f.root, ".factory/lessons.jsonl"))).toBe(false);
+  expect(result.deliveryHead).not.toBe(f.candidate);
+});
+
+test("structural learning remains isolated and review-required", async () => {
+  const f = await fixture("pattern", "Use scripts/port.ts for port selection.");
+  const result = await deliverLearningProposal({
+    ...f,
+    verifiedCandidate: f.candidate,
+    baseBranch: "main",
+    publish: false,
+  });
+  expect(result.status).toBe("proposed");
+  expect(result.reviewRequired).toBe(true);
+  expect(result.kind).toBe("structural");
+  expect(readFileSync(join(result.worktree!, ".factory/codebase-rules.json"), "utf8")).toContain(
+    "scripts/port.ts",
+  );
+  expect(existsSync(join(f.root, ".factory/codebase-rules.json"))).toBe(false);
+});
+
+test("structural delivery excludes unmerged feature commits", async () => {
+  const f = await fixture("pattern", "Use the canonical port module.");
+  f.git("checkout", "-b", "feature");
+  writeFileSync(join(f.root, "feature-only.txt"), "unmerged");
+  f.git("add", ".");
+  f.git("commit", "-m", "unmerged feature");
+  const featureHead = f.git("rev-parse", "HEAD");
+  const result = await deliverLearningProposal({
+    ...f,
+    verifiedCandidate: featureHead,
+    baseBranch: "main",
+    publish: false,
+  });
+  expect(result.status).toBe("proposed");
+  expect(existsSync(join(result.worktree!, "feature-only.txt"))).toBe(false);
+  expect(f.git("rev-parse", "HEAD")).toBe(featureHead);
+});
+
+test("delivery re-evaluates edited proposals and holds changed evidence", async () => {
+  const f = await fixture();
+  writeFileSync(join(f.artifacts, "check.log"), "invented\npassed\n");
+  const result = await deliverLearningProposal({
+    ...f,
+    verifiedCandidate: f.candidate,
+    baseBranch: "main",
+    publish: false,
+  });
+  expect(result.status).toBe("held");
+  expect(result.deliveryHead).toBeUndefined();
+});
+
+test("delivery runs configured checks and cannot publish after a failed check", async () => {
+  const f = await fixture();
+  const result = await deliverLearningProposal({
+    ...f,
+    verifiedCandidate: f.candidate,
+    baseBranch: "main",
+    checks: [["bun", "-e", "process.exit(2)"]],
+    publish: false,
+  });
+  expect(result.status).toBe("held");
+  expect(result.deliveryHead).toBeUndefined();
+});
+
+test("recurrence deduplicates replay, revisions preserve audit, and topic veto blocks re-ID", async () => {
+  const f = await fixture();
+  const deliver = (base: string) =>
+    deliverLearningProposal({
+      ...f,
+      verifiedCandidate: f.candidate,
+      acceptedBase: base,
+      baseBranch: "main",
+      publish: false,
+    });
+  const first = await deliver(f.candidate);
+  expect(first.status).toBe("proposed");
+  const historyDir = join(first.worktree!, ".factory/learning-history");
+  const receipt = JSON.parse(readFileSync(join(historyDir, readdirSync(historyDir)[0]!), "utf8"));
+  expect(receipt.sourceCandidate).toBe(f.candidate);
+  expect(receipt.accepted[0].evidence[0].sha256).toMatch(/^[a-f0-9]{64}$/);
+  const repeated = await deliver(first.deliveryHead!);
+  expect(repeated.status).toBe("held");
+  expect(repeated.reasons).toContain("no_new_learning");
+  const raw = JSON.parse(readFileSync(f.proposalPath, "utf8"));
+  raw.accepted[0].mutation.value.rule = "Reserve a port before binding.";
+  writeFileSync(f.proposalPath, JSON.stringify(raw));
+  const revised = await deliver(first.deliveryHead!);
+  expect(revised.status).toBe("proposed");
+  const entries = readFileSync(join(revised.worktree!, ".factory/lessons.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  expect(entries).toHaveLength(2);
+  expect(entries[0].superseded_by).toBe(entries[1].revision_id);
+  expect(entries[1].occurrence_count).toBe(1);
+  entries[0].vetoed = true;
+  writeFileSync(
+    join(revised.worktree!, ".factory/lessons.jsonl"),
+    entries.map((e) => JSON.stringify(e)).join("\n") + "\n",
+  );
+  execFileSync("git", ["add", "."], { cwd: revised.worktree });
+  execFileSync("git", ["commit", "-m", "operator veto"], { cwd: revised.worktree });
+  const vetoHead = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: revised.worktree,
+    encoding: "utf8",
+  }).trim();
+  const vetoed = await deliver(vetoHead);
+  expect(vetoed.status).toBe("held");
+  expect(vetoed.reasons).toContain("operator_veto_topic");
+});
+
+test("distinct recorded runs increase recurrence but preserve their exact evidence identities", async () => {
+  const f = await fixture();
+  const first = await deliverLearningProposal({
+    ...f,
+    verifiedCandidate: f.candidate,
+    baseBranch: "main",
+    publish: false,
+  });
+  const raw = JSON.parse(readFileSync(f.proposalPath, "utf8"));
+  raw.accepted[0].mutation.evidence[0].runId = "run2";
+  raw.accepted[0].evidence[0].runId = "run2";
+  writeFileSync(f.proposalPath, JSON.stringify(raw));
+  const dossier = {
+    ...f.dossier,
+    attempts: [...f.dossier.attempts, { ...f.dossier.attempts[0]!, runId: "run2", lapIndex: 1 }],
+  };
+  const result = await deliverLearningProposal({
+    ...f,
+    dossier,
+    evidenceRoots: { ...f.evidenceRoots, run2: f.artifacts },
+    verifiedCandidate: f.candidate,
+    acceptedBase: first.deliveryHead!,
+    baseBranch: "main",
+    publish: false,
+  });
+  expect(result.status).toBe("proposed");
+  const entry = JSON.parse(
+    readFileSync(join(result.worktree!, ".factory/lessons.jsonl"), "utf8").trim(),
+  );
+  expect(entry.occurrence_count).toBe(2);
+  expect(entry.provenance.map((p: { runId: string }) => p.runId)).toEqual(["run1", "run2"]);
+});
+
+test("mixed learning requires explicitly separate delivery categories", async () => {
+  const f = await fixture();
+  const raw = JSON.parse(readFileSync(f.proposalPath, "utf8"));
+  raw.accepted.push({
+    ...raw.accepted[0],
+    mutation: {
+      ...raw.accepted[0].mutation,
+      category: "pattern",
+      value: "Use the canonical module.",
+    },
+  });
+  writeFileSync(f.proposalPath, JSON.stringify(raw));
+  const options = { ...f, verifiedCandidate: f.candidate, baseBranch: "main", publish: false };
+  expect((await deliverLearningProposal(options)).reasons).toContain(
+    "mixed_proposal_select_delivery_category",
+  );
+  const lightweight = await deliverLearningProposal({ ...options, category: "lightweight" });
+  const structural = await deliverLearningProposal({ ...options, category: "structural" });
+  expect(lightweight.status).toBe("proposed");
+  expect(structural.status).toBe("proposed");
+  expect(existsSync(join(lightweight.worktree!, ".factory/codebase-rules.json"))).toBe(false);
+  expect(existsSync(join(structural.worktree!, ".factory/lessons.jsonl"))).toBe(false);
+});
