@@ -1,4 +1,8 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { resolveProjectWorkspace } from "@animus/contracts/paths";
 import {
   issueSpecification,
   parseIssueArgs,
@@ -187,9 +191,148 @@ test("bindIssueContract cryptographically freezes normalized issue content and p
 
   expect(Object.isFrozen(contract)).toBe(true);
   expect(Object.isFrozen(contract.sections)).toBe(true);
+  expect(Object.isFrozen(contract.sections.invariants)).toBe(true);
+  expect(Object.isFrozen(contract.comments)).toBe(true);
+  expect(Object.isFrozen(contract.dependencies)).toBe(true);
   expect(() => {
     (contract as any).title = "mutated";
   }).toThrow();
+  expect(() => {
+    (contract.sections.invariants as any).push("mutated");
+  }).toThrow();
+});
+
+test("bindIssueContract rejects invalid or non-array comments and dependency pages", () => {
+  const canonicalBody = [
+    "Part of #140",
+    "",
+    "## Source and problem",
+    "Problem",
+    "",
+    "## Outcome",
+    "Outcome",
+    "",
+    "## Invariants",
+    "- Inv",
+    "",
+    "## Acceptance criteria",
+    "- [ ] AC1",
+    "",
+    "## Boundary",
+    "- Touchpoints: none",
+    "",
+    "Depends on: None",
+  ].join("\n");
+
+  const issue = {
+    number: 86,
+    url: "https://github.com/owner/repo/issues/86",
+    state: "OPEN",
+    labels: [{ name: "ready-for-agent" }],
+    title: "Complete Spec",
+    body: canonicalBody,
+    comments: [],
+  };
+
+  // Malformed comments: read returns object instead of array
+  const badCommentsRead: GithubRead = (args) => {
+    if (args[0] === "api" && args[1].includes("comments")) return { error: "failed" };
+    if (args[0] === "api") return [];
+    if (args.slice(0, 2).join(" ") === "issue view") return issue;
+    return {};
+  };
+
+  expect(() =>
+    bindIssueContract({ root: "/unused", number: 86, repo: "owner/repo", read: badCommentsRead }),
+  ).toThrow(/Unable to verify complete comments/);
+
+  // Malformed dependencies: read returns object instead of array
+  const badDepsRead: GithubRead = (args) => {
+    if (args[0] === "api" && args[1].includes("blocked_by")) return { error: "failed" };
+    if (args[0] === "api") return [];
+    if (args.slice(0, 2).join(" ") === "issue view") return issue;
+    return {};
+  };
+
+  expect(() =>
+    bindIssueContract({ root: "/unused", number: 86, repo: "owner/repo", read: badDepsRead }),
+  ).toThrow(/Unable to verify native dependencies/);
+});
+
+test("bindIssueContract refuses execution when issue run state is held or dossier budget is exhausted", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "animus-contract-test-"));
+  try {
+    const ws = resolveProjectWorkspace(tmp);
+    mkdirSync(join(ws.runsDir, "run-90"), { recursive: true });
+    writeFileSync(
+      join(ws.runsDir, "run-90", "state.json"),
+      JSON.stringify({ issue: 90, status: "needs_owner" }),
+    );
+    mkdirSync(join(ws.runsDir, "run-91"), { recursive: true });
+    writeFileSync(
+      join(ws.runsDir, "run-91", "state.json"),
+      JSON.stringify({ issue: 91, status: "waiting_approval" }),
+    );
+    mkdirSync(join(ws.runsDir, "run-92"), { recursive: true });
+    writeFileSync(
+      join(ws.runsDir, "run-92", "state.json"),
+      JSON.stringify({ issue: 92, status: "interrupted" }),
+    );
+
+    mkdirSync(ws.dossiersDir, { recursive: true });
+    writeFileSync(
+      join(ws.dossiersDir, "issue-93.json"),
+      JSON.stringify({
+        issueNumber: 93,
+        attempts: [{ lap: 0 }, { lap: 1 }, { lap: 2 }],
+      }),
+    );
+
+    const makeIssue = (num: number) => ({
+      number: num,
+      url: `https://github.com/owner/repo/issues/${num}`,
+      state: "OPEN",
+      labels: [{ name: "ready-for-agent" }],
+      title: "Spec Section",
+      body: [
+        "## Source and problem",
+        "Prob",
+        "## Outcome",
+        "Out",
+        "## Invariants",
+        "- Inv",
+        "## Acceptance criteria",
+        "- [ ] AC1",
+        "## Boundary",
+        "- Bound",
+        "Depends on: None",
+      ].join("\n"),
+      comments: [],
+    });
+
+    const readFor =
+      (num: number): GithubRead =>
+      (args) => {
+        if (args[0] === "api") return [];
+        if (args.slice(0, 2).join(" ") === "issue view") return makeIssue(num);
+        return {};
+      };
+
+    expect(() =>
+      bindIssueContract({ root: tmp, number: 90, repo: "owner/repo", read: readFor(90) }),
+    ).toThrow(/needs_owner/);
+    expect(() =>
+      bindIssueContract({ root: tmp, number: 91, repo: "owner/repo", read: readFor(91) }),
+    ).toThrow(/waiting_approval/);
+    expect(() =>
+      bindIssueContract({ root: tmp, number: 92, repo: "owner/repo", read: readFor(92) }),
+    ).toThrow(/interrupted/);
+    expect(() =>
+      bindIssueContract({ root: tmp, number: 93, repo: "owner/repo", read: readFor(93) }),
+    ).toThrow(/dossier_budget_exhausted/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test("requests only the named task without bypassing checks or approval", () => {

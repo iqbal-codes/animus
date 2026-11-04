@@ -128,7 +128,24 @@ export function evaluateIssueAdmission(
     }
   }
 
-  // 1. Closed issues are held
+  // 1. Exclude check: wontfix overrides everything with absolute precedence.
+  // Legacy factory:exclude has no authority in canonical mode.
+  if (lowerCanonicalLabels.has("wontfix")) {
+    return {
+      number,
+      title,
+      state,
+      admission_status: "excluded",
+      reason: "excluded_by_label",
+      labels: labelNames,
+      dependencies: deps,
+      unsatisfied_dependencies: unsatisfied,
+      body,
+      integrated_to_branch: integratedBranch,
+    };
+  }
+
+  // 2. Closed issues are held
   if (state !== "OPEN") {
     return {
       number,
@@ -144,7 +161,7 @@ export function evaluateIssueAdmission(
     };
   }
 
-  // 2. Unlabeled check
+  // 3. Unlabeled check
   if (labelNames.length === 0) {
     return {
       number,
@@ -152,22 +169,6 @@ export function evaluateIssueAdmission(
       state,
       admission_status: "held",
       reason: "unlabeled_awaiting_triage",
-      labels: labelNames,
-      dependencies: deps,
-      unsatisfied_dependencies: unsatisfied,
-      body,
-      integrated_to_branch: integratedBranch,
-    };
-  }
-
-  // 3. Exclude check: wontfix overrides everything. Legacy factory:exclude has no authority in canonical mode.
-  if (lowerCanonicalLabels.has("wontfix")) {
-    return {
-      number,
-      title,
-      state,
-      admission_status: "excluded",
-      reason: "excluded_by_label",
       labels: labelNames,
       dependencies: deps,
       unsatisfied_dependencies: unsatisfied,
@@ -439,17 +440,17 @@ export async function evaluateBacklogAdmission(
   }
 
   const nativeDependenciesMap = new Map<number, number[]>(options.nativeDependencies ?? []);
+  const failedNativeLookup = new Set<number>();
   if (options.forge?.getIssueDependencies && options.repo) {
-    const isSynthetic = options.forge.constructor.name === "SyntheticForgeAdapter";
-    if (isSynthetic) {
-      for (const issue of options.issues) {
-        if (!nativeDependenciesMap.has(issue.number)) {
-          try {
-            const deps = await options.forge.getIssueDependencies(options.repo, issue.number);
-            if (deps && deps.length > 0) {
-              nativeDependenciesMap.set(issue.number, deps);
-            }
-          } catch {}
+    for (const issue of options.issues) {
+      if (!nativeDependenciesMap.has(issue.number)) {
+        try {
+          const deps = await options.forge.getIssueDependencies(options.repo, issue.number);
+          if (deps && deps.length > 0) {
+            nativeDependenciesMap.set(issue.number, deps);
+          }
+        } catch {
+          failedNativeLookup.add(issue.number);
         }
       }
     }
@@ -530,6 +531,11 @@ export async function evaluateBacklogAdmission(
       runsDir,
       maxLaps,
     });
+
+    if (failedNativeLookup.has(issue.number) && res.admission_status === "admitted") {
+      res.admission_status = "held";
+      res.reason = "dependency_lookup_failed:native";
+    }
 
     const unavailable = res.unsatisfied_dependencies.filter((n) => failedLookup.has(n));
     if (unavailable.length > 0 && res.reason.startsWith("waiting_on_dependency:")) {

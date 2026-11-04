@@ -24,7 +24,11 @@ import { loadIssueDossier } from "./dossier";
 import { reconcileWaitingApprovalPrCi, type GhRunner, type checkPrCiStatus } from "./ci";
 import { runTriagePass } from "./triage";
 import { resolveTriageStateRoot } from "./triage-state";
-import { evaluateIssueAdmission, type RawIssue } from "../../apps/backend/src/intake/admission";
+import {
+  evaluateIssueAdmission,
+  readRunStates,
+  type RawIssue,
+} from "../../apps/backend/src/intake/admission";
 
 export type BrakeChecker = RelationalBrakeChecker;
 
@@ -102,6 +106,9 @@ export interface FilterAdmittedIssuesOptions {
   mergedIssueNumbers?: Set<number>;
   stateRoot?: string;
   maxLaps?: number;
+  runsDir?: string;
+  dossiersDir?: string;
+  runStates?: Map<number, string>;
 }
 
 export function filterAdmittedIssues(
@@ -109,9 +116,17 @@ export function filterAdmittedIssues(
   closedIssueNumbers: Set<number>,
   options: FilterAdmittedIssuesOptions = {},
 ): BacklogCandidate[] {
+  const runsDir =
+    options.runsDir ??
+    (options.stateRoot ? join(options.stateRoot, "runs") : undefined);
+  const runStates =
+    options.runStates ?? (runsDir ? readRunStates(runsDir) : new Map<number, string>());
   const mergedSet =
     options.mergedIssueNumbers ??
-    (options.stateRoot ? getMergedIssueNumbers(join(options.stateRoot, "runs")) : new Set<number>());
+    (runsDir ? getMergedIssueNumbers(runsDir) : new Set<number>());
+  const waitingApprovalSet =
+    options.waitingApprovalIssueNumbers ??
+    (runsDir ? getIssuesWaitingApproval(runsDir) : new Set<number>());
 
   const rawIssues: RawIssue[] = issues.map((c) => ({
     number: c.number,
@@ -134,8 +149,11 @@ export function filterAdmittedIssues(
     const evaluated = evaluateIssueAdmission(raw, allByNumber, {
       closedIssueNumbers,
       mergedIssueNumbers: mergedSet,
-      waitingApprovalIssueNumbers: options.waitingApprovalIssueNumbers,
+      waitingApprovalIssueNumbers: waitingApprovalSet,
+      runStates,
+      runsDir,
       stateRoot: options.stateRoot,
+      dossiersDir: options.dossiersDir,
       maxLaps: options.maxLaps,
     });
     if (evaluated.admission_status === "admitted") {
@@ -561,6 +579,7 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
   const admitted = filterAdmittedIssues(backlog.issues, backlog.closedNumbers, {
     waitingApprovalIssueNumbers: waitingApprovalNumbers,
     mergedIssueNumbers: mergedNumbers,
+    runsDir,
     stateRoot,
     maxLaps: mergedConfig.max_laps,
   });

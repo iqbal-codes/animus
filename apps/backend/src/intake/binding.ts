@@ -69,7 +69,12 @@ export async function verifyTargetBinding(
   if (issueForge.getIssueDependencies) {
     try {
       nativeDeps = await issueForge.getIssueDependencies(repoName, issueNumber);
-    } catch {}
+    } catch (error: any) {
+      throw new TargetBindingError(
+        "target_drift",
+        `Failed to verify dependencies: ${error?.message || String(error)}`,
+      );
+    }
   }
 
   // 3. Unified admission evaluation across all 7 invariants

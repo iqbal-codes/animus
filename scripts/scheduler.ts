@@ -62,12 +62,10 @@ export async function fetchGithubBacklog(
   const nativeDepsMap = new Map<number, number[]>();
   if (forge.getIssueDependencies) {
     for (const item of readyOpen) {
-      try {
-        const deps = await forge.getIssueDependencies(repo, item.number);
-        if (deps && deps.length > 0) {
-          nativeDepsMap.set(item.number, deps);
-        }
-      } catch {}
+      const deps = await forge.getIssueDependencies(repo, item.number);
+      if (deps && deps.length > 0) {
+        nativeDepsMap.set(item.number, deps);
+      }
     }
   }
 

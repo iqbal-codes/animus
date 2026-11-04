@@ -532,6 +532,79 @@ Depends on: #59, #60
       expect(issue.reason).toBe("excluded_by_label");
     });
 
+    test("wontfix label has absolute precedence over CLOSED state and blocking labels", async () => {
+      const checkoutPath = createMockCheckout("co-alpha", "owner/repo-alpha");
+      const project = await registry.registerProject({
+        method: "local_checkout",
+        name: "Alpha Project",
+        checkout_path: checkoutPath,
+      });
+
+      // Issue is CLOSED on GitHub and has wontfix
+      forge.addIssue("owner/repo-alpha", {
+        number: 31,
+        title: "Dead Closed Feature",
+        state: "CLOSED",
+        labels: [{ name: "wontfix" }, { name: "needs-owner" }],
+      });
+
+      const issue = await intake.getProjectIssue(project.id, 31);
+      expect(issue.admission_status).toBe("excluded");
+      expect(issue.reason).toBe("excluded_by_label");
+    });
+
+    test("evaluateBacklogAdmission holds issue when native dependency lookup throws", async () => {
+      const checkoutPath = createMockCheckout("co-alpha", "owner/repo-alpha");
+      const project = await registry.registerProject({
+        method: "local_checkout",
+        name: "Alpha Project",
+        checkout_path: checkoutPath,
+      });
+
+      forge.addIssue("owner/repo-alpha", {
+        number: 55,
+        title: "Native Error Task",
+        state: "OPEN",
+        labels: [{ name: "ready-for-agent" }],
+      });
+
+      forge.getIssueDependencies = async () => {
+        throw new Error("GitHub GraphQL API timeout");
+      };
+
+      const issue = await intake.getProjectIssue(project.id, 55);
+      expect(issue.admission_status).toBe("held");
+      expect(issue.reason).toBe("dependency_lookup_failed:native");
+    });
+
+    test("verifyTargetBinding rejects when getIssueDependencies throws", async () => {
+      const checkoutPath = createMockCheckout("co-alpha", "owner/repo-alpha");
+      const project = await registry.registerProject({
+        method: "local_checkout",
+        name: "Alpha Project",
+        checkout_path: checkoutPath,
+      });
+
+      forge.addIssue("owner/repo-alpha", {
+        number: 56,
+        title: "Native Error Bind Task",
+        state: "OPEN",
+        labels: [{ name: "ready-for-agent" }],
+      });
+
+      forge.getIssueDependencies = async () => {
+        throw new Error("transport disconnect");
+      };
+
+      await expect(
+        intake.bindProjectTarget(project.id, 56, {
+          expected_state: "OPEN",
+          expected_labels: ["ready-for-agent"],
+          expected_admission_status: "admitted",
+        }),
+      ).rejects.toThrow(TargetBindingError);
+    });
+
     test("holds issue when active claim exists in comments or body", async () => {
       const checkoutPath = createMockCheckout("co-alpha", "owner/repo-alpha");
       const project = await registry.registerProject({

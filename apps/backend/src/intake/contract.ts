@@ -1,12 +1,17 @@
 import { createHash } from "node:crypto";
-import { resolveProjectWorkspace, getMergedIssueNumbers } from "@animus/contracts/paths";
+import {
+  resolveProjectWorkspace,
+  getMergedIssueNumbers,
+  getIssuesWaitingApproval,
+  loadCascadedScheduleConfig,
+} from "@animus/contracts/paths";
 import {
   parseDependencies,
   parseTicketSections,
   isActiveClaim,
   type StructuredTicketSections,
 } from "./parser";
-import { evaluateIssueAdmission, type RawIssue } from "./admission";
+import { evaluateIssueAdmission, readRunStates, type RawIssue } from "./admission";
 import type { IssueForgeAdapter } from "../registry/forge";
 
 export type GithubRead = (args: string[], cwd: string) => unknown;
@@ -84,6 +89,18 @@ export function validateCanonicalSections(body: string): StructuredTicketSection
   return sections;
 }
 
+export function deepFreeze<T>(obj: T): T {
+  if (obj === null || typeof obj !== "object") return obj;
+  Object.freeze(obj);
+  for (const key of Object.getOwnPropertyNames(obj)) {
+    const val = (obj as any)[key];
+    if (val !== null && (typeof val === "object" || typeof val === "function")) {
+      deepFreeze(val);
+    }
+  }
+  return obj;
+}
+
 export function normalizeIssueContractContent(contract: {
   number: number;
   title: string;
@@ -91,6 +108,15 @@ export function normalizeIssueContractContent(contract: {
   comments: string[];
   dependencies: { number: number; state: string }[];
   labels?: string[];
+  sections?: {
+    partOf: number | null;
+    sourceProblem: string;
+    outcome: string;
+    invariants: string[];
+    acceptanceCriteria: string[];
+    boundary: string;
+    dependsOn: number[];
+  };
 }): string {
   const normTitle = (contract.title || "").trim();
   const normBody = (contract.body || "").replace(/\r\n/g, "\n").trim();
@@ -102,14 +128,28 @@ export function normalizeIssueContractContent(contract: {
     .map((d) => `${d.number}:${d.state}`);
   const normLabels = [...(contract.labels || [])].map((l) => l.trim().toLowerCase()).sort();
 
-  return JSON.stringify({
+  const payload: Record<string, unknown> = {
     number: contract.number,
     title: normTitle,
     body: normBody,
     comments: normComments,
     dependencies: normDeps,
     labels: normLabels,
-  });
+  };
+
+  if (contract.sections) {
+    payload.sections = {
+      partOf: contract.sections.partOf ?? null,
+      sourceProblem: (contract.sections.sourceProblem || "").trim(),
+      outcome: (contract.sections.outcome || "").trim(),
+      invariants: [...(contract.sections.invariants || [])].map((s) => s.trim()),
+      acceptanceCriteria: [...(contract.sections.acceptanceCriteria || [])].map((s) => s.trim()),
+      boundary: (contract.sections.boundary || "").trim(),
+      dependsOn: [...(contract.sections.dependsOn || [])].sort((a, b) => a - b),
+    };
+  }
+
+  return JSON.stringify(payload);
 }
 
 export function computeContractSha256(normalizedJson: string): string {
@@ -192,18 +232,21 @@ export function bindIssueContract(options: BindIssueContractOptions): BoundIssue
   const pages = read(
     ["api", `repos/${repo}/issues/${number}/comments`, "--paginate", "--slurp"],
     root,
-  ) as Array<Array<{ body: string }>>;
+  );
 
-  if (Array.isArray(pages)) {
-    if (
-      pages.some((page) => !Array.isArray(page) || page.some((c) => typeof c?.body !== "string"))
-    ) {
-      throw new Error("Unable to verify complete comments");
-    }
-    comments = pages.flat().map((c) => c.body);
-  } else if (Array.isArray(rawIssue.comments)) {
-    comments = rawIssue.comments.map((c) => c.body);
+  if (!Array.isArray(pages)) {
+    throw new Error("Unable to verify complete comments");
   }
+
+  const rawCommentItems: Array<{ body: string }> =
+    pages.length > 0 && Array.isArray(pages[0])
+      ? (pages as Array<Array<{ body: string }>>).flat()
+      : (pages as Array<{ body: string }>);
+
+  if (rawCommentItems.some((c) => !c || typeof c !== "object" || typeof c.body !== "string")) {
+    throw new Error("Unable to verify complete comments");
+  }
+  comments = rawCommentItems.map((c) => c.body);
 
   if (
     isActiveClaim(
@@ -218,23 +261,31 @@ export function bindIssueContract(options: BindIssueContractOptions): BoundIssue
   const dependencyPages = read(
     ["api", `repos/${repo}/issues/${number}/dependencies/blocked_by`, "--paginate", "--slurp"],
     root,
-  ) as Array<Array<{ number: number; state: string; repository_url: string }>>;
+  );
 
-  if (Array.isArray(dependencyPages)) {
-    if (dependencyPages.some((p) => !Array.isArray(p))) {
-      throw new Error("Unable to verify native dependencies");
+  if (!Array.isArray(dependencyPages)) {
+    throw new Error("Unable to verify native dependencies");
+  }
+
+  const rawDepItems: Array<{ number: number; state: string; repository_url: string }> =
+    dependencyPages.length > 0 && Array.isArray(dependencyPages[0])
+      ? (
+          dependencyPages as Array<Array<{ number: number; state: string; repository_url: string }>>
+        ).flat()
+      : (dependencyPages as Array<{ number: number; state: string; repository_url: string }>);
+
+  for (const dep of rawDepItems) {
+    if (
+      !dep ||
+      typeof dep !== "object" ||
+      dep.repository_url !== `https://api.github.com/repos/${repo}` ||
+      !Number.isSafeInteger(dep.number)
+    ) {
+      throw new Error(
+        "Cross-repository or malformed native dependency requires human verification",
+      );
     }
-    for (const dep of dependencyPages.flat()) {
-      if (
-        dep.repository_url !== `https://api.github.com/repos/${repo}` ||
-        !Number.isSafeInteger(dep.number)
-      ) {
-        throw new Error(
-          "Cross-repository or malformed native dependency requires human verification",
-        );
-      }
-      nativeDependencies.push(dep.number);
-    }
+    nativeDependencies.push(dep.number);
   }
 
   // 4. Union dependencies (Markdown + native)
@@ -257,19 +308,37 @@ export function bindIssueContract(options: BindIssueContractOptions): BoundIssue
   };
 
   let localMergedIssues = new Set<number>();
+  let waitingApprovalIssues = new Set<number>();
+  let runStates = new Map<number, string>();
   let runsDir: string | undefined;
   let stateRoot: string | undefined;
+  let dossiersDir: string | undefined;
+  let maxLaps: number | undefined;
+
   try {
     const ws = resolveProjectWorkspace(root);
     runsDir = ws.runsDir;
     stateRoot = ws.stateRoot;
+    dossiersDir = ws.dossiersDir;
     localMergedIssues = getMergedIssueNumbers(ws.runsDir);
+    waitingApprovalIssues = getIssuesWaitingApproval(ws.runsDir);
+    runStates = readRunStates(ws.runsDir);
+    try {
+      const sched = loadCascadedScheduleConfig(ws);
+      maxLaps = sched.max_laps ?? 3;
+    } catch {
+      maxLaps = 3;
+    }
   } catch {}
 
   const admissionCheck = evaluateIssueAdmission(rawForAdmission, new Map(), {
     mergedIssueNumbers: localMergedIssues,
+    waitingApprovalIssueNumbers: waitingApprovalIssues,
+    runStates,
     stateRoot,
+    dossiersDir,
     runsDir,
+    maxLaps,
   });
 
   // Check state and labels
@@ -292,6 +361,35 @@ export function bindIssueContract(options: BindIssueContractOptions): BoundIssue
 
   if (admissionCheck.reason === "actively_claimed") {
     throw new Error("Requested issue has a loop claim; resolve ownership before running");
+  }
+
+  if (admissionCheck.reason === "waiting_approval") {
+    throw new Error("Requested issue is waiting for human approval (waiting_approval)");
+  }
+
+  if (admissionCheck.reason === "needs_owner") {
+    throw new Error("Requested issue was escalated to needs_owner");
+  }
+
+  if (admissionCheck.reason === "interrupted") {
+    throw new Error(
+      "Requested issue has an interrupted run requiring manual intervention (interrupted)",
+    );
+  }
+
+  if (admissionCheck.reason === "already_merged") {
+    throw new Error("Requested issue is already merged (already_merged)");
+  }
+
+  if (admissionCheck.reason === "dossier_budget_exhausted") {
+    throw new Error("Requested issue has exhausted dossier budget (dossier_budget_exhausted)");
+  }
+
+  if (
+    admissionCheck.admission_status !== "admitted" &&
+    !admissionCheck.reason.startsWith("waiting_on_dependency:")
+  ) {
+    throw new Error(`Requested issue is not admitted: ${admissionCheck.reason}`);
   }
 
   // Resolve all dependencies
@@ -326,31 +424,32 @@ export function bindIssueContract(options: BindIssueContractOptions): BoundIssue
     comments,
     dependencies: resolved,
     labels: labelNames,
+    sections: parsedSections,
   });
   const sha256 = computeContractSha256(normalizedJson);
 
   // 8. Produce immutable frozen contract
-  const frozenSections = Object.freeze({
-    partOf: parsedSections.partOf,
-    sourceProblem: parsedSections.sourceProblem,
-    outcome: parsedSections.outcome,
-    invariants: Object.freeze([...parsedSections.invariants]),
-    acceptanceCriteria: Object.freeze([...parsedSections.acceptanceCriteria]),
-    boundary: parsedSections.boundary,
-    dependsOn: Object.freeze([...parsedSections.dependsOn]),
-  });
-
-  return Object.freeze({
+  const boundContract = {
     number,
     url,
     title,
     body,
-    comments: Object.freeze([...comments]),
-    dependencies: Object.freeze(resolved.map((d) => Object.freeze({ ...d }))),
+    comments: [...comments],
+    dependencies: resolved.map((d) => ({ ...d })),
     activeClaim: false,
-    labels: Object.freeze([...labelNames]),
+    labels: [...labelNames],
     sha256,
     contractSha256: sha256,
-    sections: frozenSections,
-  }) as unknown as BoundIssueContract;
+    sections: {
+      partOf: parsedSections.partOf,
+      sourceProblem: parsedSections.sourceProblem,
+      outcome: parsedSections.outcome,
+      invariants: [...parsedSections.invariants],
+      acceptanceCriteria: [...parsedSections.acceptanceCriteria],
+      boundary: parsedSections.boundary,
+      dependsOn: [...parsedSections.dependsOn],
+    },
+  };
+
+  return deepFreeze(boundContract) as unknown as BoundIssueContract;
 }
