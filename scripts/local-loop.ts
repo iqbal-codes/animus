@@ -52,7 +52,13 @@ import {
   type IssueDossier,
   type LapAttemptRecord,
 } from "./loop/dossier";
-import { runPostIssueReflection } from "./loop/reflector";
+import {
+  runPostIssueReflection,
+  executeTerminalReflection,
+  createBoundedReflectionTransport,
+  type ExecuteTerminalReflectionOptions,
+  type BoundedReflectionTransportOptions,
+} from "./loop/reflector";
 import { deliverLearningProposal, type LearningDeliveryTransport } from "./loop/learning-delivery";
 import type { LearningCommandRecord, LearningEvaluator } from "./loop/learning-schema";
 import { loadPrompt, renderPrompt, resolveAnimusCommandsDir } from "./loop/prompts";
@@ -79,7 +85,12 @@ import {
   publishPrReview,
   syncExistingEvidenceBindings,
 } from "./loop/pr-publication";
-import { evaluateSubticketAutoMerge } from "./loop/merge-queue";
+import {
+  evaluateSubticketAutoMerge,
+  executeSubticketAutoMerge,
+  type ExecuteSubticketAutoMergeOptions,
+  type AutoMergeExecutionResult,
+} from "./loop/merge-queue";
 import { parsePartOf } from "../apps/backend/src/intake/parser";
 
 export type {
@@ -131,6 +142,16 @@ export {
   DEFAULT_PROTECTED_PATHS,
   type PrepareLoopWorktreeOptions,
   type AssertCandidateOptions,
+};
+
+export {
+  executeSubticketAutoMerge,
+  type ExecuteSubticketAutoMergeOptions,
+  type AutoMergeExecutionResult,
+  executeTerminalReflection,
+  createBoundedReflectionTransport,
+  type ExecuteTerminalReflectionOptions,
+  type BoundedReflectionTransportOptions,
 };
 
 export { computeExternalBlastRadius, type ExternalBlastRadiusOptions };
@@ -289,6 +310,7 @@ export async function runLocalLoop(
     pid: process.pid,
     issue: issue.url,
     route,
+    pr: existingPr?.url ?? existingPr?.headRefName,
     runDirectory,
     startedAt: new Date().toISOString(),
   });
@@ -332,197 +354,40 @@ export async function runLocalLoop(
   const commandRecords: LearningCommandRecord[] = [];
   const acceptedRef = defaultBaseSha;
 
-  // Reflection uses its own report parser, but must not bypass role deadlines or checkpoints.
-  const reflectionTransport: typeof transport = async (request) => {
-    const role = "reflector";
-    const budget = roleBudgets.reflector;
-    const checkpointPath = join(handoffDir, "reflector-checkpoint.md");
-    for (let attempt = 0; attempt <= (options.maxContinuations ?? 1); attempt++) {
-      const startedAt = Date.now();
-      const softDeadline = startedAt + budget.softMs;
-      const hardDeadline = startedAt + budget.hardMs;
-      const argv = [...request.argv];
-      // All supported provider argv builders put the user prompt last.
-      argv[argv.length - 1] += [
-        "",
-        "## Bounded role execution (overrides completion instructions above)",
-        `Soft deadline (absolute Unix milliseconds): ${softDeadline}.`,
-        `Hard deadline (absolute Unix milliseconds): ${hardDeadline}; the host terminates the owned process group then.`,
-        `Write a durable checkpoint to ${checkpointPath} before the soft deadline: completed work, HEAD, dirty files, evidence, blockers, and exact next steps. Preserve this worktree.`,
-        "After soft deadline the Pi guard permits only write/edit of that exact checkpoint path and simple read-only git status/diff/rev-parse. No git add/commit, publication, or other work is allowed.",
-        "Bash defaults to 90 seconds; explicitly longer budgets are clipped to remaining hard time.",
-        'If incomplete, return {"verdict":"interrupted"}; never report completed reflection for incomplete work.',
-        ...(attempt
-          ? [
-              `Continuation ${attempt}: resume the SAME role in the SAME worktree. Read ${checkpointPath} and prior attempt artifacts first; retain all existing work.`,
-            ]
-          : []),
-      ].join("\n");
-      const result = await transport({
-        ...request,
-        argv,
-        timeoutMs: Math.max(1, hardDeadline - Date.now()),
-        env: {
-          ...request.env,
-          FACTORY_LOOP_SOFT_DEADLINE_MS: String(softDeadline),
-          FACTORY_LOOP_HARD_DEADLINE_MS: String(hardDeadline),
-          FACTORY_LOOP_CHECKPOINT_PATH: checkpointPath,
-        },
-      });
-      const finishedAt = Date.now();
-      const artifact = join(runDirectory, `${role}-attempt-${attempt}.json`);
-      await Bun.write(
-        artifact,
-        JSON.stringify({ ...result, attempt, softDeadline, hardDeadline, finishedAt }),
-      );
-      const head = await git(request.cwd, "rev-parse", "HEAD");
-      state.evidence.push({
-        kind: (request.provider as any) ?? "agent",
-        role,
-        round: attempt,
-        candidate: head,
-        artifact,
-        exitCode: result.exitCode,
-        provider: request.provider,
-      });
-      await save();
-      const timedOut =
-        result.timedOut === true || result.exitCode === 124 || finishedAt >= hardDeadline;
-      if (!timedOut && !interruptionReport(result.stdout)) return result;
-      const reason = timedOut ? "hard deadline exceeded" : "agent checkpoint/interrupted report";
-      const dirty = await git(request.cwd, "status", "--porcelain", "--untracked-files=all");
-      const previous = existsSync(checkpointPath)
-        ? readFileSync(checkpointPath, "utf8")
-        : "# Interrupted reflector checkpoint";
-      const checkpoint =
-        previous +
-        `\n\n## Host checkpoint: reflector attempt ${attempt}\nReason: ${reason}\nHEAD: ${head}\nStage: ${state.status}\nArtifact: ${artifact}\nWorktree: ${request.cwd}\nDirty status:\n\`\`\`\n${dirty || "(clean)"}\n\`\`\`\n`;
-      await Bun.write(checkpointPath, checkpoint);
-      await Bun.write(join(handoffDir, `${role}-attempt-${attempt}-checkpoint.md`), checkpoint);
-      if (attempt === (options.maxContinuations ?? 1)) {
-        throw new RoleInterrupted(
-          `reflector interrupted: ${reason}; continuation budget exhausted; see ${checkpointPath}`,
-        );
-      }
-    }
-    throw new RoleInterrupted("reflector continuation budget exhausted");
-  };
-
   const reflectTerminal = async (dossier: IssueDossier) => {
-    if (!shouldTriggerReflection(dossier)) return;
-    const terminalStatus = state.status;
-    const reflectionWorktree = join(runDirectory, "reflection-worktree");
-    const fingerprint = async () => {
-      const untracked = (
-        await git(state.worktree, "ls-files", "--others", "--exclude-standard", "-z")
-      )
-        .split("\0")
-        .filter(Boolean)
-        .map((path) => [
-          path,
-          createHash("sha256")
-            .update(readFileSync(join(state.worktree, path)))
-            .digest("hex"),
-        ]);
-      return JSON.stringify([
-        await git(state.worktree, "rev-parse", "HEAD"),
-        await git(state.worktree, "status", "--porcelain=v1", "--untracked-files=all"),
-        await git(state.worktree, "diff", "HEAD", "--binary"),
-        untracked,
-      ]);
-    };
-    let before: string | undefined;
-    try {
-      before = await fingerprint();
-      const pinnedHead = await git(state.worktree, "rev-parse", "HEAD");
-      await git(root, "worktree", "add", "--detach", reflectionWorktree, pinnedHead);
-      state.status = "reflecting";
-      await save();
-      const evidenceRoots = Object.fromEntries(
-        dossier.attempts
-          .filter((attempt) => attempt.artifactsDir)
-          .map((attempt) => [attempt.runId, attempt.artifactsDir!]),
-      );
-      const historicalCommands = dossier.attempts.flatMap(
-        (attempt) => attempt.commandRecords ?? [],
-      );
-      const reflection = await runPostIssueReflection({
-        root,
-        worktree: reflectionWorktree,
-        dossier,
-        artifactsDir,
-        transport: reflectionTransport,
-        timeoutMs: roleBudgets.reflector.hardMs,
-        evidenceRoots,
-        commandRecords: historicalCommands,
-        acceptedRef,
-        proposalEvaluator: options.reflection?.proposalEvaluator,
-      });
-      await Bun.write(join(artifactsDir, "reflection.json"), JSON.stringify(reflection, null, 2));
-      let delivered = false;
-      if (reflection.status === "proposed" && reflection.proposalPath && state.candidate) {
-        const delivery = await deliverLearningProposal({
-          root,
-          proposalPath: reflection.proposalPath,
-          verifiedCandidate: state.candidate,
-          baseBranch: defaultBaseBranch,
-          dossier,
-          evidenceRoots,
-          commandRecords: historicalCommands,
-          proposalEvaluator: options.reflection?.proposalEvaluator,
-          sourceDeliveryPr: state.pr,
-          transport: options.reflection?.deliveryTransport,
-          publish: options.push !== false,
-        });
-        await Bun.write(
-          join(artifactsDir, "learning-delivery.json"),
-          JSON.stringify(delivery, null, 2),
-        );
-        delivered =
-          delivery.status === "proposed" && (options.push === false || Boolean(delivery.prUrl));
-      }
-      if (before !== (await fingerprint()))
-        throw new Error("Reflection changed the verified candidate or dirty state; delivery held");
-      if (delivered || reflection.status === "no_entry") {
-        dossier.reflectedAt = new Date().toISOString();
-        saveIssueDossier(stateRoot, dossier);
-      }
-    } catch (error) {
-      await Bun.write(
-        join(artifactsDir, "reflection.json"),
-        JSON.stringify(
-          {
-            status: "error",
-            error: error instanceof Error ? error.message : String(error),
-          },
-          null,
-          2,
-        ),
-      );
-    } finally {
-      state.status = terminalStatus;
-      // Git refuses removal of dirty/interrupted reflection worktrees; preserve their evidence.
-      await git(root, "worktree", "remove", reflectionWorktree).catch(() => {});
-    }
-    if (before !== undefined && before !== (await fingerprint())) {
-      throw new Error("Reflection changed the verified candidate or dirty state; delivery held");
-    }
+    await executeTerminalReflection({
+      root,
+      stateRoot,
+      runDirectory,
+      artifactsDir,
+      handoffDir,
+      worktree: state.worktree,
+      candidate: state.candidate,
+      defaultBaseBranch,
+      dossier,
+      transport,
+      budget: roleBudgets.reflector,
+      maxContinuations: options.maxContinuations,
+      push: options.push,
+      pr: state.pr,
+      acceptedRef,
+      commandRecords,
+      proposalEvaluator: options.reflection?.proposalEvaluator,
+      deliveryTransport: options.reflection?.deliveryTransport,
+      currentStatus: state.status,
+      setStatus: (status) => {
+        state.status = status;
+      },
+      onEvidence: async (ev) => {
+        state.evidence.push(ev);
+      },
+      onSave: async () => {
+        await save();
+      },
+    });
   };
 
   try {
-    const lockDir = join(stateRoot, "locks", `issue-${issue.number}`);
-    await Bun.write(
-      join(lockDir, "owner.json"),
-      JSON.stringify({
-        runId,
-        pid: process.pid,
-        issue: issue.url,
-        route,
-        pr: state.pr,
-        runDirectory,
-        startedAt: new Date().toISOString(),
-      }),
-    );
     await Bun.write(join(runDirectory, "issue.json"), JSON.stringify(issue, null, 2));
     await save();
 
@@ -887,15 +752,65 @@ export async function runLocalLoop(
     }
 
     // -------------------------------------------------------------
-    // STAGE 2: DETERMINISTIC PRE-COMMIT CI GATE
+    // STAGE 2: DETERMINISTIC PRE-COMMIT CI GATE & ORDINARY CHECKS
     // -------------------------------------------------------------
     // Ordinary checks (architecture, format, lint, typecheck, tests) are enforced
     // deterministically on commit by Git's pre-commit hook (.githooks/pre-commit).
     // Bypassing hooks with --no-verify or -n is blocked by loop-guard.ts.
+    state.status = "checking";
+    await save();
+    const checkOutputs: string[] = [];
+    for (let i = 0; i < checks.length; i++) {
+      await inspectLocalLoop(root);
+      const startedAt = new Date().toISOString();
+      const result = await processRun(["sh", "-c", checks[i]!], state.worktree, timeout);
+      const completedAt = new Date().toISOString();
+      const artifact = join(runDirectory, `check-${i}.json`);
+      const recordPath = `command-${i}.json`;
+      const recordContent = JSON.stringify({ command: checks[i], ...result });
+      await Bun.write(artifact, recordContent);
+      await Bun.write(join(artifactsDir, recordPath), recordContent);
+      commandRecords.push({
+        executionId: `${runId}:check-${i}`,
+        runId,
+        candidate: state.candidate!,
+        command: checks[i]!,
+        cwd: state.worktree,
+        exitCode: result.exitCode,
+        startedAt,
+        completedAt,
+        artifact: {
+          runId,
+          candidate: state.candidate!,
+          path: recordPath,
+          lineStart: 1,
+          lineEnd: 1,
+          quote: recordContent,
+        },
+      });
+      await Bun.write(
+        join(artifactsDir, "host-command-records.json"),
+        JSON.stringify(commandRecords, null, 2),
+      );
+      checkOutputs.push(
+        `Check [${checks[i]}]: exit ${result.exitCode}\n${result.stdout}\n${result.stderr}`,
+      );
+      state.evidence.push({
+        kind: "check",
+        round: 0,
+        candidate: state.candidate,
+        artifact,
+        exitCode: result.exitCode,
+      });
+      if (result.exitCode !== 0) {
+        throw new Error(`Ordinary project check failed: ${checks[i]}`);
+      }
+    }
     if (!existsSync(join(artifactsDir, "builder-checks.log"))) {
       await Bun.write(
         join(artifactsDir, "builder-checks.log"),
-        "Verified: deterministic pre-commit CI gates executed cleanly (--no-verify prohibited).\n",
+        checkOutputs.join("\n\n") ||
+          "Verified: deterministic pre-commit CI gates executed cleanly (--no-verify prohibited).\n",
       );
     }
     await assertCandidate(state.candidate);
@@ -1350,7 +1265,7 @@ export async function runLocalLoop(
       state.candidate,
     );
 
-    const autoMergeEval = evaluateSubticketAutoMerge({
+    let autoMergeEval = evaluateSubticketAutoMerge({
       isSubticket: partOf !== undefined,
       targetBranch: baseBranch,
       baseBranch: defaultBaseBranch,
@@ -1367,143 +1282,33 @@ export async function runLocalLoop(
     );
 
     if (isApproved && autoMergeEval.authorized && integrationBranch) {
-      try {
-        await assertCandidate(state.candidate);
-        const currentIntTip = (
-          await git(root, "rev-parse", `refs/heads/${integrationBranch}`)
-        ).trim();
-        if (currentIntTip !== state.identities.targetBaseTip) {
-          throw new Error(
-            `Integration branch '${integrationBranch}' drifted from '${state.identities.targetBaseTip}' to '${currentIntTip}' during verification; holding for human merge.`,
-          );
+      const mergeRes = await executeSubticketAutoMerge({
+        root,
+        candidate: state.candidate!,
+        integrationBranch,
+        targetBaseTip: state.identities.targetBaseTip!,
+        worktree: state.worktree,
+        issueNumber: issue.number,
+        partOf,
+        defaultBaseBranch,
+        pr: state.pr,
+        hasOrigin,
+        push: options.push !== false,
+        autoMergeEval,
+        assertCandidateFn: assertCandidate,
+      });
+      autoMergeEval = mergeRes.evaluation;
+      state.autoMerge = autoMergeEval;
+      await Bun.write(
+        join(artifactsDir, "auto-merge-judgement.json"),
+        JSON.stringify(autoMergeEval, null, 2),
+      );
+      if (mergeRes.success) {
+        finalStatus = mergeRes.finalStatus;
+        reviewOutcome = mergeRes.reviewOutcome;
+        if (mergeRes.finalIntegrationPr) {
+          state.finalIntegrationPr = mergeRes.finalIntegrationPr;
         }
-
-        const rootHeadBranch = await git(root, "symbolic-ref", "--short", "HEAD").catch(() => "");
-        if (rootHeadBranch === integrationBranch) {
-          await git(root, "merge", "--ff-only", state.candidate);
-        } else {
-          await git(
-            root,
-            "update-ref",
-            `refs/heads/${integrationBranch}`,
-            state.candidate,
-            state.identities.targetBaseTip,
-          );
-        }
-
-        if (options.push !== false) {
-          if (state.pr) {
-            await processRun(
-              ["gh", "pr", "merge", state.pr, "--squash", "--match-head-commit", state.candidate],
-              state.worktree,
-              30_000,
-            ).catch(() => {});
-          }
-          if (hasOrigin) {
-            await git(
-              root,
-              "push",
-              "origin",
-              `refs/heads/${integrationBranch}:refs/heads/${integrationBranch}`,
-            ).catch(() => {});
-          }
-          await processRun(
-            [
-              "gh",
-              "issue",
-              "close",
-              String(issue.number),
-              "--comment",
-              `Auto-merged into integration branch \`${integrationBranch}\` at commit \`${state.candidate}\`.`,
-            ],
-            state.worktree,
-            15_000,
-          ).catch(() => {});
-
-          if (partOf !== undefined) {
-            try {
-              const openIssuesRes = await processRun(
-                ["gh", "issue", "list", "--state", "open", "--json", "number,body"],
-                root,
-                15_000,
-              );
-              if (openIssuesRes.exitCode === 0) {
-                const openIssues = JSON.parse(openIssuesRes.stdout) as Array<{
-                  number: number;
-                  body?: string;
-                }>;
-                const remainingSiblings = openIssues.filter(
-                  (i) =>
-                    i.number !== issue.number &&
-                    i.number !== partOf &&
-                    parsePartOf(i.body ?? "") === partOf,
-                );
-                if (remainingSiblings.length === 0) {
-                  const existingFinalPr = await processRun(
-                    [
-                      "gh",
-                      "pr",
-                      "list",
-                      "--state",
-                      "open",
-                      "--head",
-                      integrationBranch,
-                      "--base",
-                      defaultBaseBranch,
-                      "--json",
-                      "url",
-                    ],
-                    root,
-                    15_000,
-                  );
-                  let finalPrUrl: string | undefined;
-                  if (existingFinalPr.exitCode === 0) {
-                    const parsedPrs = JSON.parse(existingFinalPr.stdout) as Array<{ url?: string }>;
-                    finalPrUrl = parsedPrs[0]?.url;
-                  }
-                  if (!finalPrUrl) {
-                    const createFinal = await processRun(
-                      [
-                        "gh",
-                        "pr",
-                        "create",
-                        "--base",
-                        defaultBaseBranch,
-                        "--head",
-                        integrationBranch,
-                        "--title",
-                        `feat(spec-${partOf}): integrated delivery for spec #${partOf}`,
-                        "--body",
-                        `Closes #${partOf}\n\nAll subticket PRs for spec #${partOf} have been verified and integrated into \`${integrationBranch}\`. Ready for human review.`,
-                      ],
-                      root,
-                      30_000,
-                    );
-                    if (createFinal.exitCode === 0) {
-                      finalPrUrl = createFinal.stdout.trim();
-                    }
-                  }
-                  if (finalPrUrl) {
-                    state.finalIntegrationPr = finalPrUrl;
-                  }
-                }
-              }
-            } catch {}
-          }
-        }
-
-        finalStatus = "merged";
-        reviewOutcome = "merged";
-      } catch (mergeErr: unknown) {
-        const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
-        autoMergeEval.authorized = false;
-        autoMergeEval.decision = "hold_for_human";
-        autoMergeEval.reasons.push(msg);
-        state.autoMerge = autoMergeEval;
-        await Bun.write(
-          join(artifactsDir, "auto-merge-judgement.json"),
-          JSON.stringify(autoMergeEval, null, 2),
-        );
       }
     }
 
