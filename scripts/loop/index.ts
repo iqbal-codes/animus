@@ -25,8 +25,12 @@ export {
   prepareLoopWorktree,
   assertCandidate,
 } from "./worktree";
-export * from "./lifecycle";
-export * from "./role-runner";
+export {
+  runBoundedRole,
+  type BoundedRoleOptions,
+  type BoundedRoleResult,
+  RoleInterrupted,
+} from "./role-runner";
 export {
   defaultGhRunner,
   publishPrEvidenceUpdate,
@@ -34,13 +38,18 @@ export {
   extractValidDiffLines,
   publishPrReview,
   syncExistingEvidenceBindings,
-  recordLapAndReflect,
   type PublicationRecord,
   type PublicationErrorRecord,
-  type RecordLapAndReflectOptions,
 } from "./pr-publication";
-export * from "./qa-runner";
-export * from "./review-gate";
+export {
+  verifyDeployment,
+  type DeploymentVerificationResult,
+} from "./qa-runner";
 export { LoopPublisher, type LoopPublisherOptions } from "./publisher";
 export { acquireIssueLock } from "./triage";
-
+export {
+  LapSession,
+  runAnimusLoop,
+  runLocalLoop,
+  type TerminalDispositionInput,
+} from "./session";
