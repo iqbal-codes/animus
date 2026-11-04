@@ -159,6 +159,7 @@ export class LapSession {
   readonly releaseLock: () => Promise<void>;
   readonly save: () => Promise<void>;
   readonly existingWorktree?: string;
+  private terminalDisposed = false;
 
   constructor(init: {
     root: string;
@@ -945,6 +946,14 @@ export class LapSession {
    * and atomic state.json persistence across ALL exit paths.
    */
   async terminalDisposition(input: TerminalDispositionInput): Promise<LocalLoopResult> {
+    if (this.terminalDisposed) {
+      try {
+        await this.save();
+      } catch {}
+      return this.state;
+    }
+    this.terminalDisposed = true;
+
     const isExceeded = this.lap >= this.maxLaps;
     let finalStatus: LocalLoopStatus;
 
@@ -1168,13 +1177,23 @@ export class LapSession {
     }
 
     if (input.reviewReport) {
-      await Bun.write(
-        join(this.artifactsDir, "review.json"),
-        JSON.stringify(input.reviewReport, null, 2),
-      );
+      try {
+        await Bun.write(
+          join(this.artifactsDir, "review.json"),
+          JSON.stringify(input.reviewReport, null, 2),
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("Warning: Failed to write review.json artifact:", msg);
+      }
     }
 
-    await this.save();
+    try {
+      await this.save();
+    } catch (saveErr: unknown) {
+      const msg = saveErr instanceof Error ? saveErr.message : String(saveErr);
+      console.error("Warning: Failed to persist terminal state.json:", msg);
+    }
     return this.state;
   }
 

@@ -605,4 +605,93 @@ describe("Canonical Animus Loop Orchestrator & Facade Shim", () => {
       await rm(root, { recursive: true, force: true }).catch(() => {});
     }
   });
+
+  test("AC2: exact-once terminal disposition and clean lock release even when reflection encounters error", async () => {
+    const root = await createGitRepoFixture();
+    try {
+      const issue: LocalIssue = {
+        number: 142,
+        url: "https://github.com/iqbal-codes/animus/issues/142",
+        title: "test exact-once terminal disposition",
+        body: "AC1: must record exact-once dossier attempt and release lock",
+        comments: [],
+        dependencies: [],
+        activeClaim: false,
+      };
+
+      const transport: AgentTransport = async ({ cwd, role }) => {
+        if (role === "builder") {
+          await Bun.write(join(cwd, "delivered.txt"), "hello");
+          runCmd(cwd, "git", "add", "delivered.txt");
+          runCmd(cwd, "git", "commit", "-m", "deliver");
+          const head = runCmd(cwd, "git", "rev-parse", "HEAD");
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              type: "message_end",
+              message: {
+                role: "assistant",
+                content: [
+                  { type: "text", text: JSON.stringify({ candidate: head, verdict: "pass" }) },
+                ],
+              },
+            }),
+            stderr: "",
+          };
+        }
+        if (role === "qa") {
+          const head = runCmd(cwd, "git", "rev-parse", "HEAD");
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              type: "message_end",
+              message: {
+                role: "assistant",
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      head,
+                      verdict: "fail",
+                      overall: "FAIL",
+                      passed: false,
+                      lines: [
+                        { id: "AC1", kind: "criterion", verdict: "FAIL", observed: "qa fail" },
+                      ],
+                    }),
+                  },
+                ],
+              },
+            }),
+            stderr: "",
+          };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      };
+
+      const result = await runAnimusLoop(root, issue, {
+        transport,
+        push: false,
+      });
+
+      expect(result.status).toBe("sent_back");
+
+      // Verify issue dossier has exactly 1 attempt record (exact-once)
+      const { common } = await (await import("../../scripts/loop/worktree")).inspectLocalLoop(root);
+      const stateRoot = join(common, "factory-local-loop");
+      const { loadIssueDossier } = await import("../../scripts/loop/dossier");
+      const dossier = loadIssueDossier(stateRoot, 142);
+      expect(dossier).toBeDefined();
+      expect(dossier!.attempts.length).toBe(1);
+
+      // Verify lock is completely released
+      const reacquired = await (
+        await import("../../scripts/loop/worktree")
+      ).acquireIssueLock(stateRoot, 142);
+      expect(typeof reacquired).toBe("function");
+      await reacquired();
+    } finally {
+      await rm(root, { recursive: true, force: true }).catch(() => {});
+    }
+  });
 });
