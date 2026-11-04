@@ -67,6 +67,10 @@ export interface LocalLoopOptions {
   ciWaitSeconds?: number;
   /** Optional CI assessment injector for testing */
   checkPrCi?: (pr: string | number, options?: any) => Promise<any>;
+  /** Optional custom state root directory override. */
+  stateRoot?: string;
+  /** Alias for stateRoot */
+  stateDirectory?: string;
 }
 
 export interface LoopEvidence {

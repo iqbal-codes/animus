@@ -1,4 +1,5 @@
 import { join, resolve } from "node:path";
+import { resolveProjectWorkspace } from "../../../packages/contracts/src/paths";
 import { githubJson, issueSpecification, readIssueContract } from "../../loop";
 import { inspectLocalLoop, runAnimusLoop } from "../../animus-loop";
 import { findRun, watchRun } from "../../loop-watch";
@@ -47,7 +48,7 @@ export async function runLoopCliCommand(opts: {
       };
       if (!repository.nameWithOwner) throw new Error("Unable to identify repository");
       const contract = readIssueContract(opts.repoRoot, issueNum, repository.nameWithOwner);
-      const local = await inspectLocalLoop(opts.repoRoot);
+      const workspace = resolveProjectWorkspace(opts.repoRoot);
 
       if (opts.dryRun) {
         console.log(
@@ -59,7 +60,7 @@ export async function runLoopCliCommand(opts: {
               issue: contract,
               merge: "approve",
               model: process.env.FACTORY_LOOP_MODEL || "Pi configured default",
-              stateDirectory: resolve(local.common, "factory-local-loop"),
+              stateDirectory: workspace.stateRoot,
               specification: issueSpecification(contract.url),
             },
             null,
@@ -85,13 +86,9 @@ export async function runLoopCliCommand(opts: {
       if (rawIssue && opts.run) {
         throw new Error("Use --issue or --run, not both");
       }
-      const result = Bun.spawnSync(["git", "rev-parse", "--git-common-dir"], {
-        cwd: opts.repoRoot,
-      });
-      if (result.exitCode !== 0) throw new Error("Unable to resolve repository state directory");
-      const common = resolve(opts.repoRoot, result.stdout.toString().trim());
+      const workspace = resolveProjectWorkspace(opts.repoRoot);
       const directory = await findRun(
-        join(common, "factory-local-loop", "runs"),
+        workspace.runsDir,
         rawIssue ? Number(rawIssue) : undefined,
         opts.run,
       );
@@ -198,14 +195,9 @@ export async function runSchedulerCliCommand(opts: {
     }
     const repo = (JSON.parse(repoRes.stdout.toString()) as { nameWithOwner: string }).nameWithOwner;
 
-    const gitCommonRes = Bun.spawnSync(["git", "rev-parse", "--git-common-dir"], {
-      cwd: opts.repoRoot,
-    });
-    const gitCommon =
-      gitCommonRes.exitCode === 0 ? gitCommonRes.stdout.toString().trim() : ".git";
-    const common = resolve(opts.repoRoot, gitCommon);
-    const sharedRoot = resolve(common, "..");
-    const runsDir = join(common, "factory-local-loop", "runs");
+    const workspace = resolveProjectWorkspace(opts.repoRoot);
+    const sharedRoot = workspace.primaryRoot;
+    const runsDir = workspace.runsDir;
 
     const fetchBacklog = async () => fetchGithubBacklog(opts.repoRoot, repo);
 

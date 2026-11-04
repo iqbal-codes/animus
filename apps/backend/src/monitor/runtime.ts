@@ -1,6 +1,12 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import {
+  resolveProjectWorkspace,
+  loadCascadedScheduleConfig,
+  countActiveLaps,
+  isWithinWorkWindow,
+  resolveTriageStateRoot,
+} from "@animus/contracts/paths";
 
 export interface MonitorIssue {
   number: number;
@@ -139,7 +145,7 @@ export async function loadMonitorRuntime(
 ): Promise<MonitorRuntime> {
   // Resolve from the installed factory, never from a registered project's source tree.
   const factory = new URL("../../../../", import.meta.url);
-  const [scheduler, loop, contracts, config, triageState] = await Promise.all([
+  const [scheduler, loop, contracts, config, _triageState] = await Promise.all([
     import(new URL("scripts/loop/scheduler.ts", factory).href),
     import(new URL("scripts/local-loop.ts", factory).href),
     import(new URL("scripts/loop.ts", factory).href),
@@ -207,18 +213,10 @@ export async function loadMonitorRuntime(
     hasCapacityFull:
       overrides.hasCapacityFull ??
       ((root) => {
-        const cfg = scheduler.loadScheduleConfig(root);
+        const ws = resolveProjectWorkspace(root);
+        const cfg = loadCascadedScheduleConfig(ws);
         const parallel = cfg.parallel ?? 1;
-        const candidates = [
-          join(root, ".git", "factory-local-loop", "runs"),
-          join(root, ".factory-local-loop", "runs"),
-        ];
-        for (const dir of candidates) {
-          if (existsSync(dir)) {
-            if (scheduler.countActiveLaps(dir) >= parallel) return true;
-          }
-        }
-        return false;
+        return countActiveLaps(ws.runsDir) >= parallel;
       }),
     triage:
       overrides.triage ??
@@ -234,10 +232,10 @@ export async function loadMonitorRuntime(
         return data;
       }),
     checkWorkWindow: (root) => {
-      const scheduleConfig = scheduler.loadScheduleConfig(root);
-      return scheduler.isWithinWorkWindow(scheduleConfig.work_window);
+      const scheduleConfig = loadCascadedScheduleConfig(root);
+      return isWithinWorkWindow(scheduleConfig.work_window);
     },
     resolveTriageStateRoot: (root, customStateRoot) =>
-      triageState.resolveTriageStateRoot(root, customStateRoot),
+      resolveTriageStateRoot(root, customStateRoot),
   };
 }

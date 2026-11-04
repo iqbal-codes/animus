@@ -1,26 +1,46 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { getProjectRunsDir, resolveAnimusHome, getProjectSlug } from "../../packages/contracts/src/paths";
+import {
+  type WorkWindowConfig,
+  type ScheduleConfig,
+  type RelationalBrakeChecker,
+  getProjectRunsDir,
+  resolveAnimusHome,
+  getProjectSlug,
+  resolveProjectWorkspace,
+  evaluateWorkspacePreflight,
+  parseScheduleJson,
+  loadScheduleConfig,
+  loadCascadedScheduleConfig,
+  checkBrakes,
+  checkWorkspaceBrakes,
+  isWithinWorkWindow,
+  isProcessAlive,
+  countActiveLaps,
+  getIssuesWaitingApproval,
+  getMergedIssueNumbers,
+} from "../../packages/contracts/src/paths";
 import { loadIssueDossier } from "./dossier";
 import { reconcileWaitingApprovalPrCi, type GhRunner, type checkPrCiStatus } from "./ci";
 import { runTriagePass } from "./triage";
 import { resolveTriageStateRoot } from "./triage-state";
 
-export interface WorkWindowConfig {
-  enabled: boolean;
-  start_time: string; // "HH:MM" 24h
-  end_time: string; // "HH:MM" 24h
-  timezone: string; // e.g. "Asia/Jakarta" or "UTC"
-}
+export type BrakeChecker = RelationalBrakeChecker;
 
-export interface ScheduleConfig {
-  workflow: string;
-  parallel: number;
-  max_laps: number;
-  interval_seconds: number;
-  inputs?: Record<string, unknown>;
-  work_window?: WorkWindowConfig;
-}
+export {
+  type WorkWindowConfig,
+  type ScheduleConfig,
+  parseScheduleJson,
+  loadScheduleConfig,
+  loadCascadedScheduleConfig,
+  checkBrakes,
+  checkWorkspaceBrakes,
+  isWithinWorkWindow,
+  isProcessAlive,
+  countActiveLaps,
+  getIssuesWaitingApproval,
+  getMergedIssueNumbers,
+};
 
 export interface BacklogCandidate {
   number: number;
@@ -55,10 +75,6 @@ export interface TriagePassContext {
 
 export type TriagePassHandler = (context: TriagePassContext) => Promise<unknown>;
 
-export interface BrakeChecker {
-  isScheduledLaunchPermitted(projectId?: string | null): { permitted: boolean; reason?: string };
-}
-
 export interface SchedulerTickResult {
   action: "launched" | "skipped";
   reason: TickSkipReason | TickLaunchReason;
@@ -79,262 +95,6 @@ export const BLOCKING_LABELS = new Set([
   "wontfix",
   "needs-owner",
 ]);
-export function parseScheduleJson(filePath: string): Partial<ScheduleConfig> | null {
-  if (!existsSync(filePath)) return null;
-  let raw: any;
-  try {
-    raw = JSON.parse(readFileSync(filePath, "utf-8"));
-  } catch (err: any) {
-    throw new Error(`Malformed schedule config in '${filePath}': ${err?.message || "invalid JSON"}`);
-  }
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    throw new Error(`Invalid schedule config in '${filePath}': expected an object`);
-  }
-
-  if (raw.interval_seconds !== undefined && (!Number.isFinite(raw.interval_seconds) || raw.interval_seconds <= 0)) {
-    throw new Error(`Invalid schedule interval in '${filePath}': must be a positive number`);
-  }
-  if (raw.parallel !== undefined && (!Number.isSafeInteger(raw.parallel) || raw.parallel <= 0)) {
-    throw new Error(`Invalid schedule parallel capacity in '${filePath}': must be a positive integer`);
-  }
-  if (raw.max_laps !== undefined && (!Number.isSafeInteger(raw.max_laps) || raw.max_laps <= 0)) {
-    throw new Error(`Invalid schedule max_laps in '${filePath}': must be a positive integer`);
-  }
-
-  if (raw.work_window !== undefined && raw.work_window !== null) {
-    if (typeof raw.work_window !== "object" || Array.isArray(raw.work_window)) {
-      throw new Error(`Invalid schedule work_window in '${filePath}': expected an object`);
-    }
-    const window = raw.work_window;
-    if (window.enabled) {
-      if (
-        typeof window.start_time !== "string" ||
-        typeof window.end_time !== "string" ||
-        !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(window.start_time) ||
-        !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(window.end_time)
-      ) {
-        throw new Error(`Invalid schedule work window times in '${filePath}': expected HH:MM format`);
-      }
-      const tz = window.timezone || "Asia/Jakarta";
-      try {
-        new Intl.DateTimeFormat("en-US", { timeZone: tz }).format();
-      } catch {
-        throw new Error(`Invalid timezone in schedule config '${filePath}': '${tz}'`);
-      }
-    }
-  }
-
-  return {
-    ...(typeof raw.workflow === "string" ? { workflow: raw.workflow } : {}),
-    ...(typeof raw.parallel === "number" && raw.parallel > 0 ? { parallel: raw.parallel } : {}),
-    ...(typeof raw.max_laps === "number" && raw.max_laps > 0 ? { max_laps: raw.max_laps } : {}),
-    ...(typeof raw.interval_seconds === "number" && raw.interval_seconds > 0
-      ? { interval_seconds: raw.interval_seconds }
-      : {}),
-    ...(typeof raw.inputs === "object" && raw.inputs !== null ? { inputs: raw.inputs } : {}),
-    ...(typeof raw.work_window === "object" && raw.work_window !== null
-      ? {
-          work_window: {
-            enabled: Boolean(raw.work_window.enabled),
-            start_time: raw.work_window.start_time || "20:00",
-            end_time: raw.work_window.end_time || "05:00",
-            timezone: raw.work_window.timezone || "Asia/Jakarta",
-          },
-        }
-      : {}),
-  };
-}
-
-export function loadScheduleConfig(root: string): ScheduleConfig {
-  const defaults: ScheduleConfig = {
-    workflow: "animus-loop",
-    parallel: 1,
-    max_laps: 3,
-    interval_seconds: 300,
-    inputs: { merge: "approve" },
-    work_window: {
-      enabled: false,
-      start_time: "20:00",
-      end_time: "05:00",
-      timezone: "Asia/Jakarta",
-    },
-  };
-
-  const repoSchedule = parseScheduleJson(join(root, ".factory/schedule.json"));
-  const userGlobal = parseScheduleJson(join(resolveAnimusHome(), "schedule.json"));
-  const userProject = parseScheduleJson(
-    join(resolveAnimusHome(), "projects", getProjectSlug(root), "schedule.json"),
-  );
-
-  return {
-    ...defaults,
-    ...repoSchedule,
-    ...userGlobal,
-    ...userProject,
-    inputs: {
-      ...defaults.inputs,
-      ...repoSchedule?.inputs,
-      ...userGlobal?.inputs,
-      ...userProject?.inputs,
-    },
-    work_window: {
-      enabled:
-        userProject?.work_window?.enabled ??
-        userGlobal?.work_window?.enabled ??
-        repoSchedule?.work_window?.enabled ??
-        defaults.work_window!.enabled,
-      start_time:
-        userProject?.work_window?.start_time ??
-        userGlobal?.work_window?.start_time ??
-        repoSchedule?.work_window?.start_time ??
-        defaults.work_window!.start_time,
-      end_time:
-        userProject?.work_window?.end_time ??
-        userGlobal?.work_window?.end_time ??
-        repoSchedule?.work_window?.end_time ??
-        defaults.work_window!.end_time,
-      timezone:
-        userProject?.work_window?.timezone ??
-        userGlobal?.work_window?.timezone ??
-        repoSchedule?.work_window?.timezone ??
-        defaults.work_window!.timezone,
-    },
-  };
-}
-
-export function checkBrakes(
-  root: string,
-  sharedRoot?: string,
-): { active: boolean; type?: "stop" | "pause"; path?: string } {
-  const candidates: Array<{ path: string; type: "stop" | "pause" }> = [
-    { path: join(root, ".factory/STOP"), type: "stop" },
-    { path: join(root, ".factory/PAUSE"), type: "pause" },
-  ];
-
-  if (sharedRoot && sharedRoot !== root) {
-    candidates.push(
-      { path: join(sharedRoot, ".factory/STOP"), type: "stop" },
-      { path: join(sharedRoot, ".factory/PAUSE"), type: "pause" },
-    );
-  }
-
-  for (const c of candidates) {
-    if (existsSync(c.path)) {
-      return { active: true, type: c.type, path: c.path };
-    }
-  }
-
-  return { active: false };
-}
-
-export function isWithinWorkWindow(window?: WorkWindowConfig, now = new Date()): boolean {
-  if (!window || !window.enabled) return true;
-
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: window.timezone,
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  });
-  const parts = formatter.formatToParts(now);
-  const hour = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
-  const minute = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
-  const currentMinutes = hour * 60 + minute;
-
-  const [startH, startM] = window.start_time.split(":").map(Number);
-  const [endH, endM] = window.end_time.split(":").map(Number);
-  const startMinutes = (startH ?? 0) * 60 + (startM ?? 0);
-  const endMinutes = (endH ?? 0) * 60 + (endM ?? 0);
-
-  if (startMinutes <= endMinutes) {
-    return currentMinutes >= startMinutes && currentMinutes < endMinutes;
-  } else {
-    // Overnight window (e.g. 20:00 to 05:00)
-    return currentMinutes >= startMinutes || currentMinutes < endMinutes;
-  }
-}
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export function countActiveLaps(runsDir: string): number {
-  if (!existsSync(runsDir)) return 0;
-  let active = 0;
-  try {
-    for (const entry of readdirSync(runsDir)) {
-      const statePath = join(runsDir, entry, "state.json");
-      if (!existsSync(statePath)) continue;
-      try {
-        const state = JSON.parse(readFileSync(statePath, "utf-8"));
-        if (
-          state.status === "preparing" ||
-          state.status === "building" ||
-          state.status === "checking" ||
-          state.status === "qa" ||
-          state.status === "reviewing" ||
-          state.status === "reflecting"
-        ) {
-          if (typeof state.pid === "number" && !isProcessAlive(state.pid)) {
-            continue;
-          }
-          active++;
-        }
-      } catch {}
-    }
-  } catch {}
-  return active;
-}
-
-export function getIssuesWaitingApproval(runsDir: string): Set<number> {
-  const waiting = new Set<number>();
-  if (!existsSync(runsDir)) return waiting;
-  try {
-    for (const entry of readdirSync(runsDir)) {
-      const statePath = join(runsDir, entry, "state.json");
-      if (!existsSync(statePath)) continue;
-      try {
-        const state = JSON.parse(readFileSync(statePath, "utf-8"));
-        if (
-          state.status === "waiting_approval" ||
-          state.status === "interrupted" ||
-          state.status === "needs_owner"
-        ) {
-          const match = /\/issues\/(\d+)$/.exec(state.issue ?? "");
-          if (match && match[1]) {
-            waiting.add(Number(match[1]));
-          }
-        }
-      } catch {}
-    }
-  } catch {}
-  return waiting;
-}
-
-export function getMergedIssueNumbers(runsDir: string): Set<number> {
-  const merged = new Set<number>();
-  if (!existsSync(runsDir)) return merged;
-  try {
-    for (const entry of readdirSync(runsDir)) {
-      const statePath = join(runsDir, entry, "state.json");
-      if (!existsSync(statePath)) continue;
-      try {
-        const state = JSON.parse(readFileSync(statePath, "utf-8"));
-        if (state.status === "merged") {
-          const match = /\/issues\/(\d+)$/.exec(state.issue ?? "");
-          if (match && match[1]) {
-            merged.add(Number(match[1]));
-          }
-        }
-      } catch {}
-    }
-  } catch {}
-  return merged;
-}
 
 export interface FilterAdmittedIssuesOptions {
   waitingApprovalIssueNumbers?: Set<number>;
@@ -703,20 +463,38 @@ export interface SchedulerTickOptions {
 
 export async function runSchedulerTick(options: SchedulerTickOptions): Promise<SchedulerTickResult> {
   const { root, sharedRoot } = options;
-  const mergedConfig: ScheduleConfig = {
-    ...loadScheduleConfig(root),
-    ...options.config,
-  };
+  const workspace = resolveProjectWorkspace(root, {
+    stateRoot: options.stateRoot,
+    customRunsDir: options.runsDir,
+  });
 
-  // 1. Check file brakes (root and sharedRoot)
-  const brake = checkBrakes(root, sharedRoot);
-  if (brake.active) {
-    const skipReason: TickSkipReason = brake.type === "stop" ? "stop_brake_set" : "pause_brake_set";
+  // Evaluate operational readiness preflight (brakes, cascaded schedule, work window)
+  const preflight = evaluateWorkspacePreflight(workspace, {
+    brakes: options.brakes,
+    projectId: options.projectId,
+    config: options.config,
+    now: options.now,
+    mode: "schedule",
+    ignoreCapacity: true, // We dispatch triage before checking capacity
+  });
+
+  if (!preflight.ok) {
+    let skipReason: TickSkipReason;
+    if (preflight.reason === "stop_brake_set" || preflight.reason === "launch_brake_set") {
+      skipReason = "stop_brake_set";
+    } else if (preflight.reason === "pause_brake_set" || preflight.reason === "schedule_paused") {
+      skipReason = "pause_brake_set";
+    } else if (preflight.reason === "outside_work_window") {
+      skipReason = "outside_work_window";
+    } else {
+      skipReason = "stop_brake_set";
+    }
+
     return {
       action: "skipped",
       reason: skipReason,
       activeLapsCount: 0,
-      detail: brake.path,
+      detail: preflight.detail,
       triage: {
         status: "skipped",
         reason: skipReason,
@@ -725,68 +503,9 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
     };
   }
 
-  // 1b. Check BrakeService (if provided)
-  const brakeService = options.brakes;
-  if (brakeService) {
-    let permitted: { permitted: boolean; reason?: string };
-    try {
-      permitted = brakeService.isScheduledLaunchPermitted(options.projectId);
-    } catch {
-      permitted = { permitted: false, reason: "brake_state_unknown" };
-    }
-    if (!permitted.permitted) {
-      const skipReason: TickSkipReason =
-        permitted.reason === "schedule_paused" ? "pause_brake_set" : "stop_brake_set";
-      return {
-        action: "skipped",
-        reason: skipReason,
-        activeLapsCount: 0,
-        detail: permitted.reason ?? "brake_service_disallowed",
-        triage: {
-          status: "skipped",
-          reason: skipReason,
-        },
-        triageStatus: "skipped",
-      };
-    }
-  }
-
-  // 2. Check work window
-  if (!isWithinWorkWindow(mergedConfig.work_window, options.now)) {
-    return {
-      action: "skipped",
-      reason: "outside_work_window",
-      activeLapsCount: 0,
-      detail: `Outside work window (${mergedConfig.work_window?.start_time}-${mergedConfig.work_window?.end_time} in ${mergedConfig.work_window?.timezone})`,
-      triage: {
-        status: "skipped",
-        reason: "outside_work_window",
-      },
-      triageStatus: "skipped",
-    };
-  }
-
-  // 3. Resolve runsDir, stateRoot, and repo
-  const runsDir =
-    options.runsDir ??
-    (() => {
-      if (process.env.ANIMUS_RUNS_DIR || process.env.ANIMUS_HOME) {
-        return getProjectRunsDir(root);
-      }
-      try {
-        const gitRes = Bun.spawnSync(["git", "rev-parse", "--git-common-dir"], { cwd: root });
-        if (gitRes.exitCode === 0) {
-          const common = resolve(root, gitRes.stdout.toString().trim());
-          const commonRuns = join(common, "factory-local-loop", "runs");
-          if (existsSync(commonRuns)) return commonRuns;
-        }
-      } catch {}
-      const projectRuns = getProjectRunsDir(root);
-      if (existsSync(projectRuns)) return projectRuns;
-      return join(root, ".factory-local-loop", "runs");
-    })();
-
-  const stateRoot = options.stateRoot ?? resolve(runsDir, "..");
+  const mergedConfig = preflight.schedule;
+  const runsDir = options.runsDir ?? workspace.runsDir;
+  const stateRoot = options.stateRoot ?? workspace.stateRoot;
   const repo = options.repo ?? detectRepo(root) ?? "";
 
   // 4. Reconcile PR CI status for runs waiting approval

@@ -26,6 +26,8 @@ import {
   ensureSecureDirectory,
   enforceSecureFilePermissions,
   migrateLegacyState,
+  resolveProjectWorkspace,
+  evaluateWorkspacePreflight,
 } from "@animus/contracts/paths";
 import { loadScheduleConfig } from "../../scripts/loop/scheduler";
 
@@ -219,5 +221,24 @@ describe("Local Application State Paths (~/.animus/)", () => {
     expect(config.parallel).toBe(4); // overridden by user home
     expect(config.work_window?.enabled).toBe(true); // overridden by user home
     expect(config.work_window?.start_time).toBe("21:00");
+  });
+
+  test("resolveProjectWorkspace resolves canonical paths and fallback runs", () => {
+    const userAnimus = join(tempDir, "user-animus-ws");
+    process.env.ANIMUS_HOME = userAnimus;
+    const repoPath = join(tempDir, "canonical-repo");
+    mkdirSync(repoPath, { recursive: true });
+
+    const ws = resolveProjectWorkspace(repoPath);
+    const slug = getProjectSlug(repoPath);
+    expect(ws.stateRoot).toBe(join(userAnimus, "projects", slug));
+    expect(ws.runsDir).toBe(join(userAnimus, "projects", slug, "runs"));
+    expect(ws.worktreesDir).toBe(join(userAnimus, "projects", slug, "worktrees"));
+    expect(ws.fallbackRunsDirs).toContain(join(userAnimus, "runs", slug));
+
+    // Operational preflight unified call
+    const preflight = evaluateWorkspacePreflight(ws);
+    expect(preflight.ok).toBe(true);
+    expect(preflight.status).toBe("ready");
   });
 });

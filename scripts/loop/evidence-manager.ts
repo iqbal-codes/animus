@@ -1,7 +1,10 @@
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { processRun } from "./process";
-import { getProjectSlug, resolveAnimusHome } from "../../packages/contracts/src/paths";
+import {
+  findWorkspaceRunDirectory,
+  resolveProjectWorkspace,
+} from "../../packages/contracts/src/paths";
 import { findRun } from "../loop-watch";
 import { validateEvidenceCitations } from "./artifacts";
 import {
@@ -83,58 +86,15 @@ export function validateHostedAssetUrl(urlStr: string): { ok: boolean; reason?: 
 }
 
 /**
- * Resolves a run directory by runId or issue number.
+ * Resolves a run directory by runId or issue number using canonical ProjectWorkspace
+ * with fallback lookup for existing run directories.
  */
 export async function resolveRunDirectory(
   repoRoot: string,
   options: { runId?: string; issue?: number },
 ): Promise<string> {
-  const commonRes = await processRun(["git", "rev-parse", "--git-common-dir"], repoRoot, 10_000);
-  const common =
-    commonRes.exitCode === 0
-      ? resolve(repoRoot, commonRes.stdout.trim())
-      : resolve(repoRoot, ".git");
-  const stateRoot = process.env.ANIMUS_HOME || process.env.ANIMUS_STATE_DIR || process.env.ANIMUS_RUNS_DIR
-    ? join(resolveAnimusHome(), "projects", getProjectSlug(repoRoot))
-    : join(common, "factory-local-loop");
-  const runsDir = join(stateRoot, "runs");
-
-  if (!existsSync(runsDir)) {
-    throw new Error(`Runs directory not found: ${runsDir}`);
-  }
-
-  if (options.runId) {
-    const directPath = join(runsDir, options.runId);
-    if (existsSync(directPath)) return directPath;
-  }
-
-  if (options.issue !== undefined) return findRun(runsDir, options.issue);
-  const entries = readdirSync(runsDir);
-  for (const entry of entries) {
-    const runPath = join(runsDir, entry);
-    const stateFile = join(runPath, "state.json");
-    if (existsSync(stateFile)) {
-      try {
-        const state = JSON.parse(readFileSync(stateFile, "utf-8"));
-        if (options.runId && (state.runId === options.runId || entry === options.runId)) {
-          return runPath;
-        }
-        if (
-          options.issue !== undefined &&
-          (String(state.issue).match(/\/issues\/(\d+)\/?$/)?.[1] === String(options.issue) ||
-            String(state.issue) === String(options.issue) ||
-            state.issue === `#${options.issue}` ||
-            state.branch?.includes(`issue-${options.issue}`))
-        ) {
-          return runPath;
-        }
-      } catch {}
-    }
-  }
-
-  throw new Error(
-    `No run matching ${options.runId ? `runId '${options.runId}'` : `issue #${options.issue}`} found in ${runsDir}`,
-  );
+  const workspace = resolveProjectWorkspace(repoRoot);
+  return findWorkspaceRunDirectory(workspace, options);
 }
 
 /**

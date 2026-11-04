@@ -1,6 +1,7 @@
 import { open, readdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { resolveProjectWorkspace } from "../packages/contracts/src/paths";
 import type { LocalLoopResult, LoopEvidence } from "./loop/types";
 
 export type WatchedEvidence = Partial<LoopEvidence> & Record<string, unknown>;
@@ -193,10 +194,9 @@ if (import.meta.main) {
     const { values } = parseArgs({ args: process.argv.slice(2), strict: true, allowPositionals: false, options: { issue: { type: "string" }, run: { type: "string" }, once: { type: "boolean", default: false }, history: { type: "boolean", default: false } } });
     if (values.issue && (!/^[1-9]\d*$/.test(values.issue) || !Number.isSafeInteger(Number(values.issue)))) throw new Error("Invalid issue number");
     if (values.issue && values.run) throw new Error("Use --issue or --run, not both");
-    const result = Bun.spawnSync(["git", "rev-parse", "--git-common-dir"], { cwd: resolve(import.meta.dir, "..") });
-    if (result.exitCode !== 0) throw new Error("Unable to resolve repository state directory");
-    const common = resolve(import.meta.dir, "..", result.stdout.toString().trim());
-    const directory = await findRun(join(common, "factory-local-loop", "runs"), values.issue ? Number(values.issue) : undefined, values.run);
+    const root = resolve(import.meta.dir, "..");
+    const ws = resolveProjectWorkspace(root);
+    const directory = await findRun(ws.runsDir, values.issue ? Number(values.issue) : undefined, values.run);
     let lapBanner = "";
     try {
       const initial = await Bun.file(join(directory, "state.json")).json();

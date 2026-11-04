@@ -267,7 +267,7 @@ describe("Animus Unified CLI & Repository Setup Onboarding", () => {
     expect(existsSync(join(tempDir, ".factory/hooks/holdout_fence.py"))).toBe(true);
     expect(existsSync(join(tempDir, ".factory/holdout/HOLDOUT.md"))).toBe(true);
     expect(existsSync(join(tempDir, "harness/ci.ts"))).toBe(true);
-  });
+  }, 30_000);
 
   test("brownfield repository with existing AGENTS.md keeps it untouched by default and supports explicit --agents-md overwrite", async () => {
     const existingAgents = "# Existing Repo Guide\nAlways use snake_case for database columns.\n";

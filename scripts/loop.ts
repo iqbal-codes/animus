@@ -1,8 +1,7 @@
 import { parseArgs } from "node:util";
 import { join, resolve } from "node:path";
 import { inspectLocalLoop, runAnimusLoop, type LocalIssue } from "./animus-loop";
-import { getMergedIssueNumbers } from "./loop/scheduler";
-import { getProjectSlug, resolveAnimusHome } from "../packages/contracts/src/paths";
+import { getMergedIssueNumbers, resolveProjectWorkspace } from "../packages/contracts/src/paths";
 import { isActiveClaim, parseDependencies } from "../apps/backend/src/intake/parser";
 
 export function parseIssueArgs(args: string[]): { issue: number; dryRun: boolean; push: boolean } {
@@ -136,14 +135,8 @@ export function readIssueContract(
   }
   let localMergedIssues = new Set<number>();
   try {
-    const gitCommonRes = Bun.spawnSync(["git", "rev-parse", "--git-common-dir"], { cwd: root });
-    const commonDir =
-      gitCommonRes.exitCode === 0 ? resolve(root, gitCommonRes.stdout.toString().trim()) : join(root, ".git");
-    const stateRoot =
-      process.env.ANIMUS_HOME || process.env.ANIMUS_STATE_DIR || process.env.ANIMUS_RUNS_DIR
-        ? join(resolveAnimusHome(), "projects", getProjectSlug(root))
-        : join(commonDir, "factory-local-loop");
-    localMergedIssues = getMergedIssueNumbers(join(stateRoot, "runs"));
+    const ws = resolveProjectWorkspace(root);
+    localMergedIssues = getMergedIssueNumbers(ws.runsDir);
   } catch {}
 
   const resolved = [...dependencies].map((dependency) => {
@@ -184,7 +177,7 @@ if (import.meta.main) {
     };
     if (!repository.nameWithOwner) throw new Error("Unable to identify repository");
     const contract = readIssueContract(root, issue, repository.nameWithOwner);
-    const local = await inspectLocalLoop(root);
+    const workspace = resolveProjectWorkspace(root);
     if (dryRun) {
       console.log(
         JSON.stringify(
@@ -195,7 +188,7 @@ if (import.meta.main) {
             issue: contract,
             merge: "approve",
             model: process.env.FACTORY_LOOP_MODEL || "Pi configured default",
-            stateDirectory: resolve(local.common, "factory-local-loop"),
+            stateDirectory: workspace.stateRoot,
             specification: issueSpecification(contract.url),
           },
           null,

@@ -11,6 +11,7 @@ import {
 } from "./loop/scheduler";
 import { readIssueContract } from "./loop";
 import { runAnimusLoop } from "./animus-loop";
+import { resolveProjectWorkspace } from "../packages/contracts/src/paths";
 import { parseDependencies, isActiveClaim } from "../apps/backend/src/intake/parser";
 
 export function parseSchedulerCliArgs(args: string[]): {
@@ -115,11 +116,9 @@ if (import.meta.main) {
     }
     const repo = (JSON.parse(repoRes.stdout.toString()) as { nameWithOwner: string }).nameWithOwner;
 
-    const gitCommonRes = Bun.spawnSync(["git", "rev-parse", "--git-common-dir"], { cwd: root });
-    const gitCommon = gitCommonRes.exitCode === 0 ? gitCommonRes.stdout.toString().trim() : ".git";
-    const common = resolve(root, gitCommon);
-    const sharedRoot = resolve(common, "..");
-    const runsDir = join(common, "factory-local-loop", "runs");
+    const workspace = resolveProjectWorkspace(root);
+    const sharedRoot = workspace.primaryRoot;
+    const runsDir = workspace.runsDir;
 
     const fetchBacklog = async () => fetchGithubBacklog(root, repo);
 

@@ -11,7 +11,7 @@ import {
 } from "./worktree";
 import { readAnimusConfig } from "./config";
 import { parsePartOf } from "../../apps/backend/src/intake/parser";
-import { resolveAnimusHome, getProjectSlug } from "../../packages/contracts/src/paths";
+import { resolveProjectWorkspace } from "../../packages/contracts/src/paths";
 import { setupArtifactDirectories } from "./artifacts";
 import { loadIssueDossier } from "./dossier";
 import { resolveVerificationProfile } from "./profiles";
@@ -208,11 +208,9 @@ export async function setupLoopLifecycle(
   }
 
   const runId = randomUUID();
-  const stateRoot =
-    process.env.ANIMUS_HOME || process.env.ANIMUS_STATE_DIR || process.env.ANIMUS_RUNS_DIR
-      ? join(resolveAnimusHome(), "projects", getProjectSlug(root))
-      : join(common, "factory-local-loop");
-  const runDirectory = join(stateRoot, "runs", runId);
+  const workspace = resolveProjectWorkspace(root, { stateRoot: options.stateDirectory });
+  const stateRoot = workspace.stateRoot;
+  const runDirectory = join(workspace.runsDir, runId);
   const { artifactsDir, handoffDir } = await setupArtifactDirectories(runDirectory);
   const releaseLock = await acquireIssueLock(stateRoot, issue.number, {
     runId,
@@ -240,7 +238,7 @@ export async function setupLoopLifecycle(
       route,
       status: "preparing",
       runDirectory,
-      worktree: existingWorktree ?? join(stateRoot, "worktrees", runId),
+      worktree: existingWorktree ?? join(workspace.worktreesDir, runId),
       branch,
       base,
       partOf,
