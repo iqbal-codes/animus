@@ -18,6 +18,7 @@ import { resolveVerificationProfile } from "./profiles";
 import { loadScheduleConfig } from "./scheduler";
 import { loadPrompt } from "./prompts";
 import { processRun } from "./process";
+import { defaultGhRunner } from "./pr-publication";
 import type { LocalIssue, LocalLoopOptions, LocalLoopResult, VerificationProfile } from "./types";
 
 export interface ExistingPrInfo {
@@ -174,7 +175,8 @@ export async function setupLoopLifecycle(
   // DISCOVERY & ROUTING: Check if an open PR already exists for this issue
   let existingPr: ExistingPrInfo | null = null;
   try {
-    const prSearch = await processRun(
+    const runner = options.ghRunner ?? defaultGhRunner;
+    const prSearch = await runner(
       ["gh", "pr", "list", "--state", "open", "--json", "number,url,headRefName,body"],
       root,
       30_000,

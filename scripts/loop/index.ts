@@ -48,5 +48,6 @@ export {
 } from "./pr-publication";
 export * from "./qa-runner";
 export * from "./review-gate";
+export { LoopPublisher, type LoopPublisherOptions } from "./publisher";
 export { acquireIssueLock } from "./triage";
 

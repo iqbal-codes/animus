@@ -33,6 +33,12 @@ export interface ProcessResult {
   timedOut?: boolean;
 }
 
+export type GhRunner = (
+  args: string[],
+  cwd?: string,
+  timeoutMs?: number,
+) => Promise<{ exitCode: number; stdout: string; stderr: string; timedOut?: boolean }>;
+
 export type AgentTransport = (request: {
   argv: string[];
   cwd: string;
@@ -67,6 +73,8 @@ export interface LocalLoopOptions {
   ciWaitSeconds?: number;
   /** Optional CI assessment injector for testing */
   checkPrCi?: (pr: string | number, options?: any) => Promise<any>;
+  /** Injectable GitHub CLI runner port for offline testing and forge mocking. */
+  ghRunner?: GhRunner;
   /** Optional custom state root directory override. */
   stateRoot?: string;
   /** Alias for stateRoot */

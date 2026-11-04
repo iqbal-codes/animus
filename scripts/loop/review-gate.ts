@@ -12,6 +12,7 @@ import {
   recordLapAndReflect,
   escalateIssueToHuman,
 } from "./pr-publication";
+import { LoopPublisher } from "./publisher";
 import { RoleInterrupted } from "./deadlines";
 import type {
   LocalIssue,
@@ -182,6 +183,7 @@ export interface FinalizeReviewAndPublishOptions {
   reviewEval: ReviewReadinessEvaluation;
   reflectTerminal: (dossier: IssueDossier) => Promise<void>;
   state: LocalLoopResult;
+  publisher?: LoopPublisher;
 }
 
 /**
@@ -215,10 +217,21 @@ export async function finalizeReviewAndPublish(
     reviewEval,
     reflectTerminal,
     state,
+    publisher,
   } = opts;
 
+  const pub =
+    publisher ??
+    new LoopPublisher({
+      worktree,
+      runDirectory,
+      artifactsDir,
+      issueNumber: issue.number,
+      push,
+    });
+
   if (reviewEval.finalStatus === "needs_owner") {
-    await escalateIssueToHuman(worktree, issue.number);
+    await pub.escalateToHuman(candidate);
   }
 
   await recordLapAndReflect({
@@ -273,14 +286,12 @@ export async function finalizeReviewAndPublish(
 
   if (pr) {
     try {
-      const commentResult = await publishPrReview({
-        repoRoot: worktree,
+      const commentResult = await pub.publishReview({
         pr,
-        candidate,
+        candidate: candidate!,
         reviewBody: reviewComment,
         findings: reviewEval.syncedFindings,
         rawDiff: reviewEval.diffContentFinal,
-        runDirectory,
       });
       if (commentResult.commentUrl) {
         state.reviewCommentUrl = commentResult.commentUrl;
@@ -297,14 +308,10 @@ export async function finalizeReviewAndPublish(
           )
         : undefined;
 
-    await syncAndPublishPrEvidence({
-      worktree,
+    await pub.syncAndPublishPrEvidence({
       pr,
-      push,
-      candidate,
+      candidate: candidate!,
       captures: qaReport?.captures || [],
-      artifactsDir,
-      runDirectory,
       identities,
       qaReport,
       builderReport,
@@ -317,13 +324,11 @@ export async function finalizeReviewAndPublish(
     });
   } else if (push !== false) {
     try {
-      await publishComment({
-        repoRoot: worktree,
+      await pub.publishComment({
         target: { kind: "issue", idOrUrl: issue.number },
         commentType: "review",
         commentBody: reviewComment,
-        candidate,
-        runDirectory,
+        candidate: candidate!,
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -349,6 +354,7 @@ export interface HandleLoopCatchOptions {
   recoveries: NonNullable<LapAttemptRecord["recoveries"]>;
   reflectTerminal: (dossier: IssueDossier) => Promise<void>;
   save: () => Promise<void>;
+  publisher?: LoopPublisher;
 }
 
 /**
@@ -384,8 +390,18 @@ export async function handleLoopCatch(opts: HandleLoopCatchOptions): Promise<Loc
   const finalErrorStatus: LocalLoopStatus = isExceeded ? "needs_owner" : "failed";
   state.status = finalErrorStatus;
 
+  const pub =
+    opts.publisher ??
+    new LoopPublisher({
+      worktree: root,
+      runDirectory: join(stateRoot, "runs", runId),
+      artifactsDir,
+      issueNumber: issue.number,
+      push: true,
+    });
+
   if (isExceeded) {
-    await escalateIssueToHuman(root, issue.number);
+    await pub.escalateToHuman(state.candidate);
   }
 
   try {

@@ -9,6 +9,7 @@ import {
   recordLapAndReflect,
   escalateIssueToHuman,
 } from "./pr-publication";
+import { LoopPublisher } from "./publisher";
 import { formatCiCheckComment } from "./pr-reporting";
 import type {
   LocalIssue,
@@ -17,8 +18,11 @@ import type {
   LocalLoopRoute,
   LocalLoopOptions,
   LoopEvidence,
+  GhRunner,
 } from "./types";
 import type { LearningCommandRecord } from "./learning-schema";
+
+export type { GhRunner };
 
 export interface PrCheckItem {
   name: string;
@@ -35,11 +39,6 @@ export interface PrCiAssessment {
   failedChecks: PrCheckItem[];
   summary: string;
 }
-
-export type GhRunner = (
-  cmd: string[],
-  cwd?: string,
-) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
 
 export function parseGhChecksOutput(stdout: string, stderr = ""): PrCiAssessment {
   const trimmedOut = stdout.trim();
@@ -227,7 +226,8 @@ export async function reconcileWaitingApprovalPrCi(
   }
 
   for (const entry of entries) {
-    const statePath = join(runsDir, entry, "state.json");
+    const runDir = join(runsDir, entry);
+    const statePath = join(runDir, "state.json");
     if (!existsSync(statePath)) continue;
 
     let state: LocalLoopResult;
@@ -242,15 +242,22 @@ export async function reconcileWaitingApprovalPrCi(
     const issueMatch = /\/issues\/(\d+)$/.exec(state.issue ?? "");
     if (!issueMatch || !issueMatch[1]) continue;
     const issueNumber = Number(issueMatch[1]);
+    const artifactsDir = join(runDir, "artifacts");
+
+    const publisher = new LoopPublisher({
+      worktree: state.worktree || root,
+      runDirectory: runDir,
+      artifactsDir,
+      issueNumber,
+      push: true,
+      runner,
+    });
 
     // Verify PR is still OPEN before evaluating CI
     try {
-      const prView = await runner(["gh", "pr", "view", String(state.pr), "--json", "state"], root);
-      if (prView.exitCode === 0) {
-        const prData = JSON.parse(prView.stdout);
-        if (prData.state && String(prData.state).toUpperCase() !== "OPEN") {
-          continue;
-        }
+      const isOpen = await publisher.isPrOpen(state.pr);
+      if (!isOpen) {
+        continue;
       }
     } catch {
       // If PR view fails, continue conservatively
@@ -270,19 +277,7 @@ export async function reconcileWaitingApprovalPrCi(
 
       if (newStatus === "needs_owner") {
         try {
-          await runner(
-            [
-              "gh",
-              "issue",
-              "edit",
-              String(issueNumber),
-              "--add-label",
-              "ready-for-human",
-              "--remove-label",
-              "ready-for-agent",
-            ],
-            root,
-          );
+          await publisher.escalateToHuman(state.candidate);
         } catch {}
       }
 
@@ -303,7 +298,12 @@ export async function reconcileWaitingApprovalPrCi(
       ];
 
       try {
-        await runner(["gh", "pr", "comment", String(state.pr), "--body", commentLines.join("\n")], root);
+        await publisher.publishComment({
+          target: { kind: "pr", idOrUrl: String(state.pr) },
+          commentType: "ci_check",
+          commentBody: commentLines.join("\n"),
+          candidate: state.candidate || "HEAD",
+        });
       } catch {}
 
       recordLapAttempt(
@@ -449,6 +449,7 @@ export interface HandleCiFastFailOptions {
   save: () => Promise<void>;
   qaReport?: any;
   builderReport?: any;
+  publisher?: LoopPublisher;
 }
 
 /**
@@ -480,8 +481,19 @@ export async function handleCiFastFail(opts: HandleCiFastFailOptions): Promise<L
   const ciStatus: LocalLoopStatus = isMaxLapsExceeded ? "needs_owner" : "sent_back";
   state.status = ciStatus;
 
+  const pub =
+    opts.publisher ??
+    new LoopPublisher({
+      worktree: state.worktree,
+      runDirectory: state.runDirectory,
+      artifactsDir,
+      issueNumber: issue.number,
+      push: options.push !== false,
+      runner: options.ghRunner,
+    });
+
   if (ciStatus === "needs_owner") {
-    await escalateIssueToHuman(state.worktree, issue.number);
+    await pub.escalateToHuman(state.candidate);
   }
 
   const changedFilesFinal = (
@@ -518,25 +530,17 @@ export async function handleCiFastFail(opts: HandleCiFastFailOptions): Promise<L
     isMaxLapsExceeded,
   });
 
-  await publishLoopComment({
-    worktree: state.worktree,
+  await pub.publishLoopComment({
     pr: state.pr,
-    issueNumber: issue.number,
-    push: options.push,
     commentType: "ci_check",
     commentBody: ciComment,
     candidate: state.candidate!,
-    runDirectory: state.runDirectory,
   });
 
-  await syncAndPublishPrEvidence({
-    worktree: state.worktree,
+  await pub.syncAndPublishPrEvidence({
     pr: state.pr,
-    push: options.push,
     candidate: state.candidate!,
     captures: qaReport?.captures || [],
-    artifactsDir,
-    runDirectory: state.runDirectory,
     identities: state.identities,
     qaReport,
     builderReport,
@@ -566,6 +570,7 @@ export interface VerifyPrCiGateOptions {
   save: () => Promise<void>;
   qaReport?: any;
   builderReport?: any;
+  publisher?: LoopPublisher;
 }
 
 export interface VerifyPrCiGateResult {
@@ -598,6 +603,17 @@ export async function verifyPrCiGate(opts: VerifyPrCiGateOptions): Promise<Verif
     builderReport,
   } = opts;
 
+  const pub =
+    opts.publisher ??
+    new LoopPublisher({
+      worktree: state.worktree,
+      runDirectory: state.runDirectory,
+      artifactsDir,
+      issueNumber: issue.number,
+      push: options.push !== false,
+      runner: options.ghRunner,
+    });
+
   const prTarget = state.pr ?? (options.checkPrCi ? "mock-pr" : undefined);
   if (!prTarget || (options.push === false && !options.checkPrCi)) {
     return { failed: false };
@@ -609,10 +625,9 @@ export async function verifyPrCiGate(opts: VerifyPrCiGateOptions): Promise<Verif
   const ciTimeoutSeconds = options.ciWaitSeconds ?? 15;
   const ciAssessment = options.checkPrCi
     ? await options.checkPrCi(prTarget, { cwd: state.worktree })
-    : await pollPrCiStatus(prTarget, {
+    : await pub.pollPrCiStatus(prTarget, {
         maxWaitSeconds: ciTimeoutSeconds,
         pollIntervalSeconds: 5,
-        cwd: state.worktree,
       });
 
   await Bun.write(join(artifactsDir, "pr-ci.json"), JSON.stringify(ciAssessment, null, 2));
@@ -637,6 +652,7 @@ export async function verifyPrCiGate(opts: VerifyPrCiGateOptions): Promise<Verif
       save,
       qaReport,
       builderReport,
+      publisher: pub,
     });
     return { failed: true, result: fastFailResult, assessment: ciAssessment };
   }

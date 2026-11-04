@@ -65,8 +65,10 @@ import {
   syncAndPublishPrEvidence,
   recordLapAndReflect,
 } from "./loop/pr-publication";
+import { LoopPublisher } from "./loop/publisher";
 
 // Re-export all domain types for full backward compatibility across all consumers
+export { LoopPublisher } from "./loop/publisher";
 export type * from "./loop/types";
 export type * from "./loop/prompt-context";
 export type * from "./loop/blast-radius";
@@ -154,6 +156,15 @@ export async function runAnimusLoop(
   const roleBudgets = resolveRoleBudgets(options);
   const lc = await setupLoopLifecycle(root, issue, options);
   const { state, save, releaseLock } = lc;
+
+  const publisher = new LoopPublisher({
+    worktree: state.worktree,
+    runDirectory: lc.runDirectory,
+    artifactsDir: lc.artifactsDir,
+    issueNumber: issue.number,
+    push: options.push !== false,
+    runner: options.ghRunner,
+  });
 
   const transport =
     options.transport ??
@@ -284,18 +295,14 @@ export async function runAnimusLoop(
     state.identities.prHead = state.candidate;
     state.identities.testedHead = state.candidate;
 
-    await publishBuilderDelivery({
-      worktree: state.worktree,
+    await publisher.publishBuilderDelivery({
       branch: lc.branch,
       issue,
       state,
       builderReport,
-      push: options.push !== false,
       route: lc.route,
       lap: lc.lap,
-      artifactsDir: lc.artifactsDir,
       handoffDir: lc.handoffDir,
-      runDirectory: lc.runDirectory,
       integrationBranch: lc.integrationBranch,
     });
 
@@ -333,6 +340,7 @@ export async function runAnimusLoop(
       pr: state.pr,
       push: options.push !== false,
       builderReport,
+      publisher,
       invokeQa: (qaCwd, extraVars, testedHead) =>
         invoke("qa", testedHead, extraVars, qaCwd, { requiredAcIds }),
     });
@@ -358,6 +366,7 @@ export async function runAnimusLoop(
         options,
         reflectTerminal,
         save,
+        publisher,
       });
     }
 
@@ -382,6 +391,7 @@ export async function runAnimusLoop(
       save,
       qaReport,
       builderReport,
+      publisher,
     });
 
     if (ciResult.failed) {
@@ -483,6 +493,7 @@ export async function runAnimusLoop(
       reviewEval,
       reflectTerminal,
       state,
+      publisher,
     });
 
     await save();
@@ -503,6 +514,7 @@ export async function runAnimusLoop(
       recoveries,
       reflectTerminal,
       save,
+      publisher,
     });
   } finally {
     try {
