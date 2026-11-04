@@ -18,12 +18,17 @@ export {
   DEFAULT_PROTECTED_PATHS,
   type PrepareLoopWorktreeOptions,
   type AssertCandidateOptions,
+  type WorktreeAllocation,
+  type WorktreeAllocationOptions,
+  type WorktreeLockInfo,
   git,
   inspectLocalLoop,
   findExistingWorktreeForBranch,
   acquireWorktreeIssueLock,
   prepareLoopWorktree,
   assertCandidate,
+  isPidAlive,
+  allocateWorktree,
 } from "./worktree";
 export {
   runBoundedRole,

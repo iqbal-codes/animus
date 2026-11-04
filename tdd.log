@@ -1,0 +1,29 @@
+# TDD Log - Issue #146: Unified Spec Integration & Worktree Management
+
+## Cycle 1: Red Phase - Worktree Holdout Fencing & PID-Verified Lock Reclamation
+- Seams: `WorktreeManager.allocateWorktree`, `prepareLoopWorktree`, `acquireIssueLock`, `isPidAlive` in `scripts/loop/worktree.ts` and `apps/backend/src/coordination/worktree.ts`
+- Tests added in `tests/integration/coordination.test.ts`:
+  1. `enforces sparse-checkout holdout fencing (!/.factory/holdout/) and .githooks binding in allocated worktree`
+     - Failure: `fatal: this worktree is not sparse`
+  2. `stale worktree lock is reclaimed when holding PID is dead (ESRCH), while live PID or EPERM fails closed`
+     - Failure: `CoordinationError: Worktree is exclusively locked by run stale-run (pid 99999999)`
+  3. `checkout-free CAS integration preserves dirty primary checkout and updates integration branch without checking out branches in root`
+  4. `Two-Layer Critical Impact Gate: child with database migration/DDL halts coordination pipeline without merging`
+     - Failure: `AssertionError: promise resolved instead of rejecting with Critical impact detected`
+  5. `loop subticket auto-merge updates SQLite project_issue_integrations and synchronizes spec coordination truth`
+     - Failure: `AssertionError: expected undefined to be defined (integrationRow was not written)`
+
+## Cycle 2: Green Phase - Implementation & Consolidation
+- Implementations:
+  1. Consolidated `allocateWorktree` onto `scripts/loop/worktree.ts`.
+  2. Implemented PID-verified locking (`isPidAlive`) checking `kill(pid, 0)`: only `ESRCH` marks stale, `EPERM` is alive, and age never proves dead.
+  3. Enforced sparse checkout `!/.factory/holdout/` and `.githooks` binding on all newly allocated and reused worktrees.
+  4. Updated `apps/backend/src/coordination/worktree.ts` to delegate directly to `allocateWorktree` in `scripts/loop/worktree.ts`.
+  5. Implemented checkout-free compare-and-swap merge in `SerializedIntegrationManager` (`apps/backend/src/coordination/integration.ts`) using `git merge-tree --write-tree` + `git commit-tree` + `git update-ref` without mutating primary checkout branch or working tree.
+  6. Enforced two-layer Critical Impact Gate in `SpecCoordinatorService.dispatchChild` (`apps/backend/src/coordination/service.ts`) before merging.
+  7. Updated `executeSubticketAutoMerge` in `scripts/loop/merge-queue.ts` to use checkout-free `update-ref` ref updates and call `recordSubticketIntegration` to write `project_issue_integrations` and update `project_spec_coordinations` when project DB is attached.
+  8. Passed `db`, `dbPath`, `projectId` through `LapSession` in `scripts/loop/session.ts`.
+  9. Added integration tests in `tests/integration/loop-worktree.bun.test.ts` and `tests/integration/loop-merge-queue-and-reflector.bun.test.ts`.
+- Verification Results:
+  - `bun run check`: All architecture checks, formatting, linting (0 warnings), and typechecking passed.
+  - `bun run test`: All 32 Vitest suites (437 tests) and all 35 Bun suites (516 tests, 953 total baseline tests) passed with 0 failures.

@@ -1354,6 +1354,9 @@ export class LapSession {
           push: this.options.push !== false,
           autoMergeEval: reviewEval.autoMergeEval,
           assertCandidateFn: assertCandidateInWorktree,
+          db: (this.options as any).db,
+          dbPath: (this.options as any).dbPath,
+          projectId: (this.options as any).projectId,
         });
         reviewEval = {
           ...reviewEval,

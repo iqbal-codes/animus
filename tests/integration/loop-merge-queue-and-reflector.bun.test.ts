@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { executeSubticketAutoMerge } from "../../scripts/loop/merge-queue";
 import {
   createBoundedReflectionTransport,
@@ -367,6 +368,150 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
     expect(result.success).toBe(false);
     expect(result.finalStatus).toBe("waiting_approval");
     expect(result.error).toMatch(/Candidate has uncommitted or untracked changes/i);
+  });
+
+  test("AC1: checkout-free CAS ref update preserves dirty uncommitted files in primary checkout", async () => {
+    const { repo, baseSha } = await initGitRepo();
+    const integrationBranch = "factory/spec-103-integration";
+    await git(repo, "branch", integrationBranch, baseSha);
+
+    // Create candidate commit in a separate worktree
+    const wtDir = await mkdtemp(join(tmpdir(), "wt-cand-"));
+    tempDirs.push(wtDir);
+    await git(repo, "worktree", "add", "-b", "subticket-49", wtDir, baseSha);
+    await writeFile(join(wtDir, "sub-49.txt"), "subticket 49 content\n");
+    await git(wtDir, "add", "sub-49.txt");
+    await git(wtDir, "commit", "-m", "feat: subticket 49");
+    const candidateSha = (await git(wtDir, "rev-parse", "HEAD")).trim();
+
+    // Leave dirty uncommitted files in primary repo
+    await writeFile(join(repo, "dirty-primary.txt"), "dirty untracked file\n");
+    await writeFile(join(repo, "README.md"), "# Modified tracked README\n");
+
+    const result = await executeSubticketAutoMerge({
+      root: repo,
+      candidate: candidateSha,
+      integrationBranch,
+      targetBaseTip: baseSha,
+      worktree: wtDir,
+      issueNumber: 49,
+      defaultBaseBranch: "main",
+      push: false,
+      autoMergeEval: makeStubEval(),
+      assertCandidateFn: async () => {},
+    });
+
+    expect(result.success).toBe(true);
+    // Invariant: Dirty files in primary repo checkout remain completely preserved
+    expect(existsSync(join(repo, "dirty-primary.txt"))).toBe(true);
+    expect(readFileSync(join(repo, "dirty-primary.txt"), "utf-8")).toBe("dirty untracked file\n");
+    expect(readFileSync(join(repo, "README.md"), "utf-8")).toBe("# Modified tracked README\n");
+
+    // Invariant: Integration branch was advanced in git refs
+    const intTip = (await git(repo, "rev-parse", `refs/heads/${integrationBranch}`)).trim();
+    expect(intTip).toBe(candidateSha);
+  });
+
+  test("AC5: writes verified SQLite project_issue_integrations and updates project_spec_coordinations when DB is attached", async () => {
+    const { repo, baseSha } = await initGitRepo();
+    const integrationBranch = "factory/spec-104-integration";
+    await git(repo, "branch", integrationBranch, baseSha);
+
+    const wtDir = await mkdtemp(join(tmpdir(), "wt-cand-db-"));
+    tempDirs.push(wtDir);
+    await git(repo, "worktree", "add", "-b", "subticket-50", wtDir, baseSha);
+    await writeFile(join(wtDir, "sub-50.txt"), "subticket 50\n");
+    await git(wtDir, "add", "sub-50.txt");
+    await git(wtDir, "commit", "-m", "feat: subticket 50");
+    const candidateSha = (await git(wtDir, "rev-parse", "HEAD")).trim();
+
+    // Create an in-memory or file-based SQLite database with project_issue_integrations and project_spec_coordinations
+    const dbDir = await mkdtemp(join(tmpdir(), "db-test-"));
+    tempDirs.push(dbDir);
+    const dbPath = join(dbDir, "console.db");
+    const testDb = new DatabaseSync(dbPath);
+    testDb.exec(`
+      CREATE TABLE projects (id TEXT PRIMARY KEY, checkout_path TEXT);
+      CREATE TABLE project_issue_integrations (
+        project_id TEXT NOT NULL,
+        issue_number INTEGER NOT NULL,
+        branch TEXT NOT NULL,
+        commit_sha TEXT,
+        integrated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, issue_number)
+      );
+      CREATE TABLE project_spec_coordinations (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        spec_issue_number INTEGER NOT NULL,
+        current_integration_sha TEXT NOT NULL,
+        plan_snapshot TEXT NOT NULL,
+        final_pr_url TEXT,
+        status TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+
+    const projectId = "proj_104";
+    testDb.prepare("INSERT INTO projects (id, checkout_path) VALUES (?, ?)").run(projectId, repo);
+    const initialPlan = {
+      specIssueNumber: 104,
+      currentIntegrationSha: baseSha,
+      children: [{ number: 50, title: "Subticket 50", status: "running", commitSha: null }],
+    };
+    testDb
+      .prepare(
+        `INSERT INTO project_spec_coordinations (id, project_id, spec_issue_number, current_integration_sha, plan_snapshot, status, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        "coord_104",
+        projectId,
+        104,
+        baseSha,
+        JSON.stringify(initialPlan),
+        "active",
+        new Date().toISOString(),
+      );
+
+    const result = await executeSubticketAutoMerge({
+      root: repo,
+      candidate: candidateSha,
+      integrationBranch,
+      targetBaseTip: baseSha,
+      worktree: wtDir,
+      issueNumber: 50,
+      partOf: 104,
+      defaultBaseBranch: "main",
+      push: false,
+      db: testDb,
+      projectId,
+      autoMergeEval: makeStubEval(),
+      assertCandidateFn: async () => {},
+    });
+
+    expect(result.success).toBe(true);
+
+    // Verify row in project_issue_integrations
+    const row = testDb
+      .prepare("SELECT * FROM project_issue_integrations WHERE project_id = ? AND issue_number = ?")
+      .get(projectId, 50) as any;
+    expect(row).toBeDefined();
+    expect(row.commit_sha).toBe(candidateSha);
+    expect(row.branch).toBe(integrationBranch);
+
+    // Verify project_spec_coordinations updated
+    const coordRow = testDb
+      .prepare(
+        "SELECT * FROM project_spec_coordinations WHERE project_id = ? AND spec_issue_number = ?",
+      )
+      .get(projectId, 104) as any;
+    expect(coordRow.current_integration_sha).toBe(candidateSha);
+    const updatedPlan = JSON.parse(coordRow.plan_snapshot);
+    expect(updatedPlan.children[0].status).toBe("integrated_to_branch");
+    expect(updatedPlan.children[0].commitSha).toBe(candidateSha);
+
+    testDb.close();
   });
 });
 

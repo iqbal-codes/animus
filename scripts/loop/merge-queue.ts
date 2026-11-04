@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { git, assertCandidate, type AssertCandidateOptions } from "./worktree";
 import { processRun } from "./process";
 import { parsePartOf } from "../../apps/backend/src/intake/parser";
@@ -408,6 +409,178 @@ export interface ExecuteSubticketAutoMergeOptions {
   gitFn?: typeof git;
   processRunFn?: typeof processRun;
   parsePartOfFn?: (text: string) => number | null;
+  db?: DatabaseSync;
+  dbPath?: string;
+  projectId?: string;
+}
+
+export interface RecordSubticketIntegrationOptions {
+  root: string;
+  issueNumber: number;
+  branch: string;
+  candidate: string;
+  partOf?: number;
+  finalIntegrationPr?: string;
+  db?: DatabaseSync;
+  dbPath?: string;
+  projectId?: string;
+}
+
+/**
+ * Record verified subticket integration into SQLite project_issue_integrations
+ * and synchronize project_spec_coordinations truth when a project DB is attached.
+ */
+export function recordSubticketIntegration(
+  options: RecordSubticketIntegrationOptions,
+): { integrated: boolean; projectId?: string } {
+  const { root, issueNumber, branch, candidate, partOf, finalIntegrationPr } = options;
+
+  let db = options.db;
+  let shouldClose = false;
+
+  if (!db) {
+    let resolvedDbPath = options.dbPath;
+    if (!resolvedDbPath) {
+      const candidates = [
+        join(root, "factory-local-loop", "console.db"),
+        join(root, "state", "console.db"),
+        join(root, ".factory/state/console.db"),
+        join(root, "console.db"),
+      ];
+      for (const cand of candidates) {
+        if (existsSync(cand)) {
+          resolvedDbPath = cand;
+          break;
+        }
+      }
+    }
+    if (resolvedDbPath && existsSync(resolvedDbPath)) {
+      try {
+        db = new DatabaseSync(resolvedDbPath);
+        shouldClose = true;
+      } catch {}
+    }
+  }
+
+  if (!db) {
+    return { integrated: false };
+  }
+
+  try {
+    const tableExists = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='project_issue_integrations'",
+      )
+      .get() as { name?: string } | undefined;
+
+    if (!tableExists) {
+      return { integrated: false };
+    }
+
+    let projectId = options.projectId;
+    if (!projectId) {
+      try {
+        const projectsTable = db
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='projects'")
+          .get();
+        if (projectsTable) {
+          const allProjects = db
+            .prepare("SELECT id, checkout_path FROM projects")
+            .all() as Array<{ id: string; checkout_path: string }>;
+          const match = allProjects.find(
+            (p) => resolve(p.checkout_path) === resolve(root),
+          );
+          if (match) {
+            projectId = match.id;
+          } else if (allProjects.length === 1) {
+            projectId = allProjects[0]?.id;
+          }
+        }
+      } catch {}
+    }
+
+    if (!projectId) {
+      return { integrated: false };
+    }
+
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO project_issue_integrations (project_id, issue_number, branch, commit_sha, integrated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(project_id, issue_number) DO UPDATE SET
+         branch = excluded.branch,
+         commit_sha = excluded.commit_sha,
+         integrated_at = excluded.integrated_at`,
+    ).run(projectId, issueNumber, branch, candidate, now);
+
+    // Synchronize project_spec_coordinations truth if spec coordination row exists
+    if (partOf !== undefined) {
+      try {
+        const coordTable = db
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='project_spec_coordinations'",
+          )
+          .get();
+        if (coordTable) {
+          const coordRow = db
+            .prepare(
+              "SELECT * FROM project_spec_coordinations WHERE project_id = ? AND spec_issue_number = ?",
+            )
+            .get(projectId, partOf) as any;
+
+          if (coordRow && coordRow.plan_snapshot) {
+            try {
+              const plan = JSON.parse(coordRow.plan_snapshot);
+              plan.currentIntegrationSha = candidate;
+              if (Array.isArray(plan.children)) {
+                for (const child of plan.children) {
+                  if (child.number === issueNumber) {
+                    child.status = "integrated_to_branch";
+                    child.commitSha = candidate;
+                  }
+                }
+              }
+              if (finalIntegrationPr) {
+                plan.status = "completed";
+                plan.finalPullRequest = {
+                  number: 0,
+                  url: finalIntegrationPr,
+                  title: `Integrated delivery for spec #${partOf}`,
+                  head: branch,
+                  base: plan.baseBranch ?? "main",
+                };
+              }
+              db.prepare(
+                `UPDATE project_spec_coordinations
+                 SET current_integration_sha = ?,
+                     plan_snapshot = ?,
+                     final_pr_url = COALESCE(?, final_pr_url),
+                     status = CASE WHEN ? IS NOT NULL THEN 'completed' ELSE status END,
+                     updated_at = ?
+                 WHERE project_id = ? AND spec_issue_number = ?`,
+              ).run(
+                candidate,
+                JSON.stringify(plan),
+                finalIntegrationPr ?? null,
+                finalIntegrationPr ?? null,
+                now,
+                projectId,
+                partOf,
+              );
+            } catch {}
+          }
+        }
+      } catch {}
+    }
+
+    return { integrated: true, projectId };
+  } finally {
+    if (shouldClose && db) {
+      try {
+        db.close();
+      } catch {}
+    }
+  }
 }
 
 /**
@@ -460,18 +633,10 @@ export async function executeSubticketAutoMerge(
       );
     }
 
-    const rootHeadBranch = await gitCmd(root, "symbolic-ref", "--short", "HEAD").catch(() => "");
-    if (rootHeadBranch === integrationBranch) {
-      await gitCmd(root, "merge", "--ff-only", candidate);
-    } else {
-      await gitCmd(
-        root,
-        "update-ref",
-        `refs/heads/${integrationBranch}`,
-        candidate,
-        targetBaseTip,
-      );
-    }
+    const cleanRef = integrationBranch.startsWith("refs/heads/")
+      ? integrationBranch
+      : `refs/heads/${integrationBranch}`;
+    await gitCmd(root, "update-ref", cleanRef, candidate, targetBaseTip);
 
     if (push !== false) {
       if (pr) {
@@ -573,6 +738,21 @@ export async function executeSubticketAutoMerge(
         } catch {}
       }
     }
+
+    // Record verified integration in SQLite project_issue_integrations and synchronize coordination truth
+    try {
+      recordSubticketIntegration({
+        root,
+        issueNumber,
+        branch: integrationBranch,
+        candidate,
+        partOf,
+        finalIntegrationPr,
+        db: options.db,
+        dbPath: options.dbPath,
+        projectId: options.projectId,
+      });
+    } catch {}
 
     return {
       success: true,

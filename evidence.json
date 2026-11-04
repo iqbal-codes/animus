@@ -1,0 +1,66 @@
+{
+  "ticket": 146,
+  "parentSpec": 140,
+  "branch": "t3/spec-146-worktree-coordination",
+  "baseSha": "51b54e3c6f5405e25059f87623cb8fcdd270ce9d",
+  "candidate": "ce17943916262cfe0896642becb37cd4b2304640",
+  "testedIdentity": "ce17943916262cfe0896642becb37cd4b2304640",
+  "acceptanceCriteria": {
+    "AC1_holdout_fencing_and_hooks": {
+      "status": "PASS",
+      "description": "Every worktree allocated by SpecCoordinatorService or runAnimusLoop enforces .factory/holdout sparse-checkout fencing and .githooks binding.",
+      "tests": [
+        "tests/integration/coordination.test.ts: enforces sparse-checkout holdout fencing (!/.factory/holdout/) and .githooks binding in allocated worktree",
+        "tests/integration/loop-worktree.bun.test.ts: allocateWorktree enforces sparse holdout fence, hooks binding, and PID-verified locking",
+        "tests/integration/loop-worktree.bun.test.ts: prepareLoopWorktree allocates new worktree with sparse-checkout and sets hooksPath if .githooks exists"
+      ]
+    },
+    "AC2_pid_verified_lock_reclaim": {
+      "status": "PASS",
+      "description": "Stale worktree locks are reclaimed only when the owning PID is dead (ESRCH), preserving the 'age never proves dead' lock invariant.",
+      "tests": [
+        "tests/integration/coordination.test.ts: stale worktree lock is reclaimed when holding PID is dead (ESRCH), while live PID or EPERM fails closed",
+        "tests/integration/loop-worktree.bun.test.ts: isPidAlive accurately identifies PID liveness without relying on age",
+        "tests/integration/loop-worktree.bun.test.ts: acquireIssueLock & stale PID cleanup"
+      ]
+    },
+    "AC3_checkout_free_cas_integration": {
+      "status": "PASS",
+      "description": "Child branch integration into factory/spec-<N>-integration uses checkout-free compare-and-swap ref updates, never checking out branches in the primary repository root.",
+      "tests": [
+        "tests/integration/coordination.test.ts: checkout-free CAS integration preserves dirty primary checkout and updates integration branch without checking out branches in root",
+        "tests/integration/loop-merge-queue-and-reflector.bun.test.ts: AC1: checkout-free CAS ref update preserves dirty uncommitted files in primary checkout",
+        "tests/integration/coordination.test.ts: integration drift halts pipeline without corrupting branch"
+      ]
+    },
+    "AC4_two_layer_critical_impact_gate": {
+      "status": "PASS",
+      "description": "The two-layer Critical Impact Gate (diff path inspection + reviewer risk evaluation) is enforced before subtickets merge into the Integration Branch.",
+      "tests": [
+        "tests/integration/coordination.test.ts: Two-Layer Critical Impact Gate: child with database migration/DDL halts coordination pipeline without merging",
+        "tests/integration/local-loop.bun.test.ts: holds subticket at waiting_approval (not sent_back) when critical impact (DB migration) is present despite passing all quality checks",
+        "tests/integration/loop-modules.bun.test.ts: Two-Layer Critical Impact & Subticket Auto-Merge Gate: authorizes bounded subtickets and holds critical impact PRs for human review"
+      ]
+    },
+    "AC5_loop_merge_sqlite_synchronization": {
+      "status": "PASS",
+      "description": "Subticket auto-merges performed by the loop update SQLite project_issue_integrations records when a project database is attached.",
+      "tests": [
+        "tests/integration/coordination.test.ts: loop subticket auto-merge updates SQLite project_issue_integrations and synchronizes spec coordination truth",
+        "tests/integration/loop-merge-queue-and-reflector.bun.test.ts: AC5: writes verified SQLite project_issue_integrations and updates project_spec_coordinations when DB is attached"
+      ]
+    },
+    "AC6_deterministic_checks": {
+      "status": "PASS",
+      "description": "Deterministic checks (bun run check && bun test) pass cleanly.",
+      "checks": [
+        "scripts/health/check-architecture.mjs: passed",
+        "bun run format: passed",
+        "bun run lint: passed (0 warnings, 0 errors)",
+        "bun run typecheck: passed (0 errors across 215 files)",
+        "vp test run (Vitest neutral-suite): 32/32 files, 437/437 passed",
+        "bun test (bun-suite): 35/35 suites, 516/516 passed, total 953 baseline tests"
+      ]
+    }
+  }
+}

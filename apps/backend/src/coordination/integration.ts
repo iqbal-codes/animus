@@ -99,51 +99,30 @@ export class SerializedIntegrationManager {
       );
     }
 
-    // Remember the branch currently checked out in repoRoot to restore it afterwards
-    let initialBranchOrHead = "";
-    try {
-      initialBranchOrHead = this.runner(["symbolic-ref", "--short", "HEAD"], { cwd: repoRoot });
-    } catch {
+    // 3. Resolve child branch SHA
+    let childSha = params.childHeadSha ?? "";
+    if (!childSha) {
       try {
-        initialBranchOrHead = this.runner(["rev-parse", "HEAD"], { cwd: repoRoot });
-      } catch {}
-    }
-
-    // Checkout integration branch
-    try {
-      this.runner(["checkout", integrationBranch], { cwd: repoRoot });
-    } catch (err: any) {
-      throw new CoordinationError(
-        "checkout_failed",
-        `Failed to checkout integration branch ${integrationBranch}: ${err.message}`,
-      );
-    }
-
-    // 3. Attempt merge
-    try {
-      this.runner(
-        [
-          "merge",
-          "--no-ff",
-          childBranch,
-          "-m",
-          `feat(coordination): integrate child #${childIssueNumber} into ${integrationBranch}`,
-        ],
-        { cwd: repoRoot },
-      );
-    } catch (err: any) {
-      // Conflict or merge error detected: abort merge to keep branch uncorrupted
-      try {
-        this.runner(["merge", "--abort"], { cwd: repoRoot });
-      } catch {}
-
-      // Restore initial branch if different
-      if (initialBranchOrHead && initialBranchOrHead !== integrationBranch) {
-        try {
-          this.runner(["checkout", initialBranchOrHead], { cwd: repoRoot });
-        } catch {}
+        childSha = this.runner(["rev-parse", childBranch], { cwd: repoRoot });
+      } catch (err: any) {
+        throw new CoordinationError(
+          "child_branch_unresolvable",
+          `Could not resolve child branch ${childBranch}: ${err.message}`,
+        );
       }
+    }
 
+    // 4. Checkout-free 3-way merge via git merge-tree --write-tree
+    let treeSha = "";
+    try {
+      const mergeTreeOut = this.runner(["merge-tree", "--write-tree", currentSha, childSha], {
+        cwd: repoRoot,
+      });
+      treeSha = mergeTreeOut.trim().split("\n")[0]!.trim();
+      if (!treeSha || treeSha.length !== 40) {
+        throw new Error(`Unexpected merge-tree output: ${mergeTreeOut}`);
+      }
+    } catch (err: any) {
       throw new CoordinationError(
         "integration_conflict",
         `Integration conflict while merging ${childBranch} into ${integrationBranch}: ${err.message}`,
@@ -152,32 +131,45 @@ export class SerializedIntegrationManager {
           childBranch,
           integrationBranch,
           preservedSha: currentSha,
+          error: err.message,
         },
       );
     }
 
-    // 4. Resolve new SHA after merge
-    let newSha = "";
+    // 5. Create merge commit object via git commit-tree without touching index or working tree
+    let newCommitSha = "";
     try {
-      newSha = this.runner(["rev-parse", "HEAD"], { cwd: repoRoot });
+      const commitMsg = `feat(coordination): integrate child #${childIssueNumber} into ${integrationBranch}`;
+      newCommitSha = this.runner(
+        ["commit-tree", treeSha, "-p", currentSha, "-p", childSha, "-m", commitMsg],
+        { cwd: repoRoot },
+      );
+      newCommitSha = newCommitSha.trim().split("\n")[0]!.trim();
     } catch (err: any) {
       throw new CoordinationError(
-        "rev_parse_failed",
-        `Failed to get post-merge SHA for ${integrationBranch}: ${err.message}`,
+        "commit_tree_failed",
+        `Failed to create merge commit for child #${childIssueNumber}: ${err.message}`,
       );
     }
 
-    // Restore initial branch if different
-    if (initialBranchOrHead && initialBranchOrHead !== integrationBranch) {
-      try {
-        this.runner(["checkout", initialBranchOrHead], { cwd: repoRoot });
-      } catch {}
+    // 6. Compare-and-swap ref update via git update-ref
+    const cleanRef = integrationBranch.startsWith("refs/heads/")
+      ? integrationBranch
+      : `refs/heads/${integrationBranch}`;
+    try {
+      this.runner(["update-ref", cleanRef, newCommitSha, currentSha], { cwd: repoRoot });
+    } catch (err: any) {
+      throw new CoordinationError(
+        "integration_drift",
+        `Integration drift detected during update-ref on ${integrationBranch}: ${err.message}`,
+        { expectedSha: currentSha, error: err.message },
+      );
     }
 
     return {
       success: true,
       previousSha: currentSha,
-      newSha,
+      newSha: newCommitSha,
       childIssueNumber,
     };
   }

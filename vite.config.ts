@@ -49,6 +49,24 @@ export default defineConfig({
         },
       },
       {
+        files: ["apps/backend/src/coordination/**/*.{ts,tsx,js,jsx}"],
+        rules: {
+          "no-restricted-imports": [
+            "error",
+            {
+              patterns: [
+                "@animus/backend",
+                "@animus/backend/*",
+                "@animus/engine-host",
+                "@animus/engine-host/*",
+                "**/apps/**",
+                "**/packages/**",
+              ],
+            },
+          ],
+        },
+      },
+      {
         files: [
           "apps/web/src/**/*.{ts,tsx,js,jsx}",
           "packages/client/src/**/*.{ts,js}",

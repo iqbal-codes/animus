@@ -407,6 +407,8 @@ describe("scripts/loop/worktree", () => {
       expect(typeof loopExports.acquireWorktreeIssueLock).toBe("function");
       expect(typeof loopExports.prepareLoopWorktree).toBe("function");
       expect(typeof loopExports.assertCandidate).toBe("function");
+      expect(typeof loopExports.isPidAlive).toBe("function");
+      expect(typeof loopExports.allocateWorktree).toBe("function");
     });
 
     test("scripts/loop/index.ts barrel exports acquireWorktreeIssueLock without collision", async () => {
@@ -431,6 +433,50 @@ describe("scripts/loop/worktree", () => {
       expect(typeof localLoopAcquireLock).toBe("function");
       expect(typeof localLoopPrepareWorktree).toBe("function");
       expect(typeof localLoopAssertCandidate).toBe("function");
+    });
+
+    test("isPidAlive accurately identifies PID liveness without relying on age", () => {
+      // Current process is alive
+      expect(loopExports.isPidAlive(process.pid)).toBe(true);
+      // Dead PID 99999999 on POSIX
+      expect(loopExports.isPidAlive(99999999)).toBe(false);
+      // Invalid inputs return false
+      expect(loopExports.isPidAlive(-1)).toBe(false);
+      expect(loopExports.isPidAlive(0)).toBe(false);
+      expect(loopExports.isPidAlive(NaN)).toBe(false);
+    });
+
+    test("allocateWorktree enforces sparse holdout fence, hooks binding, and PID-verified locking", async () => {
+      const repo = await initGitRepo();
+      const holdoutDir = join(repo, ".factory", "holdout");
+      await mkdir(holdoutDir, { recursive: true });
+      await writeFile(join(holdoutDir, "secret.json"), JSON.stringify({ key: "val" }));
+      const githooksDir = join(repo, ".githooks");
+      await mkdir(githooksDir, { recursive: true });
+      await writeFile(join(githooksDir, "pre-commit"), "#!/bin/sh\nexit 0\n");
+      await git(repo, "add", "-A");
+      await git(repo, "commit", "-m", "chore: setup holdout and hooks");
+
+      const baseSha = await git(repo, "rev-parse", "HEAD");
+      const wtDir = join(repo, "worktrees", "alloc-test-501");
+
+      const alloc = loopExports.allocateWorktree({
+        repoRoot: repo,
+        worktreeDir: wtDir,
+        branch: "factory/alloc-501",
+        startSha: baseSha,
+        issueNumber: 501,
+      });
+
+      expect(alloc.worktreeDir).toBe(wtDir);
+      expect(existsSync(join(wtDir, ".factory", "holdout", "secret.json"))).toBe(false);
+      const sparseList = await git(wtDir, "sparse-checkout", "list");
+      expect(sparseList).toContain("!/.factory/holdout/");
+
+      const configuredHooks = await git(wtDir, "config", "core.hooksPath");
+      expect(configuredHooks).toBe(githooksDir);
+
+      alloc.releaseLock();
     });
   });
 });
