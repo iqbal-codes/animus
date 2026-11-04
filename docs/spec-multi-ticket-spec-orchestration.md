@@ -77,7 +77,7 @@ An end-to-end multi-ticket implementation coordination capability for the **Buil
   - Integration tests: `tests/integration/loop-modules.bun.test.ts`
   - Coordination primitives: `apps/backend/src/coordination/`
 - **Known callers (blast radius)**:
-  - Autonomous builder execution in `scripts/local-loop.ts` (Stage 2 Builder)
+  - Autonomous builder execution in `scripts/animus-loop.ts` (and `scripts/local-loop.ts` facade)
   - Interactive operator invocations (`/animus-implement-spec #<id>`)
   - Subticket auto-merge queue (`scripts/loop/merge-queue.ts`)
 - **Test seam**:
