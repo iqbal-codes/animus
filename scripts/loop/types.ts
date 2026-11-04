@@ -144,6 +144,15 @@ export interface AutoMergeEvaluationResult {
   rationale?: string;
 }
 
+export interface AutoMergeExecutionResult {
+  success: boolean;
+  evaluation: AutoMergeEvaluationResult;
+  finalStatus: "merged" | "waiting_approval";
+  reviewOutcome: "merged" | "approved";
+  finalIntegrationPr?: string;
+  error?: string;
+}
+
 export type ModelTier = "small" | "medium" | "large";
 
 export interface BacklogTicket {

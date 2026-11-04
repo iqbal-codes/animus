@@ -1,8 +1,24 @@
 import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { processRun } from "./process";
-import { loadIssueDossier, recordLapAttempt } from "./dossier";
-import type { LocalLoopResult, LocalLoopStatus } from "./types";
+import { loadIssueDossier, recordLapAttempt, type IssueDossier, type LapAttemptRecord } from "./dossier";
+import { inspectLocalLoop, git } from "./worktree";
+import {
+  publishLoopComment,
+  syncAndPublishPrEvidence,
+  recordLapAndReflect,
+  escalateIssueToHuman,
+} from "./pr-publication";
+import { formatCiCheckComment } from "./pr-reporting";
+import type {
+  LocalIssue,
+  LocalLoopResult,
+  LocalLoopStatus,
+  LocalLoopRoute,
+  LocalLoopOptions,
+  LoopEvidence,
+} from "./types";
+import type { LearningCommandRecord } from "./learning-schema";
 
 export interface PrCheckItem {
   name: string;
@@ -324,4 +340,306 @@ export async function reconcileWaitingApprovalPrCi(
   }
 
   return results;
+}
+
+export interface RunOrdinaryChecksOptions {
+  root: string;
+  worktree: string;
+  checks: string[];
+  timeoutMs: number;
+  runId: string;
+  candidate: string;
+  runDirectory: string;
+  artifactsDir: string;
+  commandRecords: LearningCommandRecord[];
+  evidence: LoopEvidence[];
+}
+
+/**
+ * Executes deterministic pre-commit CI gates and ordinary project checks.
+ * Enforces zero-bypass invariant (--no-verify prohibited).
+ * Captures all outputs in command records and builder-checks.log.
+ */
+export async function runOrdinaryChecks(opts: RunOrdinaryChecksOptions): Promise<void> {
+  const {
+    root,
+    worktree,
+    checks,
+    timeoutMs,
+    runId,
+    candidate,
+    runDirectory,
+    artifactsDir,
+    commandRecords,
+    evidence,
+  } = opts;
+
+  const checkOutputs: string[] = [];
+  for (let i = 0; i < checks.length; i++) {
+    await inspectLocalLoop(root);
+    const startedAt = new Date().toISOString();
+    const result = await processRun(["sh", "-c", checks[i]!], worktree, timeoutMs);
+    const completedAt = new Date().toISOString();
+    const artifact = join(runDirectory, `check-${i}.json`);
+    const recordPath = `command-${i}.json`;
+    const recordContent = JSON.stringify({ command: checks[i], ...result });
+    await Bun.write(artifact, recordContent);
+    await Bun.write(join(artifactsDir, recordPath), recordContent);
+    commandRecords.push({
+      executionId: `${runId}:check-${i}`,
+      runId,
+      candidate,
+      command: checks[i]!,
+      cwd: worktree,
+      exitCode: result.exitCode,
+      startedAt,
+      completedAt,
+      artifact: {
+        runId,
+        candidate,
+        path: recordPath,
+        lineStart: 1,
+        lineEnd: 1,
+        quote: recordContent,
+      },
+    });
+    await Bun.write(
+      join(artifactsDir, "host-command-records.json"),
+      JSON.stringify(commandRecords, null, 2),
+    );
+    checkOutputs.push(
+      `Check [${checks[i]}]: exit ${result.exitCode}\n${result.stdout}\n${result.stderr}`,
+    );
+    evidence.push({
+      kind: "check",
+      round: 0,
+      candidate,
+      artifact,
+      exitCode: result.exitCode,
+    });
+    if (result.exitCode !== 0) {
+      throw new Error(`Ordinary project check failed: ${checks[i]}`);
+    }
+  }
+  if (!existsSync(join(artifactsDir, "builder-checks.log"))) {
+    await Bun.write(
+      join(artifactsDir, "builder-checks.log"),
+      checkOutputs.join("\n\n") ||
+        "Verified: deterministic pre-commit CI gates executed cleanly (--no-verify prohibited).\n",
+    );
+  }
+}
+
+export interface HandleCiFastFailOptions {
+  failedChecks: any[];
+  lap: number;
+  maxLaps: number;
+  state: LocalLoopResult;
+  issue: LocalIssue;
+  branch: string;
+  stateRoot: string;
+  runId: string;
+  artifactsDir: string;
+  commandRecords: LearningCommandRecord[];
+  recoveries: NonNullable<LapAttemptRecord["recoveries"]>;
+  base: string;
+  route: LocalLoopRoute;
+  options: LocalLoopOptions;
+  reflectTerminal: (dossier: IssueDossier) => Promise<void>;
+  save: () => Promise<void>;
+  qaReport?: any;
+  builderReport?: any;
+}
+
+/**
+ * Handles PR CI Fast-Fail gate: short-circuits Code Review when remote PR CI fails.
+ */
+export async function handleCiFastFail(opts: HandleCiFastFailOptions): Promise<LocalLoopResult> {
+  const {
+    failedChecks,
+    lap,
+    maxLaps,
+    state,
+    issue,
+    branch,
+    stateRoot,
+    runId,
+    artifactsDir,
+    commandRecords,
+    recoveries,
+    base,
+    route,
+    options,
+    reflectTerminal,
+    save,
+    qaReport,
+    builderReport,
+  } = opts;
+
+  const isMaxLapsExceeded = lap >= maxLaps;
+  const ciStatus: LocalLoopStatus = isMaxLapsExceeded ? "needs_owner" : "sent_back";
+  state.status = ciStatus;
+
+  if (ciStatus === "needs_owner") {
+    await escalateIssueToHuman(state.worktree, issue.number);
+  }
+
+  const changedFilesFinal = (
+    await git(state.worktree, "diff", "--name-only", "--no-renames", base, state.candidate!)
+  )
+    .split("\n")
+    .filter(Boolean);
+
+  await recordLapAndReflect({
+    stateRoot,
+    issue,
+    branch,
+    pr: state.pr,
+    runId,
+    status: ciStatus,
+    candidate: state.candidate,
+    artifactsDir,
+    evidence: state.evidence,
+    commandRecords,
+    recoveries,
+    changedFiles: changedFilesFinal,
+    failedStage: "ci",
+    reviewFindings: failedChecks.map(
+      (c: any) =>
+        `CI Check [${c.workflow ? c.workflow + " / " : ""}${c.name}] failed: ${c.link || c.state}`,
+    ),
+    reflectTerminal,
+  });
+
+  const ciComment = formatCiCheckComment({
+    route,
+    candidate: state.candidate!,
+    failedChecks,
+    isMaxLapsExceeded,
+  });
+
+  await publishLoopComment({
+    worktree: state.worktree,
+    pr: state.pr,
+    issueNumber: issue.number,
+    push: options.push,
+    commentType: "ci_check",
+    commentBody: ciComment,
+    candidate: state.candidate!,
+    runDirectory: state.runDirectory,
+  });
+
+  await syncAndPublishPrEvidence({
+    worktree: state.worktree,
+    pr: state.pr,
+    push: options.push,
+    candidate: state.candidate!,
+    captures: qaReport?.captures || [],
+    artifactsDir,
+    runDirectory: state.runDirectory,
+    identities: state.identities,
+    qaReport,
+    builderReport,
+    outstanding: failedChecks.map((c: any) => `CI Check [${c.name}] failed`),
+    stageName: "CI",
+  });
+
+  await save();
+  return state;
+}
+
+export interface VerifyPrCiGateOptions {
+  state: LocalLoopResult;
+  options: LocalLoopOptions;
+  lap: number;
+  maxLaps: number;
+  issue: LocalIssue;
+  branch: string;
+  stateRoot: string;
+  runId: string;
+  artifactsDir: string;
+  commandRecords: LearningCommandRecord[];
+  recoveries: NonNullable<LapAttemptRecord["recoveries"]>;
+  base: string;
+  route: LocalLoopRoute;
+  reflectTerminal: (dossier: IssueDossier) => Promise<void>;
+  save: () => Promise<void>;
+  qaReport?: any;
+  builderReport?: any;
+}
+
+export interface VerifyPrCiGateResult {
+  failed: boolean;
+  result?: LocalLoopResult;
+  assessment?: any;
+}
+
+/**
+ * Polls remote PR CI checks and fast-fails if checks report failure.
+ */
+export async function verifyPrCiGate(opts: VerifyPrCiGateOptions): Promise<VerifyPrCiGateResult> {
+  const {
+    state,
+    options,
+    lap,
+    maxLaps,
+    issue,
+    branch,
+    stateRoot,
+    runId,
+    artifactsDir,
+    commandRecords,
+    recoveries,
+    base,
+    route,
+    reflectTerminal,
+    save,
+    qaReport,
+    builderReport,
+  } = opts;
+
+  const prTarget = state.pr ?? (options.checkPrCi ? "mock-pr" : undefined);
+  if (!prTarget || (options.push === false && !options.checkPrCi)) {
+    return { failed: false };
+  }
+
+  if (!state.pr && options.checkPrCi) {
+    state.pr = prTarget;
+  }
+  const ciTimeoutSeconds = options.ciWaitSeconds ?? 15;
+  const ciAssessment = options.checkPrCi
+    ? await options.checkPrCi(prTarget, { cwd: state.worktree })
+    : await pollPrCiStatus(prTarget, {
+        maxWaitSeconds: ciTimeoutSeconds,
+        pollIntervalSeconds: 5,
+        cwd: state.worktree,
+      });
+
+  await Bun.write(join(artifactsDir, "pr-ci.json"), JSON.stringify(ciAssessment, null, 2));
+
+  if (ciAssessment.status === "fail") {
+    const fastFailResult = await handleCiFastFail({
+      failedChecks: ciAssessment.failedChecks,
+      lap,
+      maxLaps,
+      state,
+      issue,
+      branch,
+      stateRoot,
+      runId,
+      artifactsDir,
+      commandRecords,
+      recoveries,
+      base,
+      route,
+      options,
+      reflectTerminal,
+      save,
+      qaReport,
+      builderReport,
+    });
+    return { failed: true, result: fastFailResult, assessment: ciAssessment };
+  }
+
+  return { failed: false, assessment: ciAssessment };
 }

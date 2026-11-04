@@ -3263,6 +3263,19 @@ Depends on: None
     });
 
     describe("AC2: CI Workflow (.github/workflows/ci.yml) Contract", () => {
+      test("runs CI when a draft becomes ready while preserving default PR events", () => {
+        const doc = parseYaml(
+          readFileSync(join(process.cwd(), ".github/workflows/ci.yml"), "utf-8"),
+        );
+        expect(doc.on.pull_request.types).toEqual([
+          "opened",
+          "synchronize",
+          "reopened",
+          "ready_for_review",
+        ]);
+        expect(doc.on.pull_request.branches).toEqual(["main", "develop", "development"]);
+      });
+
       test("defines explicit timeout-minutes on every CI job", () => {
         const ciPath = join(process.cwd(), ".github/workflows/ci.yml");
         const content = readFileSync(ciPath, "utf-8");

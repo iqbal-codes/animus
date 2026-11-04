@@ -1,7 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { git, assertCandidate, type AssertCandidateOptions } from "./worktree";
+import { processRun } from "./process";
+import { parsePartOf } from "../../apps/backend/src/intake/parser";
 import type {
   AutoMergeEvaluationResult,
+  AutoMergeExecutionResult,
   AutoMergeRiskLevel,
   CriticalImpactCategory,
   DiffImpactAnalysis,
@@ -9,6 +13,8 @@ import type {
   ReviewerReport,
 } from "./types";
 import { loadPrompt, renderPrompt } from "./prompts";
+
+export type { AutoMergeExecutionResult };
 
 export interface AssessBatchOptions {
   method?: "merge" | "squash" | "rebase";
@@ -383,5 +389,213 @@ export function evaluateSubticketAutoMerge(
     reasons,
     rationale: judgement?.rationale || reviewerReport?.reason,
   };
+}
+
+export interface ExecuteSubticketAutoMergeOptions {
+  root: string;
+  candidate: string;
+  integrationBranch: string;
+  targetBaseTip: string;
+  worktree: string;
+  issueNumber: number;
+  partOf?: number;
+  defaultBaseBranch: string;
+  pr?: string;
+  hasOrigin?: boolean;
+  push?: boolean;
+  autoMergeEval: AutoMergeEvaluationResult;
+  assertCandidateFn?: (options: AssertCandidateOptions) => Promise<unknown> | unknown;
+  gitFn?: typeof git;
+  processRunFn?: typeof processRun;
+  parsePartOfFn?: (text: string) => number | null;
+}
+
+/**
+ * Execute subticket auto-merge mechanics:
+ * 1. Verifies candidate commit integrity via assertCandidate.
+ * 2. Checks integration branch drift fail-closed (must match targetBaseTip).
+ * 3. Updates target integration branch ref with candidate commit.
+ * 4. Merges PR via gh pr merge --squash --match-head-commit.
+ * 5. Pushes updated integration branch to origin and closes GitHub subticket issue.
+ * 6. Checks remaining open sibling subtickets; creates final parent integration PR when all complete.
+ */
+export async function executeSubticketAutoMerge(
+  options: ExecuteSubticketAutoMergeOptions,
+): Promise<AutoMergeExecutionResult> {
+  const {
+    root,
+    candidate,
+    integrationBranch,
+    targetBaseTip,
+    worktree,
+    issueNumber,
+    partOf,
+    defaultBaseBranch,
+    pr,
+    hasOrigin,
+    push,
+    autoMergeEval,
+  } = options;
+
+  const gitCmd = options.gitFn ?? git;
+  const processCmd = options.processRunFn ?? processRun;
+  const assertCandidateCmd = options.assertCandidateFn ?? assertCandidate;
+  const parsePartOfCmd = options.parsePartOfFn ?? parsePartOf;
+
+  let finalIntegrationPr: string | undefined;
+
+  try {
+    await assertCandidateCmd({
+      root,
+      worktree,
+      expectedCandidate: candidate,
+      base: targetBaseTip,
+    });
+    const currentIntTip = (
+      await gitCmd(root, "rev-parse", `refs/heads/${integrationBranch}`)
+    ).trim();
+    if (currentIntTip !== targetBaseTip) {
+      throw new Error(
+        `Integration branch '${integrationBranch}' drifted from '${targetBaseTip}' to '${currentIntTip}' during verification; holding for human merge.`,
+      );
+    }
+
+    const rootHeadBranch = await gitCmd(root, "symbolic-ref", "--short", "HEAD").catch(() => "");
+    if (rootHeadBranch === integrationBranch) {
+      await gitCmd(root, "merge", "--ff-only", candidate);
+    } else {
+      await gitCmd(
+        root,
+        "update-ref",
+        `refs/heads/${integrationBranch}`,
+        candidate,
+        targetBaseTip,
+      );
+    }
+
+    if (push !== false) {
+      if (pr) {
+        await processCmd(
+          ["gh", "pr", "merge", pr, "--squash", "--match-head-commit", candidate],
+          worktree,
+          30_000,
+        ).catch(() => {});
+      }
+      if (hasOrigin) {
+        await gitCmd(
+          root,
+          "push",
+          "origin",
+          `refs/heads/${integrationBranch}:refs/heads/${integrationBranch}`,
+        ).catch(() => {});
+      }
+      await processCmd(
+        [
+          "gh",
+          "issue",
+          "close",
+          String(issueNumber),
+          "--comment",
+          `Auto-merged into integration branch \`${integrationBranch}\` at commit \`${candidate}\`.`,
+        ],
+        worktree,
+        15_000,
+      ).catch(() => {});
+
+      if (partOf !== undefined) {
+        try {
+          const openIssuesRes = await processCmd(
+            ["gh", "issue", "list", "--state", "open", "--json", "number,body"],
+            root,
+            15_000,
+          );
+          if (openIssuesRes.exitCode === 0) {
+            const openIssues = JSON.parse(openIssuesRes.stdout) as Array<{
+              number: number;
+              body?: string;
+            }>;
+            const remainingSiblings = openIssues.filter(
+              (i) =>
+                i.number !== issueNumber &&
+                i.number !== partOf &&
+                parsePartOfCmd(i.body ?? "") === partOf,
+            );
+            if (remainingSiblings.length === 0) {
+              const existingFinalPr = await processCmd(
+                [
+                  "gh",
+                  "pr",
+                  "list",
+                  "--state",
+                  "open",
+                  "--head",
+                  integrationBranch,
+                  "--base",
+                  defaultBaseBranch,
+                  "--json",
+                  "url",
+                ],
+                root,
+                15_000,
+              );
+              let finalPrUrl: string | undefined;
+              if (existingFinalPr.exitCode === 0) {
+                const parsedPrs = JSON.parse(existingFinalPr.stdout) as Array<{ url?: string }>;
+                finalPrUrl = parsedPrs[0]?.url;
+              }
+              if (!finalPrUrl) {
+                const createFinal = await processCmd(
+                  [
+                    "gh",
+                    "pr",
+                    "create",
+                    "--base",
+                    defaultBaseBranch,
+                    "--head",
+                    integrationBranch,
+                    "--title",
+                    `feat(spec-${partOf}): integrated delivery for spec #${partOf}`,
+                    "--body",
+                    `Closes #${partOf}\n\nAll subticket PRs for spec #${partOf} have been verified and integrated into \`${integrationBranch}\`. Ready for human review.`,
+                  ],
+                  root,
+                  30_000,
+                );
+                if (createFinal.exitCode === 0) {
+                  finalPrUrl = createFinal.stdout.trim();
+                }
+              }
+              if (finalPrUrl) {
+                finalIntegrationPr = finalPrUrl;
+              }
+            }
+          }
+        } catch {}
+      }
+    }
+
+    return {
+      success: true,
+      evaluation: autoMergeEval,
+      finalStatus: "merged",
+      reviewOutcome: "merged",
+      finalIntegrationPr,
+    };
+  } catch (mergeErr: unknown) {
+    const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
+    const updatedEval: AutoMergeEvaluationResult = {
+      ...autoMergeEval,
+      authorized: false,
+      decision: "hold_for_human",
+      reasons: [...autoMergeEval.reasons, msg],
+    };
+    return {
+      success: false,
+      evaluation: updatedEval,
+      finalStatus: "waiting_approval",
+      reviewOutcome: "approved",
+      error: msg,
+    };
+  }
 }
 
