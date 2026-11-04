@@ -33,8 +33,8 @@ Use this playbook when:
    - Add native blocker links where supported. Read back each created issue, its labels, parent relationship, dependency body line, and native edges. If the user asked only for local drafts, save one file per ticket under `.scratch/<feature>/issues/` and a graph/coverage index marked draft-only.
    *Completion Criterion*: All approved tickets and dependency edges are published and read back (or written to `.scratch/` when draft-only) with verified labels and issue numbers.
 
-4. **Hand off to `/animus-implement`.**
-   Return issue URLs, source coverage, blockers, and separate contract/admission status. Name the current frontier and any unknown prerequisite state. Suggest `/animus-implement <spec-reference>`; publishing tickets does not launch a lap, close the parent, or authorize merge/deploy.
+4. **Hand off to `/animus-implement` or `/animus-implement-spec`.**
+   Return issue URLs, source coverage, blockers, and separate contract/admission status. Name the current frontier and any unknown prerequisite state. Suggest `/animus-implement-spec <spec-reference>` for multi-ticket DAG coordination on an integration branch, or `/animus-implement <ticket-reference>` for an isolated single-ticket frontier item; publishing tickets does not launch a lap, close the parent, or authorize merge/deploy.
    *Completion Criterion*: Handoff summary lists all created ticket URLs, coverage mapping, and current unblocked frontier without auto-launching execution.
 
 ## Canonical ticket body template

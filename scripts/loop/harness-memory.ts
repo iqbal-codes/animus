@@ -79,6 +79,7 @@ export function resolveAllowedSkills(root: string, role: LoopRole, acceptedRef?:
         "tdd",
         "diagnosing-bugs",
         "animus-implement",
+        "animus-implement-spec",
         "unstick",
         "blueprint",
         "ui-quality",

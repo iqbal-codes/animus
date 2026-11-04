@@ -12,7 +12,7 @@
 - **Repository Skills**: Consult playbooks in `.agents/skills/` when triggered:
   - Issue triage: `/animus-triage`
   - Spec drafting, product shaping & architecture: `/animus-brainstorm`, `/animus-grill`, `/animus-spec`, `/animus-architecture`, `/animus-tickets`
-  - Implementation & verification: `/animus-implement`, `.agents/skills/tdd/SKILL.md`, `.agents/skills/blueprint/SKILL.md`, `.agents/skills/security-hardening/SKILL.md`
+  - Implementation & verification: `/animus-implement`, `/animus-implement-spec`, `.agents/skills/tdd/SKILL.md`, `.agents/skills/blueprint/SKILL.md`, `.agents/skills/security-hardening/SKILL.md`
   - Failure recovery & root-causing: `/diagnosing-bugs`, `.agents/skills/unstick/SKILL.md`
   - Frontend & UI verification: `.agents/skills/ui-quality/SKILL.md`
   - Code review & standards: `/animus-review`

@@ -12,7 +12,7 @@
 - **Repository Skills**: Canonical playbooks live in `.agents/skills/`. Consult when triggered:
   - Issue triage: `/animus-triage`
   - Spec drafting, product shaping & architecture: `/animus-brainstorm`, `/animus-grill`, `/animus-spec`, `/animus-architecture`, `/animus-tickets`
-  - Implementation, PR authoring & verification: `/animus-implement`, `.agents/skills/pr`, `.agents/skills/tdd`, `.agents/skills/blueprint`, `.agents/skills/security-hardening`
+  - Implementation, PR authoring & verification: `/animus-implement`, `/animus-implement-spec`, `.agents/skills/pr`, `.agents/skills/tdd`, `.agents/skills/blueprint`, `.agents/skills/security-hardening`
   - Failure recovery & root-causing: `/diagnosing-bugs`, `.agents/skills/unstick`
   - Frontend & UI verification: `.agents/skills/ui-quality`
   - Code review & standards: `/animus-review` (enforces `CODING_STANDARDS.md`)
