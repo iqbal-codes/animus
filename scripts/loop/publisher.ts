@@ -112,10 +112,13 @@ export class LoopPublisher {
     const existing = records.find(
       (r) =>
         r.action === "pr_create" &&
-        (r.target === branch || r.candidate === candidate) &&
-        r.success === true,
+        r.success === true &&
+        (r.targetKind === "pr" || r.targetKind === undefined) &&
+        (r.branch === branch ||
+          (r.issueNumber !== undefined && r.issueNumber === this.issueNumber) ||
+          r.target === branch),
     );
-    if (existing && existing.targetKind === "pr" && existing.target.startsWith("http")) {
+    if (existing && existing.target.startsWith("http")) {
       return { prUrl: existing.target, created: false, deduplicated: true };
     }
 
@@ -139,6 +142,8 @@ export class LoopPublisher {
               action: "pr_create",
               targetKind: "pr",
               target: parsed.url,
+              branch,
+              issueNumber: this.issueNumber,
               candidate,
               success: true,
             });
@@ -173,6 +178,8 @@ export class LoopPublisher {
         action: "pr_create",
         targetKind: "pr",
         target: prUrl,
+        branch,
+        issueNumber: this.issueNumber,
         candidate,
         success: true,
       });
@@ -431,14 +438,21 @@ export class LoopPublisher {
     if (this.push === false) return;
 
     try {
-      try {
-        await git(this.worktree, "push", "-u", "origin", branch);
-      } catch (pushErr: unknown) {
-        // If git push fails (e.g. offline test fixture without remote origin), log warning but proceed with forge runner
-        const msg = pushErr instanceof Error ? pushErr.message : String(pushErr);
-        console.error("Warning: git push failed:", msg);
-      }
+      await git(this.worktree, "push", "-u", "origin", branch);
+    } catch (pushErr: unknown) {
+      const msg = pushErr instanceof Error ? pushErr.message : String(pushErr);
+      recordPublicationError(this.artifactsDir, {
+        timestamp: new Date().toISOString(),
+        action: "git_push",
+        target: branch,
+        candidate: state.candidate!,
+        error: `git push failed: ${msg}`,
+      });
+      console.error("Warning: git push failed:", msg);
+      return;
+    }
 
+    try {
       if (!state.pr) {
         const body = renderCanonicalPrBody({
           issue,

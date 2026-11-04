@@ -31,11 +31,13 @@ export const defaultGhRunner: GhRunner = async (args, cwd = process.cwd(), timeo
 
 export interface PublicationRecord {
   timestamp: string;
-  action: "pr_evidence_update" | "comment" | "pr_create" | "label_escalation";
-  targetKind: "pr" | "issue";
+  action: "pr_evidence_update" | "comment" | "pr_create" | "label_escalation" | "git_push";
+  targetKind: "pr" | "issue" | "branch";
   target: string;
   commentType?: "builder" | "review" | "ci_check" | "escalation" | "qa_check";
   candidate: string;
+  branch?: string;
+  issueNumber?: number;
   commentUrl?: string;
   success: boolean;
   contentHash?: string;
@@ -637,171 +639,6 @@ export async function publishPrReview(params: {
   };
 }
 
-export async function escalateIssueToHuman(
-  cwd: string,
-  issueNumber: number,
-  options?: { runner?: GhRunner; candidate?: string; artifactsDir?: string; push?: boolean },
-): Promise<void> {
-  const runner = options?.runner || defaultGhRunner;
-  const artifactsDir = options?.artifactsDir || join(cwd, "artifacts");
-  const candidate = options?.candidate || "HEAD";
-  const targetStr = String(issueNumber);
-
-  // Check deduplication
-  const existingRecords = loadPublicationRecords(artifactsDir);
-  const duplicate = existingRecords.find(
-    (r) =>
-      r.action === "label_escalation" &&
-      r.targetKind === "issue" &&
-      r.target === targetStr &&
-      r.commentType === "escalation" &&
-      r.candidate === candidate &&
-      r.success === true,
-  );
-  if (duplicate) return;
-
-  if (options?.push === false) return;
-
-  try {
-    const res = await runner(
-      [
-        "gh",
-        "issue",
-        "edit",
-        targetStr,
-        "--add-label",
-        "ready-for-human",
-        "--remove-label",
-        "ready-for-agent",
-      ],
-      cwd,
-      15_000,
-    );
-
-    if (res.exitCode === 0) {
-      appendPublicationRecord(artifactsDir, {
-        timestamp: new Date().toISOString(),
-        action: "label_escalation",
-        targetKind: "issue",
-        target: targetStr,
-        commentType: "escalation",
-        candidate,
-        success: true,
-      });
-    } else {
-      recordPublicationError(artifactsDir, {
-        timestamp: new Date().toISOString(),
-        action: "label_escalation",
-        target: targetStr,
-        candidate,
-        error: `gh issue edit failed on ${targetStr} (exit code ${res.exitCode}): ${res.stderr}`,
-        stderr: res.stderr,
-      });
-    }
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error("Warning: Failed to update GitHub issue labels on escalation:", msg);
-  }
-}
-
-export interface PublishLoopCommentOptions {
-  worktree: string;
-  pr?: string;
-  issueNumber: number;
-  push?: boolean;
-  commentType: "builder" | "qa_check" | "ci_check" | "review" | "escalation";
-  commentBody: string;
-  candidate: string;
-  runDirectory: string;
-  runner?: GhRunner;
-}
-
-export async function publishLoopComment(opts: PublishLoopCommentOptions): Promise<void> {
-  if (opts.pr) {
-    try {
-      await publishComment({
-        repoRoot: opts.worktree,
-        target: { kind: "pr", idOrUrl: opts.pr },
-        commentType: opts.commentType,
-        commentBody: opts.commentBody,
-        candidate: opts.candidate,
-        runDirectory: opts.runDirectory,
-        runner: opts.runner,
-      });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`Warning: Failed to publish ${opts.commentType} comment on PR:`, msg);
-    }
-  } else if (opts.push !== false) {
-    try {
-      await publishComment({
-        repoRoot: opts.worktree,
-        target: { kind: "issue", idOrUrl: opts.issueNumber },
-        commentType: opts.commentType,
-        commentBody: opts.commentBody,
-        candidate: opts.candidate,
-        runDirectory: opts.runDirectory,
-        runner: opts.runner,
-      });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`Warning: Failed to publish ${opts.commentType} comment on issue:`, msg);
-    }
-  }
-}
-
-export interface SyncAndPublishPrEvidenceOptions {
-  worktree: string;
-  pr?: string;
-  push?: boolean;
-  candidate: string;
-  captures?: any[];
-  artifactsDir: string;
-  runDirectory: string;
-  identities?: any;
-  qaReport?: any;
-  builderReport?: any;
-  outstanding?: string[];
-  judgeAlterations?: string[];
-  autoMerge?: any;
-  stageName: string;
-  runner?: GhRunner;
-}
-
-export async function syncAndPublishPrEvidence(
-  opts: SyncAndPublishPrEvidenceOptions,
-): Promise<void> {
-  if (opts.pr && opts.push !== false) {
-    try {
-      const syncedCaptures = syncExistingEvidenceBindings(
-        opts.captures || [],
-        opts.artifactsDir,
-        opts.candidate,
-      );
-      const newEvContent = renderEvidenceContent({
-        identities: opts.identities,
-        qaReport: opts.qaReport,
-        builderReport: opts.builderReport,
-        captures: syncedCaptures,
-        outstanding: opts.outstanding,
-        judgeAlterations: opts.judgeAlterations,
-        autoMerge: opts.autoMerge,
-      });
-      await publishPrEvidenceUpdate({
-        repoRoot: opts.worktree,
-        pr: opts.pr,
-        candidate: opts.candidate,
-        newEvidenceContent: newEvContent,
-        runDirectory: opts.runDirectory,
-        runner: opts.runner,
-      });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`Warning: ${opts.stageName} stage PR evidence synchronization error:`, msg);
-    }
-  }
-}
-
 export interface RecordLapAndReflectOptions {
   stateRoot: string;
   issue: LocalIssue;
@@ -854,40 +691,4 @@ export async function recordLapAndReflect(
   );
   await opts.reflectTerminal(dossier);
   return dossier;
-}
-
-export interface PublishBuilderDeliveryOptions {
-  worktree: string;
-  branch: string;
-  issue: LocalIssue;
-  state: LocalLoopResult;
-  builderReport: any;
-  push: boolean;
-  route: LocalLoopRoute;
-  lap: number;
-  artifactsDir: string;
-  handoffDir: string;
-  runDirectory: string;
-  integrationBranch?: string;
-  runner?: GhRunner;
-  publisher?: import("./publisher").LoopPublisher;
-}
-
-/**
- * Writes builder handoff reports, pushes branch to origin, creates PR or posts
- * builder continuation comment, and synchronizes PR evidence.
- */
-export async function publishBuilderDelivery(opts: PublishBuilderDeliveryOptions): Promise<void> {
-  const { LoopPublisher } = await import("./publisher");
-  const publisher =
-    opts.publisher ??
-    new LoopPublisher({
-      worktree: opts.worktree,
-      runDirectory: opts.runDirectory,
-      artifactsDir: opts.artifactsDir,
-      issueNumber: opts.issue.number,
-      push: opts.push,
-      runner: opts.runner,
-    });
-  return publisher.publishBuilderDelivery(opts);
 }

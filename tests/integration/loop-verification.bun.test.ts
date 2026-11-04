@@ -10,12 +10,8 @@ import {
   finalizeReviewAndPublish,
   handleLoopCatch,
 } from "../../scripts/loop/review-gate";
-import {
-  publishLoopComment,
-  syncAndPublishPrEvidence,
-  escalateIssueToHuman,
-  recordLapAndReflect,
-} from "../../scripts/loop/pr-publication";
+import { recordLapAndReflect } from "../../scripts/loop/pr-publication";
+import { LoopPublisher } from "../../scripts/loop/publisher";
 import * as loopExports from "../../scripts/loop/index";
 import { git } from "../../scripts/loop/worktree";
 import type { LocalIssue, LocalLoopResult } from "../../scripts/loop/types";
@@ -363,35 +359,42 @@ describe("scripts/loop/verification", () => {
       expect(reflected).toBe(true);
     });
 
-    test("publishLoopComment, syncAndPublishPrEvidence, and escalateIssueToHuman isolate errors", async () => {
+    test("LoopPublisher isolates publication errors when remote is unavailable", async () => {
       const root = await createRepoFixture();
+      const publisher = new LoopPublisher({
+        worktree: root,
+        runDirectory: root,
+        artifactsDir: root,
+        issueNumber: 80,
+        push: false,
+      });
+
       // Test when remote PR is unavailable: should not throw, should handle error gracefully
       expect(
-        publishLoopComment({
-          worktree: root,
+        publisher.publishLoopComment({
           pr: "non-existent-pr",
-          issueNumber: 80,
-          push: false,
           commentType: "builder",
           commentBody: "test comment",
           candidate: "abc",
-          runDirectory: root,
         }),
       ).resolves.toBeUndefined();
 
       expect(
-        syncAndPublishPrEvidence({
-          worktree: root,
+        publisher.syncAndPublishPrEvidence({
           pr: "non-existent-pr",
-          push: false,
           candidate: "abc",
-          artifactsDir: root,
-          runDirectory: root,
           stageName: "Test",
         }),
       ).resolves.toBeUndefined();
 
-      expect(escalateIssueToHuman(root, 999999)).resolves.toBeUndefined();
+      const p2 = new LoopPublisher({
+        worktree: root,
+        runDirectory: root,
+        artifactsDir: root,
+        issueNumber: 999999,
+        push: false,
+      });
+      expect(p2.escalateToHuman("abc")).resolves.toBeDefined();
     });
   });
 
@@ -404,9 +407,7 @@ describe("scripts/loop/verification", () => {
       expect((loopExports as any).evaluateReviewReadiness).toBeFunction();
       expect((loopExports as any).finalizeReviewAndPublish).toBeFunction();
       expect((loopExports as any).handleLoopCatch).toBeFunction();
-      expect((loopExports as any).escalateIssueToHuman).toBeFunction();
-      expect((loopExports as any).publishLoopComment).toBeFunction();
-      expect((loopExports as any).syncAndPublishPrEvidence).toBeFunction();
+      expect((loopExports as any).LoopPublisher).toBeFunction();
       expect((loopExports as any).recordLapAndReflect).toBeFunction();
     });
 

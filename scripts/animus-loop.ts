@@ -58,13 +58,7 @@ import {
   finalizeReviewAndPublish,
   handleLoopCatch,
 } from "./loop/review-gate";
-import {
-  publishBuilderDelivery,
-  escalateIssueToHuman,
-  publishLoopComment,
-  syncAndPublishPrEvidence,
-  recordLapAndReflect,
-} from "./loop/pr-publication";
+import { recordLapAndReflect } from "./loop/pr-publication";
 import { LoopPublisher } from "./loop/publisher";
 
 // Re-export all domain types for full backward compatibility across all consumers
@@ -79,10 +73,7 @@ export type * from "./loop/qa-runner";
 export type * from "./loop/review-gate";
 export type * from "./loop/ci";
 export type {
-  PublishLoopCommentOptions,
-  SyncAndPublishPrEvidenceOptions,
   RecordLapAndReflectOptions,
-  PublishBuilderDeliveryOptions,
   PublicationRecord,
   PublicationErrorRecord,
 } from "./loop/pr-publication";
@@ -125,10 +116,6 @@ export {
   evaluateReviewReadiness,
   finalizeReviewAndPublish,
   handleLoopCatch,
-  publishBuilderDelivery,
-  escalateIssueToHuman,
-  publishLoopComment,
-  syncAndPublishPrEvidence,
   recordLapAndReflect,
 };
 
@@ -494,6 +481,7 @@ export async function runAnimusLoop(
       reflectTerminal,
       state,
       publisher,
+      ghRunner: options?.ghRunner,
     });
 
     await save();
@@ -515,6 +503,8 @@ export async function runAnimusLoop(
       reflectTerminal,
       save,
       publisher,
+      push: options.push !== false,
+      ghRunner: options?.ghRunner,
     });
   } finally {
     try {

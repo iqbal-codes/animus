@@ -3,12 +3,7 @@ import { join } from "node:path";
 import { git } from "./worktree";
 import { validateEvidenceCitations } from "./artifacts";
 import { formatQaFailureComment } from "./pr-reporting";
-import {
-  publishLoopComment,
-  syncAndPublishPrEvidence,
-  recordLapAndReflect,
-  escalateIssueToHuman,
-} from "./pr-publication";
+import { recordLapAndReflect } from "./pr-publication";
 import { LoopPublisher } from "./publisher";
 import type {
   LocalIssue,
@@ -17,6 +12,7 @@ import type {
   LocalLoopStatus,
   LocalLoopOptions,
   LoopEvidence,
+  GhRunner,
 } from "./types";
 import type { IssueDossier, LapAttemptRecord } from "./dossier";
 import type { LearningCommandRecord } from "./learning-schema";
@@ -33,6 +29,8 @@ export interface ExecuteBlackBoxQaOptions {
   push?: boolean;
   builderReport?: any;
   publisher?: LoopPublisher;
+  issueNumber?: number;
+  ghRunner?: GhRunner;
   invokeQa: (
     qaCwd: string,
     extraVars: Record<string, string>,
@@ -152,31 +150,26 @@ export async function executeBlackBoxQa(opts: ExecuteBlackBoxQaOptions): Promise
     await Bun.write(join(handoffDir, "evidence-problems.txt"), evidenceProblems.join("\n"));
     evidenceOk = evidenceOkBool ? "true" : "false";
 
-    if (opts.publisher) {
-      await opts.publisher.syncAndPublishPrEvidence({
-        pr,
-        candidate,
-        captures: qaReport?.captures || [],
-        identities,
-        qaReport,
-        builderReport,
-        stageName: "QA",
-      });
-    } else {
-      await syncAndPublishPrEvidence({
+    const pub =
+      opts.publisher ??
+      new LoopPublisher({
         worktree,
-        pr,
-        push,
-        candidate,
-        captures: qaReport?.captures || [],
-        artifactsDir,
         runDirectory,
-        identities,
-        qaReport,
-        builderReport,
-        stageName: "QA",
+        artifactsDir: artifactsDir || join(runDirectory, "artifacts"),
+        issueNumber: opts.issueNumber ?? 0,
+        push,
+        runner: opts.ghRunner,
       });
-    }
+
+    await pub.syncAndPublishPrEvidence({
+      pr,
+      candidate,
+      captures: qaReport?.captures || [],
+      identities,
+      qaReport,
+      builderReport,
+      stageName: "QA",
+    });
   }
 
   return { qaReport, evidenceOk, qaWorktreeDir, testedIntegrationHead };

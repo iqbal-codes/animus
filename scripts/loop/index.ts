@@ -34,17 +34,10 @@ export {
   extractValidDiffLines,
   publishPrReview,
   syncExistingEvidenceBindings,
-  escalateIssueToHuman,
-  publishLoopComment,
-  syncAndPublishPrEvidence,
   recordLapAndReflect,
-  publishBuilderDelivery,
   type PublicationRecord,
   type PublicationErrorRecord,
-  type PublishLoopCommentOptions,
-  type SyncAndPublishPrEvidenceOptions,
   type RecordLapAndReflectOptions,
-  type PublishBuilderDeliveryOptions,
 } from "./pr-publication";
 export * from "./qa-runner";
 export * from "./review-gate";

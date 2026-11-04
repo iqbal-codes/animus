@@ -3,12 +3,7 @@ import { join, resolve } from "node:path";
 import { processRun } from "./process";
 import { loadIssueDossier, recordLapAttempt, type IssueDossier, type LapAttemptRecord } from "./dossier";
 import { inspectLocalLoop, git } from "./worktree";
-import {
-  publishLoopComment,
-  syncAndPublishPrEvidence,
-  recordLapAndReflect,
-  escalateIssueToHuman,
-} from "./pr-publication";
+import { recordLapAndReflect } from "./pr-publication";
 import { LoopPublisher } from "./publisher";
 import { formatCiCheckComment } from "./pr-reporting";
 import type {

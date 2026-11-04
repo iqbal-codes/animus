@@ -5,13 +5,7 @@ import { evaluateHostReadiness } from "./artifacts";
 import { evaluateSubticketAutoMerge } from "./merge-queue";
 import { formatReviewComment } from "./pr-reporting";
 import { formatEscalationHandoff } from "./prompt-context";
-import {
-  publishPrReview,
-  publishComment,
-  syncAndPublishPrEvidence,
-  recordLapAndReflect,
-  escalateIssueToHuman,
-} from "./pr-publication";
+import { recordLapAndReflect } from "./pr-publication";
 import { LoopPublisher } from "./publisher";
 import { RoleInterrupted } from "./deadlines";
 import type {
@@ -21,6 +15,7 @@ import type {
   LocalLoopStatus,
   LoopEvidence,
   AutoMergeEvaluationResult,
+  GhRunner,
 } from "./types";
 import type { IssueDossier, LapAttemptRecord } from "./dossier";
 import type { LearningCommandRecord } from "./learning-schema";
@@ -184,6 +179,7 @@ export interface FinalizeReviewAndPublishOptions {
   reflectTerminal: (dossier: IssueDossier) => Promise<void>;
   state: LocalLoopResult;
   publisher?: LoopPublisher;
+  ghRunner?: GhRunner;
 }
 
 /**
@@ -228,6 +224,7 @@ export async function finalizeReviewAndPublish(
       artifactsDir,
       issueNumber: issue.number,
       push,
+      runner: opts.ghRunner,
     });
 
   if (reviewEval.finalStatus === "needs_owner") {
@@ -355,6 +352,8 @@ export interface HandleLoopCatchOptions {
   reflectTerminal: (dossier: IssueDossier) => Promise<void>;
   save: () => Promise<void>;
   publisher?: LoopPublisher;
+  push?: boolean;
+  ghRunner?: GhRunner;
 }
 
 /**
@@ -397,7 +396,8 @@ export async function handleLoopCatch(opts: HandleLoopCatchOptions): Promise<Loc
       runDirectory: join(stateRoot, "runs", runId),
       artifactsDir,
       issueNumber: issue.number,
-      push: true,
+      push: opts.push !== false,
+      runner: opts.ghRunner,
     });
 
   if (isExceeded) {
