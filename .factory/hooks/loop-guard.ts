@@ -169,6 +169,8 @@ export default function registerLoopGuard(api: any) {
   if (!api || typeof api.on !== "function") return;
 
   let consecutiveBashFailures = 0;
+  const surfacedRegistryHints = new Set<string>();
+  const surfacedLessonHints = new Set<string>();
 
   api.on("tool_call", async (event: any) => {
     const toolName = String(event?.toolName ?? "");
@@ -216,6 +218,21 @@ export default function registerLoopGuard(api: any) {
       }
     }
     if (toolName === "bash") {
+      if (typeof args.command === "string") {
+        const cmd = args.command;
+        if (
+          /\bgit\b.*(?:\s+commit|\s+push|\s+merge)\b.*(?:\s+--no-verify|\s+-n\b)/i.test(cmd) ||
+          /\bgit\b.*(?:\s+--no-verify|\s+-n\b).*(?:\s+commit|\s+push|\s+merge)\b/i.test(cmd) ||
+          /\bgit\b.*-c\s+core\.hooksPath=(?:\/dev\/null|""|'')/i.test(cmd)
+        ) {
+          return {
+            block: true,
+            reason:
+              "HARNESS GUARD: Bypassing git hooks with --no-verify, -n, or overriding core.hooksPath is strictly prohibited. All commits must pass deterministic pre-commit CI gates.",
+          };
+        }
+      }
+
       const requested =
         typeof args.timeout === "number" && Number.isFinite(args.timeout) && args.timeout > 0
           ? args.timeout
@@ -314,14 +331,22 @@ export default function registerLoopGuard(api: any) {
         );
       }
       if (toolName === "read" && ruleEval.registryHints.length > 0) {
-        sections.push(
-          `[SHARED PATTERN & MODULE REGISTRY]:\n${ruleEval.registryHints.map((h) => `  - ${h}`).join("\n")}`,
-        );
+        const freshRegistry = ruleEval.registryHints.filter((h) => !surfacedRegistryHints.has(h));
+        for (const h of freshRegistry) surfacedRegistryHints.add(h);
+        if (freshRegistry.length > 0) {
+          sections.push(
+            `[SHARED PATTERN & MODULE REGISTRY]:\n${freshRegistry.map((h) => `  - ${h}`).join("\n")}`,
+          );
+        }
       }
       if (lessons.length > 0) {
-        sections.push(
-          `[HARNESS ACTIVE LESSONS for ${args.path}]:\n${lessons.map((l) => `  - ${l}`).join("\n")}`,
-        );
+        const freshLessons = lessons.filter((l) => !surfacedLessonHints.has(l));
+        for (const l of freshLessons) surfacedLessonHints.add(l);
+        if (freshLessons.length > 0) {
+          sections.push(
+            `[HARNESS ACTIVE LESSONS for ${args.path}]:\n${freshLessons.map((l) => `  - ${l}`).join("\n")}`,
+          );
+        }
       }
       if ((toolName === "write" || toolName === "edit") && consecutiveBashFailures >= 2) {
         sections.push(

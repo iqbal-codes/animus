@@ -146,6 +146,7 @@ export const reviewFindingSchema = z.object({
   status: reviewFindingStatusSchema.default("open"),
   lapIntroduced: z.number().int().nonnegative().default(0),
   lapResolved: z.number().int().nonnegative().optional(),
+  suggestion: z.string().optional(),
 });
 export type ReviewFinding = z.infer<typeof reviewFindingSchema>;
 
@@ -229,14 +230,18 @@ export const reviewerReportSchema = z.object({
   delivers: z.enum(["all", "part", "none"]).default("all"),
   axes: z
     .object({
-      standards: z.object({
-        status: z.enum(["pass", "fail", "incomplete"]),
-        summary: z.string().optional(),
-      }),
-      spec: z.object({
-        status: z.enum(["pass", "fail", "incomplete"]),
-        summary: z.string().optional(),
-      }),
+      standards: z
+        .object({
+          status: z.enum(["pass", "fail", "incomplete"]),
+          summary: z.string().optional(),
+        })
+        .optional(),
+      spec: z
+        .object({
+          status: z.enum(["pass", "fail", "incomplete"]),
+          summary: z.string().optional(),
+        })
+        .optional(),
     })
     .optional(),
   findings: z
@@ -266,6 +271,15 @@ export const builderReportSchema = z.object({
   verdict: z.enum(["pass", "fail", "interrupted"]),
   summary: z.string().default(""),
   outcome: z.string().optional(),
+  visualSummary: z.string().optional(),
+  beforeAfter: z
+    .object({
+      before: z.string(),
+      after: z.string(),
+    })
+    .optional(),
+  mergeDoor: z.enum(["one-way", "two-way"]).optional(),
+  blastRadius: z.string().optional(),
   invariants: z.array(z.string()).optional(),
   reviewGuidance: z.array(z.string()).optional(),
   risk: z.string().optional(),

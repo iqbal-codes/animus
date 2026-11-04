@@ -160,6 +160,26 @@ describe("TypeScript Harness and Mutation Verification", () => {
     });
     expect(allowed).toBeUndefined();
 
+    // Guardrail: blocks --no-verify or -n hook bypass
+    const noVerifyBlocked = await handlers.tool_call!({
+      toolName: "bash",
+      args: { command: "git commit -m 'skip' --no-verify" },
+    });
+    expect(noVerifyBlocked?.block).toBe(true);
+    expect(noVerifyBlocked?.reason).toContain("Bypassing git hooks with --no-verify");
+
+    const noVerifyFlagFirst = await handlers.tool_call!({
+      toolName: "bash",
+      args: { command: "git commit -n -m 'skip'" },
+    });
+    expect(noVerifyFlagFirst?.block).toBe(true);
+
+    const normalGitAllowed = await handlers.tool_call!({
+      toolName: "bash",
+      args: { command: "git commit -m 'feat: normal commit'" },
+    });
+    expect(normalGitAllowed).toBeUndefined();
+
     // First bash failure: tool guidance hint only, no unstick trigger yet
     const fail1 = await handlers.tool_result!({
       toolName: "bash",

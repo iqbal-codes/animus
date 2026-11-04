@@ -13,6 +13,7 @@ const NON_BUILDER_SKILLS = new Set([
   "animus-review",
   "animus-harness",
   "animus-learn",
+  "retro",
   "writing-for-agents",
   "skill-creator",
 ]);
@@ -110,6 +111,7 @@ export function resolveAllowedSkills(root: string, role: LoopRole, acceptedRef?:
       break;
     case "reflector":
       candidateNames.add("animus-learn");
+      candidateNames.add("retro");
       candidateNames.add("writing-for-agents");
       candidateNames.add("skill-creator");
       break;

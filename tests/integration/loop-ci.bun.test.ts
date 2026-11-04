@@ -391,7 +391,7 @@ test("runLocalLoop Stage 3.5 catches PR CI failure and fails fast before reviewe
                 text: JSON.stringify({
                   candidate: head,
                   verdict: "pass",
-                  checks: [{ criterion: "C1", result: "pass", evidence: "unit test ok" }],
+                  checks: [{ criterion: "C1", result: "pass", evidence: "builder-checks.log" }],
                   findings: [],
                 }),
               },

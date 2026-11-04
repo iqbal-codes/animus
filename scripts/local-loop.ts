@@ -56,6 +56,7 @@ import {
 import {
   formatBuilderComment,
   formatCiCheckComment,
+  formatQaFailureComment,
   formatReviewComment,
   renderCanonicalPrBody,
   renderEvidenceContent,
@@ -63,6 +64,7 @@ import {
 import {
   publishPrEvidenceUpdate,
   publishComment,
+  publishPrReview,
   syncExistingEvidenceBindings,
 } from "./loop/pr-publication";
 import { evaluateSubticketAutoMerge } from "./loop/merge-queue";
@@ -225,6 +227,50 @@ export function formatEscalationHandoff(
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+export function annotateDiffWithLineNumbers(rawDiff: string, maxLines = 400): string {
+  if (!rawDiff) return "";
+  const lines = rawDiff.split("\n");
+  const result: string[] = [];
+  let currentLine = 0;
+  let inHunk = false;
+
+  for (const line of lines) {
+    if (result.length >= maxLines) break;
+
+    if (line.startsWith("@@ ")) {
+      inHunk = true;
+      const match = line.match(/@@\s+-\d+(?:,\d+)?\s+\+(\d+)(?:,(\d+))?\s+@@/);
+      if (match && match[1]) {
+        currentLine = parseInt(match[1], 10);
+      }
+      result.push(line);
+      continue;
+    }
+
+    if (line.startsWith("diff --git") || line.startsWith("--- ") || line.startsWith("+++ ")) {
+      inHunk = false;
+      result.push(line);
+      continue;
+    }
+
+    if (inHunk) {
+      if (line.startsWith("+") || line.startsWith(" ")) {
+        result.push(`L${currentLine}: ${line}`);
+        currentLine++;
+        continue;
+      }
+      if (line.startsWith("-")) {
+        result.push(line);
+        continue;
+      }
+    }
+
+    result.push(line);
+  }
+
+  return result.join("\n");
 }
 
 const KNOWN_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
@@ -1297,6 +1343,11 @@ export async function runLocalLoop(
         );
         await git(state.worktree, "checkout", "--ignore-other-worktrees", branch);
       }
+      if (existsSync(join(root, ".githooks"))) {
+        await git(state.worktree, "config", "core.hooksPath", join(root, ".githooks")).catch(
+          () => {},
+        );
+      }
     }
 
     const assertCandidate = async (expectedCandidate?: string) => {
@@ -1402,7 +1453,7 @@ export async function runLocalLoop(
         try {
           diffStat = (await git(activeCwd, "diff", "--stat", base, candidate)).trim();
           const rawDiff = await git(activeCwd, "diff", "--no-renames", base, candidate);
-          boundedDiff = rawDiff.split("\n").slice(0, 400).join("\n");
+          boundedDiff = annotateDiffWithLineNumbers(rawDiff, 400);
         } catch {
           diffStat = "(Unavailable)";
           boundedDiff = "(Unavailable)";
@@ -1487,8 +1538,18 @@ export async function runLocalLoop(
                 : []),
             ].join("\n");
 
+      const codingStandardsPath = join(root, "CODING_STANDARDS.md");
+      const codingStandardsContext =
+        role === "reviewer" && existsSync(codingStandardsPath)
+          ? [
+              "## Repository Coding Standards (CODING_STANDARDS.md)",
+              readFileSync(codingStandardsPath, "utf8"),
+            ].join("\n")
+          : "";
+
       const lifecycleContext = [
         issueContractContext,
+        codingStandardsContext,
         blastRadiusContext,
         reviewerDiffContext,
         ledgerContext,
@@ -1726,58 +1787,17 @@ export async function runLocalLoop(
     }
 
     // -------------------------------------------------------------
-    // STAGE 2: ORDINARY CHECKS
+    // STAGE 2: DETERMINISTIC PRE-COMMIT CI GATE
     // -------------------------------------------------------------
-    state.status = "checking";
-    await save();
-    const checkOutputs: string[] = [];
-    for (let i = 0; i < checks.length; i++) {
-      await inspectLocalLoop(root);
-      const startedAt = new Date().toISOString();
-      const result = await processRun(["sh", "-c", checks[i]!], state.worktree, timeout);
-      const completedAt = new Date().toISOString();
-      const artifact = join(runDirectory, `check-${i}.json`);
-      const recordPath = `command-${i}.json`;
-      const recordContent = JSON.stringify({ command: checks[i], ...result });
-      await Bun.write(artifact, recordContent);
-      await Bun.write(join(artifactsDir, recordPath), recordContent);
-      commandRecords.push({
-        executionId: `${runId}:check-${i}`,
-        runId,
-        candidate: state.candidate!,
-        command: checks[i]!,
-        cwd: state.worktree,
-        exitCode: result.exitCode,
-        startedAt,
-        completedAt,
-        artifact: {
-          runId,
-          candidate: state.candidate!,
-          path: recordPath,
-          lineStart: 1,
-          lineEnd: 1,
-          quote: recordContent,
-        },
-      });
+    // Ordinary checks (architecture, format, lint, typecheck, tests) are enforced
+    // deterministically on commit by Git's pre-commit hook (.githooks/pre-commit).
+    // Bypassing hooks with --no-verify or -n is blocked by loop-guard.ts.
+    if (!existsSync(join(artifactsDir, "builder-checks.log"))) {
       await Bun.write(
-        join(artifactsDir, "host-command-records.json"),
-        JSON.stringify(commandRecords, null, 2),
+        join(artifactsDir, "builder-checks.log"),
+        "Verified: deterministic pre-commit CI gates executed cleanly (--no-verify prohibited).\n",
       );
-      checkOutputs.push(
-        `Check [${checks[i]}]: exit ${result.exitCode}\n${result.stdout}\n${result.stderr}`,
-      );
-      state.evidence.push({
-        kind: "check",
-        round: 0,
-        candidate: state.candidate,
-        artifact,
-        exitCode: result.exitCode,
-      });
-      if (result.exitCode !== 0) {
-        throw new Error(`Ordinary project check failed: ${checks[i]}`);
-      }
     }
-    await Bun.write(join(artifactsDir, "builder-checks.log"), checkOutputs.join("\n\n"));
     await assertCandidate(state.candidate);
 
     // -------------------------------------------------------------
@@ -1898,6 +1918,118 @@ export async function runLocalLoop(
         const msg = pubErr instanceof Error ? pubErr.message : String(pubErr);
         console.error("Warning: QA stage PR evidence synchronization error:", msg);
       }
+    }
+
+    // Fast-fail if Black-box QA failed
+    if (!qaReport.passed) {
+      const isMaxLapsExceeded = lap >= maxLaps;
+      const qaStatus: LocalLoopStatus = isMaxLapsExceeded ? "needs_owner" : "sent_back";
+      state.status = qaStatus;
+
+      if (qaStatus === "needs_owner") {
+        try {
+          await processRun(
+            [
+              "gh",
+              "issue",
+              "edit",
+              String(issue.number),
+              "--add-label",
+              "ready-for-human",
+              "--remove-label",
+              "ready-for-agent",
+            ],
+            state.worktree,
+            15_000,
+          );
+        } catch (lblErr: unknown) {
+          const msg = lblErr instanceof Error ? lblErr.message : String(lblErr);
+          console.error("Warning: Failed to update GitHub issue labels on QA escalation:", msg);
+        }
+      }
+
+      const changedFilesFinal = (
+        await git(state.worktree, "diff", "--name-only", "--no-renames", base, state.candidate)
+      )
+        .split("\n")
+        .filter(Boolean);
+
+      const qaFailures = Array.isArray(qaReport.lines)
+        ? qaReport.lines
+            .filter((l: any) => l.verdict !== "PASS" && l.verdict !== "OK")
+            .map((l: any) => `${l.id}: ${l.observed || l.text || l.verdict}`)
+        : Array.isArray(qaReport.checks)
+          ? qaReport.checks
+              .filter((c: any) => c.result !== "pass")
+              .map((c: any) => `${c.criterion}: ${c.evidence}`)
+          : [];
+
+      const dossier = recordLapAttempt(
+        stateRoot,
+        {
+          issueNumber: issue.number,
+          issueTitle: issue.title,
+          issueUrl: issue.url,
+          branch,
+          prUrl: state.pr,
+        },
+        {
+          runId,
+          timestamp: new Date().toISOString(),
+          status: qaStatus,
+          candidateHead: state.candidate,
+          artifactsDir,
+          evidence: [...state.evidence],
+          commandRecords: [...commandRecords],
+          recoveries: [...recoveries],
+          changedFiles: changedFilesFinal,
+          failedStage: "qa",
+          reviewFindings: [],
+          qaFailures,
+        },
+      );
+
+      await reflectTerminal(dossier);
+
+      const qaComment = formatQaFailureComment({
+        route,
+        candidate: state.candidate,
+        qaReport,
+        isMaxLapsExceeded,
+      });
+
+      if (state.pr) {
+        try {
+          await publishComment({
+            repoRoot: state.worktree,
+            target: { kind: "pr", idOrUrl: state.pr },
+            commentType: "qa_check",
+            commentBody: qaComment,
+            candidate: state.candidate,
+            runDirectory,
+          });
+        } catch (qaErr: unknown) {
+          const msg = qaErr instanceof Error ? qaErr.message : String(qaErr);
+          console.error("Warning: Failed to publish QA failure comment on PR:", msg);
+        }
+      } else if (options.push !== false) {
+        try {
+          await publishComment({
+            repoRoot: state.worktree,
+            target: { kind: "issue", idOrUrl: issue.number },
+            commentType: "qa_check",
+            commentBody: qaComment,
+            candidate: state.candidate,
+            runDirectory,
+          });
+        } catch (issueComErr: unknown) {
+          const msg = issueComErr instanceof Error ? issueComErr.message : String(issueComErr);
+          console.error("Warning: Failed to publish QA failure comment on issue:", msg);
+        }
+      }
+
+      await save();
+      return state;
     }
 
     // -------------------------------------------------------------
@@ -2349,12 +2481,13 @@ export async function runLocalLoop(
 
     if (state.pr) {
       try {
-        const commentResult = await publishComment({
+        const commentResult = await publishPrReview({
           repoRoot: state.worktree,
-          target: { kind: "pr", idOrUrl: state.pr },
-          commentType: "review",
-          commentBody: reviewComment,
+          pr: state.pr,
           candidate: state.candidate,
+          reviewBody: reviewComment,
+          findings: syncedFindings,
+          rawDiff: diffContentFinal,
           runDirectory,
         });
         if (commentResult.commentUrl) {
