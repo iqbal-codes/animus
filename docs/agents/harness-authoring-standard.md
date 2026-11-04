@@ -12,7 +12,8 @@ Authoritative schema and formatting constraints for agent-authored repository me
   2. **Types & Signatures**: Make illegal states unrepresentable with discriminated unions, boundary `unknown` parsing, and exhaustive `never` checks.
   3. **Automated Guard Rule (`rules` in `codebase-rules.json`)**: Block or warn on repeatable syntax/API pitfalls via regex/glob guards with a `replacement_hint`.
   4. **Verified Tool Recipe (`tool-guidance.json`)**: Record zero-exit CLI verification commands.
-  5. **Prose Lesson (`lessons.jsonl`)**: Reserve for judgment calls that levels 1–4 cannot enforce mechanically.
+  5. **Reviewer Coding Standards (`CODING_STANDARDS.md`)**: Place architectural judgment calls, module-depth expectations, and code-smell rules in `CODING_STANDARDS.md` for the Reviewer, keeping the Builder's context window free of instruction bloat.
+  6. **File-Scoped Prose Lesson (`lessons.jsonl`)**: Reserve strictly for file-scoped runtime bug traps that levels 1–4 cannot enforce mechanically.
 
 ## 2. Codebase Rules & Pattern Registry Schema (`.factory/codebase-rules.json`)
 

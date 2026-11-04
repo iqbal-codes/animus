@@ -29,10 +29,7 @@ const sanitizer = new ReportSanitizer();
  */
 export function escapeMarkdownTableCell(text: string): string {
   if (!text) return "";
-  return text
-    .replace(/\r?\n/g, "<br>")
-    .replace(/\|/g, "\\|")
-    .trim();
+  return text.replace(/\r?\n/g, "<br>").replace(/\|/g, "\\|").trim();
 }
 
 /**
@@ -59,7 +56,10 @@ export function renderEvidenceContent(params: {
 
   const lines: string[] = [];
 
-  // 1. Candidate & Environment Identities
+  // 1. Candidate & Environment Identities and Verification Table inside collapsible details
+  lines.push("<details>");
+  lines.push("<summary>Verification matrix & candidate metadata</summary>");
+  lines.push("");
   lines.push(`PR head: \`${identities.prHead}\`; selected base: \`${identities.targetBaseTip}\`.`);
   lines.push(`Tested identity: \`${identities.testedHead}\`.`);
   const envText =
@@ -100,6 +100,8 @@ export function renderEvidenceContent(params: {
   } else {
     lines.push("| Initial verification | NOT RUN | Initial build awaiting QA | n/a |");
   }
+  lines.push("");
+  lines.push("</details>");
   lines.push("");
 
   // 3. Before / After Comparison Table
@@ -281,9 +283,37 @@ export function renderCanonicalPrBody(params: {
     judgeAlterations,
   });
 
+  const door =
+    builderReport?.mergeDoor === "one-way"
+      ? "One-way door"
+      : builderReport?.mergeDoor === "two-way"
+        ? "Two-way door"
+        : "Two-way door";
+
+  const blastRadius =
+    builderReport?.blastRadius ||
+    (builderReport?.changes && builderReport.changes.length > 0
+      ? `${builderReport.changes.length} file(s) modified`
+      : "Low");
+
+  const summaryContent = [
+    ...(builderReport?.visualSummary ? [builderReport.visualSummary, ""] : []),
+    ...(builderReport?.summary ? [builderReport.summary, ""] : []),
+  ].filter(Boolean);
+  if (summaryContent.length === 0) {
+    summaryContent.push(`Automated delivery for issue #${issue.number}: ${issue.title}.`);
+  }
+
+  const beforeAfterText = builderReport?.beforeAfter
+    ? `- **Before:** ${builderReport.beforeAfter.before}\n  **After:** ${builderReport.beforeAfter.after}\n`
+    : "";
+
   const bodyParts = [
     `Closes #${issue.number}`,
     "",
+    "## Summary",
+    "",
+    ...(summaryContent.length > 0 ? [...summaryContent, ""] : []),
     "## Problem and Outcome",
     "",
     `Resolves issue #${issue.number}: ${issue.title}.`,
@@ -303,7 +333,14 @@ export function renderCanonicalPrBody(params: {
     "",
     "## Evidence",
     "",
+    ...(beforeAfterText ? [beforeAfterText, ""] : []),
     evidenceBlock,
+    "",
+    "## Merge Danger",
+    "",
+    `**Door:** ${door}`,
+    "",
+    `**Blast Radius:** ${blastRadius}`,
   ];
 
   return bodyParts.join("\n");
@@ -421,7 +458,7 @@ export function formatReviewComment(params: {
   blastRadiusCount: number;
   qaReport?: QaReport;
   reviewerReport: ReviewerReport;
-  dossierFindings?: ReviewFinding[];
+  dossierFindings?: (ReviewFinding | string)[];
   isNeedsOwner?: boolean;
   handoffProse?: string;
   autoMerge?: AutoMergeEvaluationResult;
@@ -447,54 +484,80 @@ export function formatReviewComment(params: {
     "",
   ];
 
+  const activeFindings = dossierFindings ?? reviewerReport.findings;
+  const hasFindings = Boolean(activeFindings && activeFindings.length > 0);
+  const isCleanApproved =
+    (outcome === "approved" || outcome === "merge" || outcome === "merged") && !hasFindings;
+
+  if (isCleanApproved) {
+    const qaTotal = qaReport?.lines?.length ?? 0;
+    const qaPassed = qaReport?.lines?.filter((l) => l.verdict === "PASS").length ?? 0;
+    lines.push(
+      `✅ **Code Review Passed** — QA checks (${qaPassed}/${qaTotal}) and diff inspection clean.`,
+    );
+    lines.push("");
+  }
+
   // Review Axes Summary
   if (reviewerReport.axes) {
     lines.push("#### ⚖️ Review Axes:");
-    lines.push(
-      `- **Standards**: \`${reviewerReport.axes.standards.status}\` ${reviewerReport.axes.standards.summary ? `(${reviewerReport.axes.standards.summary})` : ""}`,
-    );
-    lines.push(
-      `- **Specification**: \`${reviewerReport.axes.spec.status}\` ${reviewerReport.axes.spec.summary ? `(${reviewerReport.axes.spec.summary})` : ""}`,
-    );
-    lines.push("");
-  }
-
-  // Black-box QA verification
-  if (qaReport) {
-    lines.push("#### 🧪 Black-box QA Verification:");
-    if (qaReport.lines && qaReport.lines.length > 0) {
-      for (const c of qaReport.lines) {
-        const isPass = c.verdict === "PASS";
-        const label = c.kind === "probe" ? "Runtime Probe" : "Criteria";
-        const desc = c.text ? ` - ${c.text}` : "";
-        lines.push(`- [${isPass ? "x" : " "}] **${c.id} (${label})**${desc}`);
-      }
-    } else {
-      lines.push("- No QA checks reported.");
+    if (reviewerReport.axes.standards) {
+      lines.push(
+        `- **Standards**: \`${reviewerReport.axes.standards.status}\` ${reviewerReport.axes.standards.summary ? `(${reviewerReport.axes.standards.summary})` : ""}`,
+      );
+    }
+    if (reviewerReport.axes.spec) {
+      lines.push(
+        `- **Specification**: \`${reviewerReport.axes.spec.status}\` ${reviewerReport.axes.spec.summary ? `(${reviewerReport.axes.spec.summary})` : ""}`,
+      );
     }
     lines.push("");
   }
 
-  // Code Review Findings
-  lines.push("#### 🔍 Code Review Findings:");
-  const activeFindings = dossierFindings ?? reviewerReport.findings;
-  if (activeFindings && activeFindings.length > 0) {
-    for (const f of activeFindings) {
-      if (typeof f === "string") {
-        lines.push(`- ${f}`);
+  if (!isCleanApproved) {
+    // Black-box QA verification
+    if (qaReport) {
+      lines.push("#### 🧪 Black-box QA Verification:");
+      if (qaReport.lines && qaReport.lines.length > 0) {
+        for (const c of qaReport.lines) {
+          const isPass = c.verdict === "PASS";
+          const label = c.kind === "probe" ? "Runtime Probe" : "Criteria";
+          const desc = c.text ? ` - ${c.text}` : "";
+          lines.push(`- [${isPass ? "x" : " "}] **${c.id} (${label})**${desc}`);
+        }
       } else {
-        const blockLabel = f.blocking ? "🚫 BLOCKING" : "ℹ️ SUGGESTION";
-        const loc = f.location?.file ? ` (\`${f.location.file}${f.location.line ? `:${f.location.line}` : ""}\`)` : "";
-        lines.push(`- **[${f.id}]** ${blockLabel} [${f.axis}/${f.classification}]: ${f.title}${loc}`);
-        if (f.description && f.description !== f.title) {
-          lines.push(`  *${f.description}*`);
+        lines.push("- No QA checks reported.");
+      }
+      lines.push("");
+    }
+
+    // Code Review Findings
+    lines.push("#### 🔍 Code Review Findings:");
+    if (activeFindings && activeFindings.length > 0) {
+      for (const f of activeFindings) {
+        if (typeof f === "string") {
+          lines.push(`- ${f}`);
+        } else {
+          const blockLabel = f.blocking ? "🚫 BLOCKING" : "ℹ️ SUGGESTION";
+          const loc = f.location?.file
+            ? ` (\`${f.location.file}${f.location.line ? `:${f.location.line}` : ""}\`)`
+            : "";
+          lines.push(
+            `- **[${f.id}]** ${blockLabel} [${f.axis}/${f.classification}]: ${f.title}${loc}`,
+          );
+          if (f.description && f.description !== f.title) {
+            lines.push(`  *${f.description}*`);
+          }
+          if (f.suggestion) {
+            lines.push(`  \`\`\`suggestion\n  ${f.suggestion.split("\n").join("\n  ")}\n  \`\`\``);
+          }
         }
       }
+    } else {
+      lines.push("- No blocking standards or specification findings.");
     }
-  } else {
-    lines.push("- No blocking standards or specification findings.");
+    lines.push("");
   }
-  lines.push("");
 
   // Reviewer Decision & Rationale
   if (reviewerReport.reason) {
@@ -559,7 +622,9 @@ export function formatReviewComment(params: {
         `⚠️ **Candidate verified and approved (Code & AC Passed) — Auto-Merge Held for Human Review** due to critical impact (${autoMerge.criticalImpacts.map((c) => `\`${c}\``).join(", ")}). Awaiting human merge approval (\`merge=approve\`).`,
       );
     } else {
-      lines.push("✅ **Candidate verified and approved.** Awaiting human merge approval (`merge=approve`).");
+      lines.push(
+        "✅ **Candidate verified and approved.** Awaiting human merge approval (`merge=approve`).",
+      );
     }
   } else {
     lines.push("⚠️ **Work item sent back.** Review feedback has been recorded for the next lap.");
@@ -569,12 +634,53 @@ export function formatReviewComment(params: {
 }
 
 /**
+ * Formats a concise QA failure comment.
+ */
+export function formatQaFailureComment(params: {
+  route: string;
+  candidate: string;
+  qaReport: QaReport;
+  isMaxLapsExceeded: boolean;
+}): string {
+  const { route, candidate, qaReport, isMaxLapsExceeded } = params;
+
+  const failingLines = (qaReport.lines || []).filter((l) => l.verdict !== "PASS");
+
+  const lines = [
+    `### Loop QA Check: Failed (route: ${route})`,
+    "",
+    `**Candidate**: \`${candidate}\``,
+    "",
+    "#### ❌ Black-box QA Failures:",
+    ...(failingLines.length > 0
+      ? failingLines.map(
+          (l) =>
+            `- [ ] **${l.id} (${l.kind || "criterion"})**: \`${l.verdict}\`${l.observed ? ` — ${l.observed}` : l.text ? ` — ${l.text}` : ""}${l.evidence && l.evidence.length > 0 ? ` (evidence: ${l.evidence.join(", ")})` : ""}`,
+        )
+      : [`- Overall verdict: \`${qaReport.overall}\``]),
+    "",
+    ...(qaReport.summary ? [`**Summary**: ${qaReport.summary}`, ""] : []),
+    isMaxLapsExceeded
+      ? "⛔ **Maximum laps exceeded on QA failure.** Handing off to human owner (`ready-for-human`)."
+      : "⚠️ **Work item sent back due to QA failure.** QA error feedback recorded for next lap auto-fix.",
+  ];
+
+  return sanitizer.sanitizeMarkdown(lines.join("\n").trim()).report;
+}
+
+/**
  * Formats a CI check failure comment.
  */
 export function formatCiCheckComment(params: {
   route: string;
   candidate: string;
-  failedChecks: Array<{ name: string; workflow?: string; state?: string; link?: string; description?: string }>;
+  failedChecks: Array<{
+    name: string;
+    workflow?: string;
+    state?: string;
+    link?: string;
+    description?: string;
+  }>;
   isMaxLapsExceeded: boolean;
 }): string {
   const { route, candidate, failedChecks, isMaxLapsExceeded } = params;

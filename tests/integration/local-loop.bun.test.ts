@@ -12,10 +12,12 @@ import {
   resolveAnimusCommandsDir,
   formatBuilderComment,
   formatEscalationHandoff,
+  annotateDiffWithLineNumbers,
   type LocalIssue,
   type PiTransport,
 } from "../../scripts/local-loop";
 import { loadPrompt } from "../../scripts/loop/prompts";
+import { loadIssueDossier } from "../../scripts/loop/dossier";
 
 test("accepts a single fenced JSON report without discarding findings and rejects ambiguous or invalid reports", () => {
   const value = { candidate: "abc", verdict: "pass", findings: ["must fix"], checks: [] };
@@ -602,7 +604,7 @@ test("runLocalLoop transitions to needs_owner when review returns outcome needs-
               text: JSON.stringify({
                 candidate: head,
                 verdict: "pass",
-                checks: [{ criterion: "AC1", result: "pass", evidence: "pass" }],
+                checks: [{ criterion: "AC1", result: "pass", evidence: "builder-checks.log" }],
                 findings: [],
               }),
             },
@@ -676,7 +678,7 @@ test("runLocalLoop transitions to needs_owner when lap count reaches max_laps on
               text: JSON.stringify({
                 candidate: head,
                 verdict: "pass",
-                checks: [{ criterion: "AC1", result: "pass", evidence: "pass" }],
+                checks: [{ criterion: "AC1", result: "pass", evidence: "builder-checks.log" }],
                 findings: [],
               }),
             },
@@ -1408,4 +1410,141 @@ test("runLocalLoop pre-packs issue body, comments, blast radius, and reviewer di
   const diffSection = capturedPrompts.reviewer.split("## Candidate Git Diff (Bounded)")[1] ?? "";
   const diffLines = diffSection.split("\n");
   expect(diffLines.length).toBeLessThanOrEqual(405);
+});
+
+test("annotateDiffWithLineNumbers annotates added and context lines with right-side line numbers", () => {
+  const rawDiff = [
+    "diff --git a/src/app.ts b/src/app.ts",
+    "--- a/src/app.ts",
+    "+++ b/src/app.ts",
+    "@@ -10,3 +20,4 @@",
+    " const a = 1;",
+    "-const b = 2;",
+    "+const b = 3;",
+    "+const c = 4;",
+    " return a + b;",
+  ].join("\n");
+
+  const annotated = annotateDiffWithLineNumbers(rawDiff, 400);
+  expect(annotated).toContain("diff --git a/src/app.ts b/src/app.ts");
+  expect(annotated).toContain("@@ -10,3 +20,4 @@");
+  expect(annotated).toContain("L20:  const a = 1;");
+  expect(annotated).toContain("-const b = 2;");
+  expect(annotated).toContain("L21: +const b = 3;");
+  expect(annotated).toContain("L22: +const c = 4;");
+  expect(annotated).toContain("L23:  return a + b;");
+
+  // Bounded check
+  const truncated = annotateDiffWithLineNumbers(rawDiff, 5);
+  expect(truncated.split("\n").length).toBe(5);
+});
+
+test("fast-fails at QA stage when black-box QA fails, short-circuiting reviewer", async () => {
+  const root = await fixture();
+  const issue: LocalIssue = {
+    number: 105,
+    url: "https://github.com/owner/repo/issues/105",
+    title: "buggy feature",
+    body: "needs QA verification",
+    comments: [],
+    dependencies: [],
+    activeClaim: false,
+  };
+
+  const rolesInvoked: string[] = [];
+
+  const transport: PiTransport = async ({ cwd, role }) => {
+    rolesInvoked.push(role);
+    const head = git(cwd, "rev-parse", "HEAD");
+
+    if (role === "builder") {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  candidate: head,
+                  verdict: "pass",
+                  summary: "Implemented buggy feature",
+                  checks: [{ criterion: "AC1", result: "pass", evidence: "builder-checks.log" }],
+                }),
+              },
+            ],
+          },
+        }),
+        stderr: "",
+      };
+    }
+
+    if (role === "qa") {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  head,
+                  overall: "FAIL",
+                  summary: "Black-box QA detected functional failure",
+                  lines: [
+                    {
+                      id: "AC1",
+                      kind: "criterion",
+                      verdict: "FAIL",
+                      text: "Button click throws 500 error",
+                      observed: "500 Internal Server Error",
+                      evidence: ["builder-checks.log"],
+                    },
+                  ],
+                }),
+              },
+            ],
+          },
+        }),
+        stderr: "",
+      };
+    }
+
+    // Reviewer should NOT be invoked!
+    return {
+      exitCode: 0,
+      stdout: JSON.stringify({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                sha: head,
+                outcome: "approved",
+                findings: [],
+              }),
+            },
+          ],
+        },
+      }),
+      stderr: "",
+    };
+  };
+
+  const res = await runLocalLoop(root, issue, { pi: transport, push: false });
+  expect(res.status).toBe("sent_back");
+  expect(rolesInvoked).toEqual(["builder", "qa"]);
+  expect(rolesInvoked).not.toContain("reviewer");
+
+  const stateRoot = resolve(res.runDirectory, "../..");
+  const dossier = loadIssueDossier(stateRoot, issue.number);
+  expect(dossier?.attempts.length).toBe(1);
+  expect(dossier?.attempts[0].failedStage).toBe("qa");
+  expect(dossier?.attempts[0].qaFailures.length).toBeGreaterThan(0);
 });

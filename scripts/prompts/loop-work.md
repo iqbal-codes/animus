@@ -40,9 +40,9 @@ The host process has pre-packed the issue specification, description, and commen
 6. **Final validation:** Run the repository's ordinary checks once on your candidate commit (`engineering.md` or harness config). Save complete output to `$ARTIFACTS_DIR/builder-checks.log` so subsequent QA and review nodes reuse it without duplicate execution. If user-visible behavior changed, launch the app according to `$INPUTS.runtime` and verify the observable user path.
 7. **Commit and push:** Commit with an imperative, conventional commit message (`feat(...)`, `fix(...)`). The host executor pushes to origin, opens or updates the PR with `Closes #<n>`, and ensures the PR is ready for review (`gh pr ready <n>`).
 
-## 3. Pull Request Evidence Contract
+## 3. Pull Request Evidence Contract & Human-Friendly Presentation
 
-Every pull request description must contain an `## Evidence` section before this step is complete:
+Every pull request description must contain an `## Evidence` section before this step is complete. Write human-friendly summaries using the domain language from `GLOSSARY.md` (zero robotic disclaimers or filler preamble):
 
 - Map each contract criterion to its concrete verification evidence (command output line, log path, or test assertion) on your pushed candidate commit.
 - If the change alters what an in-repository check samples or excuses, declare it under an explicit heading: `### Judge Alterations (Requires Approval)`.
@@ -67,8 +67,15 @@ Return your final report in JSON (plain or within a single ```json code fence):
 {
   "candidate": "<full committed HEAD sha>",
   "verdict": "pass | fail | interrupted",
-  "summary": "Brief 1-2 sentence executive summary of what was built or repaired this lap.",
+  "summary": "Brief 1-2 sentence human-friendly executive summary using domain terminology.",
   "outcome": "Concrete description of observable delivered behavior and explicit statement of remaining/unimplemented scope.",
+  "visualSummary": "<diagram, diff-sketch, call-tree, or file-tree illustrating the change>",
+  "beforeAfter": {
+    "before": "<concise summary of prior behavior or failing test run>",
+    "after": "<concise summary of new delivered behavior or passing test run>"
+  },
+  "mergeDoor": "two-way | one-way",
+  "blastRadius": "<one-word or concise scope of potential ramifications, e.g. 'Low' or 'Auth token consumers'>",
   "invariants": [
     "Preserved system property, boundary, or contract rule and supporting AC reference."
   ],

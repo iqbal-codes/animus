@@ -9,12 +9,18 @@ import {
   renderEvidenceContent,
 } from "../../scripts/loop/pr-reporting";
 import {
+  extractValidDiffLines,
   publishComment,
   publishPrEvidenceUpdate,
+  publishPrReview,
   syncExistingEvidenceBindings,
   type GhRunner,
 } from "../../scripts/loop/pr-publication";
-import type { CaptureRecord, HostBoundIdentities } from "../../scripts/loop/report-schema";
+import type {
+  CaptureRecord,
+  HostBoundIdentities,
+  ReviewFinding,
+} from "../../scripts/loop/report-schema";
 
 describe("PR and Issue Publication Pipeline with Injected GhRunner", () => {
   const dummyIdentities: HostBoundIdentities = {
@@ -470,6 +476,200 @@ describe("PR and Issue Publication Pipeline with Injected GhRunner", () => {
     });
     expect(rendered).toContain("https://github.com/user-attachments/assets/after.png");
     expect(rendered).toContain("supplied_unverified");
+
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  test("extractValidDiffLines parses diff headers and hunk lines into correct right-side line numbers", () => {
+    const rawDiff = [
+      "diff --git a/src/index.ts b/src/index.ts",
+      "--- a/src/index.ts",
+      "+++ b/src/index.ts",
+      "@@ -10,3 +20,4 @@",
+      " context 20",
+      "-removed line",
+      "+added 21",
+      "+added 22",
+      " context 23",
+      "diff --git a/src/other.ts b/src/other.ts",
+      "--- /dev/null",
+      "+++ b/src/other.ts",
+      "@@ -0,0 +1,2 @@",
+      "+first line",
+      "+second line",
+    ].join("\n");
+
+    const validLines = extractValidDiffLines(rawDiff);
+    expect(validLines.has("src/index.ts")).toBe(true);
+    const indexLines = validLines.get("src/index.ts")!;
+    expect(indexLines.has(20)).toBe(true);
+    expect(indexLines.has(21)).toBe(true);
+    expect(indexLines.has(22)).toBe(true);
+    expect(indexLines.has(23)).toBe(true);
+    expect(indexLines.has(10)).toBe(false); // left-side line number, not in right-side set
+
+    expect(validLines.has("src/other.ts")).toBe(true);
+    const otherLines = validLines.get("src/other.ts")!;
+    expect(otherLines.has(1)).toBe(true);
+    expect(otherLines.has(2)).toBe(true);
+    expect(otherLines.has(3)).toBe(false);
+  });
+
+  test("publishPrReview calls gh api reviews when inline comments match diff lines and falls back cleanly", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "animus-pub-review-"));
+    const artifactsDir = join(tempDir, "artifacts");
+    await mkdir(artifactsDir, { recursive: true });
+
+    const rawDiff = [
+      "diff --git a/src/auth.ts b/src/auth.ts",
+      "--- a/src/auth.ts",
+      "+++ b/src/auth.ts",
+      "@@ -1,2 +1,3 @@",
+      " export function check() {",
+      "+  return false;",
+      " }",
+    ].join("\n");
+
+    const findings: ReviewFinding[] = [
+      {
+        id: "F1",
+        axis: "standards",
+        classification: "defect",
+        blocking: true,
+        title: "Auth bypass",
+        description: "Always returns false",
+        location: { file: "src/auth.ts", line: 2 },
+        suggestion: "return true;",
+        status: "open",
+        lapIntroduced: 0,
+      },
+      {
+        id: "F2",
+        axis: "standards",
+        classification: "defect",
+        blocking: false,
+        title: "Out of diff finding",
+        description: "Line 99 is not in diff",
+        location: { file: "src/auth.ts", line: 99 },
+        status: "open",
+        lapIntroduced: 0,
+      },
+    ];
+
+    let apiArgs: string[] = [];
+    let passedPayload: any = null;
+
+    const mockRunner: GhRunner = async (args) => {
+      apiArgs = args;
+      if (args[0] === "gh" && args[1] === "api") {
+        const inputIdx = args.indexOf("--input");
+        if (inputIdx !== -1) {
+          passedPayload = JSON.parse(await readFile(args[inputIdx + 1], "utf-8"));
+        }
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            html_url: "https://github.com/owner/repo/pull/10#pullrequestreview-1",
+          }),
+          stderr: "",
+        };
+      }
+      return {
+        exitCode: 0,
+        stdout: "https://github.com/owner/repo/pull/10#issuecomment-1",
+        stderr: "",
+      };
+    };
+
+    // 1. Successful PR review API call with inline comment on line 2 (line 99 excluded because not in diff)
+    const res = await publishPrReview({
+      repoRoot: tempDir,
+      pr: "https://github.com/owner/repo/pull/10",
+      candidate: "head1234",
+      reviewBody: "### Loop review: sent back",
+      findings,
+      rawDiff,
+      runDirectory: tempDir,
+      runner: mockRunner,
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.inlineCount).toBe(1);
+    expect(res.commentUrl).toBe("https://github.com/owner/repo/pull/10#pullrequestreview-1");
+    expect(apiArgs[2]).toBe("repos/owner/repo/pulls/10/reviews");
+    expect(passedPayload).toBeDefined();
+    expect(passedPayload.comments.length).toBe(1);
+    expect(passedPayload.comments[0].path).toBe("src/auth.ts");
+    expect(passedPayload.comments[0].line).toBe(2);
+    expect(passedPayload.comments[0].body).toContain("🚫 BLOCKING [F1] Auth bypass");
+    expect(passedPayload.comments[0].body).toContain("```suggestion\nreturn true;\n```");
+
+    // 2. Fallback when PR is not a GitHub URL or has 0 inline comments
+    let fallbackCalled = false;
+    const fallbackRunner: GhRunner = async (args) => {
+      if (args[1] === "pr" && args[2] === "comment") {
+        fallbackCalled = true;
+      }
+      return {
+        exitCode: 0,
+        stdout: "https://github.com/owner/repo/pull/20#issuecomment-2",
+        stderr: "",
+      };
+    };
+
+    const resFallback = await publishPrReview({
+      repoRoot: tempDir,
+      pr: "mock-pr-target",
+      candidate: "head5678",
+      reviewBody: "### Loop review: approved",
+      findings: [],
+      rawDiff,
+      runDirectory: tempDir,
+      runner: fallbackRunner,
+    });
+
+    expect(resFallback.ok).toBe(true);
+    expect(resFallback.inlineCount).toBe(0);
+    expect(fallbackCalled).toBe(true);
+
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  test("publishComment supports qa_check commentType cleanly", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "animus-pub-qacheck-"));
+    const artifactsDir = join(tempDir, "artifacts");
+    await mkdir(artifactsDir, { recursive: true });
+
+    let commandRun: string[] = [];
+    const mockRunner: GhRunner = async (args) => {
+      commandRun = args;
+      return {
+        exitCode: 0,
+        stdout: "https://github.com/owner/repo/pull/1#issuecomment-8888",
+        stderr: "",
+      };
+    };
+
+    const res = await publishComment({
+      repoRoot: tempDir,
+      target: { kind: "pr", idOrUrl: "https://github.com/owner/repo/pull/1" },
+      commentType: "qa_check",
+      commentBody: "### Loop QA Check: Failed",
+      candidate: "head4444",
+      runDirectory: tempDir,
+      runner: mockRunner,
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.commentUrl).toBe("https://github.com/owner/repo/pull/1#issuecomment-8888");
+    expect(commandRun[1]).toBe("pr");
+    expect(commandRun[2]).toBe("comment");
+
+    const records = JSON.parse(
+      await readFile(join(artifactsDir, "publication-records.json"), "utf-8"),
+    );
+    expect(records.length).toBe(1);
+    expect(records[0].commentType).toBe("qa_check");
 
     await rm(tempDir, { recursive: true, force: true });
   });

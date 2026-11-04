@@ -6,6 +6,7 @@ import {
   escapeMarkdownTableCell,
   formatBuilderComment,
   formatCiCheckComment,
+  formatQaFailureComment,
   formatReviewComment,
   generateEvidenceMigrationPreview,
   renderCanonicalPrBody,
@@ -574,5 +575,181 @@ describe("PR Body and Comment Reporting Lifecycle", () => {
 
     expect(evWithAutoMerge).toContain("### Auto-Merge & Critical Impact Gate");
     expect(evWithAutoMerge).toContain("`database_or_state_migration`");
+  });
+
+  test("formatQaFailureComment formats concise failure details and max laps escalation", () => {
+    const qaReport: QaReport = {
+      head: "head1234",
+      overall: "FAIL",
+      summary: "2 acceptance criteria failed during test run",
+      lines: [
+        {
+          id: "AC1",
+          kind: "criterion",
+          verdict: "FAIL",
+          text: "Login succeeds with valid token",
+          observed: "Returned 401 Unauthorized",
+          evidence: ["login.log"],
+        },
+        {
+          id: "AC2",
+          kind: "probe",
+          verdict: "PASS",
+          text: "Healthcheck 200",
+          evidence: ["health.log"],
+        },
+      ],
+      noticed: [],
+      captures: [],
+    };
+
+    // Lap retry comment
+    const commentRetry = formatQaFailureComment({
+      route: "simple",
+      candidate: "head1234",
+      qaReport,
+      isMaxLapsExceeded: false,
+    });
+    expect(commentRetry).toContain("### Loop QA Check: Failed (route: simple)");
+    expect(commentRetry).toContain("**Candidate**: `head1234`");
+    expect(commentRetry).toContain("AC1 (criterion)");
+    expect(commentRetry).toContain("Returned 401 Unauthorized");
+    expect(commentRetry).toContain("evidence: login.log");
+    expect(commentRetry).not.toContain("AC2"); // Passing check not listed in failures
+    expect(commentRetry).toContain("Work item sent back due to QA failure");
+
+    // Max laps escalation comment
+    const commentMax = formatQaFailureComment({
+      route: "continue",
+      candidate: "head1234",
+      qaReport,
+      isMaxLapsExceeded: true,
+    });
+    expect(commentMax).toContain("Maximum laps exceeded on QA failure");
+  });
+
+  test("renderCanonicalPrBody renders human-friendly $pr layout with visualSummary, beforeAfter, and mergeDoor", () => {
+    const richBuilder: BuilderReport = {
+      candidate: dummyIdentities.prHead,
+      verdict: "pass",
+      summary: "Added line-by-line inline code review comments.",
+      visualSummary: "```diff\n- old logic\n+ new logic\n```",
+      beforeAfter: {
+        before: "Review comments posted as a monolithic single comment",
+        after: "Review comments posted inline at exact diff file:line anchors",
+      },
+      mergeDoor: "two-way",
+      blastRadius: "Low risk (publication pipeline only)",
+      outcome: "Delivered human-friendly PR layout and inline reviews.",
+      invariants: ["Fail-closed validation", "Audit trail in publication records"],
+      reviewGuidance: ["Start at scripts/loop/pr-publication.ts"],
+      changedSeams: [
+        { seam: "scripts/loop/pr-publication.ts", impact: "publishPrReview exported" },
+      ],
+      checks: [{ criterion: "test", result: "pass", evidence: "pass" }],
+    };
+
+    const body = renderCanonicalPrBody({
+      issue: dummyIssue,
+      identities: dummyIdentities,
+      builderReport: richBuilder,
+    });
+
+    expect(body).toContain("Closes #42");
+    expect(body).toContain("## Summary");
+    expect(body).toContain("```diff\n- old logic\n+ new logic\n```");
+    expect(body).toContain("## Evidence");
+    expect(body).toContain("- **Before:** Review comments posted as a monolithic single comment");
+    expect(body).toContain(
+      "**After:** Review comments posted inline at exact diff file:line anchors",
+    );
+    expect(body).toContain("<details>");
+    expect(body).toContain("<summary>Verification matrix & candidate metadata</summary>");
+    expect(body).toContain("## Merge Danger");
+    expect(body).toContain("**Door:** Two-way door");
+    expect(body).toContain("**Blast Radius:** Low risk (publication pipeline only)");
+  });
+
+  test("formatReviewComment is quiet when clean approved and sharp with suggestions when sent back", () => {
+    // 1. Clean approved: quiet LGTM
+    const cleanReview: ReviewerReport = {
+      sha: dummyIdentities.prHead,
+      outcome: "approved",
+      reason: "Architecture and test coverage meet all standards.",
+      delivers: "all",
+      axes: {
+        standards: { status: "pass", summary: "Deep modules and zero reinvention" },
+      },
+      findings: [],
+      dispositions: [],
+      rechecks: [],
+      judge_changes: [],
+    };
+
+    const qaReport: QaReport = {
+      head: dummyIdentities.testedHead,
+      overall: "PASS",
+      summary: "Clean pass",
+      lines: [
+        { id: "AC1", kind: "criterion", verdict: "PASS", text: "AC1 ok", evidence: ["ac1.log"] },
+        { id: "AC2", kind: "criterion", verdict: "PASS", text: "AC2 ok", evidence: ["ac2.log"] },
+      ],
+      noticed: [],
+      captures: [],
+    };
+
+    const quietComment = formatReviewComment({
+      outcome: "approved",
+      route: "simple",
+      candidate: dummyIdentities.prHead,
+      blastRadiusCount: 2,
+      qaReport,
+      reviewerReport: cleanReview,
+    });
+
+    expect(quietComment).toContain(
+      "✅ **Code Review Passed** — QA checks (2/2) and diff inspection clean.",
+    );
+    expect(quietComment).not.toContain("#### 🧪 Black-box QA Verification:"); // Quiet when clean!
+    expect(quietComment).not.toContain("#### 🔍 Code Review Findings:"); // No findings section when clean!
+
+    // 2. Sent back with suggestion: sharp and actionable
+    const sentBackReview: ReviewerReport = {
+      sha: dummyIdentities.prHead,
+      outcome: "sent-back",
+      reason: "Found pass-through wrapper smell and tautological test.",
+      delivers: "part",
+      findings: [
+        {
+          id: "F1",
+          axis: "standards",
+          classification: "defect",
+          blocking: true,
+          title: "Shallow pass-through wrapper",
+          description: "Function merely delegates to helper without transformation.",
+          location: { file: "src/service.ts", line: 42 },
+          suggestion: "return helper.process(data);",
+          status: "open",
+          lapIntroduced: 0,
+        },
+      ],
+      dispositions: [],
+      rechecks: [],
+      judge_changes: [],
+    };
+
+    const sharpComment = formatReviewComment({
+      outcome: "sent back",
+      route: "simple",
+      candidate: dummyIdentities.prHead,
+      blastRadiusCount: 3,
+      reviewerReport: sentBackReview,
+    });
+
+    expect(sharpComment).toContain("#### 🔍 Code Review Findings:");
+    expect(sharpComment).toContain(
+      "**[F1]** 🚫 BLOCKING [standards/defect]: Shallow pass-through wrapper (`src/service.ts:42`)",
+    );
+    expect(sharpComment).toContain("```suggestion\n  return helper.process(data);\n  ```");
   });
 });

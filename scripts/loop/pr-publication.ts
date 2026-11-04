@@ -1,8 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { ReportSanitizer } from "@animus/contracts/sanitizer";
 import { processRun } from "./process";
 import { updatePrBodyEvidence, type AmbiguousEvidenceBoundaryError } from "./pr-reporting";
-import type { CaptureRecord, EvidenceUrlMapping } from "./report-schema";
+
+const sanitizer = new ReportSanitizer();
+import type { CaptureRecord, EvidenceUrlMapping, ReviewFinding } from "./report-schema";
 
 export type GhRunner = (
   args: string[],
@@ -19,7 +22,7 @@ export interface PublicationRecord {
   action: "pr_evidence_update" | "comment" | "pr_create";
   targetKind: "pr" | "issue";
   target: string;
-  commentType?: "builder" | "review" | "ci_check" | "escalation";
+  commentType?: "builder" | "review" | "ci_check" | "escalation" | "qa_check";
   candidate: string;
   commentUrl?: string;
   success: boolean;
@@ -338,7 +341,7 @@ export async function publishPrEvidenceUpdate(params: {
 export async function publishComment(params: {
   repoRoot: string;
   target: { kind: "pr" | "issue"; idOrUrl: string | number };
-  commentType: "builder" | "review" | "ci_check" | "escalation";
+  commentType: "builder" | "review" | "ci_check" | "escalation" | "qa_check";
   commentBody: string;
   candidate: string;
   runDirectory?: string;
@@ -405,5 +408,219 @@ export async function publishComment(params: {
     ok: true,
     commentUrl,
     message: `Comment published successfully on ${target.kind} ${targetStr}`,
+  };
+}
+
+/**
+ * Extracts valid right-side line numbers per file path from a unified git diff.
+ */
+export function extractValidDiffLines(rawDiff: string): Map<string, Set<number>> {
+  const fileLines = new Map<string, Set<number>>();
+  let currentFile: string | null = null;
+  let currentLine = 0;
+  let inHunk = false;
+
+  for (const rawLine of rawDiff.split("\n")) {
+    if (rawLine.startsWith("diff --git")) {
+      inHunk = false;
+      continue;
+    }
+    if (rawLine.startsWith("+++ ")) {
+      let pathPart = rawLine.slice(4).trim();
+      if (pathPart.startsWith('"') && pathPart.endsWith('"')) {
+        pathPart = pathPart.slice(1, -1);
+      }
+      if (pathPart === "/dev/null") {
+        currentFile = null;
+      } else if (pathPart.startsWith("b/")) {
+        currentFile = pathPart.slice(2);
+      } else {
+        currentFile = pathPart;
+      }
+      if (currentFile && !fileLines.has(currentFile)) {
+        fileLines.set(currentFile, new Set());
+      }
+      inHunk = false;
+      continue;
+    }
+
+    if (rawLine.startsWith("--- ")) {
+      inHunk = false;
+      continue;
+    }
+
+    if (rawLine.startsWith("@@ ")) {
+      inHunk = true;
+      const match = rawLine.match(/@@\s+-\d+(?:,\d+)?\s+\+(\d+)(?:,(\d+))?\s+@@/);
+      if (match && match[1]) {
+        currentLine = parseInt(match[1], 10);
+      }
+      continue;
+    }
+
+    if (inHunk && currentFile) {
+      if (rawLine.startsWith("+") || rawLine.startsWith(" ")) {
+        const set = fileLines.get(currentFile);
+        if (set) {
+          set.add(currentLine);
+        }
+        currentLine++;
+      } else if (rawLine.startsWith("-")) {
+        // removed line: right-side line number is not incremented
+      }
+    }
+  }
+
+  return fileLines;
+}
+
+/**
+ * Publishes a GitHub PR review with inline diff comments if line numbers are valid,
+ * falling back cleanly to top-level PR comment if no inline comments exist or API fails.
+ */
+export async function publishPrReview(params: {
+  repoRoot: string;
+  pr: string;
+  candidate: string;
+  reviewBody: string;
+  findings?: (ReviewFinding | string)[];
+  rawDiff?: string;
+  runDirectory?: string;
+  runner?: GhRunner;
+}): Promise<{ ok: boolean; commentUrl?: string; inlineCount: number; message: string }> {
+  const { repoRoot, pr, candidate, reviewBody, findings, rawDiff, runDirectory } = params;
+  const runner = params.runner || defaultGhRunner;
+  const artifactsDir = runDirectory ? join(runDirectory, "artifacts") : join(repoRoot, "artifacts");
+
+  // Check deduplication
+  const existingRecords = loadPublicationRecords(artifactsDir);
+  const duplicate = existingRecords.find(
+    (r) =>
+      r.action === "comment" &&
+      r.targetKind === "pr" &&
+      r.target === pr &&
+      r.commentType === "review" &&
+      r.candidate === candidate &&
+      r.success === true,
+  );
+  if (duplicate) {
+    return {
+      ok: true,
+      commentUrl: duplicate.commentUrl,
+      inlineCount: 0,
+      message: `Comment of type 'review' already published for candidate '${candidate}'.`,
+    };
+  }
+
+  let validDiffMap: Map<string, Set<number>> | null = null;
+  if (rawDiff && rawDiff.trim().length > 0) {
+    validDiffMap = extractValidDiffLines(rawDiff);
+  }
+
+  const inlineComments: Array<{ path: string; line: number; body: string }> = [];
+  if (findings && Array.isArray(findings)) {
+    for (const f of findings) {
+      if (
+        typeof f === "object" &&
+        f !== null &&
+        f.location?.file &&
+        typeof f.location?.line === "number"
+      ) {
+        if (validDiffMap) {
+          const fileSet = validDiffMap.get(f.location.file);
+          if (!fileSet || !fileSet.has(f.location.line)) {
+            continue;
+          }
+        }
+        const blockLabel = f.blocking ? "🚫 BLOCKING" : "ℹ️ SUGGESTION";
+        let body = `**${blockLabel} [${f.id}] ${f.title}**\n\n${f.description}`;
+        if (f.suggestion) {
+          body += `\n\n\`\`\`suggestion\n${f.suggestion}\n\`\`\``;
+        }
+        inlineComments.push({
+          path: f.location.file,
+          line: f.location.line,
+          body: sanitizer.sanitizeMarkdown(body).report,
+        });
+      }
+    }
+  }
+
+  const prMatch = pr.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+  if (inlineComments.length > 0 && prMatch) {
+    const [, owner, repo, pullNumber] = prMatch;
+    ensureArtifactsDir(artifactsDir);
+    const payloadPath = join(artifactsDir, "review-payload.json");
+    const payload = {
+      commit_id: candidate,
+      body: reviewBody,
+      event: "COMMENT",
+      comments: inlineComments.map((c) => ({
+        path: c.path,
+        line: c.line,
+        side: "RIGHT",
+        body: c.body,
+      })),
+    };
+    try {
+      writeFileSync(payloadPath, JSON.stringify(payload, null, 2), "utf-8");
+      const reviewRes = await runner(
+        [
+          "gh",
+          "api",
+          `repos/${owner}/${repo}/pulls/${pullNumber}/reviews`,
+          "--method",
+          "POST",
+          "--input",
+          payloadPath,
+        ],
+        repoRoot,
+        30_000,
+      );
+
+      if (reviewRes.exitCode === 0) {
+        let commentUrl: string | undefined;
+        try {
+          const parsed = JSON.parse(reviewRes.stdout);
+          commentUrl = parsed.html_url || undefined;
+        } catch {}
+
+        appendPublicationRecord(artifactsDir, {
+          timestamp: new Date().toISOString(),
+          action: "comment",
+          targetKind: "pr",
+          target: pr,
+          commentType: "review",
+          candidate,
+          commentUrl,
+          success: true,
+        });
+
+        return {
+          ok: true,
+          commentUrl,
+          inlineCount: inlineComments.length,
+          message: `PR review published successfully on ${pr} with ${inlineComments.length} inline comment(s)`,
+        };
+      }
+    } catch {}
+  }
+
+  // Fallback to standard top-level comment
+  const fallback = await publishComment({
+    repoRoot,
+    target: { kind: "pr", idOrUrl: pr },
+    commentType: "review",
+    commentBody: reviewBody,
+    candidate,
+    runDirectory,
+    runner,
+  });
+
+  return {
+    ok: fallback.ok,
+    commentUrl: fallback.commentUrl,
+    inlineCount: 0,
+    message: fallback.message,
   };
 }

@@ -26,9 +26,9 @@ Use `/animus-learn` when:
    Verify that discovered test, lint, format, typecheck, or build commands exit with code 0 before updating `.factory/tool-guidance.json`. Run each candidate command in the local terminal to confirm successful completion.
    *Completion Criterion*: Each tool guidance command is executed in the local environment and exits with code 0 before recording.
 
-3. **Formulate and Gate Candidate Lessons with the Configured Harness**
-   Follow `docs/spec-learning-reliability-hardening.md`: resolve candidate-bound artifact evidence, validate each mutation, and evaluate grounding and quality through `evaluateLearningWithHarness`. Propose only verdicts with both approvals, confidence at least 0.70, and `hallucinationRisk: "grounded_in_logs"`; offline, missing, timed-out, or malformed evaluation holds the candidate.
-   *Completion Criterion*: Each proposed lesson has resolved evidence and a schema-valid harness verdict; held lessons remain inactive.
+3. **Formulate and Gate Candidate Mutations by the Context-Pressure Hierarchy (`/retro`)**
+   Keep Builder context pressure low by routing each finding to the most deterministic layer: mechanical mistakes become `guard` rules (`.factory/codebase-rules.json`), shared abstractions become `pattern` entries, judgment calls belong in `CODING_STANDARDS.md` (read by Reviewer), and only file-scoped runtime traps become `lesson` entries (`.factory/lessons.jsonl`). Follow `docs/spec-learning-reliability-hardening.md`: resolve candidate-bound artifact evidence, validate each mutation, and evaluate grounding and quality through `evaluateLearningWithHarness` (both approvals, confidence >= 0.70, `hallucinationRisk: "grounded_in_logs"`).
+   *Completion Criterion*: Each proposed mutation is routed to the lowest-context-pressure layer with resolved evidence and a schema-valid harness verdict; held lessons remain inactive.
 
 4. **Propose Reusable Repository Skills**
    When procedural knowledge spans multiple steps, include a skill mutation for `.agents/skills/<name>/SKILL.md` in the proposal artifact. Follow `.agents/skills/writing-for-agents/SKILL.md` for valid YAML and observable completion criteria.

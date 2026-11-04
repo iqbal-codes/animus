@@ -13,7 +13,13 @@ import {
 import { BUNDLED_PROMPTS } from "../../scripts/loop/bundled-prompts";
 import { loadPrompt } from "../../scripts/loop/prompts";
 import { buildProviderArgv, materializeSkillContent } from "../../scripts/loop/providers";
-import { hostBoundIdentitiesSchema, type ReviewFinding } from "../../scripts/loop/report-schema";
+import {
+  builderReportSchema,
+  hostBoundIdentitiesSchema,
+  reviewFindingSchema,
+  reviewerReportSchema,
+  type ReviewFinding,
+} from "../../scripts/loop/report-schema";
 import { extractRequiredAcIds } from "../../scripts/local-loop";
 
 describe("Loop Report Schema & Strict Validation", () => {
@@ -742,5 +748,80 @@ Code review completed across Standards and Spec axes.
       const loaded = loadPrompt(name);
       expect(loaded).toBe(bundled);
     }
+  });
+
+  test("reviewFindingSchema accepts optional suggestion replacement code snippet", () => {
+    const findingWithSuggestion = {
+      id: "F1",
+      axis: "standards",
+      classification: "defect",
+      blocking: true,
+      title: "Inefficient loop",
+      description: "Replace with map",
+      location: { file: "src/utils.ts", line: 15 },
+      suggestion: "const items = raw.map(x => x.id);",
+    };
+    const parsed = reviewFindingSchema.parse(findingWithSuggestion);
+    expect(parsed.suggestion).toBe("const items = raw.map(x => x.id);");
+
+    const findingWithoutSuggestion = {
+      id: "F2",
+      title: "Missing check",
+    };
+    const parsed2 = reviewFindingSchema.parse(findingWithoutSuggestion);
+    expect(parsed2.suggestion).toBeUndefined();
+  });
+
+  test("reviewerReportSchema accepts 1-axis reports with spec omitted or axes omitted", () => {
+    // 1. axes omitted entirely
+    const noAxes = reviewerReportSchema.parse({
+      sha: "sha123",
+      outcome: "approved",
+    });
+    expect(noAxes.axes).toBeUndefined();
+    expect(noAxes.outcome).toBe("approved");
+
+    // 2. 1-axis report: only standards provided
+    const oneAxis = reviewerReportSchema.parse({
+      sha: "sha123",
+      outcome: "sent-back",
+      axes: {
+        standards: { status: "fail", summary: "Module depth smell" },
+      },
+    });
+    expect(oneAxis.axes?.standards?.status).toBe("fail");
+    expect(oneAxis.axes?.spec).toBeUndefined();
+
+    // 3. Legacy 2-axes report
+    const legacyTwoAxes = reviewerReportSchema.parse({
+      sha: "sha123",
+      outcome: "approved",
+      axes: {
+        standards: { status: "pass" },
+        spec: { status: "pass" },
+      },
+    });
+    expect(legacyTwoAxes.axes?.standards?.status).toBe("pass");
+    expect(legacyTwoAxes.axes?.spec?.status).toBe("pass");
+  });
+
+  test("builderReportSchema accepts visualSummary, beforeAfter, mergeDoor, and blastRadius", () => {
+    const report = builderReportSchema.parse({
+      candidate: "cand123",
+      verdict: "pass",
+      summary: "Human friendly PR",
+      visualSummary: "```diff\n+ new feature\n```",
+      beforeAfter: {
+        before: "Crash on port 0",
+        after: "Binds to available port cleanly",
+      },
+      mergeDoor: "two-way",
+      blastRadius: "Low risk slice",
+    });
+    expect(report.visualSummary).toContain("+ new feature");
+    expect(report.beforeAfter?.before).toBe("Crash on port 0");
+    expect(report.beforeAfter?.after).toBe("Binds to available port cleanly");
+    expect(report.mergeDoor).toBe("two-way");
+    expect(report.blastRadius).toBe("Low risk slice");
   });
 });
