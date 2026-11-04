@@ -782,6 +782,9 @@ test("13. Verification Profiles: resolves appropriate profile and generates tune
   expect(repoBuilderSkills.some((s) => s.endsWith(".agents/skills/blueprint"))).toBe(true);
   expect(repoBuilderSkills.some((s) => s.endsWith(".agents/skills/ui-quality"))).toBe(true);
   expect(repoBuilderSkills.some((s) => s.endsWith(".agents/skills/security-hardening"))).toBe(true);
+  expect(repoBuilderSkills.some((s) => s.endsWith(".agents/skills/animus-implement-spec"))).toBe(
+    true,
+  );
   expect(
     repoBuilderSkills.some((s) => s.endsWith(".agents/skills/policy-verifier-regressions")),
   ).toBe(true);
