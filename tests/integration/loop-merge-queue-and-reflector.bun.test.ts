@@ -4,7 +4,12 @@ import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { executeSubticketAutoMerge } from "../../scripts/loop/merge-queue";
+import {
+  executeSubticketAutoMerge,
+  evaluateSubticketAutoMerge,
+  recordSubticketIntegration,
+} from "../../scripts/loop/merge-queue";
+import { specCoordinationPlanSchema } from "@animus/contracts/operator";
 import {
   createBoundedReflectionTransport,
   executeTerminalReflection,
@@ -512,6 +517,181 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
     expect(updatedPlan.children[0].commitSha).toBe(candidateSha);
 
     testDb.close();
+  });
+
+  test("Two-Layer Gate: evaluateSubticketAutoMerge fails closed when reviewer auto_merge_judgement is missing", () => {
+    const result = evaluateSubticketAutoMerge({
+      isSubticket: true,
+      targetBranch: "factory/spec-105-integration",
+      baseBranch: "main",
+      readinessReady: true,
+      changedFiles: ["apps/web/src/button.tsx"],
+      diffContent: "+export const Button = () => null;\n",
+      reviewerReport: {
+        sha: "abc1234",
+        outcome: "merge",
+        delivers: "all",
+        findings: [],
+        dispositions: [],
+        rechecks: [],
+        judge_changes: [],
+        // Missing auto_merge_judgement
+      },
+    });
+
+    // Invariant: Must not fabricate low risk or default to approved
+    expect(result.authorized).toBe(false);
+    expect(result.decision).toBe("hold_for_human");
+    expect(result.scopeAligned).toBe(false);
+    expect(result.riskLevel).toBe("high");
+    expect(result.reasons.some((r) => r.includes("Reviewer auto-merge judgement is missing"))).toBe(
+      true,
+    );
+  });
+
+  test("recordSubticketIntegration extracts positive integer PR number and succeeds against schema", async () => {
+    const { repo, baseSha } = await initGitRepo();
+    const dbDir = await mkdtemp(join(tmpdir(), "db-test-pr-"));
+    tempDirs.push(dbDir);
+    const dbPath = join(dbDir, "console.db");
+    const testDb = new DatabaseSync(dbPath);
+    testDb.exec(`
+      CREATE TABLE projects (id TEXT PRIMARY KEY, checkout_path TEXT);
+      CREATE TABLE project_issue_integrations (
+        project_id TEXT NOT NULL,
+        issue_number INTEGER NOT NULL,
+        branch TEXT NOT NULL,
+        commit_sha TEXT,
+        integrated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, issue_number)
+      );
+      CREATE TABLE project_spec_coordinations (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        spec_issue_number INTEGER NOT NULL,
+        is_standalone INTEGER NOT NULL DEFAULT 0,
+        integration_branch TEXT NOT NULL,
+        base_branch TEXT NOT NULL,
+        base_sha TEXT NOT NULL,
+        current_integration_sha TEXT NOT NULL,
+        plan_snapshot TEXT NOT NULL,
+        final_pr_number INTEGER,
+        final_pr_url TEXT,
+        status TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+
+    const projectId = "proj_106";
+    testDb.prepare("INSERT INTO projects (id, checkout_path) VALUES (?, ?)").run(projectId, repo);
+    const initialPlan = {
+      id: "coord_106",
+      projectId,
+      specIssueNumber: 106,
+      isStandalone: false,
+      integrationBranch: "factory/spec-106-integration",
+      baseBranch: "main",
+      baseSha,
+      currentIntegrationSha: baseSha,
+      status: "active",
+      dag: { "51": [] },
+      children: [
+        {
+          number: 51,
+          title: "Subticket 51",
+          dependencies: [],
+          status: "running",
+          contract: {
+            sourceAndProblem: "p",
+            outcome: "o",
+            invariants: ["invariant 1"],
+            acceptanceCriteria: ["ac 1"],
+            boundary: "b",
+            rawBody: "raw",
+            digest: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          },
+        },
+      ],
+      snapshotTimestamp: new Date().toISOString(),
+    };
+    testDb
+      .prepare(
+        `INSERT INTO project_spec_coordinations (id, project_id, spec_issue_number, is_standalone, integration_branch, base_branch, base_sha, current_integration_sha, plan_snapshot, status, updated_at)
+         VALUES (?, ?, ?, 0, 'factory/spec-106-integration', 'main', ?, ?, ?, 'active', ?)`,
+      )
+      .run(
+        "coord_106",
+        projectId,
+        106,
+        baseSha,
+        baseSha,
+        JSON.stringify(initialPlan),
+        new Date().toISOString(),
+      );
+
+    const res = recordSubticketIntegration({
+      root: repo,
+      issueNumber: 51,
+      branch: "factory/spec-106-integration",
+      candidate: baseSha,
+      partOf: 106,
+      finalIntegrationPr: "https://github.com/org/repo/pull/148",
+      db: testDb,
+      projectId,
+    });
+
+    expect(res.integrated).toBe(true);
+    const row = testDb
+      .prepare(
+        "SELECT * FROM project_spec_coordinations WHERE project_id = ? AND spec_issue_number = ?",
+      )
+      .get(projectId, 106) as any;
+    expect(row.final_pr_number).toBe(148);
+    expect(row.final_pr_url).toBe("https://github.com/org/repo/pull/148");
+    expect(row.status).toBe("completed");
+
+    // Must validate successfully with specCoordinationPlanSchema
+    const parsedPlan = JSON.parse(row.plan_snapshot);
+    const validated = specCoordinationPlanSchema.parse(parsedPlan);
+    expect(validated.finalPullRequest?.number).toBe(148);
+    expect(validated.status).toBe("completed");
+
+    testDb.close();
+  });
+
+  test("executeSubticketAutoMerge fails closed without claiming success when attached DB fails", async () => {
+    const { repo, baseSha } = await initGitRepo();
+    const integrationBranch = "factory/spec-107-integration";
+    await git(repo, "branch", integrationBranch, baseSha);
+
+    const wtDir = await mkdtemp(join(tmpdir(), "wt-cand-fail-db-"));
+    tempDirs.push(wtDir);
+    await git(repo, "worktree", "add", "-b", "subticket-52", wtDir, baseSha);
+    await writeFile(join(wtDir, "sub-52.txt"), "subticket 52\n");
+    await git(wtDir, "add", "sub-52.txt");
+    await git(wtDir, "commit", "-m", "feat: subticket 52");
+    const candidateSha = (await git(wtDir, "rev-parse", "HEAD")).trim();
+
+    // Point to a non-existent DB path with dbPath option
+    const result = await executeSubticketAutoMerge({
+      root: repo,
+      candidate: candidateSha,
+      integrationBranch,
+      targetBaseTip: baseSha,
+      worktree: wtDir,
+      issueNumber: 52,
+      partOf: 107,
+      defaultBaseBranch: "main",
+      push: false,
+      dbPath: join(repo, "nonexistent-dir", "invalid.db"),
+      autoMergeEval: makeStubEval(),
+      assertCandidateFn: async () => {},
+    });
+
+    // Invariant: Must fail closed and not claim success
+    expect(result.success).toBe(false);
+    expect(result.finalStatus).toBe("waiting_approval");
+    expect(result.error).toBeDefined();
   });
 });
 

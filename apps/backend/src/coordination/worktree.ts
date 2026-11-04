@@ -1,4 +1,4 @@
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import {
   allocateWorktree,
@@ -27,7 +27,10 @@ export class WorktreeManager {
     const lockPath = join(worktreeDir, ".worktree.lock");
     if (existsSync(lockPath)) {
       try {
-        unlinkSync(lockPath);
+        const cur = JSON.parse(readFileSync(lockPath, "utf-8"));
+        if (cur?.pid === process.pid) {
+          unlinkSync(lockPath);
+        }
       } catch {}
     }
   }

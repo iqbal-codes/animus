@@ -27,3 +27,21 @@
 - Verification Results:
   - `bun run check`: All architecture checks, formatting, linting (0 warnings), and typechecking passed.
   - `bun run test`: All 32 Vitest suites (437 tests) and all 35 Bun suites (516 tests, 953 total baseline tests) passed with 0 failures.
+
+## Cycle 3: Review & Remediation Phase
+- Findings:
+  1. Lock atomicity in `allocateWorktree`: Use `{ flag: "wx" }` for atomic lock acquisition, prevent TOCTOU during stale reclaim, enforce owner-only release (`pid === process.pid && runId === lock.runId`), and fail closed on malformed PIDs (`<= 0`, NaN, non-integer).
+  2. Cross-process integration lock: Added atomic file lock (`.git/animus-spec-integration.lock`) with PID verification, stale reclaim, and owner-only release in `SerializedIntegrationManager` (in-process map alone insufficient).
+  3. Two-Layer Critical Impact Gate: Enforced explicit reviewer judgement in `evaluateSubticketAutoMerge` (never fabricate low risk or default to approved when missing) and verified moderate risk / unaligned scope in coordinator.
+  4. Attached DB error handling & final PR schema: Extracted positive integer PR number in `recordSubticketIntegration` to comply with `finalPullRequestInfoSchema`, and failed closed in `executeSubticketAutoMerge` when attached DB operations fail.
+- Tests added:
+  1. `Two-Layer Critical Impact Gate: child with reviewer judgement moderate risk or scope unaligned halts pipeline` in `tests/integration/coordination.test.ts`
+  2. `attached DB error during loop auto-merge fails closed without claiming success` in `tests/integration/coordination.test.ts`
+  3. `Two-Layer Gate: evaluateSubticketAutoMerge fails closed when reviewer auto_merge_judgement is missing` in `tests/integration/loop-merge-queue-and-reflector.bun.test.ts`
+  4. `recordSubticketIntegration extracts positive integer PR number and succeeds against schema` in `tests/integration/loop-merge-queue-and-reflector.bun.test.ts`
+  5. `executeSubticketAutoMerge fails closed without claiming success when attached DB fails` in `tests/integration/loop-merge-queue-and-reflector.bun.test.ts`
+  6. `allocateWorktree fails closed on malformed PID in .worktree.lock` in `tests/integration/loop-worktree.bun.test.ts`
+  7. `allocateWorktree releaseLock enforces owner-only release` in `tests/integration/loop-worktree.bun.test.ts`
+- Verification Results:
+  - `bun run check`: Clean (architecture, format, lint, typecheck 0 errors across 215 files).
+  - `bun run test`: 32 Vitest suites (437 tests) + 35 Bun suites (521 tests) = 958 tests passed with 0 failures.

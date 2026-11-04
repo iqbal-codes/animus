@@ -130,7 +130,7 @@ export async function acquireIssueLock(
     if (existsSync(ownerFile)) {
       try {
         const owner = JSON.parse(readFileSync(ownerFile, "utf8"));
-        if (typeof owner.pid === "number") {
+        if (typeof owner.pid === "number" && Number.isInteger(owner.pid) && owner.pid > 0) {
           if (!isPidAlive(owner.pid)) {
             stale = true;
           }
@@ -154,7 +154,13 @@ export async function acquireIssueLock(
 
   return async () => {
     try {
-      await rm(lock, { recursive: true, force: true });
+      if (existsSync(ownerFile)) {
+        const raw = readFileSync(ownerFile, "utf8");
+        const cur = JSON.parse(raw);
+        if (cur?.pid === process.pid) {
+          await rm(lock, { recursive: true, force: true });
+        }
+      }
     } catch {}
   };
 }
@@ -386,7 +392,7 @@ export function allocateWorktree(options: WorktreeAllocationOptions): WorktreeAl
     try {
       const lockContent = readFileSync(lockPath, "utf-8");
       const lock = JSON.parse(lockContent) as WorktreeLockInfo;
-      if (typeof lock.pid === "number") {
+      if (typeof lock.pid === "number" && Number.isInteger(lock.pid) && lock.pid > 0) {
         if (isPidAlive(lock.pid)) {
           throw new CoordinationError(
             "worktree_lock_conflict",
@@ -465,18 +471,32 @@ export function allocateWorktree(options: WorktreeAllocationOptions): WorktreeAl
     lockedAt: new Date().toISOString(),
     pid: process.pid,
   };
-  writeFileSync(lockPath, JSON.stringify(lockInfo, null, 2));
+  try {
+    writeFileSync(lockPath, JSON.stringify(lockInfo, null, 2), { flag: "wx" });
+  } catch (err: any) {
+    throw new CoordinationError(
+      "worktree_lock_conflict",
+      `Worktree ${worktreeDir} lock could not be exclusively acquired (wx failed): ${err.message}`,
+    );
+  }
+
+  const cleanMyLock = () => {
+    if (existsSync(lockPath)) {
+      try {
+        const cur = JSON.parse(readFileSync(lockPath, "utf-8"));
+        if (cur?.pid === process.pid && cur?.runId === runId) {
+          unlinkSync(lockPath);
+        }
+      } catch {}
+    }
+  };
 
   // Validate starting SHA before execution starts
   let currentHead = "";
   try {
     currentHead = runner(["rev-parse", "HEAD"], { cwd: worktreeDir });
   } catch (err: any) {
-    if (existsSync(lockPath)) {
-      try {
-        unlinkSync(lockPath);
-      } catch {}
-    }
+    cleanMyLock();
     throw new CoordinationError(
       "starting_sha_unresolvable",
       `Failed to resolve HEAD in worktree ${worktreeDir}: ${err.message}`,
@@ -491,11 +511,7 @@ export function allocateWorktree(options: WorktreeAllocationOptions): WorktreeAl
   }
 
   if (currentHead !== resolvedExpectedSha) {
-    if (existsSync(lockPath)) {
-      try {
-        unlinkSync(lockPath);
-      } catch {}
-    }
+    cleanMyLock();
     throw new CoordinationError(
       "starting_sha_mismatch",
       `Starting SHA mismatch: expected ${resolvedExpectedSha} (${startSha}), but worktree HEAD is ${currentHead}`,
@@ -508,11 +524,7 @@ export function allocateWorktree(options: WorktreeAllocationOptions): WorktreeAl
   try {
     statusOutput = runner(["status", "--porcelain"], { cwd: worktreeDir });
   } catch (err: any) {
-    if (existsSync(lockPath)) {
-      try {
-        unlinkSync(lockPath);
-      } catch {}
-    }
+    cleanMyLock();
     throw new CoordinationError(
       "branch_cleanliness_check_failed",
       `Failed to check branch cleanliness in worktree ${worktreeDir}: ${err.message}`,
@@ -525,11 +537,7 @@ export function allocateWorktree(options: WorktreeAllocationOptions): WorktreeAl
     .filter((l) => l.length > 0 && !l.endsWith(".worktree.lock"));
 
   if (dirtyLines.length > 0) {
-    if (existsSync(lockPath)) {
-      try {
-        unlinkSync(lockPath);
-      } catch {}
-    }
+    cleanMyLock();
     throw new CoordinationError(
       "worktree_dirty",
       `Worktree ${worktreeDir} is not clean: uncommitted changes or untracked files detected`,
@@ -544,18 +552,10 @@ export function allocateWorktree(options: WorktreeAllocationOptions): WorktreeAl
     issueNumber,
     runId,
     releaseLock: () => {
-      if (existsSync(lockPath)) {
-        try {
-          unlinkSync(lockPath);
-        } catch {}
-      }
+      cleanMyLock();
     },
     removeWorktree: () => {
-      if (existsSync(lockPath)) {
-        try {
-          unlinkSync(lockPath);
-        } catch {}
-      }
+      cleanMyLock();
       try {
         runner(["worktree", "remove", "--force", worktreeDir], { cwd: repoRoot });
       } catch {}

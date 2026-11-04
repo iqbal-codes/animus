@@ -67,7 +67,13 @@ export async function executeTargetedImplement(
 
   if (runner) {
     const res = await runner(submission);
-    return targetedImplementResultSchema.parse(res);
+    const parsed = targetedImplementResultSchema.parse(res);
+    return Object.assign(parsed, {
+      ...((res as any).autoMergeJudgement
+        ? { autoMergeJudgement: (res as any).autoMergeJudgement }
+        : {}),
+      ...((res as any).reviewerReport ? { reviewerReport: (res as any).reviewerReport } : {}),
+    });
   }
 
   // Default execution via Bun subprocess if runner is not provided

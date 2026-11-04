@@ -3,8 +3,8 @@
   "parentSpec": 140,
   "branch": "t3/spec-146-worktree-coordination",
   "baseSha": "51b54e3c6f5405e25059f87623cb8fcdd270ce9d",
-  "candidate": "ce17943916262cfe0896642becb37cd4b2304640",
-  "testedIdentity": "ce17943916262cfe0896642becb37cd4b2304640",
+  "candidate": "94b038d4ae2c0e017846c5a3105e294d5513a124",
+  "testedIdentity": "94b038d4ae2c0e017846c5a3105e294d5513a124",
   "acceptanceCriteria": {
     "AC1_holdout_fencing_and_hooks": {
       "status": "PASS",
@@ -59,7 +59,7 @@
         "bun run lint: passed (0 warnings, 0 errors)",
         "bun run typecheck: passed (0 errors across 215 files)",
         "vp test run (Vitest neutral-suite): 32/32 files, 437/437 passed",
-        "bun test (bun-suite): 35/35 suites, 516/516 passed, total 953 baseline tests"
+        "bun test (bun-suite): 35/35 suites, 521/521 passed, total 958 tests"
       ]
     }
   }

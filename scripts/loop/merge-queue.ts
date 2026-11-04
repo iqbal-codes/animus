@@ -314,15 +314,21 @@ export function evaluateSubticketAutoMerge(
   const reviewerImpacts: CriticalImpactCategory[] = judgement?.critical_impacts ?? [];
   const criticalImpacts = Array.from(new Set([...diffImpact.categories, ...reviewerImpacts]));
 
-  const reviewerRisk: AutoMergeRiskLevel = judgement?.risk_level ?? "low";
+  const reasons: string[] = [...diffImpact.reasons];
+  if (!judgement) {
+    reasons.push(
+      "Reviewer auto-merge judgement is missing; auto-merge requires explicit reviewer evaluation.",
+    );
+  }
+
+  const reviewerRisk: AutoMergeRiskLevel = judgement?.risk_level ?? "high";
   const deterministicMinRisk: AutoMergeRiskLevel = diffImpact.hasCriticalImpact ? "high" : "trivial";
   const riskLevel: AutoMergeRiskLevel =
     RISK_ORDER[reviewerRisk] >= RISK_ORDER[deterministicMinRisk]
       ? reviewerRisk
       : deterministicMinRisk;
 
-  const scopeAligned = judgement ? judgement.scope_aligned : true;
-  const reasons: string[] = [...diffImpact.reasons];
+  const scopeAligned = judgement ? judgement.scope_aligned : false;
 
   const isIntegrationTarget =
     isSubticket &&
@@ -368,13 +374,14 @@ export function evaluateSubticketAutoMerge(
   }
 
   const authorized =
+    Boolean(judgement) &&
+    judgement?.eligible === true &&
     isIntegrationTarget &&
     readinessReady &&
     criticalImpacts.length === 0 &&
     outcome === "merge" &&
     scopeAligned &&
-    (riskLevel === "trivial" || riskLevel === "low") &&
-    (judgement ? judgement.eligible === true : true);
+    (riskLevel === "trivial" || riskLevel === "low");
 
   return {
     authorized,
@@ -432,11 +439,12 @@ export interface RecordSubticketIntegrationOptions {
  */
 export function recordSubticketIntegration(
   options: RecordSubticketIntegrationOptions,
-): { integrated: boolean; projectId?: string } {
+): { integrated: boolean; projectId?: string; error?: string } {
   const { root, issueNumber, branch, candidate, partOf, finalIntegrationPr } = options;
 
   let db = options.db;
   let shouldClose = false;
+  let dbAttached = Boolean(options.db || options.dbPath);
 
   if (!db) {
     let resolvedDbPath = options.dbPath;
@@ -454,15 +462,36 @@ export function recordSubticketIntegration(
         }
       }
     }
-    if (resolvedDbPath && existsSync(resolvedDbPath)) {
-      try {
-        db = new DatabaseSync(resolvedDbPath);
-        shouldClose = true;
-      } catch {}
+    if (resolvedDbPath) {
+      if (options.dbPath) {
+        dbAttached = true;
+      }
+      if (existsSync(resolvedDbPath)) {
+        try {
+          db = new DatabaseSync(resolvedDbPath);
+          shouldClose = true;
+        } catch (err: any) {
+          return {
+            integrated: false,
+            error: `Failed to open attached SQLite database at ${resolvedDbPath}: ${err.message}`,
+          };
+        }
+      } else if (options.dbPath) {
+        return {
+          integrated: false,
+          error: `Attached database at ${options.dbPath} does not exist`,
+        };
+      }
     }
   }
 
   if (!db) {
+    if (dbAttached) {
+      return {
+        integrated: false,
+        error: `Attached database does not exist or could not be opened`,
+      };
+    }
     return { integrated: false };
   }
 
@@ -474,6 +503,12 @@ export function recordSubticketIntegration(
       .get() as { name?: string } | undefined;
 
     if (!tableExists) {
+      if (dbAttached) {
+        return {
+          integrated: false,
+          error: "Database attached but project_issue_integrations table does not exist",
+        };
+      }
       return { integrated: false };
     }
 
@@ -496,10 +531,23 @@ export function recordSubticketIntegration(
             projectId = allProjects[0]?.id;
           }
         }
-      } catch {}
+      } catch (err: any) {
+        if (dbAttached) {
+          return {
+            integrated: false,
+            error: `Failed to query projects table in attached database: ${err.message}`,
+          };
+        }
+      }
     }
 
     if (!projectId) {
+      if (dbAttached) {
+        return {
+          integrated: false,
+          error: `Database attached but could not resolve projectId for root ${root}`,
+        };
+      }
       return { integrated: false };
     }
 
@@ -529,27 +577,56 @@ export function recordSubticketIntegration(
             .get(projectId, partOf) as any;
 
           if (coordRow && coordRow.plan_snapshot) {
-            try {
-              const plan = JSON.parse(coordRow.plan_snapshot);
-              plan.currentIntegrationSha = candidate;
-              if (Array.isArray(plan.children)) {
-                for (const child of plan.children) {
-                  if (child.number === issueNumber) {
-                    child.status = "integrated_to_branch";
-                    child.commitSha = candidate;
-                  }
+            const plan = JSON.parse(coordRow.plan_snapshot);
+            plan.currentIntegrationSha = candidate;
+            if (Array.isArray(plan.children)) {
+              for (const child of plan.children) {
+                if (child.number === issueNumber) {
+                  child.status = "integrated_to_branch";
+                  child.commitSha = candidate;
                 }
               }
-              if (finalIntegrationPr) {
-                plan.status = "completed";
-                plan.finalPullRequest = {
-                  number: 0,
-                  url: finalIntegrationPr,
-                  title: `Integrated delivery for spec #${partOf}`,
-                  head: branch,
-                  base: plan.baseBranch ?? "main",
-                };
-              }
+            }
+            let prNum: number | null = null;
+            if (finalIntegrationPr) {
+              const prMatch = finalIntegrationPr.match(/\/pull\/(\d+)/);
+              prNum = prMatch ? parseInt(prMatch[1]!, 10) : (partOf ?? 1);
+              if (prNum <= 0) prNum = partOf ?? 1;
+              plan.status = "completed";
+              plan.finalPullRequest = {
+                number: prNum,
+                url: finalIntegrationPr,
+                title: `Integrated delivery for spec #${partOf}`,
+                head: branch,
+                base: plan.baseBranch ?? "main",
+              };
+            }
+            const columns = db
+              .prepare("PRAGMA table_info(project_spec_coordinations)")
+              .all() as Array<{ name: string }>;
+            const hasPrNumber = columns.some((c) => c.name === "final_pr_number");
+
+            if (hasPrNumber) {
+              db.prepare(
+                `UPDATE project_spec_coordinations
+                 SET current_integration_sha = ?,
+                     plan_snapshot = ?,
+                     final_pr_number = COALESCE(?, final_pr_number),
+                     final_pr_url = COALESCE(?, final_pr_url),
+                     status = CASE WHEN ? IS NOT NULL THEN 'completed' ELSE status END,
+                     updated_at = ?
+                 WHERE project_id = ? AND spec_issue_number = ?`,
+              ).run(
+                candidate,
+                JSON.stringify(plan),
+                prNum,
+                finalIntegrationPr ?? null,
+                finalIntegrationPr ?? null,
+                now,
+                projectId,
+                partOf,
+              );
+            } else {
               db.prepare(
                 `UPDATE project_spec_coordinations
                  SET current_integration_sha = ?,
@@ -567,13 +644,28 @@ export function recordSubticketIntegration(
                 projectId,
                 partOf,
               );
-            } catch {}
+            }
           }
         }
-      } catch {}
+      } catch (err: any) {
+        if (dbAttached) {
+          return {
+            integrated: false,
+            error: `Failed to update project_spec_coordinations in attached database: ${err.message}`,
+          };
+        }
+      }
     }
 
     return { integrated: true, projectId };
+  } catch (err: any) {
+    if (dbAttached) {
+      return {
+        integrated: false,
+        error: `SQLite integration record write failed: ${err.message}`,
+      };
+    }
+    return { integrated: false };
   } finally {
     if (shouldClose && db) {
       try {
@@ -740,8 +832,9 @@ export async function executeSubticketAutoMerge(
     }
 
     // Record verified integration in SQLite project_issue_integrations and synchronize coordination truth
+    const isDbAttached = Boolean(options.db || options.dbPath);
     try {
-      recordSubticketIntegration({
+      const syncResult = recordSubticketIntegration({
         root,
         issueNumber,
         branch: integrationBranch,
@@ -752,7 +845,39 @@ export async function executeSubticketAutoMerge(
         dbPath: options.dbPath,
         projectId: options.projectId,
       });
-    } catch {}
+      if (syncResult.error && isDbAttached) {
+        return {
+          success: false,
+          evaluation: {
+            ...autoMergeEval,
+            authorized: false,
+            decision: "hold_for_human",
+            reasons: [...autoMergeEval.reasons, syncResult.error],
+          },
+          finalStatus: "waiting_approval",
+          reviewOutcome: "approved",
+          error: syncResult.error,
+          finalIntegrationPr,
+        };
+      }
+    } catch (syncErr: unknown) {
+      if (isDbAttached) {
+        const syncMsg = syncErr instanceof Error ? syncErr.message : String(syncErr);
+        return {
+          success: false,
+          evaluation: {
+            ...autoMergeEval,
+            authorized: false,
+            decision: "hold_for_human",
+            reasons: [...autoMergeEval.reasons, syncMsg],
+          },
+          finalStatus: "waiting_approval",
+          reviewOutcome: "approved",
+          error: `Failed to synchronize attached project database: ${syncMsg}`,
+          finalIntegrationPr,
+        };
+      }
+    }
 
     return {
       success: true,

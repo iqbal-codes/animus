@@ -1,5 +1,9 @@
 import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 import { CoordinationError } from "./errors";
+import { isPidAlive } from "../../../../scripts/loop/worktree";
 
 export interface IntegrationParams {
   repoRoot: string;
@@ -36,6 +40,88 @@ function defaultGitRunner(cmd: string[], options: { cwd: string }): string {
   }
 }
 
+function acquireCrossProcessIntegrationLock(
+  repoRoot: string,
+  runner: (cmd: string[], options: { cwd: string }) => string,
+  maxWaitMs = 15_000,
+): () => void {
+  let lockDir = repoRoot;
+  try {
+    const gitDir = runner(["rev-parse", "--git-dir"], { cwd: repoRoot });
+    lockDir = resolve(repoRoot, gitDir);
+  } catch {}
+
+  const lockPath = join(lockDir, "animus-spec-integration.lock");
+  const startTime = Date.now();
+  const token = randomUUID();
+
+  while (true) {
+    if (existsSync(lockPath)) {
+      try {
+        const raw = readFileSync(lockPath, "utf-8");
+        const existing = JSON.parse(raw);
+        if (
+          typeof existing.pid === "number" &&
+          Number.isInteger(existing.pid) &&
+          existing.pid > 0
+        ) {
+          if (!isPidAlive(existing.pid)) {
+            // Stale lock: dead PID (ESRCH), reclaim
+            try {
+              unlinkSync(lockPath);
+            } catch {}
+          }
+        } else {
+          // Malformed lock: fail closed
+          throw new CoordinationError(
+            "integration_lock_conflict",
+            `Integration lock ${lockPath} contains malformed data`,
+          );
+        }
+      } catch (err: any) {
+        if (err instanceof CoordinationError) throw err;
+        throw new CoordinationError(
+          "integration_lock_conflict",
+          `Integration lock ${lockPath} could not be inspected: ${err.message}`,
+        );
+      }
+    }
+
+    try {
+      const payload = JSON.stringify({
+        pid: process.pid,
+        lockedAt: new Date().toISOString(),
+        token,
+      });
+      writeFileSync(lockPath, payload, { flag: "wx" });
+      return () => {
+        if (existsSync(lockPath)) {
+          try {
+            const raw = readFileSync(lockPath, "utf-8");
+            const cur = JSON.parse(raw);
+            if (cur?.pid === process.pid && cur?.token === token) {
+              unlinkSync(lockPath);
+            }
+          } catch {}
+        }
+      };
+    } catch (err: any) {
+      if (err?.code === "EEXIST") {
+        if (Date.now() - startTime >= maxWaitMs) {
+          throw new CoordinationError(
+            "integration_lock_timeout",
+            `Timed out waiting for integration lock ${lockPath} after ${maxWaitMs}ms`,
+          );
+        }
+        const waitUntil = Date.now() + 25;
+        while (Date.now() < waitUntil) {}
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 export class SerializedIntegrationManager {
   private runner: (cmd: string[], options: { cwd: string }) => string;
   // Mutex per repo root to serialize git integration operations and prevent index.lock collisions
@@ -59,9 +145,19 @@ export class SerializedIntegrationManager {
     });
     this.repoLocks.set(lockKey, lockPromise);
 
+    let releaseCrossProcessLock: (() => void) | undefined;
     try {
+      releaseCrossProcessLock = acquireCrossProcessIntegrationLock(
+        params.repoRoot,
+        params.gitRunner ?? this.runner,
+      );
       return this.executeCompareAndSwapMerge(params);
     } finally {
+      if (releaseCrossProcessLock) {
+        try {
+          releaseCrossProcessLock();
+        } catch {}
+      }
       this.repoLocks.delete(lockKey);
       releaseLock();
     }

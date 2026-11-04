@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -477,6 +477,75 @@ describe("scripts/loop/worktree", () => {
       expect(configuredHooks).toBe(githooksDir);
 
       alloc.releaseLock();
+    });
+
+    test("allocateWorktree fails closed on malformed PID in .worktree.lock", async () => {
+      const repo = await initGitRepo();
+      const baseSha = await git(repo, "rev-parse", "HEAD");
+      const wtDir = join(repo, "worktrees", "alloc-bad-pid");
+      await mkdir(wtDir, { recursive: true });
+      const lockPath = join(wtDir, ".worktree.lock");
+
+      for (const badPid of [-1, 0, "not-a-pid", null]) {
+        await writeFile(
+          lockPath,
+          JSON.stringify({
+            runId: "bad-run",
+            branch: "factory/bad-branch",
+            startSha: baseSha,
+            issueNumber: 502,
+            lockedAt: new Date(Date.now() - 3600_000 * 24).toISOString(),
+            pid: badPid,
+          }),
+        );
+
+        expect(() =>
+          loopExports.allocateWorktree({
+            repoRoot: repo,
+            worktreeDir: wtDir,
+            branch: "factory/bad-branch",
+            startSha: baseSha,
+            issueNumber: 502,
+          }),
+        ).toThrow();
+      }
+    });
+
+    test("allocateWorktree releaseLock enforces owner-only release", async () => {
+      const repo = await initGitRepo();
+      const baseSha = await git(repo, "rev-parse", "HEAD");
+      const wtDir = join(repo, "worktrees", "alloc-owner-release");
+
+      const alloc = loopExports.allocateWorktree({
+        repoRoot: repo,
+        worktreeDir: wtDir,
+        branch: "factory/alloc-owner",
+        startSha: baseSha,
+        issueNumber: 503,
+      });
+
+      const lockPath = join(wtDir, ".worktree.lock");
+      expect(existsSync(lockPath)).toBe(true);
+
+      // Overwrite with different runId (simulating another run/process lock)
+      await writeFile(
+        lockPath,
+        JSON.stringify({
+          runId: "different-run",
+          branch: "factory/alloc-owner",
+          startSha: baseSha,
+          issueNumber: 503,
+          lockedAt: new Date().toISOString(),
+          pid: process.pid,
+        }),
+      );
+
+      // alloc.releaseLock() must not delete a lock owned by different-run
+      alloc.releaseLock();
+      expect(existsSync(lockPath)).toBe(true);
+
+      // Clean up for test
+      unlinkSync(lockPath);
     });
   });
 });

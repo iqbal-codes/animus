@@ -546,7 +546,8 @@ export class SpecCoordinatorService {
     if (
       criticalImpacts.length > 0 ||
       (judgement && !judgement.eligible) ||
-      (judgement && judgement.risk_level === "high")
+      (judgement && (judgement.risk_level === "high" || judgement.risk_level === "moderate")) ||
+      (judgement && !judgement.scope_aligned)
     ) {
       const errorMsg = `Critical impact detected on child #${childIssueNumber} (${criticalImpacts.join(", ")}): requires human review before integration`;
       plan.status = "halted";

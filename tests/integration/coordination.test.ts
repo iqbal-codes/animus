@@ -412,7 +412,45 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
         }),
       ).toThrow(CoordinationError);
 
+      // Malformed PIDs (negative, zero, string, null) fail closed and are never treated as stale
+      for (const badPid of [-1, 0, "12345", null]) {
+        writeFileSync(
+          lockPath,
+          JSON.stringify({
+            runId: "bad-pid-run",
+            branch: "test/stale-branch",
+            startSha,
+            issueNumber: 44,
+            lockedAt: new Date(Date.now() - 3600_000 * 24).toISOString(),
+            pid: badPid,
+          }),
+        );
+        expect(() =>
+          worktreeManager.allocateWorktree({
+            repoRoot: repoPath,
+            worktreeDir,
+            branch: "test/stale-branch",
+            startSha,
+            issueNumber: 44,
+          }),
+        ).toThrow(CoordinationError);
+      }
+
+      // Owner-only release: another PID/run cannot delete the lock
+      writeFileSync(
+        lockPath,
+        JSON.stringify({
+          runId: "other-run",
+          branch: "test/stale-branch",
+          startSha,
+          issueNumber: 44,
+          lockedAt: new Date().toISOString(),
+          pid: process.pid,
+        }),
+      );
       alloc.releaseLock();
+      expect(existsSync(lockPath)).toBe(true); // preserved because runId did not match
+      unlinkSync(lockPath); // manual cleanup for test
     });
 
     test("fails closed if starting SHA mismatches expected base", () => {
@@ -670,37 +708,27 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
       unlinkSync(join(repoPath, "dirty-primary-untracked.txt"));
     });
 
-    test("Two-Layer Critical Impact Gate: child with database migration/DDL halts coordination pipeline without merging", async () => {
+    test("Two-Layer Critical Impact Gate: child with reviewer judgement moderate risk or scope unaligned halts pipeline", async () => {
       forge.addIssue("owner/repo-spec", {
         number: 58,
-        title: "Spec: Critical Impact Test",
+        title: "Spec: Reviewer Semantic Gate",
         state: "OPEN",
         body: "Spec",
       });
       forge.addIssue("owner/repo-spec", {
-        number: 112,
-        title: "Critical Subticket 112",
+        number: 115,
+        title: "Semantic Subticket 115",
         state: "OPEN",
         body: "Part of #58\n\nDepends on: None",
         labels: ["ready-for-agent"],
       });
 
-      const planBefore = await coordinator.planSpec(projectId, 58);
-      const integrationShaBefore = planBefore.currentIntegrationSha;
+      await coordinator.planSpec(projectId, 58);
 
-      const runnerWithDdl = async (sub: any) => {
-        // Create a database schema migration file with SQL DDL
-        const migrationDir = join(sub.worktreePath, "migrations");
-        mkdirSync(migrationDir, { recursive: true });
-        writeFileSync(
-          join(migrationDir, "001_create_users.sql"),
-          "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT);\n",
-        );
-        execFileSync("git", ["add", "-A"], {
-          cwd: sub.worktreePath,
-          stdio: "ignore",
-        });
-        execFileSync("git", ["commit", "-m", "feat(db): add users table migration"], {
+      const runnerWithModerateRisk = async (sub: any) => {
+        writeFileSync(join(sub.worktreePath, "feature-115.txt"), "feature 115");
+        execFileSync("git", ["add", "-A"], { cwd: sub.worktreePath, stdio: "ignore" });
+        execFileSync("git", ["commit", "-m", "feat: 115"], {
           cwd: sub.worktreePath,
           stdio: "ignore",
         });
@@ -708,39 +736,105 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
           cwd: sub.worktreePath,
           encoding: "utf-8",
         }).trim();
-        return { success: true, childIssueNumber: sub.childIssueNumber, headSha };
+        return {
+          success: true,
+          childIssueNumber: sub.childIssueNumber,
+          headSha,
+          autoMergeJudgement: {
+            eligible: false,
+            risk_level: "moderate",
+            scope_aligned: true,
+            critical_impacts: [],
+            rationale: "Moderate architectural risk requires human eyes.",
+          },
+        };
       };
 
-      // Dispatching child with critical impact must reject/throw CoordinationError
       await expect(
         coordinator.dispatchChild({
           projectId,
           specIssueNumber: 58,
-          childIssueNumber: 112,
-          runner: runnerWithDdl,
+          childIssueNumber: 115,
+          runner: runnerWithModerateRisk,
         }),
       ).rejects.toThrow(/Critical impact detected/);
 
-      // Coordination pipeline must be halted with attribution at critical_impact_gate
-      const planAfter = coordinator.getPlan(projectId, 58)!;
-      expect(planAfter.status).toBe("halted");
-      expect(planAfter.haltAttribution?.stage).toBe("critical_impact_gate");
-      expect(planAfter.haltAttribution?.childIssueNumber).toBe(112);
+      const plan = coordinator.getPlan(projectId, 58)!;
+      expect(plan.status).toBe("halted");
+      expect(plan.haltAttribution?.stage).toBe("critical_impact_gate");
+    });
 
-      // Invariant: Integration branch was NOT advanced
-      const currentIntSha = execFileSync("git", ["rev-parse", "factory/spec-58-integration"], {
+    test("attached DB error during loop auto-merge fails closed without claiming success", async () => {
+      forge.addIssue("owner/repo-spec", {
+        number: 58,
+        title: "Spec: DB Error Gate",
+        state: "OPEN",
+        body: "Spec",
+      });
+      forge.addIssue("owner/repo-spec", {
+        number: 116,
+        title: "DB Error Subticket 116",
+        state: "OPEN",
+        body: "Part of #58\n\nDepends on: None",
+        labels: ["ready-for-agent"],
+      });
+
+      const plan = await coordinator.planSpec(projectId, 58);
+      const baseTip = plan.currentIntegrationSha;
+
+      const wtDir = join(tempDir, "loop-wt-116");
+      execFileSync("git", ["worktree", "add", "-b", "factory/spec-58/ticket-116", wtDir, baseTip], {
         cwd: repoPath,
+        stdio: "ignore",
+      });
+      writeFileSync(join(wtDir, "loop-116.txt"), "content");
+      execFileSync("git", ["add", "-A"], { cwd: wtDir, stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", "feat: 116"], { cwd: wtDir, stdio: "ignore" });
+      const cand116 = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: wtDir,
         encoding: "utf-8",
       }).trim();
-      expect(currentIntSha).toBe(integrationShaBefore);
 
-      // Invariant: No false row written to project_issue_integrations
-      const falseRow = db
-        .prepare(
-          "SELECT * FROM project_issue_integrations WHERE project_id = ? AND issue_number = ?",
-        )
-        .get(projectId, 112);
-      expect(falseRow).toBeUndefined();
+      const { executeSubticketAutoMerge } = await import("../../scripts/loop/merge-queue");
+
+      // Pass an invalid dbPath to simulate attached DB failure
+      const mergeResult = await executeSubticketAutoMerge({
+        root: repoPath,
+        candidate: cand116,
+        integrationBranch: "factory/spec-58-integration",
+        targetBaseTip: baseTip,
+        worktree: wtDir,
+        issueNumber: 116,
+        partOf: 58,
+        defaultBaseBranch: "main",
+        push: false,
+        dbPath: join(tempDir, "nonexistent-dir-for-db", "console.db"),
+        projectId,
+        autoMergeEval: {
+          authorized: true,
+          decision: "auto_merge",
+          isSubticket: true,
+          targetBranch: "factory/spec-58-integration",
+          baseBranch: "main",
+          riskLevel: "low",
+          scopeAligned: true,
+          criticalImpacts: [],
+          deterministicImpacts: [],
+          reviewerImpacts: [],
+          reasons: [],
+        },
+        assertCandidateFn: async () => {},
+      });
+
+      // Must fail closed and hold for human, never claim success
+      expect(mergeResult.success).toBe(false);
+      expect(mergeResult.finalStatus).toBe("waiting_approval");
+      expect(mergeResult.error).toBeDefined();
+
+      execFileSync("git", ["worktree", "remove", "--force", wtDir], {
+        cwd: repoPath,
+        stdio: "ignore",
+      });
     });
 
     test("loop subticket auto-merge updates SQLite project_issue_integrations and synchronizes spec coordination truth", async () => {
