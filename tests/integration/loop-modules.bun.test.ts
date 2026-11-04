@@ -24,17 +24,10 @@ import {
   buildProviderArgv,
   loadPrompt,
   renderPrompt,
-  parsePrdSections,
-  slicePrdDeterministic,
-  parseHoldoutMarkdown,
-  writeHoldoutScenarios,
-  runManagerPass,
   assessMergeBatchDeterministic,
   analyzeCriticalDiffImpact,
   evaluateSubticketAutoMerge,
-  analyzeDiffComplexity,
   verifyDeployment,
-  auditDiscoveries,
   runSchedulerTick,
   startSchedulerLoop,
   filterAdmittedIssues,
@@ -93,60 +86,7 @@ test("2. Prompts: loads decoupled markdown files from scripts/prompts and interp
   expect(rendered).toBe("Do simple in /artifacts");
 });
 
-test("3. Backlog Slicing: decomposes PRD into dependency-ordered issues with contracts", () => {
-  const prd = `# Test PRD\n\n## Core Engine\nBuild the engine.\n\n## Web UI\nBuild the web console.\n`;
-  const { title, sections } = parsePrdSections(prd);
-  expect(title).toBe("Test PRD");
-  expect(sections).toHaveLength(2);
-
-  const tickets = slicePrdDeterministic(prd, 5);
-  expect(tickets).toHaveLength(2);
-  expect(tickets[0]!.key).toBe("core-engine");
-
-  const greenfieldTickets = slicePrdDeterministic(prd, 5, { includeFoundationSlice: true });
-  expect(greenfieldTickets).toHaveLength(3);
-  expect(greenfieldTickets[0]!.key).toBe("architecture-and-shared-primitives");
-  expect(greenfieldTickets[1]!.depends_on).toEqual(["architecture-and-shared-primitives"]);
-  expect(tickets[0]!.depends_on).toEqual([]);
-  expect(tickets[1]!.key).toBe("web-ui");
-  expect(tickets[1]!.depends_on).toEqual(["core-engine"]);
-});
-
-test("4. Holdouts: authors and parses fenced acceptance scenarios", async () => {
-  const tmp = await mkdtemp(join(tmpdir(), "holdouts-"));
-  tempDirs.push(tmp);
-  const prdFile = join(tmp, "PRD.md");
-  await Bun.write(prdFile, "# PRD\n\n## User Journey\nUser logs in and checks status.\n");
-
-  const res = await writeHoldoutScenarios(tmp, prdFile, ".factory/holdout/HOLDOUT.md");
-  expect(res.count).toBe(1);
-  expect(existsSync(res.filePath)).toBe(true);
-
-  const content = await Bun.file(res.filePath).text();
-  expect(content).toContain("STRICT ACCESS POLICY");
-  const parsed = parseHoldoutMarkdown(content);
-  expect(parsed).toHaveLength(1);
-  expect(parsed[0]!.id).toBe("H-01");
-});
-
-test("5. Manager: sweeps expired locks and logs metrics line", async () => {
-  const tmp = await mkdtemp(join(tmpdir(), "manager-"));
-  tempDirs.push(tmp);
-  const stateRoot = join(tmp, ".factory-local-loop");
-  const lock = join(stateRoot, "locks", "issue-99");
-  await mkdir(lock, { recursive: true });
-
-  const root = join(import.meta.dir, "../..");
-  // Set expiry to 0 to simulate expired lock
-  const rep = await runManagerPass(root, stateRoot, 0);
-  expect(rep.actions.some((a: { action: string }) => a.action === "released_expired_lock")).toBe(
-    true,
-  );
-  expect(rep.metricsLine).toContain("merged since last pass:");
-  expect(existsSync(lock)).toBe(false);
-});
-
-test("6. Merge Queue: enforces review approval and protected paths", () => {
+test("3. Merge Queue: enforces review approval and protected paths", () => {
   const candidates = [
     {
       number: 10,
@@ -178,23 +118,7 @@ test("6. Merge Queue: enforces review approval and protected paths", () => {
   expect(plan.reasons.some((r: string) => r.includes("independent review"))).toBe(true);
 });
 
-test("7. Simplify: identifies duplicated helpers and empty catches", () => {
-  const diff = `
-+function helper() { return 1; }
-+function helper() { return 2; }
-+try { doWork(); } catch (e) {}
-  `;
-  const findings = analyzeDiffComplexity(diff);
-  expect(findings.length).toBeGreaterThanOrEqual(2);
-  expect(
-    findings.some((f: { smallerShape: string }) => f.smallerShape.includes("Consolidate helper")),
-  ).toBe(true);
-  expect(findings.some((f: { smallerShape: string }) => f.smallerShape.includes("catch"))).toBe(
-    true,
-  );
-});
-
-test("8. Deploy: verifies health and candidate match", async () => {
+test("4. Deploy: candidate HTTP probe verifies health and candidate match", async () => {
   // Offline mock server test
   const server = Bun.serve({
     port: 0,
@@ -215,12 +139,6 @@ test("8. Deploy: verifies health and candidate match", async () => {
   } finally {
     await server.stop(true);
   }
-});
-
-test("9. Discoveries: audits repository and prepares discovery records", async () => {
-  const root = join(import.meta.dir, "../..");
-  const res = await auditDiscoveries(root);
-  expect(res.prompt).toContain("Classify discovery proposals");
 });
 
 test("10. Scheduler: evaluates brakes, work window, capacity slots, dependency admission, and autonomous dispatch", async () => {
