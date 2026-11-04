@@ -43,7 +43,6 @@ import {
   buildCuratedAppendPrompts,
 } from "./loop/harness-memory";
 import { resolveVerificationProfile, getProfileInstructions } from "./loop/profiles";
-import { evaluateCodebaseRulesOnEdit } from "../.factory/hooks/loop-guard";
 import {
   recordLapAttempt,
   shouldTriggerReflection,
@@ -110,50 +109,29 @@ export {
   type AssembleRolePromptContextOptions,
 };
 
-async function git(root: string, ...args: string[]): Promise<string> {
-  const result = await processRun(["git", ...args], root, 30_000);
-  if (result.exitCode !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr}`);
-  return result.stdout.trim();
-}
+import {
+  git,
+  inspectLocalLoop,
+  findExistingWorktreeForBranch,
+  acquireIssueLock,
+  prepareLoopWorktree,
+  assertCandidate as assertCandidateInWorktree,
+  DEFAULT_PROTECTED_PATHS,
+  type PrepareLoopWorktreeOptions,
+  type AssertCandidateOptions,
+} from "./loop/worktree";
 
-export async function inspectLocalLoop(root: string) {
-  const common = resolve(root, await git(root, "rev-parse", "--git-common-dir"));
-  const primary = (await git(root, "worktree", "list", "--porcelain"))
-    .split("\n")[0]!
-    .replace(/^worktree /, "");
-  for (const directory of new Set([root, primary, common])) {
-    for (const brake of ["STOP", "PAUSE"]) {
-      if (existsSync(join(directory, ".factory", brake)))
-        throw new Error(`${brake} brake is active`);
-    }
-  }
-  return { common, primary };
-}
-
-export async function findExistingWorktreeForBranch(
-  root: string,
-  branch: string,
-): Promise<string | null> {
-  try {
-    const stdout = await git(root, "worktree", "list", "--porcelain");
-    const blocks = stdout.split("\n\n");
-    for (const block of blocks) {
-      let worktreePath = "";
-      let isTargetBranch = false;
-      for (const line of block.split("\n")) {
-        if (line.startsWith("worktree ")) {
-          worktreePath = line.slice("worktree ".length).trim();
-        } else if (line === `branch refs/heads/${branch}`) {
-          isTargetBranch = true;
-        }
-      }
-      if (isTargetBranch && worktreePath && existsSync(worktreePath)) {
-        return worktreePath;
-      }
-    }
-  } catch {}
-  return null;
-}
+export {
+  git,
+  inspectLocalLoop,
+  findExistingWorktreeForBranch,
+  acquireIssueLock,
+  prepareLoopWorktree,
+  assertCandidateInWorktree as assertCandidate,
+  DEFAULT_PROTECTED_PATHS,
+  type PrepareLoopWorktreeOptions,
+  type AssertCandidateOptions,
+};
 
 export { computeExternalBlastRadius, type ExternalBlastRadiusOptions };
 
@@ -306,32 +284,14 @@ export async function runLocalLoop(
       : join(common, "factory-local-loop");
   const runDirectory = join(stateRoot, "runs", runId);
   const { artifactsDir, handoffDir } = await setupArtifactDirectories(runDirectory);
-  const lock = join(stateRoot, "locks", `issue-${issue.number}`);
-  await mkdir(dirname(lock), { recursive: true });
-  try {
-    await mkdir(lock);
-  } catch {
-    const ownerFile = join(lock, "owner.json");
-    let stale = false;
-    if (existsSync(ownerFile)) {
-      try {
-        const owner = JSON.parse(readFileSync(ownerFile, "utf8"));
-        if (typeof owner.pid === "number") {
-          try {
-            process.kill(owner.pid, 0);
-          } catch {
-            stale = true;
-          }
-        }
-      } catch {}
-    }
-    if (stale) {
-      await rm(lock, { recursive: true, force: true });
-      await mkdir(lock);
-    } else {
-      throw new Error(`Issue ${issue.number} is locked; inspect ${lock} before manual release`);
-    }
-  }
+  const releaseLock = await acquireIssueLock(stateRoot, issue.number, {
+    runId,
+    pid: process.pid,
+    issue: issue.url,
+    route,
+    runDirectory,
+    startedAt: new Date().toISOString(),
+  });
 
   const branch = existingPr
     ? existingPr.headRefName
@@ -550,8 +510,9 @@ export async function runLocalLoop(
   };
 
   try {
+    const lockDir = join(stateRoot, "locks", `issue-${issue.number}`);
     await Bun.write(
-      join(lock, "owner.json"),
+      join(lockDir, "owner.json"),
       JSON.stringify({
         runId,
         pid: process.pid,
@@ -566,106 +527,25 @@ export async function runLocalLoop(
     await save();
 
     // 2. ISOLATED WORKTREE ALLOCATION / REUSE
-    if (existingWorktree) {
-      if (hasOrigin) {
-        await git(state.worktree, "fetch", "origin", branch).catch(() => {});
-        await git(state.worktree, "fetch", "origin", baseBranch).catch(() => {});
-        await git(
-          state.worktree,
-          "checkout",
-          "-B",
-          branch,
-          `origin/${branch}`,
-          "--ignore-other-worktrees",
-        );
-        await git(state.worktree, "reset", "--hard", `origin/${branch}`);
-      } else {
-        await git(
-          state.worktree,
-          "checkout",
-          "-B",
-          branch,
-          branch,
-          "--ignore-other-worktrees",
-        ).catch(() => {});
-      }
-      await git(state.worktree, "clean", "-fd");
-    } else {
-      await mkdir(dirname(state.worktree), { recursive: true });
-      if (route === "continue") {
-        if (hasOrigin) {
-          await git(root, "fetch", "origin", branch);
-          await git(root, "fetch", "origin", baseBranch).catch(() => {});
-        }
-        await git(root, "worktree", "add", "--no-checkout", state.worktree, `origin/${branch}`);
-        await git(
-          state.worktree,
-          "sparse-checkout",
-          "set",
-          "--no-cone",
-          "/*",
-          "!/.factory/holdout/",
-        );
-        await git(
-          state.worktree,
-          "checkout",
-          "-B",
-          branch,
-          `origin/${branch}`,
-          "--ignore-other-worktrees",
-        );
-      } else {
-        await git(root, "worktree", "add", "--no-checkout", "-b", branch, state.worktree, base);
-        await git(
-          state.worktree,
-          "sparse-checkout",
-          "set",
-          "--no-cone",
-          "/*",
-          "!/.factory/holdout/",
-        );
-        await git(state.worktree, "checkout", "--ignore-other-worktrees", branch);
-      }
-      if (existsSync(join(root, ".githooks"))) {
-        await git(state.worktree, "config", "core.hooksPath", join(root, ".githooks")).catch(
-          () => {},
-        );
-      }
-    }
+    await prepareLoopWorktree({
+      root,
+      worktreePath: state.worktree,
+      branch,
+      base,
+      route,
+      hasOrigin,
+      baseBranch,
+      existingWorktree,
+    });
 
-    const assertCandidate = async (expectedCandidate?: string) => {
-      await inspectLocalLoop(root);
-      await inspectLocalLoop(state.worktree);
-      if (await git(state.worktree, "status", "--porcelain", "--untracked-files=all"))
-        throw new Error("Candidate has uncommitted or untracked changes");
-      const head = await git(state.worktree, "rev-parse", "HEAD");
-      if (expectedCandidate && expectedCandidate !== head)
-        throw new Error("Candidate changed during verification");
-      await git(state.worktree, "merge-base", "--is-ancestor", base, head);
-      const changed = (await git(state.worktree, "diff", "--name-only", "--no-renames", base, head))
-        .split("\n")
-        .filter(Boolean);
-      if (changed.some((p) => protectedPaths.some((pattern) => new Bun.Glob(pattern).match(p))))
-        throw new Error("Candidate changed protected paths");
-
-      // Deterministic codebase rules enforcement across all harnesses (Pi, Claude, Codex, OpenCode)
-      for (const relPath of changed) {
-        const fullPath = join(state.worktree, relPath);
-        if (existsSync(fullPath)) {
-          try {
-            const content = readFileSync(fullPath, "utf-8");
-            const ruleCheck = evaluateCodebaseRulesOnEdit(state.worktree, relPath, content);
-            if (ruleCheck.blocked) {
-              throw new Error(`Candidate violated codebase rules: ${ruleCheck.reasons.join("; ")}`);
-            }
-          } catch (err: any) {
-            if (err.message.includes("Candidate violated codebase rules")) throw err;
-          }
-        }
-      }
-
-      return head;
-    };
+    const assertCandidate = (expectedCandidate?: string) =>
+      assertCandidateInWorktree({
+        root,
+        worktree: state.worktree,
+        base,
+        expectedCandidate,
+        protectedPaths,
+      });
 
     // Dynamic prompt loading with modular fallback
     const builderTemplate = loadPrompt("loop-work", root);
@@ -1847,7 +1727,7 @@ export async function runLocalLoop(
     return state;
   } finally {
     try {
-      await Bun.spawn(["rm", "-rf", lock]).exited;
+      await releaseLock();
     } catch {}
   }
 }
