@@ -6,8 +6,7 @@ import type {
 } from "@animus/contracts/operator";
 import type { ForgeAdapter, ForgeIssue } from "../registry/forge";
 import { assertIssueForge } from "../registry/forge";
-import { evaluateIssueAdmission, type RawIssue } from "./admission";
-import { parseDependencies } from "./parser";
+import { evaluateBacklogAdmission } from "./admission";
 
 export class TargetBindingError extends Error {
   constructor(
@@ -52,35 +51,11 @@ export async function verifyTargetBinding(
     );
   }
 
-  const dependencies = [
-    ...new Set(
-      [
-        liveIssue.body ?? "",
-        ...(liveIssue.comments ?? []).map((comment) => comment.body ?? ""),
-      ].flatMap(parseDependencies),
-    ),
-  ];
-  const allByNumber = new Map<number, RawIssue>([[liveIssue.number, liveIssue]]);
-  try {
-    if (dependencies.length && issueForge.getIssueStates) {
-      const states = await issueForge.getIssueStates(repoName, dependencies);
-      for (const [number, state] of states) {
-        if (state) allByNumber.set(number, { number, title: "", state });
-      }
-    } else {
-      for (const number of dependencies) {
-        const dependency = await issueForge.getIssue(repoName, number);
-        if (dependency) allByNumber.set(number, dependency);
-      }
-    }
-  } catch (error: any) {
-    throw new TargetBindingError(
-      "target_drift",
-      `Failed to verify dependencies: ${error?.message || String(error)}`,
-    );
-  }
+  // 2. Query project checkout path and local branch integrations
+  const projectRow = db
+    .prepare("SELECT checkout_path FROM projects WHERE id = ?")
+    .get(projectId) as { checkout_path?: string } | undefined;
 
-  // 3. Query local branch integrations for this project
   const integrations = db
     .prepare("SELECT issue_number, branch FROM project_issue_integrations WHERE project_id = ?")
     .all(projectId) as unknown as Array<{ issue_number: number; branch: string }>;
@@ -90,12 +65,29 @@ export async function verifyTargetBinding(
     integratedMap.set(row.issue_number, row.branch);
   }
 
-  // 4. Fresh admission evaluation
-  const admission = evaluateIssueAdmission(liveIssue, allByNumber, {
-    integratedBranchIssues: integratedMap,
+  let nativeDeps: number[] = [];
+  if (issueForge.getIssueDependencies) {
+    try {
+      nativeDeps = await issueForge.getIssueDependencies(repoName, issueNumber);
+    } catch {}
+  }
+
+  // 3. Unified admission evaluation across all 7 invariants
+  const admissionResult = await evaluateBacklogAdmission({
+    repo: repoName,
+    issues: [liveIssue],
+    forge: issueForge,
+    workspace: projectRow?.checkout_path,
+    branchIntegrations: integratedMap,
+    nativeDependencies: new Map([[issueNumber, nativeDeps]]),
   });
 
-  // 5. Verify state
+  const admission = admissionResult.issues[0];
+  if (!admission) {
+    throw new TargetBindingError("target_drift", "Admission evaluation failed");
+  }
+
+  // 4. Verify state
   const expectedState = (submission.expected_state || "OPEN").toUpperCase();
   const actualState = (liveIssue.state || "OPEN").toUpperCase();
   if (actualState !== expectedState) {

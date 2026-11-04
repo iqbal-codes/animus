@@ -16,6 +16,7 @@ import {
   computeDiff,
   computeLabelEffects,
 } from "../../apps/backend/src/intake";
+import { resolveProjectWorkspace } from "@animus/contracts/paths";
 import { createFactoryClient } from "@animus/client";
 import {
   intakePreviewResultSchema,
@@ -340,7 +341,7 @@ Depends on: #59, #60
       expect(afterIntegration.unsatisfied_dependencies).toEqual([]);
     });
 
-    test("blocks admission on blocking labels (needs-info, ready-for-human, needs-triage)", async () => {
+    test("blocks admission on blocking labels (needs-info, ready-for-human, needs-triage, needs-owner)", async () => {
       const checkoutPath = createMockCheckout("co-alpha", "owner/repo-alpha");
       const project = await registry.registerProject({
         method: "local_checkout",
@@ -348,7 +349,12 @@ Depends on: #59, #60
         checkout_path: checkoutPath,
       });
 
-      for (const blockingLabel of ["needs-info", "ready-for-human", "needs-triage"]) {
+      for (const blockingLabel of [
+        "needs-info",
+        "ready-for-human",
+        "needs-triage",
+        "needs-owner",
+      ]) {
         forge.addIssue("owner/repo-alpha", {
           number: 21,
           title: `Task with ${blockingLabel}`,
@@ -360,6 +366,150 @@ Depends on: #59, #60
         expect(issue.admission_status).toBe("held");
         expect(issue.reason).toBe("held_by_label");
       }
+    });
+
+    test("strictly blocks target binding when issue has needs-owner label", async () => {
+      const checkoutPath = createMockCheckout("co-alpha", "owner/repo-alpha");
+      const project = await registry.registerProject({
+        method: "local_checkout",
+        name: "Alpha Project",
+        checkout_path: checkoutPath,
+      });
+
+      forge.addIssue("owner/repo-alpha", {
+        number: 22,
+        title: "Escalated Task",
+        state: "OPEN",
+        labels: [{ name: "ready-for-agent" }, { name: "needs-owner" }],
+      });
+
+      await expect(
+        intake.bindProjectTarget(project.id, 22, {
+          expected_state: "OPEN",
+          expected_labels: ["ready-for-agent", "needs-owner"],
+          expected_admission_status: "admitted",
+        }),
+      ).rejects.toThrow(TargetBindingError);
+    });
+
+    test("unions native GitHub blocked_by dependencies with Markdown Depends on", async () => {
+      const checkoutPath = createMockCheckout("co-alpha", "owner/repo-alpha");
+      const project = await registry.registerProject({
+        method: "local_checkout",
+        name: "Alpha Project",
+        checkout_path: checkoutPath,
+      });
+
+      // Dependency #10 is OPEN on forge
+      forge.addIssue("owner/repo-alpha", {
+        number: 10,
+        title: "Blocker Prereq",
+        state: "OPEN",
+        labels: [{ name: "ready-for-agent" }],
+      });
+      // Issue #50 has no textual Depends on: in body, but has a native blocked_by edge to #10
+      forge.addIssue("owner/repo-alpha", {
+        number: 50,
+        title: "Native Blocked Task",
+        state: "OPEN",
+        labels: [{ name: "ready-for-agent" }],
+        body: "## Source and problem\nProblem\n## Outcome\nOutcome\n## Invariants\n- Inv\n## Acceptance criteria\n- [ ] AC1\n## Boundary\n- Boundary\n\nDepends on: None",
+      });
+      await forge.addIssueDependency("owner/repo-alpha", 50, 10);
+
+      const issue = await intake.getProjectIssue(project.id, 50);
+      expect(issue.admission_status).toBe("held");
+      expect(issue.reason).toBe("waiting_on_dependency:#10");
+      expect(issue.dependencies).toContain(10);
+      expect(issue.unsatisfied_dependencies).toContain(10);
+    });
+
+    test("holds issue when issue dossier attempts reach max_laps (dossier_budget_exhausted)", async () => {
+      const checkoutPath = createMockCheckout("co-alpha", "owner/repo-alpha");
+      const project = await registry.registerProject({
+        method: "local_checkout",
+        name: "Alpha Project",
+        checkout_path: checkoutPath,
+      });
+
+      forge.addIssue("owner/repo-alpha", {
+        number: 60,
+        title: "Exhausted Task",
+        state: "OPEN",
+        labels: [{ name: "ready-for-agent" }],
+      });
+
+      // Write dossier under stateRoot
+      const ws = resolveProjectWorkspace(checkoutPath);
+      mkdirSync(ws.dossiersDir, { recursive: true });
+      writeFileSync(
+        join(ws.dossiersDir, "issue-60.json"),
+        JSON.stringify({
+          issueNumber: 60,
+          attempts: [{ lap: 0 }, { lap: 1 }, { lap: 2 }],
+        }),
+      );
+
+      const issue = await intake.getProjectIssue(project.id, 60);
+      expect(issue.admission_status).toBe("held");
+      expect(issue.reason).toBe("dossier_budget_exhausted");
+    });
+
+    test("holds issue when local run state is waiting_approval, needs_owner, or interrupted", async () => {
+      const checkoutPath = createMockCheckout("co-alpha", "owner/repo-alpha");
+      const project = await registry.registerProject({
+        method: "local_checkout",
+        name: "Alpha Project",
+        checkout_path: checkoutPath,
+      });
+
+      forge.addIssue("owner/repo-alpha", {
+        number: 70,
+        title: "Waiting Approval Task",
+        state: "OPEN",
+        labels: [{ name: "ready-for-agent" }],
+      });
+      forge.addIssue("owner/repo-alpha", {
+        number: 71,
+        title: "Escalated Run Task",
+        state: "OPEN",
+        labels: [{ name: "ready-for-agent" }],
+      });
+      forge.addIssue("owner/repo-alpha", {
+        number: 72,
+        title: "Interrupted Run Task",
+        state: "OPEN",
+        labels: [{ name: "ready-for-agent" }],
+      });
+
+      const ws = resolveProjectWorkspace(checkoutPath);
+      mkdirSync(join(ws.runsDir, "run-70"), { recursive: true });
+      writeFileSync(
+        join(ws.runsDir, "run-70", "state.json"),
+        JSON.stringify({ issue: 70, status: "waiting_approval" }),
+      );
+      mkdirSync(join(ws.runsDir, "run-71"), { recursive: true });
+      writeFileSync(
+        join(ws.runsDir, "run-71", "state.json"),
+        JSON.stringify({ issue: 71, status: "needs_owner" }),
+      );
+      mkdirSync(join(ws.runsDir, "run-72"), { recursive: true });
+      writeFileSync(
+        join(ws.runsDir, "run-72", "state.json"),
+        JSON.stringify({ issue: 72, status: "interrupted" }),
+      );
+
+      const issue70 = await intake.getProjectIssue(project.id, 70);
+      expect(issue70.admission_status).toBe("held");
+      expect(issue70.reason).toBe("waiting_approval");
+
+      const issue71 = await intake.getProjectIssue(project.id, 71);
+      expect(issue71.admission_status).toBe("held");
+      expect(issue71.reason).toBe("needs_owner");
+
+      const issue72 = await intake.getProjectIssue(project.id, 72);
+      expect(issue72.admission_status).toBe("held");
+      expect(issue72.reason).toBe("interrupted");
     });
 
     test("strictly excludes issue on wontfix label even if ready-for-agent is present", async () => {

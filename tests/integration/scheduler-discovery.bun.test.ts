@@ -54,6 +54,34 @@ test("scheduler resolves only shared dependencies of ready open candidates", asy
   expect([...result.closedNumbers]).toEqual([1]);
 });
 
+test("fetchGithubBacklog unions native GitHub blocked_by dependencies and filterAdmittedIssues holds them", async () => {
+  const forge: IssueForgeAdapter = new SyntheticForgeAdapter({ "owner/repo": 1 });
+  forge.listIssues = async () => [
+    {
+      number: 300,
+      title: "native blocked candidate",
+      state: "OPEN",
+      labels: ["ready-for-agent"],
+      body: "Depends on: None",
+      comments: [],
+    },
+  ];
+  forge.getIssueDependencies = async (_repo, childNumber) => {
+    if (childNumber === 300) return [400];
+    return [];
+  };
+  forge.getIssueStates = async (_repo, numbers) => {
+    return new Map(numbers.map((n) => [n, "OPEN"]));
+  };
+
+  const result = await fetchGithubBacklog("/unused", "owner/repo", forge);
+  expect(result.issues[0]?.dependencies).toContain(400);
+
+  const { filterAdmittedIssues } = await import("../../scripts/loop/scheduler");
+  const admitted = filterAdmittedIssues(result.issues, result.closedNumbers);
+  expect(admitted).toEqual([]);
+});
+
 test("scheduler dependency outage refuses discovery instead of admitting work", async () => {
   const forge: IssueForgeAdapter = new SyntheticForgeAdapter({ "owner/repo": 1 });
   forge.listIssues = async () => [

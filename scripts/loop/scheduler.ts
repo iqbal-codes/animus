@@ -24,6 +24,7 @@ import { loadIssueDossier } from "./dossier";
 import { reconcileWaitingApprovalPrCi, type GhRunner, type checkPrCiStatus } from "./ci";
 import { runTriagePass } from "./triage";
 import { resolveTriageStateRoot } from "./triage-state";
+import { evaluateIssueAdmission, type RawIssue } from "../../apps/backend/src/intake/admission";
 
 export type BrakeChecker = RelationalBrakeChecker;
 
@@ -108,42 +109,39 @@ export function filterAdmittedIssues(
   closedIssueNumbers: Set<number>,
   options: FilterAdmittedIssuesOptions = {},
 ): BacklogCandidate[] {
-  const admitted: BacklogCandidate[] = [];
   const mergedSet =
     options.mergedIssueNumbers ??
     (options.stateRoot ? getMergedIssueNumbers(join(options.stateRoot, "runs")) : new Set<number>());
 
-  for (const issue of issues) {
-    if (issue.state.toUpperCase() !== "OPEN") continue;
+  const rawIssues: RawIssue[] = issues.map((c) => ({
+    number: c.number,
+    title: c.title,
+    state: c.state,
+    labels: c.labels,
+    dependencies: c.dependencies,
+    activeClaim: c.activeClaim,
+  }));
 
-    const normalizedLabels = issue.labels.map((l) => l.toLowerCase());
-    const hasReady = normalizedLabels.includes("ready-for-agent");
-    if (!hasReady) continue;
+  const allByNumber = new Map<number, RawIssue>();
+  for (const n of closedIssueNumbers) {
+    allByNumber.set(n, { number: n, title: "", state: "CLOSED" });
+  }
 
-    const hasBlocker = normalizedLabels.some((l) => BLOCKING_LABELS.has(l));
-    if (hasBlocker) continue;
+  const candidateMap = new Map(issues.map((i) => [i.number, i]));
+  const admitted: BacklogCandidate[] = [];
 
-    if (issue.activeClaim) continue;
-
-    // Skip issues already delivered and waiting for human approval, already auto-merged, or escalated
-    if (options.waitingApprovalIssueNumbers?.has(issue.number) || mergedSet.has(issue.number)) {
-      continue;
+  for (const raw of rawIssues) {
+    const evaluated = evaluateIssueAdmission(raw, allByNumber, {
+      closedIssueNumbers,
+      mergedIssueNumbers: mergedSet,
+      waitingApprovalIssueNumbers: options.waitingApprovalIssueNumbers,
+      stateRoot: options.stateRoot,
+      maxLaps: options.maxLaps,
+    });
+    if (evaluated.admission_status === "admitted") {
+      const candidate = candidateMap.get(raw.number);
+      if (candidate) admitted.push(candidate);
     }
-
-    // Skip issues that have reached or exceeded maxLaps in their issue dossier
-    if (options.stateRoot && options.maxLaps !== undefined) {
-      const dossier = loadIssueDossier(options.stateRoot, issue.number);
-      if (dossier && dossier.attempts.length >= options.maxLaps) {
-        continue;
-      }
-    }
-    // Verify all dependencies are in closedIssueNumbers or mergedSet
-    const allDepsSatisfied = issue.dependencies.every(
-      (dep) => closedIssueNumbers.has(dep) || mergedSet.has(dep),
-    );
-    if (!allDepsSatisfied) continue;
-
-    admitted.push(issue);
   }
 
   // Sort deterministically: priority issues first, then lowest number

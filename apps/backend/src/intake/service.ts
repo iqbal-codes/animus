@@ -24,7 +24,7 @@ import {
 import type { ForgeAdapter, IssueForgeAdapter } from "../registry/forge";
 import { SystemForgeAdapter, assertIssueForge } from "../registry/forge";
 import { ProjectRegistryError } from "../registry/service";
-import { evaluateIssueAdmission, type RawIssue } from "./admission";
+import { evaluateBacklogAdmission, type RawIssue } from "./admission";
 import { parseDependencies, isActiveClaim, computeDiff, computeLabelEffects } from "./parser";
 import { verifyTargetBinding, TargetBindingError } from "./binding";
 
@@ -123,7 +123,12 @@ export class IntakeService {
       (issue) => issue.state.toUpperCase() === "OPEN",
     );
     const branchIntegrations = this.getBranchIntegrations(projectId);
-    const evaluated = await this.evaluateIssues(project.repo_name, rawIssues, branchIntegrations);
+    const evaluated = await this.evaluateIssues(
+      project.repo_name,
+      rawIssues,
+      branchIntegrations,
+      project.checkout_path,
+    );
 
     evaluated.sort((a, b) => a.number - b.number);
 
@@ -151,7 +156,12 @@ export class IntakeService {
     const raw = await this.getIssueForge().getIssue(project.repo_name, issueNumber);
     const found = raw
       ? (
-          await this.evaluateIssues(project.repo_name, [raw], this.getBranchIntegrations(projectId))
+          await this.evaluateIssues(
+            project.repo_name,
+            [raw],
+            this.getBranchIntegrations(projectId),
+            project.checkout_path,
+          )
         )[0]
       : null;
     if (!found) {
@@ -195,12 +205,13 @@ export class IntakeService {
       project.repo_name,
       [simulatedIssue],
       branchIntegrations,
+      project.checkout_path,
     );
     if (!simulatedAdmission) throw new Error("Admission preview unavailable");
 
     const proposedLower = (submission.labels || []).map((l) => l.trim().toLowerCase());
     const blockingLabels = proposedLower.filter((l) =>
-      ["needs-info", "ready-for-human", "needs-triage"].includes(l),
+      ["needs-info", "ready-for-human", "needs-triage", "needs-owner"].includes(l),
     );
     const exclusionLabels = proposedLower.filter((l) => l === "wontfix");
     const activeClaim = isActiveClaim([], submission.body);
@@ -365,60 +376,16 @@ export class IntakeService {
     repo: string,
     issues: RawIssue[],
     integrations = new Map<number, string>(),
+    workspaceOrCheckout?: string,
   ): Promise<EvaluatedIssue[]> {
-    const byNumber = new Map(issues.map((issue) => [issue.number, issue]));
-    const dependencies = new Set<number>();
-    for (const issue of issues) {
-      for (const text of [
-        issue.body ?? "",
-        ...(issue.comments ?? []).map((comment) => comment.body ?? ""),
-      ]) {
-        for (const number of parseDependencies(text)) {
-          if (!byNumber.has(number) && !integrations.has(number)) dependencies.add(number);
-        }
-      }
-    }
-    const failed = new Set<number>();
-    const forge = this.getIssueForge();
-    const numbers = [...dependencies];
-    if (numbers.length && forge.getIssueStates) {
-      try {
-        const states = await forge.getIssueStates(repo, numbers);
-        for (const number of numbers) {
-          const state = states.get(number);
-          if (state) byNumber.set(number, { number, title: "", state });
-          else failed.add(number);
-        }
-      } catch {
-        for (const number of numbers) failed.add(number);
-      }
-    } else {
-      // Bound concurrency for adapters without batched status reads.
-      for (let offset = 0; offset < numbers.length; offset += 5) {
-        await Promise.all(
-          numbers.slice(offset, offset + 5).map(async (number) => {
-            try {
-              const dependency = await forge.getIssue(repo, number);
-              if (dependency) byNumber.set(number, dependency);
-              else failed.add(number);
-            } catch {
-              failed.add(number);
-            }
-          }),
-        );
-      }
-    }
-    return issues.map((issue) => {
-      const result = evaluateIssueAdmission(issue, byNumber, {
-        integratedBranchIssues: integrations,
-      });
-      const unavailable = result.unsatisfied_dependencies.filter((number) => failed.has(number));
-      if (unavailable.length && result.reason.startsWith("waiting_on_dependency:")) {
-        result.reason =
-          "dependency_lookup_failed:" + unavailable.map((number) => "#" + number).join(",");
-      }
-      return result;
+    const admissionResult = await evaluateBacklogAdmission({
+      repo,
+      issues,
+      forge: this.getIssueForge(),
+      workspace: workspaceOrCheckout,
+      branchIntegrations: integrations,
     });
+    return admissionResult.issues;
   }
 
   async evaluateBacklog(forceRefresh = false): Promise<IntakeResult> {

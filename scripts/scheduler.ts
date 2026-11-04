@@ -52,23 +52,41 @@ export async function fetchGithubBacklog(
 }> {
   const forge = adapter ?? new SystemForgeAdapter();
   const rawOpen = await forge.listIssues(repo);
-  const issues: BacklogCandidate[] = rawOpen
-    .filter((item) =>
-      (item.labels ?? []).some(
-        (label) =>
-          (typeof label === "string" ? label : label.name).toLowerCase() === "ready-for-agent",
-      ),
-    )
-    .map((item) => ({
+  const readyOpen = rawOpen.filter((item) =>
+    (item.labels ?? []).some(
+      (label) =>
+        (typeof label === "string" ? label : label.name).toLowerCase() === "ready-for-agent",
+    ),
+  );
+
+  const nativeDepsMap = new Map<number, number[]>();
+  if (forge.getIssueDependencies) {
+    for (const item of readyOpen) {
+      try {
+        const deps = await forge.getIssueDependencies(repo, item.number);
+        if (deps && deps.length > 0) {
+          nativeDepsMap.set(item.number, deps);
+        }
+      } catch {}
+    }
+  }
+
+  const issues: BacklogCandidate[] = readyOpen.map((item) => {
+    const textDeps = parseDependencies(
+      [item.body ?? "", ...(item.comments ?? []).map((comment) => comment.body ?? "")].join("\n"),
+    );
+    const nativeDeps = nativeDepsMap.get(item.number) ?? [];
+    const allDeps = Array.from(new Set([...textDeps, ...nativeDeps]));
+
+    return {
       number: item.number,
       title: item.title,
       state: item.state,
       labels: (item.labels ?? []).map((label) => (typeof label === "string" ? label : label.name)),
-      dependencies: parseDependencies(
-        [item.body ?? "", ...(item.comments ?? []).map((comment) => comment.body ?? "")].join("\n"),
-      ),
+      dependencies: allDeps,
       activeClaim: isActiveClaim(item.comments ?? [], item.body ?? ""),
-    }));
+    };
+  });
   const openNumbers = new Set(rawOpen.map((issue) => issue.number));
   const dependencies = [...new Set(issues.flatMap((issue) => issue.dependencies))].filter(
     (number) => !openNumbers.has(number),

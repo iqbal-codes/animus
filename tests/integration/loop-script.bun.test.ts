@@ -6,6 +6,7 @@ import {
   validateIssue,
   type GithubRead,
 } from "../../scripts/loop";
+import { bindIssueContract } from "../../apps/backend/src/intake";
 
 test("parses the requested issue and refuses missing, malformed or unsafe IDs", () => {
   expect(parseIssueArgs(["--issue", "72", "--dry-run"])).toEqual({
@@ -51,7 +52,24 @@ test("read-only preflight includes paginated historical dependencies and native 
     state: "OPEN",
     labels: [{ name: "ready-for-agent" }],
     title: "Deliver",
-    body: "Depends on: #10",
+    body: [
+      "## Source and problem",
+      "Spec section delivery",
+      "",
+      "## Outcome",
+      "Deliver requested task",
+      "",
+      "## Invariants",
+      "- Deterministic verification",
+      "",
+      "## Acceptance criteria",
+      "- [ ] AC1: deliver",
+      "",
+      "## Boundary",
+      "- Touchpoints: none",
+      "",
+      "Depends on: #10",
+    ].join("\n"),
     comments: [],
   };
   const read: GithubRead = (args) => {
@@ -96,6 +114,82 @@ test("read-only preflight includes paginated historical dependencies and native 
         : read(args, cwd),
     ),
   ).toThrow("Unresolved");
+});
+
+test("bindIssueContract validates canonical markdown sections and rejects incomplete bodies", () => {
+  const incompleteIssue = {
+    number: 80,
+    url: "https://github.com/owner/repo/issues/80",
+    state: "OPEN",
+    labels: [{ name: "ready-for-agent" }],
+    title: "Incomplete Spec",
+    body: "Just a short body without canonical sections\n\nDepends on: None",
+    comments: [],
+  };
+  const read: GithubRead = (args) => {
+    if (args[0] === "api") return [];
+    if (args.slice(0, 2).join(" ") === "issue view") return incompleteIssue;
+    return {};
+  };
+
+  expect(() =>
+    bindIssueContract({ root: "/unused", number: 80, repo: "owner/repo", read }),
+  ).toThrow(/canonical section/i);
+});
+
+test("bindIssueContract cryptographically freezes normalized issue content and produces immutable contract", () => {
+  const canonicalBody = [
+    "Part of #140",
+    "",
+    "## Source and problem",
+    "Problem description here",
+    "",
+    "## Outcome",
+    "Observable outcome here",
+    "",
+    "## Invariants",
+    "- Invariant 1",
+    "- Invariant 2",
+    "",
+    "## Acceptance criteria",
+    "- [ ] AC1: Observable check",
+    "",
+    "## Boundary",
+    "- Touchpoints: src/*",
+    "",
+    "Depends on: None",
+  ].join("\n");
+
+  const issue = {
+    number: 85,
+    url: "https://github.com/owner/repo/issues/85",
+    state: "OPEN",
+    labels: [{ name: "ready-for-agent" }],
+    title: "Complete Spec",
+    body: canonicalBody,
+    comments: [],
+  };
+  const read: GithubRead = (args) => {
+    if (args[0] === "api") return [];
+    if (args.slice(0, 2).join(" ") === "issue view") return issue;
+    return {};
+  };
+
+  const contract = bindIssueContract({ root: "/unused", number: 85, repo: "owner/repo", read });
+  expect(contract.number).toBe(85);
+  expect(contract.sha256).toMatch(/^[a-f0-9]{64}$/);
+  expect(contract.contractSha256).toBe(contract.sha256);
+  expect(contract.sections.sourceProblem).toBe("Problem description here");
+  expect(contract.sections.outcome).toBe("Observable outcome here");
+  expect(contract.sections.invariants).toEqual(["Invariant 1", "Invariant 2"]);
+  expect(contract.sections.acceptanceCriteria).toEqual(["AC1: Observable check"]);
+  expect(contract.sections.boundary).toContain("Touchpoints: src/*");
+
+  expect(Object.isFrozen(contract)).toBe(true);
+  expect(Object.isFrozen(contract.sections)).toBe(true);
+  expect(() => {
+    (contract as any).title = "mutated";
+  }).toThrow();
 });
 
 test("requests only the named task without bypassing checks or approval", () => {

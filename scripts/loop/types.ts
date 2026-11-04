@@ -12,6 +12,17 @@ export interface LocalIssue {
   activeClaim: boolean;
   labels?: string[];
   verificationProfile?: VerificationProfile;
+  contractSha256?: string;
+  sha256?: string;
+  sections?: {
+    partOf: number | null;
+    sourceProblem: string;
+    outcome: string;
+    invariants: string[];
+    acceptanceCriteria: string[];
+    boundary: string;
+    dependsOn: number[];
+  };
 }
 
 export type LoopRole =
