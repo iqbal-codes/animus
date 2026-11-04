@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { git } from "./worktree";
 import { checkPrCiStatus, pollPrCiStatus, type PrCiAssessment } from "./ci";
@@ -46,6 +46,7 @@ export class LoopPublisher {
   readonly issueNumber: number;
   readonly push: boolean;
   readonly runner: GhRunner;
+  private pushRejected = false;
 
   constructor(options: LoopPublisherOptions) {
     this.worktree = options.worktree;
@@ -62,6 +63,20 @@ export class LoopPublisher {
 
   getPublicationRecords(): PublicationRecord[] {
     return loadPublicationRecords(this.artifactsDir);
+  }
+
+  isPushRejected(): boolean {
+    if (this.pushRejected) return true;
+    try {
+      const errFile = join(this.artifactsDir, "publication-errors.json");
+      if (existsSync(errFile)) {
+        const errs = JSON.parse(readFileSync(errFile, "utf-8"));
+        if (Array.isArray(errs) && errs.some((e: any) => e.action === "git_push")) {
+          return true;
+        }
+      }
+    } catch {}
+    return false;
   }
 
   isDeduplicated(
@@ -104,39 +119,46 @@ export class LoopPublisher {
     body: string;
     base?: string;
     candidate: string;
+    checkOpen?: boolean;
   }): Promise<{ prUrl?: string; created: boolean; deduplicated?: boolean }> {
-    const { branch, title, body, base = "main", candidate } = options;
+    const { branch, title, body, base = "main", candidate, checkOpen } = options;
 
-    // Check deduplication
+    // Check deduplication (scoped to this specific branch)
     const records = loadPublicationRecords(this.artifactsDir);
     const existing = records.find(
       (r) =>
         r.action === "pr_create" &&
         r.success === true &&
         (r.targetKind === "pr" || r.targetKind === undefined) &&
-        (r.branch === branch ||
-          (r.issueNumber !== undefined && r.issueNumber === this.issueNumber) ||
-          r.target === branch),
+        (r.branch === branch || (!r.branch && r.target === branch)),
     );
     if (existing && existing.target.startsWith("http")) {
-      return { prUrl: existing.target, created: false, deduplicated: true };
+      if (checkOpen) {
+        const isOpen = await this.isPrOpen(existing.target);
+        if (isOpen) {
+          return { prUrl: existing.target, created: false, deduplicated: true };
+        }
+      } else {
+        return { prUrl: existing.target, created: false, deduplicated: true };
+      }
     }
 
-    if (this.push === false) {
+    if (this.push === false || this.isPushRejected()) {
       return { created: false };
     }
 
-    // Check if PR already exists
+    // Check if PR already exists remotely on this branch
     try {
       const prView = await this.runner(
-        ["gh", "pr", "view", branch, "--json", "url"],
+        ["gh", "pr", "view", branch, "--json", "url,state"],
         this.worktree,
         15_000,
       );
       if (prView.exitCode === 0) {
         try {
           const parsed = JSON.parse(prView.stdout);
-          if (parsed.url) {
+          const isClosed = parsed.state && String(parsed.state).toUpperCase() !== "OPEN";
+          if (parsed.url && !isClosed) {
             appendPublicationRecord(this.artifactsDir, {
               timestamp: new Date().toISOString(),
               action: "pr_create",
@@ -222,6 +244,9 @@ export class LoopPublisher {
     candidate: string;
     newEvidenceContent: string;
   }): Promise<{ ok: boolean; prUrl: string; readbackVerified: boolean }> {
+    if (this.push === false || this.isPushRejected()) {
+      return { ok: true, prUrl: options.pr, readbackVerified: false };
+    }
     return publishPrEvidenceUpdate({
       repoRoot: this.worktree,
       pr: options.pr,
@@ -238,6 +263,9 @@ export class LoopPublisher {
     commentBody: string;
     candidate: string;
   }): Promise<{ ok: boolean; commentUrl?: string; message: string; deduplicated?: boolean }> {
+    if (this.push === false || this.isPushRejected()) {
+      return { ok: true, message: "Push disabled or rejected; skipping comment publication." };
+    }
     return publishComment({
       repoRoot: this.worktree,
       target: options.target,
@@ -256,6 +284,9 @@ export class LoopPublisher {
     findings?: (ReviewFinding | string)[];
     rawDiff?: string;
   }): Promise<{ ok: boolean; commentUrl?: string; inlineCount: number; message: string; deduplicated?: boolean }> {
+    if (this.push === false || this.isPushRejected()) {
+      return { ok: true, inlineCount: 0, message: "Push disabled or rejected; skipping review publication." };
+    }
     return publishPrReview({
       repoRoot: this.worktree,
       pr: options.pr,
@@ -272,13 +303,13 @@ export class LoopPublisher {
     const cand = candidate || "HEAD";
     const targetStr = String(this.issueNumber);
 
+    if (this.push === false || this.isPushRejected()) {
+      return { ok: true, escalated: false };
+    }
+
     // Check deduplication
     if (this.isDeduplicated("label_escalation", targetStr, cand, "escalation")) {
       return { ok: true, escalated: false, deduplicated: true };
-    }
-
-    if (this.push === false) {
-      return { ok: true, escalated: false };
     }
 
     try {
@@ -332,6 +363,7 @@ export class LoopPublisher {
     commentBody: string;
     candidate: string;
   }): Promise<void> {
+    if (this.push === false || this.isPushRejected()) return;
     if (options.pr) {
       try {
         await this.publishComment({
@@ -344,7 +376,7 @@ export class LoopPublisher {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`Warning: Failed to publish ${options.commentType} comment on PR:`, msg);
       }
-    } else if (this.push !== false) {
+    } else {
       try {
         await this.publishComment({
           target: { kind: "issue", idOrUrl: this.issueNumber },
@@ -371,7 +403,9 @@ export class LoopPublisher {
     autoMerge?: any;
     stageName?: string;
   }): Promise<void> {
-    if (options.pr && this.push !== false) {
+    if (!options.pr || this.push === false || this.isPushRejected()) {
+      return;
+    }
       try {
         const syncedCaptures = syncExistingEvidenceBindings(
           options.captures || [],
@@ -402,7 +436,6 @@ export class LoopPublisher {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`Warning: ${options.stageName ?? "Stage"} stage PR evidence synchronization error:`, msg);
       }
-    }
   }
 
   async publishBuilderDelivery(options: {
@@ -435,11 +468,12 @@ export class LoopPublisher {
           .join("\n") || "No explicit checks"),
     );
 
-    if (this.push === false) return;
+    if (this.push === false || this.isPushRejected()) return;
 
     try {
       await git(this.worktree, "push", "-u", "origin", branch);
     } catch (pushErr: unknown) {
+      this.pushRejected = true;
       const msg = pushErr instanceof Error ? pushErr.message : String(pushErr);
       recordPublicationError(this.artifactsDir, {
         timestamp: new Date().toISOString(),

@@ -727,6 +727,31 @@ describe("PR and Issue Publication Pipeline with Injected GhRunner", () => {
     expect(escRes.escalated).toBe(false);
     expect(callCount).toBe(0);
 
+    const comRes = await pushFalsePublisher.publishComment({
+      target: { kind: "pr", idOrUrl: "144" },
+      commentType: "builder",
+      commentBody: "hello test",
+      candidate: "cand-sha-test",
+    });
+    expect(comRes.ok).toBe(true);
+    expect(callCount).toBe(0);
+
+    const revRes = await pushFalsePublisher.publishReview({
+      pr: "https://github.com/owner/repo/pull/144",
+      candidate: "cand-sha-test",
+      reviewBody: "review body",
+    });
+    expect(revRes.ok).toBe(true);
+    expect(callCount).toBe(0);
+
+    const evRes = await pushFalsePublisher.updatePrEvidence({
+      pr: "https://github.com/owner/repo/pull/144",
+      candidate: "cand-sha-test",
+      newEvidenceContent: "evidence",
+    });
+    expect(evRes.ok).toBe(true);
+    expect(callCount).toBe(0);
+
     // When push is true, observable behavior exercises injected runner and audits publication
     const activePublisher = new LoopPublisher({
       worktree: tempDir,
@@ -873,6 +898,63 @@ describe("PR and Issue Publication Pipeline with Injected GhRunner", () => {
     expect(resRestart.prUrl).toBe("https://github.com/owner/repo/pull/144");
     expect(spawnCount).toBe(initialSpawns); // Zero extra gh calls across restarts
 
+    // 4. Does NOT reuse PR from a DIFFERENT branch for the same issue
+    const resDifferentBranch = await publisher.createPullRequest({
+      branch: "local-loop/issue-144-branch-b",
+      title: "fix(issue-144): stateful loop publisher on branch b",
+      body: "## Summary\nDifferent branch",
+      base: "main",
+      candidate: "cand-sha-144-branch-b",
+    });
+    // Must invoke runner for the new branch rather than reusing branch-a PR
+    expect(spawnCount).toBeGreaterThan(initialSpawns);
+    expect(resDifferentBranch.created).toBe(true);
+
+    // 5. Does NOT reuse a CLOSED PR returned by gh pr view
+    let closedViewCalls = 0;
+    const closedPrRunner: GhRunner = async (args) => {
+      if (args[1] === "pr" && args[2] === "view") {
+        closedViewCalls++;
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            url: "https://github.com/owner/repo/pull/100-closed",
+            state: "CLOSED",
+          }),
+          stderr: "",
+        };
+      }
+      if (args[1] === "pr" && args[2] === "create") {
+        return {
+          exitCode: 0,
+          stdout: "https://github.com/owner/repo/pull/101-new\n",
+          stderr: "",
+        };
+      }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+
+    const closedTestDir = await mkdtemp(join(tmpdir(), "animus-pub-pr-closed-"));
+    const closedPub = new LoopPublisher({
+      worktree: closedTestDir,
+      runDirectory: closedTestDir,
+      artifactsDir: join(closedTestDir, "artifacts"),
+      issueNumber: 144,
+      push: true,
+      runner: closedPrRunner,
+    });
+
+    const resClosed = await closedPub.createPullRequest({
+      branch: "local-loop/issue-144-closed-test",
+      title: "fix(issue-144): fresh pr",
+      body: "body",
+      candidate: "cand-sha-closed-test",
+    });
+    expect(closedViewCalls).toBe(1);
+    expect(resClosed.created).toBe(true);
+    expect(resClosed.prUrl).toBe("https://github.com/owner/repo/pull/101-new"); // Created fresh PR, did not reuse closed PR
+
+    await rm(closedTestDir, { recursive: true, force: true });
     await rm(tempDir, { recursive: true, force: true });
   });
 
@@ -1050,12 +1132,92 @@ describe("PR and Issue Publication Pipeline with Injected GhRunner", () => {
     const recs = publisher.getPublicationRecords();
     expect(recs.some((r) => r.action === "pr_create" && r.success === true)).toBe(false);
 
+    // Rejected push must prevent ALL subsequent loop PR/comment/evidence mutations across all stages
+    expect(publisher.isPushRejected()).toBe(true);
+
+    await publisher.publishLoopComment({
+      commentType: "qa_check",
+      commentBody: "QA check failure comment",
+      candidate: candidateSha,
+    });
+    expect(ghCalled).toBe(false);
+
+    const escAfterPushFail = await publisher.escalateToHuman(candidateSha);
+    expect(escAfterPushFail.escalated).toBe(false);
+    expect(ghCalled).toBe(false);
+
+    await publisher.syncAndPublishPrEvidence({
+      pr: "https://github.com/owner/repo/pull/144",
+      candidate: candidateSha,
+    });
+    expect(ghCalled).toBe(false);
+
+    const comAfterPushFail = await publisher.publishComment({
+      target: { kind: "issue", idOrUrl: 144 },
+      commentType: "review",
+      commentBody: "Review comment body",
+      candidate: candidateSha,
+    });
+    expect(comAfterPushFail.ok).toBe(true);
+    expect(ghCalled).toBe(false);
+
+    const revAfterPushFail = await publisher.publishReview({
+      pr: "https://github.com/owner/repo/pull/144",
+      candidate: candidateSha,
+      reviewBody: "Review body",
+    });
+    expect(revAfterPushFail.ok).toBe(true);
+    expect(ghCalled).toBe(false);
+
+    const prAfterPushFail = await publisher.createPullRequest({
+      branch: "main",
+      title: "Title",
+      body: "Body",
+      candidate: candidateSha,
+    });
+    expect(prAfterPushFail.created).toBe(false);
+    expect(ghCalled).toBe(false);
+
+    // Fallback LoopPublisher instance with same artifactsDir also rejects mutations
+    const fallbackPublisher = new LoopPublisher({
+      worktree: tempDir,
+      runDirectory: tempDir,
+      artifactsDir,
+      issueNumber: 144,
+      push: true,
+      runner: mockRunner,
+    });
+    expect(fallbackPublisher.isPushRejected()).toBe(true);
+    const fallbackEsc = await fallbackPublisher.escalateToHuman(candidateSha);
+    expect(fallbackEsc.escalated).toBe(false);
+    expect(ghCalled).toBe(false);
+
     // 2. Set up local bare origin and verify successful push & publication
     const bareOrigin = await mkdtemp(join(tmpdir(), "animus-pub-bare-delivery-"));
     runGit(bareOrigin, "git", "init", "--bare", "-b", "main");
     runGit(tempDir, "git", "remote", "add", "origin", bareOrigin);
 
-    await publisher.publishBuilderDelivery({
+    // New publisher on remote-configured repo with separate artifacts
+    const successArtifactsDir = join(tempDir, "artifacts-success");
+    await mkdir(successArtifactsDir, { recursive: true });
+    let ghSuccessCalled = false;
+    const mockSuccessRunner: GhRunner = async (args) => {
+      ghSuccessCalled = true;
+      if (args[1] === "pr" && args[2] === "view") {
+        return { exitCode: 1, stdout: "", stderr: "no pull requests found" };
+      }
+      return { exitCode: 0, stdout: "https://github.com/owner/repo/pull/144\n", stderr: "" };
+    };
+    const successPublisher = new LoopPublisher({
+      worktree: tempDir,
+      runDirectory: tempDir,
+      artifactsDir: successArtifactsDir,
+      issueNumber: 144,
+      push: true,
+      runner: mockSuccessRunner,
+    });
+
+    await successPublisher.publishBuilderDelivery({
       branch: "main",
       issue,
       state,
@@ -1070,7 +1232,7 @@ describe("PR and Issue Publication Pipeline with Injected GhRunner", () => {
     expect(pushedCommit).toBe(candidateSha);
     // PR was created and state.pr was set
     expect(state.pr).toBe("https://github.com/owner/repo/pull/144");
-    expect(ghCalled).toBe(true);
+    expect(ghSuccessCalled).toBe(true);
 
     await rm(tempDir, { recursive: true, force: true });
     await rm(bareOrigin, { recursive: true, force: true });
