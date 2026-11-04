@@ -9,6 +9,7 @@ import {
   recordLapAndReflect,
   escalateIssueToHuman,
 } from "./pr-publication";
+import { LoopPublisher } from "./publisher";
 import type {
   LocalIssue,
   LocalLoopResult,
@@ -31,6 +32,7 @@ export interface ExecuteBlackBoxQaOptions {
   pr?: string;
   push?: boolean;
   builderReport?: any;
+  publisher?: LoopPublisher;
   invokeQa: (
     qaCwd: string,
     extraVars: Record<string, string>,
@@ -150,19 +152,31 @@ export async function executeBlackBoxQa(opts: ExecuteBlackBoxQaOptions): Promise
     await Bun.write(join(handoffDir, "evidence-problems.txt"), evidenceProblems.join("\n"));
     evidenceOk = evidenceOkBool ? "true" : "false";
 
-    await syncAndPublishPrEvidence({
-      worktree,
-      pr,
-      push,
-      candidate,
-      captures: qaReport?.captures || [],
-      artifactsDir,
-      runDirectory,
-      identities,
-      qaReport,
-      builderReport,
-      stageName: "QA",
-    });
+    if (opts.publisher) {
+      await opts.publisher.syncAndPublishPrEvidence({
+        pr,
+        candidate,
+        captures: qaReport?.captures || [],
+        identities,
+        qaReport,
+        builderReport,
+        stageName: "QA",
+      });
+    } else {
+      await syncAndPublishPrEvidence({
+        worktree,
+        pr,
+        push,
+        candidate,
+        captures: qaReport?.captures || [],
+        artifactsDir,
+        runDirectory,
+        identities,
+        qaReport,
+        builderReport,
+        stageName: "QA",
+      });
+    }
   }
 
   return { qaReport, evidenceOk, qaWorktreeDir, testedIntegrationHead };
@@ -185,6 +199,7 @@ export interface HandleQaFastFailOptions {
   options: LocalLoopOptions;
   reflectTerminal: (dossier: IssueDossier) => Promise<void>;
   save: () => Promise<void>;
+  publisher?: LoopPublisher;
 }
 
 /**
@@ -214,8 +229,19 @@ export async function handleQaFastFail(opts: HandleQaFastFailOptions): Promise<L
   const qaStatus: LocalLoopStatus = isMaxLapsExceeded ? "needs_owner" : "sent_back";
   state.status = qaStatus;
 
+  const pub =
+    opts.publisher ??
+    new LoopPublisher({
+      worktree: state.worktree,
+      runDirectory: state.runDirectory,
+      artifactsDir,
+      issueNumber: issue.number,
+      push: options.push !== false,
+      runner: options.ghRunner,
+    });
+
   if (qaStatus === "needs_owner") {
-    await escalateIssueToHuman(state.worktree, issue.number);
+    await pub.escalateToHuman(state.candidate);
   }
 
   const changedFilesFinal = (
@@ -259,15 +285,11 @@ export async function handleQaFastFail(opts: HandleQaFastFailOptions): Promise<L
     isMaxLapsExceeded,
   });
 
-  await publishLoopComment({
-    worktree: state.worktree,
+  await pub.publishLoopComment({
     pr: state.pr,
-    issueNumber: issue.number,
-    push: options.push,
     commentType: "qa_check",
     commentBody: qaComment,
     candidate: state.candidate!,
-    runDirectory: state.runDirectory,
   });
 
   await save();
