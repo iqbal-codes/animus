@@ -1,5 +1,4 @@
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import {
   resolveProjectWorkspace,
   loadCascadedScheduleConfig,
@@ -7,6 +6,7 @@ import {
   isWithinWorkWindow,
   resolveTriageStateRoot,
 } from "@animus/contracts/paths";
+import { SystemForgeAdapter, type ForgeAdapter, type IssueForgeAdapter } from "../registry/forge";
 
 export interface MonitorIssue {
   number: number;
@@ -96,44 +96,6 @@ export interface MonitorRuntime {
   resolveTriageStateRoot?(this: void, root: string, customStateRoot?: string): string;
 }
 
-async function githubWorker(
-  operation: string,
-  root: string,
-  repo: string,
-  number?: number,
-  stateRoot?: string,
-  dryRun?: boolean,
-): Promise<unknown> {
-  const child = Bun.spawn(
-    [
-      process.execPath,
-      fileURLToPath(new URL("./worker.ts", import.meta.url)),
-      operation,
-      root,
-      repo,
-      String(number ?? ""),
-      stateRoot ?? "",
-      String(dryRun ?? false),
-    ],
-    { stdout: "pipe", stderr: "pipe" },
-  );
-  // Triage has its own harness deadline bounds and lifecycle management.
-  // Do NOT impose a 120s worker timeout on triage which would kill the worker while
-  // leaving child/grandchild processes and locks orphaned.
-  const timer = operation === "triage" ? null : setTimeout(() => child.kill(), 120_000);
-  try {
-    const [code, output, error] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ]);
-    if (code !== 0) throw new Error(`GitHub ${operation} failed: ${error.trim()}`);
-    return JSON.parse(output);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
 export async function loadMonitorRuntime(
   overrides: {
     githubRead?: (args: string[], cwd: string) => unknown;
@@ -141,17 +103,21 @@ export async function loadMonitorRuntime(
     launch?: MonitorRuntime["launch"];
     hasCapacityFull?: MonitorRuntime["hasCapacityFull"];
     triage?: MonitorRuntime["triage"];
+    forge?: ForgeAdapter | IssueForgeAdapter;
   } = {},
 ): Promise<MonitorRuntime> {
   // Resolve from the installed factory, never from a registered project's source tree.
   const factory = new URL("../../../../", import.meta.url);
-  const [scheduler, loop, contracts, config, _triageState] = await Promise.all([
-    import(new URL("scripts/loop/scheduler.ts", factory).href),
-    import(new URL("scripts/local-loop.ts", factory).href),
-    import(new URL("scripts/loop.ts", factory).href),
-    import(new URL("scripts/loop/config.ts", factory).href),
-    import(new URL("scripts/loop/triage-state.ts", factory).href),
-  ]);
+  const [scheduler, loop, contracts, config, triageModule, backlogModule, processModule] =
+    await Promise.all([
+      import(new URL("scripts/loop/scheduler.ts", factory).href),
+      import(new URL("scripts/local-loop.ts", factory).href),
+      import(new URL("scripts/loop.ts", factory).href),
+      import(new URL("scripts/loop/config.ts", factory).href),
+      import(new URL("scripts/loop/triage.ts", factory).href),
+      import(new URL("scripts/scheduler.ts", factory).href),
+      import(new URL("scripts/loop/process.ts", factory).href),
+    ]);
   return {
     inspect: loop.inspectLocalLoop,
     setup(root) {
@@ -199,16 +165,15 @@ export async function loadMonitorRuntime(
     fetchBacklog:
       overrides.fetchBacklog ??
       (async (root, repo) => {
-        const data = (await githubWorker("backlog", root, repo)) as {
-          issues: MonitorCandidate[];
-          closedNumbers: number[];
-        };
-        return { ...data, closedNumbers: new Set(data.closedNumbers) };
+        const forge = overrides.forge
+          ? (overrides.forge as IssueForgeAdapter)
+          : new SystemForgeAdapter();
+        return await backlogModule.fetchGithubBacklog(root, repo, forge);
       }),
     readContract: async (root, number, repo) =>
       overrides.githubRead
         ? contracts.readIssueContract(root, number, repo, overrides.githubRead)
-        : ((await githubWorker("contract", root, repo, number)) as MonitorIssue),
+        : contracts.readIssueContract(root, number, repo),
     launch: overrides.launch ?? ((root, issue) => loop.runLocalLoop(root, issue, { push: true })),
     hasCapacityFull:
       overrides.hasCapacityFull ??
@@ -221,15 +186,25 @@ export async function loadMonitorRuntime(
     triage:
       overrides.triage ??
       (async (options) => {
-        const data = (await githubWorker(
-          "triage",
-          options.root,
-          options.repo,
-          options.issueNumber,
-          options.stateRoot,
-          options.dryRun,
-        )) as MonitorTriageResult;
-        return data;
+        const canonicalStateRoot = resolveTriageStateRoot(options.root, options.stateRoot);
+        const forge = overrides.forge
+          ? (overrides.forge as IssueForgeAdapter)
+          : new SystemForgeAdapter();
+        const transport = (req: {
+          argv: string[];
+          cwd: string;
+          timeoutMs?: number;
+          env?: Record<string, string | undefined>;
+        }) => processModule.processRun(req.argv, req.cwd, req.timeoutMs, req.env);
+        return await triageModule.runTriagePass({
+          root: options.root,
+          repo: options.repo,
+          stateRoot: canonicalStateRoot,
+          issueNumber: options.issueNumber,
+          dryRun: options.dryRun,
+          forge,
+          transport,
+        });
       }),
     checkWorkWindow: (root) => {
       const scheduleConfig = loadCascadedScheduleConfig(root);

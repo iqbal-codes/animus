@@ -45,3 +45,46 @@
 - Verification Results:
   - `bun run check`: Clean (architecture, format, lint, typecheck 0 errors across 215 files).
   - `bun run test`: 32 Vitest suites (437 tests) + 35 Bun suites (521 tests) = 958 tests passed with 0 failures.
+
+# TDD Log - Issue #147: In-Process Backend Application Kernel & Monitor Runtime
+
+## Cycle 1: Recovery, Diagnosis & Red Phase
+- Recovery base: `4f6b7b33cdfd98808912a3239d0c53f31a658c06`
+- Applied recovery patch (`recovery.patch`), copied routes module (`apps/backend/src/routes.ts`), deleted worker (`apps/backend/src/monitor/worker.ts`), preserved `packages/contracts/src/host.ts`.
+- Diagnosed prior work failures:
+  1. `apps/backend/src/main.ts:82`: `createBackendApp` invoked `configuration()` blindly, parsing `Bun.argv.slice(2)` and failing with `error: Invalid --port` in tests.
+  2. `tests/integration/onboarding-http.bun.test.ts`: test passed mock responses missing required schema fields (`updated_at` in controls, `existing_pr` vs `active_candidate` in promotion status, `workflow_name` in laps, and boolean brake properties).
+  3. Signal/lifecycle ordering failure in `scripts/loop/process.ts`: When `triage` was moved in-process, `processRun` executed within the backend daemon. In `scripts/loop/process.ts`, `onTerminate` registered `process.on("SIGTERM", onTerminate)` and called `stopHost(143)`, which invoked `process.exit(143)` unconditionally, killing the daemon and preempting graceful daemon shutdown (`process.exit(0)`).
+- Red-green verification tests in `tests/integration/onboarding-http.bun.test.ts`:
+  1. `real backend enrolls a checkout, provisions labels, reports held setup, and preserves admission`
+  2. `AC1: createBackendApp exports { fetch, websocket, monitor, db, stop } for direct in-process testing`
+  3. `AC1: lifecycle stop is idempotent and preserves injected db ownership`
+  4. `AC2 & AC3: unified global and project-scoped route handlers parameterized by projectId & single shared IntakeService`
+  5. `AC4: monitor runtime executes backlog polling, contract binding, and triage passes in-process without worker.ts`
+
+## Cycle 2: Green Phase - Kernel & Signal Lifecycle Implementation
+- Implementations:
+  1. `createBackendApp(options?: BackendAppOptions)` in `apps/backend/src/main.ts`:
+     - Exports `{ fetch, websocket, monitor, db, stop }` for direct in-process testing without TCP port allocation.
+     - Validates security config (`validateBindAddress`, `FACTORY_HOST_TOKEN`, `FACTORY_HOST_URL` via `hostOrigin()`) without swallowing invalid configurations.
+     - Supports injected `db` with ownership preservation: only closes internally created databases on `stop()`.
+     - Ensures `stop()` is idempotent across multiple sequential calls.
+     - In-process `app.fetch` executes in milliseconds.
+  2. Deduplicated routes in `apps/backend/src/routes.ts`:
+     - Consolidated global and project-scoped routes (`laps`, `controls`, `promotion`, `brakes`, `commands`) into shared handlers parameterized by `projectId?: string`.
+     - Eliminated ~500 lines of copy-pasted router code.
+     - Single shared `IntakeService` instance backed by registry DB and forge adapter.
+  3. Monitor runtime in `apps/backend/src/monitor/runtime.ts`:
+     - In-process execution of backlog polling (`fetchGithubBacklog`), contract binding (`readIssueContract`), and triage (`runTriagePass`).
+     - Deleted `apps/backend/src/monitor/worker.ts` completely (zero worker process spawning).
+  4. Signal/lifecycle resolution in `scripts/loop/process.ts`:
+     - In `stopHost(exitCode)`: Checks `const hasOtherListeners = process.listenerCount(signal) > 1;` before invoking `process.exit(exitCode)`.
+     - When external signal handlers exist (such as backend daemon graceful shutdown), cleans up owned child processes (`ownedExecutions`) and delegates process termination to the host signal handler rather than hijacking with exit code 143.
+     - Standalone executions without host signal handlers continue to exit with 130/143 as verified by `local-loop-deadlines.bun.test.ts`.
+  5. CLI entrypoint in `apps/backend/src/main.ts`:
+     - Registers SIGTERM/SIGINT shutdown handlers immediately on start with `Promise.allSettled` and `.finally(() => process.exit(0))`.
+     - Remains thin wrapper over `createBackendApp` when run directly with `Bun.serve`.
+- Verification Results:
+  - `bun run check`: All architecture checks, formatting, linting (0 warnings), and typechecking (0 errors across 215 files) passed.
+  - `bun run test`: All 32 Vitest suites (438 tests) and all 35 Bun suites (525 tests, 963 total tests across 67 files) passed with 0 failures.
+

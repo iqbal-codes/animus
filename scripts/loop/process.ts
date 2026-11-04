@@ -10,10 +10,14 @@ const onTerminate = () => { void stopHost(143); };
 async function stopHost(exitCode: number) {
   if (stopping) return;
   stopping = true;
+  const signal = exitCode === 130 ? "SIGINT" : "SIGTERM";
+  const hasOtherListeners = process.listenerCount(signal) > 1;
   try {
     await Promise.all([...ownedExecutions].map((cleanup) => cleanup()));
   } finally {
-    process.exit(exitCode);
+    if (!hasOtherListeners) {
+      process.exit(exitCode);
+    }
   }
 }
 
