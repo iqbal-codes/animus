@@ -295,6 +295,79 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
     expect(prCreateCall).toBeDefined();
     expect(prCreateCall).toContain(`feat(spec-100): integrated delivery for spec #100`);
   });
+
+  test("F2: injected TypeError in assertCandidateFn is propagated/held exactly once without retry", async () => {
+    const { repo, baseSha } = await initGitRepo();
+    const integrationBranch = "factory/spec-101-integration";
+    await git(repo, "branch", integrationBranch, baseSha);
+
+    await git(repo, "checkout", "-b", "subticket-47");
+    await writeFile(join(repo, "file3.txt"), "subticket 47\n");
+    await git(repo, "add", "file3.txt");
+    await git(repo, "commit", "-m", "subticket 47");
+    const candidateSha = (await git(repo, "rev-parse", "HEAD")).trim();
+    await git(repo, "checkout", "main");
+
+    let callCount = 0;
+    const injectedError = new TypeError("injected candidate type error");
+
+    const result = await executeSubticketAutoMerge({
+      root: repo,
+      candidate: candidateSha,
+      integrationBranch,
+      targetBaseTip: baseSha,
+      worktree: repo,
+      issueNumber: 47,
+      defaultBaseBranch: "main",
+      push: false,
+      autoMergeEval: makeStubEval(),
+      assertCandidateFn: async (opts) => {
+        callCount++;
+        expect(opts.root).toBe(repo);
+        expect(opts.expectedCandidate).toBe(candidateSha);
+        expect(opts.base).toBe(baseSha);
+        throw injectedError;
+      },
+    });
+
+    expect(callCount).toBe(1);
+    expect(result.success).toBe(false);
+    expect(result.finalStatus).toBe("waiting_approval");
+    expect(result.reviewOutcome).toBe("approved");
+    expect(result.error).toContain("injected candidate type error");
+  });
+
+  test("F2: default assertCandidate validator protects real candidate from uncommitted changes", async () => {
+    const { repo, baseSha } = await initGitRepo();
+    const integrationBranch = "factory/spec-102-integration";
+    await git(repo, "branch", integrationBranch, baseSha);
+
+    await git(repo, "checkout", "-b", "subticket-48");
+    await writeFile(join(repo, "file4.txt"), "subticket 48\n");
+    await git(repo, "add", "file4.txt");
+    await git(repo, "commit", "-m", "subticket 48");
+    const candidateSha = (await git(repo, "rev-parse", "HEAD")).trim();
+
+    // Leave an untracked dirty file in repo worktree
+    await writeFile(join(repo, "untracked.txt"), "untracked dirty content\n");
+
+    const result = await executeSubticketAutoMerge({
+      root: repo,
+      candidate: candidateSha,
+      integrationBranch,
+      targetBaseTip: baseSha,
+      worktree: repo,
+      issueNumber: 48,
+      defaultBaseBranch: "main",
+      push: false,
+      autoMergeEval: makeStubEval(),
+      // assertCandidateFn omitted to exercise default adapter
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.finalStatus).toBe("waiting_approval");
+    expect(result.error).toMatch(/Candidate has uncommitted or untracked changes/i);
+  });
 });
 
 describe("scripts/loop/reflector (createBoundedReflectionTransport)", () => {

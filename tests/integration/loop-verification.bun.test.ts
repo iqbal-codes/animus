@@ -3,16 +3,19 @@ import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runOrdinaryChecks, handleCiFastFail } from "../../scripts/loop/ci";
+import { executeBlackBoxQa, handleQaFastFail } from "../../scripts/loop/qa-runner";
 import {
-  runOrdinaryChecks,
-  executeBlackBoxQa,
-  handleQaFastFail,
-  handleCiFastFail,
+  evaluateReviewReadiness,
+  finalizeReviewAndPublish,
+  handleLoopCatch,
+} from "../../scripts/loop/review-gate";
+import {
   publishLoopComment,
   syncAndPublishPrEvidence,
   escalateIssueToHuman,
   recordLapAndReflect,
-} from "../../scripts/loop/verification";
+} from "../../scripts/loop/pr-publication";
 import * as loopExports from "../../scripts/loop/index";
 import { git } from "../../scripts/loop/worktree";
 import type { LocalIssue, LocalLoopResult } from "../../scripts/loop/types";
@@ -392,16 +395,175 @@ describe("scripts/loop/verification", () => {
     });
   });
 
-  describe("AC2: barrel export", () => {
-    test("scripts/loop/index.ts barrel exports verification utilities", () => {
+  describe("AC2: barrel export and review-gate mechanics", () => {
+    test("scripts/loop/index.ts barrel exports decomposed verification utilities", () => {
       expect((loopExports as any).runOrdinaryChecks).toBeFunction();
       expect((loopExports as any).executeBlackBoxQa).toBeFunction();
       expect((loopExports as any).handleQaFastFail).toBeFunction();
       expect((loopExports as any).handleCiFastFail).toBeFunction();
+      expect((loopExports as any).evaluateReviewReadiness).toBeFunction();
+      expect((loopExports as any).finalizeReviewAndPublish).toBeFunction();
+      expect((loopExports as any).handleLoopCatch).toBeFunction();
       expect((loopExports as any).escalateIssueToHuman).toBeFunction();
       expect((loopExports as any).publishLoopComment).toBeFunction();
       expect((loopExports as any).syncAndPublishPrEvidence).toBeFunction();
       expect((loopExports as any).recordLapAndReflect).toBeFunction();
+    });
+
+    test("evaluateReviewReadiness evaluates approval cleanly on passing QA and review", async () => {
+      const root = await createRepoFixture();
+      const candidate = await git(root, "rev-parse", "HEAD");
+      const issue = makeValidIssue({ number: 85 });
+      const artifactsDir = await mkdtemp(join(tmpdir(), "review-artifacts-"));
+      tempDirs.push(artifactsDir);
+
+      const evalRes = await evaluateReviewReadiness({
+        stateRoot: root,
+        issue,
+        branch: "main",
+        candidate,
+        base: candidate,
+        baseBranch: "main",
+        defaultBaseBranch: "main",
+        worktree: root,
+        lap: 1,
+        maxLaps: 3,
+        qaReport: { passed: true, checks: [] },
+        reviewReport: { passed: true, verdict: "approved", findings: [], dispositions: [] },
+        artifactsDir,
+        protectedPaths: [],
+      });
+
+      expect(evalRes.isApproved).toBe(true);
+      expect(evalRes.finalStatus).toBe("waiting_approval");
+      expect(evalRes.reviewOutcome).toBe("approved");
+    });
+
+    test("finalizeReviewAndPublish records terminal lap reflection and saves review", async () => {
+      const root = await createRepoFixture();
+      const candidate = await git(root, "rev-parse", "HEAD");
+      const issue = makeValidIssue({ number: 87 });
+      const artifactsDir = await mkdtemp(join(tmpdir(), "finalize-artifacts-"));
+      tempDirs.push(artifactsDir);
+      const runDir = await mkdtemp(join(tmpdir(), "finalize-run-"));
+      tempDirs.push(runDir);
+
+      const reviewEval = await evaluateReviewReadiness({
+        stateRoot: root,
+        issue,
+        branch: "main",
+        candidate,
+        base: candidate,
+        baseBranch: "main",
+        defaultBaseBranch: "main",
+        worktree: root,
+        lap: 1,
+        maxLaps: 3,
+        qaReport: { passed: true, checks: [] },
+        reviewReport: { passed: true, verdict: "approved", findings: [], dispositions: [] },
+        artifactsDir,
+        protectedPaths: [],
+      });
+
+      const state: LocalLoopResult = {
+        runId: "finalize-test",
+        pid: process.pid,
+        lap: 1,
+        issue: issue.url,
+        route: "simple",
+        status: "preparing",
+        runDirectory: runDir,
+        worktree: root,
+        branch: "main",
+        base: "main",
+        evidence: [],
+      };
+
+      let reflected = false;
+      await finalizeReviewAndPublish({
+        worktree: root,
+        issue,
+        branch: "main",
+        runId: "finalize-test",
+        candidate,
+        artifactsDir,
+        runDirectory: runDir,
+        stateRoot: root,
+        evidence: [],
+        commandRecords: [],
+        recoveries: [],
+        qaReport: { passed: true, checks: [] },
+        reviewReport: { passed: true, verdict: "approved", findings: [], dispositions: [] },
+        builderReport: { verdict: "pass" },
+        identities: {
+          targetBaseTip: candidate,
+          mergeBase: candidate,
+          prHead: candidate,
+          testedHead: candidate,
+          environment: "test-env",
+        },
+        lap: 1,
+        maxLaps: 3,
+        route: "simple",
+        push: false,
+        reviewEval,
+        reflectTerminal: async () => {
+          reflected = true;
+        },
+        state,
+      });
+
+      expect(reflected).toBe(true);
+      expect(state.status).toBe("waiting_approval");
+      expect(existsSync(join(artifactsDir, "review.json"))).toBe(true);
+    });
+
+    test("handleLoopCatch handles errors, records terminal state, and escalates on max laps", async () => {
+      const root = await createRepoFixture();
+      const issue = makeValidIssue({ number: 86 });
+      const runDir = await mkdtemp(join(tmpdir(), "catch-run-"));
+      tempDirs.push(runDir);
+      const artifactsDir = join(runDir, "artifacts");
+      const { mkdir } = await import("node:fs/promises");
+      await mkdir(artifactsDir, { recursive: true });
+
+      const state: LocalLoopResult = {
+        runId: "catch-test",
+        pid: process.pid,
+        lap: 3,
+        issue: issue.url,
+        route: "simple",
+        status: "preparing",
+        runDirectory: runDir,
+        worktree: root,
+        branch: "main",
+        base: "main",
+        evidence: [],
+      };
+
+      let reflected = false;
+      const catchResult = await handleLoopCatch({
+        error: new Error("simulated failure"),
+        state,
+        root,
+        issue,
+        branch: "main",
+        lap: 3,
+        maxLaps: 3,
+        stateRoot: root,
+        runId: "catch-test",
+        artifactsDir,
+        commandRecords: [],
+        recoveries: [],
+        reflectTerminal: async () => {
+          reflected = true;
+        },
+        save: async () => {},
+      });
+
+      expect(catchResult.status).toBe("needs_owner");
+      expect(catchResult.error).toBe("simulated failure");
+      expect(reflected).toBe(true);
     });
   });
 });

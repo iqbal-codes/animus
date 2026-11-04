@@ -255,4 +255,109 @@ describe("Canonical Animus Loop Orchestrator & Facade Shim", () => {
       await rm(root, { recursive: true, force: true }).catch(() => {});
     }
   });
+
+  test("F1: successful runs remain locked during execution and release on completion", async () => {
+    const root = await createGitRepoFixture();
+    try {
+      const issue: LocalIssue = {
+        number: 138,
+        url: "https://github.com/iqbal-codes/animus/issues/138",
+        title: "test lock retention during execution",
+        body: "AC1: verify lock retention",
+        comments: [],
+        dependencies: [],
+        activeClaim: false,
+      };
+
+      const { inspectLocalLoop, acquireIssueLock } = await import("../../scripts/loop/worktree");
+      const { common } = await inspectLocalLoop(root);
+      const stateRoot = join(common, "factory-local-loop");
+
+      let lockWasHeldDuringExecution = false;
+
+      const transport: AgentTransport = async ({ cwd, role }) => {
+        if (role === "builder") {
+          // Probe that issue lock is currently held by the running loop
+          try {
+            await acquireIssueLock(stateRoot, 138);
+          } catch (lockErr: any) {
+            if (/Issue 138 is locked/i.test(lockErr.message)) {
+              lockWasHeldDuringExecution = true;
+            }
+          }
+
+          await Bun.write(join(cwd, "code.txt"), "committed code");
+          runCmd(cwd, "git", "add", "code.txt");
+          runCmd(cwd, "git", "commit", "-m", "committed code");
+          const head = runCmd(cwd, "git", "rev-parse", "HEAD");
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              type: "message_end",
+              message: {
+                role: "assistant",
+                content: [
+                  { type: "text", text: JSON.stringify({ candidate: head, verdict: "pass" }) },
+                ],
+              },
+            }),
+            stderr: "",
+          };
+        }
+        const head = runCmd(cwd, "git", "rev-parse", "HEAD");
+        return {
+          exitCode: 0,
+          stdout:
+            JSON.stringify({ type: "agent_settled", aborted: false }) +
+            "\n" +
+            JSON.stringify({
+              type: "message_end",
+              message: {
+                role: "assistant",
+                stopReason: "stop",
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      candidate: head,
+                      verdict: "pass",
+                      passed: true,
+                      overall: "PASS",
+                      checks: [
+                        { criterion: "AC1", result: "pass", evidence: "builder-checks.log" },
+                      ],
+                      lines: [
+                        {
+                          id: "AC1",
+                          kind: "criterion",
+                          verdict: "PASS",
+                          evidence: ["builder-checks.log"],
+                        },
+                      ],
+                      findings: [],
+                    }),
+                  },
+                ],
+              },
+            }),
+          stderr: "",
+        };
+      };
+
+      const result = await runAnimusLoop(root, issue, {
+        transport,
+        push: false,
+      });
+
+      expect(lockWasHeldDuringExecution).toBe(true);
+      expect(result.status).toBe("waiting_approval");
+
+      // Verify lock has been released on completion and can be reacquired cleanly
+      const reacquired = await acquireIssueLock(stateRoot, 138);
+      expect(typeof reacquired).toBe("function");
+      await reacquired();
+    } finally {
+      await rm(root, { recursive: true, force: true }).catch(() => {});
+    }
+  });
 });

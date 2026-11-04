@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setupLoopLifecycle, type LoopLifecycleContext } from "../../scripts/loop/lifecycle";
 import * as loopExports from "../../scripts/loop/index";
-import { git } from "../../scripts/loop/worktree";
+import { git, inspectLocalLoop, acquireIssueLock } from "../../scripts/loop/worktree";
 import type { LocalIssue } from "../../scripts/loop/types";
 
 const tempDirs: string[] = [];
@@ -151,6 +151,32 @@ describe("scripts/loop/lifecycle", () => {
       } finally {
         await lc.releaseLock();
       }
+    });
+
+    test("F1: post-acquisition failure in setupLoopLifecycle releases lock so same issue can reacquire", async () => {
+      const root = await createRepoFixture();
+      const issue = makeValidIssue({
+        number: 99,
+        url: "https://github.com/example/repo/issues/99",
+      });
+      Object.defineProperty(issue, "verificationProfile", {
+        get() {
+          throw new Error("Simulated post-acquisition failure");
+        },
+        configurable: true,
+      });
+
+      // setupLoopLifecycle should fail with our simulated post-acquisition error
+      expect(setupLoopLifecycle(root, issue, { push: false })).rejects.toThrow(
+        "Simulated post-acquisition failure",
+      );
+
+      // Prove same issue can reacquire lock immediately without throwing "Issue 99 is locked"
+      const { common } = await inspectLocalLoop(root);
+      const stateRoot = join(common, "factory-local-loop");
+      const lockRelease = await acquireIssueLock(stateRoot, 99);
+      expect(typeof lockRelease).toBe("function");
+      await lockRelease();
     });
   });
 

@@ -404,8 +404,25 @@ describe("scripts/loop/worktree", () => {
       expect(typeof loopExports.inspectLocalLoop).toBe("function");
       expect(typeof loopExports.findExistingWorktreeForBranch).toBe("function");
       expect(typeof loopExports.acquireIssueLock).toBe("function");
+      expect(typeof loopExports.acquireWorktreeIssueLock).toBe("function");
       expect(typeof loopExports.prepareLoopWorktree).toBe("function");
       expect(typeof loopExports.assertCandidate).toBe("function");
+    });
+
+    test("scripts/loop/index.ts barrel exports acquireWorktreeIssueLock without collision", async () => {
+      const stateRoot = await mkdtemp(join(tmpdir(), "barrel-worktree-lock-"));
+      tempDirs.push(stateRoot);
+      const releaseLock = await loopExports.acquireWorktreeIssueLock(stateRoot, 402, {
+        runId: "test-run",
+      });
+      expect(typeof releaseLock).toBe("function");
+      expect(loopExports.acquireWorktreeIssueLock(stateRoot, 402)).rejects.toThrow(
+        "Issue 402 is locked",
+      );
+      await releaseLock();
+      const reacquired = await loopExports.acquireWorktreeIssueLock(stateRoot, 402);
+      expect(typeof reacquired).toBe("function");
+      await reacquired();
     });
 
     test("scripts/local-loop.ts re-exports inspectLocalLoop and findExistingWorktreeForBranch", () => {

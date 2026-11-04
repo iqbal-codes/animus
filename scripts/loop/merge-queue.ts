@@ -404,9 +404,7 @@ export interface ExecuteSubticketAutoMergeOptions {
   hasOrigin?: boolean;
   push?: boolean;
   autoMergeEval: AutoMergeEvaluationResult;
-  assertCandidateFn?:
-    | ((candidate: string) => Promise<unknown> | unknown)
-    | ((options: AssertCandidateOptions) => Promise<unknown> | unknown);
+  assertCandidateFn?: (options: AssertCandidateOptions) => Promise<unknown> | unknown;
   gitFn?: typeof git;
   processRunFn?: typeof processRun;
   parsePartOfFn?: (text: string) => number | null;
@@ -447,30 +445,12 @@ export async function executeSubticketAutoMerge(
   let finalIntegrationPr: string | undefined;
 
   try {
-    if (assertCandidateCmd) {
-      const fn = assertCandidateCmd as any;
-      try {
-        await fn(candidate);
-      } catch (fnErr) {
-        if (fnErr instanceof TypeError) {
-          await fn({
-            root,
-            worktree,
-            expectedCandidate: candidate,
-            base: targetBaseTip,
-          });
-        } else {
-          throw fnErr;
-        }
-      }
-    } else {
-      await assertCandidate({
-        root,
-        worktree,
-        expectedCandidate: candidate,
-        base: targetBaseTip,
-      });
-    }
+    await assertCandidateCmd({
+      root,
+      worktree,
+      expectedCandidate: candidate,
+      base: targetBaseTip,
+    });
     const currentIntTip = (
       await gitCmd(root, "rev-parse", `refs/heads/${integrationBranch}`)
     ).trim();

@@ -224,79 +224,86 @@ export async function setupLoopLifecycle(
     startedAt: new Date().toISOString(),
   });
 
-  const branch = existingPr
-    ? existingPr.headRefName
-    : `local-loop/issue-${issue.number}-${runId.slice(0, 8)}`;
-  const existingWorktree = await findExistingWorktreeForBranch(root, branch);
-  const dossier = loadIssueDossier(stateRoot, issue.number);
-  const lap = (dossier?.attempts.length ?? 0) + 1;
-  const initialProfile = issue.verificationProfile ?? resolveVerificationProfile(issue);
-  const state: LocalLoopResult = {
-    runId,
-    pid: process.pid,
-    lap,
-    issue: issue.url,
-    route,
-    status: "preparing",
-    runDirectory,
-    worktree: existingWorktree ?? join(stateRoot, "worktrees", runId),
-    branch,
-    base,
-    partOf,
-    integrationBranch,
-    pr: existingPr?.url,
-    verificationProfile: initialProfile,
-    evidence: [],
-  };
+  try {
+    const branch = existingPr
+      ? existingPr.headRefName
+      : `local-loop/issue-${issue.number}-${runId.slice(0, 8)}`;
+    const existingWorktree = await findExistingWorktreeForBranch(root, branch);
+    const dossier = loadIssueDossier(stateRoot, issue.number);
+    const lap = (dossier?.attempts.length ?? 0) + 1;
+    const initialProfile = issue.verificationProfile ?? resolveVerificationProfile(issue);
+    const state: LocalLoopResult = {
+      runId,
+      pid: process.pid,
+      lap,
+      issue: issue.url,
+      route,
+      status: "preparing",
+      runDirectory,
+      worktree: existingWorktree ?? join(stateRoot, "worktrees", runId),
+      branch,
+      base,
+      partOf,
+      integrationBranch,
+      pr: existingPr?.url,
+      verificationProfile: initialProfile,
+      evidence: [],
+    };
 
-  const save = async () => {
-    await Bun.write(join(runDirectory, "state.tmp"), JSON.stringify(state, null, 2));
-    await rename(join(runDirectory, "state.tmp"), join(runDirectory, "state.json"));
-  };
+    const save = async () => {
+      await Bun.write(join(runDirectory, "state.tmp"), JSON.stringify(state, null, 2));
+      await rename(join(runDirectory, "state.tmp"), join(runDirectory, "state.json"));
+    };
 
-  await Bun.write(join(runDirectory, "issue.json"), JSON.stringify(issue, null, 2));
-  await save();
+    await Bun.write(join(runDirectory, "issue.json"), JSON.stringify(issue, null, 2));
+    await save();
 
-  // Dynamic prompt loading with modular fallback
-  const builderTemplate = loadPrompt("loop-work", root);
-  const qaTemplate = loadPrompt("loop-check-app", root);
-  const reviewerTemplate = loadPrompt("loop-review", root);
+    // Dynamic prompt loading with modular fallback
+    const builderTemplate = loadPrompt("loop-work", root);
+    const qaTemplate = loadPrompt("loop-check-app", root);
+    const reviewerTemplate = loadPrompt("loop-review", root);
 
-  const scheduleCfg = loadScheduleConfig(root);
-  const maxLaps = scheduleCfg.max_laps ?? 3;
-  const maxRejections = Math.max(1, maxLaps - 1);
+    const scheduleCfg = loadScheduleConfig(root);
+    const maxLaps = scheduleCfg.max_laps ?? 3;
+    const maxRejections = Math.max(1, maxLaps - 1);
 
-  return {
-    runId,
-    stateRoot,
-    runDirectory,
-    artifactsDir,
-    handoffDir,
-    base,
-    baseBranch,
-    defaultBaseBranch,
-    defaultBaseSha,
-    integrationBranch,
-    partOf,
-    hasOrigin,
-    route,
-    existingPr,
-    branch,
-    worktree: state.worktree,
-    existingWorktree,
-    checks,
-    protectedPaths,
-    lap,
-    initialProfile,
-    releaseLock,
-    state,
-    save,
-    builderTemplate,
-    qaTemplate,
-    reviewerTemplate,
-    scheduleCfg,
-    maxLaps,
-    maxRejections,
-    timeout,
-  };
+    return {
+      runId,
+      stateRoot,
+      runDirectory,
+      artifactsDir,
+      handoffDir,
+      base,
+      baseBranch,
+      defaultBaseBranch,
+      defaultBaseSha,
+      integrationBranch,
+      partOf,
+      hasOrigin,
+      route,
+      existingPr,
+      branch,
+      worktree: state.worktree,
+      existingWorktree,
+      checks,
+      protectedPaths,
+      lap,
+      initialProfile,
+      releaseLock,
+      state,
+      save,
+      builderTemplate,
+      qaTemplate,
+      reviewerTemplate,
+      scheduleCfg,
+      maxLaps,
+      maxRejections,
+      timeout,
+    };
+  } catch (postAcquisitionError) {
+    try {
+      await releaseLock();
+    } catch {}
+    throw postAcquisitionError;
+  }
 }

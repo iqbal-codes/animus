@@ -140,6 +140,8 @@ export async function acquireIssueLock(
   };
 }
 
+export const acquireWorktreeIssueLock = acquireIssueLock;
+
 /**
  * Prepare an isolated loop worker git worktree:
  * - When reused: fetches remotes (if origin exists), checks out and resets hard to target branch, cleans untracked files.

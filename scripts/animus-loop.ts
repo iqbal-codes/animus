@@ -46,19 +46,25 @@ import { setupLoopLifecycle } from "./loop/lifecycle";
 import { invokeRoleWithDeadlines } from "./loop/role-runner";
 import {
   runOrdinaryChecks,
+  verifyPrCiGate,
+  handleCiFastFail,
+} from "./loop/ci";
+import {
   executeBlackBoxQa,
   handleQaFastFail,
-  verifyPrCiGate,
+} from "./loop/qa-runner";
+import {
   evaluateReviewReadiness,
   finalizeReviewAndPublish,
   handleLoopCatch,
+} from "./loop/review-gate";
+import {
   publishBuilderDelivery,
   escalateIssueToHuman,
   publishLoopComment,
   syncAndPublishPrEvidence,
   recordLapAndReflect,
-  handleCiFastFail,
-} from "./loop/verification";
+} from "./loop/pr-publication";
 
 // Re-export all domain types for full backward compatibility across all consumers
 export type * from "./loop/types";
@@ -67,7 +73,17 @@ export type * from "./loop/blast-radius";
 export type * from "./loop/worktree";
 export type * from "./loop/lifecycle";
 export type * from "./loop/role-runner";
-export type * from "./loop/verification";
+export type * from "./loop/qa-runner";
+export type * from "./loop/review-gate";
+export type * from "./loop/ci";
+export type {
+  PublishLoopCommentOptions,
+  SyncAndPublishPrEvidenceOptions,
+  RecordLapAndReflectOptions,
+  PublishBuilderDeliveryOptions,
+  PublicationRecord,
+  PublicationErrorRecord,
+} from "./loop/pr-publication";
 export type {
   ExecuteSubticketAutoMergeOptions,
   ExecuteTerminalReflectionOptions,
@@ -148,82 +164,84 @@ export async function runAnimusLoop(
   const commandRecords: LearningCommandRecord[] = [];
   const acceptedRef = lc.defaultBaseSha;
 
-  const reflectTerminal = async (targetDossier: IssueDossier) => {
-    await executeTerminalReflection({
-      root,
-      stateRoot: lc.stateRoot,
-      runDirectory: lc.runDirectory,
-      artifactsDir: lc.artifactsDir,
-      handoffDir: lc.handoffDir,
-      worktree: state.worktree,
-      candidate: state.candidate,
-      defaultBaseBranch: lc.defaultBaseBranch,
-      dossier: targetDossier,
-      transport,
-      budget: roleBudgets.reflector,
-      maxContinuations: options.maxContinuations,
-      push: options.push,
-      pr: state.pr,
-      acceptedRef,
-      commandRecords,
-      proposalEvaluator: options.reflection?.proposalEvaluator,
-      deliveryTransport: options.reflection?.deliveryTransport,
-      currentStatus: state.status,
-      setStatus: (status) => {
-        state.status = status;
-      },
-      onEvidence: async (ev) => {
-        state.evidence.push(ev);
-      },
-      onSave: async () => {
-        await save();
-      },
-    });
-  };
-
-  const invoke = (
-    role: LoopRole,
-    candidate?: string,
-    extraVars: Record<string, string> = {},
-    cwdOverride?: string,
-    optionsOverride?: { requiredAcIds?: string[] },
-  ) =>
-    invokeRoleWithDeadlines({
-      role,
-      root,
-      issue,
-      state,
-      stateRoot: lc.stateRoot,
-      runDirectory: lc.runDirectory,
-      artifactsDir: lc.artifactsDir,
-      handoffDir: lc.handoffDir,
-      route: lc.route,
-      base: lc.base,
-      candidate,
-      extraVars,
-      cwdOverride,
-      optionsOverride,
-      template:
-        role === "builder"
-          ? lc.builderTemplate
-          : role === "qa"
-            ? lc.qaTemplate
-            : lc.reviewerTemplate,
-      options,
-      roleBudgets,
-      transport,
-      acceptedRef,
-      holdoutPath: existsSync(join(root, ".factory/holdout/HOLDOUT.md"))
-        ? join(root, ".factory/holdout/HOLDOUT.md")
-        : "",
-      protectedPaths: lc.protectedPaths,
-      maxRejections: lc.maxRejections,
-      initialProfile: lc.initialProfile,
-      recoveries,
-      save,
-    });
+  let reflectTerminal: (targetDossier: IssueDossier) => Promise<void> = async () => {};
 
   try {
+    reflectTerminal = async (targetDossier: IssueDossier) => {
+      await executeTerminalReflection({
+        root,
+        stateRoot: lc.stateRoot,
+        runDirectory: lc.runDirectory,
+        artifactsDir: lc.artifactsDir,
+        handoffDir: lc.handoffDir,
+        worktree: state.worktree,
+        candidate: state.candidate,
+        defaultBaseBranch: lc.defaultBaseBranch,
+        dossier: targetDossier,
+        transport,
+        budget: roleBudgets.reflector,
+        maxContinuations: options.maxContinuations,
+        push: options.push,
+        pr: state.pr,
+        acceptedRef,
+        commandRecords,
+        proposalEvaluator: options.reflection?.proposalEvaluator,
+        deliveryTransport: options.reflection?.deliveryTransport,
+        currentStatus: state.status,
+        setStatus: (status) => {
+          state.status = status;
+        },
+        onEvidence: async (ev) => {
+          state.evidence.push(ev);
+        },
+        onSave: async () => {
+          await save();
+        },
+      });
+    };
+
+    const invoke = (
+      role: LoopRole,
+      candidate?: string,
+      extraVars: Record<string, string> = {},
+      cwdOverride?: string,
+      optionsOverride?: { requiredAcIds?: string[] },
+    ) =>
+      invokeRoleWithDeadlines({
+        role,
+        root,
+        issue,
+        state,
+        stateRoot: lc.stateRoot,
+        runDirectory: lc.runDirectory,
+        artifactsDir: lc.artifactsDir,
+        handoffDir: lc.handoffDir,
+        route: lc.route,
+        base: lc.base,
+        candidate,
+        extraVars,
+        cwdOverride,
+        optionsOverride,
+        template:
+          role === "builder"
+            ? lc.builderTemplate
+            : role === "qa"
+              ? lc.qaTemplate
+              : lc.reviewerTemplate,
+        options,
+        roleBudgets,
+        transport,
+        acceptedRef,
+        holdoutPath: existsSync(join(root, ".factory/holdout/HOLDOUT.md"))
+          ? join(root, ".factory/holdout/HOLDOUT.md")
+          : "",
+        protectedPaths: lc.protectedPaths,
+        maxRejections: lc.maxRejections,
+        initialProfile: lc.initialProfile,
+        recoveries,
+        save,
+      });
+
     // Worktree allocation / reuse
     await prepareLoopWorktree({
       root,
@@ -420,7 +438,7 @@ export async function runAnimusLoop(
         hasOrigin: lc.hasOrigin,
         push: options.push !== false,
         autoMergeEval: reviewEval.autoMergeEval,
-        assertCandidateFn: assertCandidate,
+        assertCandidateFn: assertCandidateInWorktree,
       });
       reviewEval = {
         ...reviewEval,
