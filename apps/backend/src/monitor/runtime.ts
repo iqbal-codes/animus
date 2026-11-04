@@ -195,7 +195,14 @@ export async function loadMonitorRuntime(
           cwd: string;
           timeoutMs?: number;
           env?: Record<string, string | undefined>;
-        }) => processModule.processRun(req.argv, req.cwd, req.timeoutMs, req.env);
+        }) =>
+          processModule.processRun(
+            req.argv,
+            req.cwd,
+            req.timeoutMs,
+            req.env as Record<string, string>,
+            { manageSignals: false },
+          );
         return await triageModule.runTriagePass({
           root: options.root,
           repo: options.repo,

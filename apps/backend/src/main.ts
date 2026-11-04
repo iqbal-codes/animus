@@ -330,17 +330,19 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     monitor.start();
   }
 
-  let stopped = false;
+  let stopPromise: Promise<void> | null = null;
   const stop = async () => {
-    if (stopped) return;
-    stopped = true;
-    await monitor.stop();
-    wsClients.clear();
-    if (ownsDb) {
-      try {
-        db.close();
-      } catch {}
-    }
+    if (stopPromise) return stopPromise;
+    stopPromise = (async () => {
+      await monitor.stop();
+      wsClients.clear();
+      if (ownsDb) {
+        try {
+          db.close();
+        } catch {}
+      }
+    })();
+    return stopPromise;
   };
 
   const appFetch = async (request: Request, server?: any): Promise<Response> => {

@@ -2,22 +2,32 @@ import { spawn } from "node:child_process";
 import type { ProcessResult } from "./types";
 import { validateTimeout } from "./deadlines";
 
+export interface ProcessRunOptions {
+  manageSignals?: boolean;
+}
+
 const ownedExecutions = new Set<() => Promise<void>>();
 let stopping = false;
+let hostSignalManagement = true;
+
 const onInterrupt = () => { void stopHost(130); };
 const onTerminate = () => { void stopHost(143); };
+
+export function configureProcessLifecycle(options: { manageSignals?: boolean }): void {
+  hostSignalManagement = options.manageSignals ?? true;
+}
+
+export function stopOwnedExecutions(): Promise<void> {
+  return Promise.all([...ownedExecutions].map((cleanup) => cleanup())).then(() => {});
+}
 
 async function stopHost(exitCode: number) {
   if (stopping) return;
   stopping = true;
-  const signal = exitCode === 130 ? "SIGINT" : "SIGTERM";
-  const hasOtherListeners = process.listenerCount(signal) > 1;
   try {
-    await Promise.all([...ownedExecutions].map((cleanup) => cleanup()));
+    await stopOwnedExecutions();
   } finally {
-    if (!hasOtherListeners) {
-      process.exit(exitCode);
-    }
+    process.exit(exitCode);
   }
 }
 
@@ -27,10 +37,12 @@ export function processRun(
   cwd: string,
   timeoutMs: number,
   env?: Record<string, string>,
+  options?: ProcessRunOptions,
 ): Promise<ProcessResult> {
   validateTimeout(timeoutMs);
   if (stopping) throw new Error("Local loop host is shutting down");
   if (process.platform === "win32") throw new Error("Local loop requires POSIX process groups");
+  const shouldManageSignals = options?.manageSignals ?? hostSignalManagement;
   return new Promise((resolve) => {
     const resolvedPiCacheRetention =
       env?.PI_CACHE_RETENTION !== undefined
@@ -97,7 +109,7 @@ export function processRun(
           resolve({ exitCode: timedOut ? 124 : exitCode, stdout, stderr, timedOut });
         } finally {
           ownedExecutions.delete(cleanup);
-          if (ownedExecutions.size === 0) {
+          if (shouldManageSignals && ownedExecutions.size === 0) {
             process.off("SIGINT", onInterrupt);
             process.off("SIGTERM", onTerminate);
           }
@@ -106,7 +118,7 @@ export function processRun(
       return finishing;
     };
     const cleanup = () => finish(143);
-    if (ownedExecutions.size === 0) {
+    if (shouldManageSignals && ownedExecutions.size === 0) {
       process.on("SIGINT", onInterrupt);
       process.on("SIGTERM", onTerminate);
     }

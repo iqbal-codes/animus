@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,6 +12,7 @@ import { ProjectRegistryService } from "../../apps/backend/src/registry/service"
 import { SyntheticForgeAdapter } from "../../apps/backend/src/registry/forge";
 import { RegisteredProjectMonitor } from "../../apps/backend/src/monitor/service";
 import { loadMonitorRuntime } from "../../apps/backend/src/monitor/runtime";
+import { processRun } from "../../scripts/loop/process";
 
 test("real backend enrolls a checkout, provisions labels, reports held setup, and preserves admission", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "factory-onboarding-http-")));
@@ -486,5 +487,223 @@ describe("In-Process Backend Application Kernel & Monitor Runtime (Ticket #147)"
     });
     expect(triageResult.successCount).toBe(1);
     expect(triageResult.processed[0]?.issueNumber).toBe(42);
+  });
+
+  test("remediation: concurrent app.stop() calls drain monitor together without early return", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "backend-concurrent-stop-")));
+    try {
+      const callerDb = initializeDatabase(":memory:");
+      const app = await createBackendApp({
+        db: callerDb,
+        stateDir: join(root, "state"),
+        startMonitor: false,
+      });
+
+      let drained = false;
+      const originalDrain = app.monitor.drain.bind(app.monitor);
+      app.monitor.drain = async () => {
+        await Bun.sleep(50);
+        drained = true;
+        await originalDrain();
+      };
+
+      const [stop1, stop2, stop3] = await Promise.all([app.stop(), app.stop(), app.stop()]);
+      expect(stop1).toBeUndefined();
+      expect(stop2).toBeUndefined();
+      expect(stop3).toBeUndefined();
+      expect(drained).toBe(true);
+      expect(app.monitor.status().stopping).toBe(true);
+      callerDb.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("remediation: in-process processRun with manageSignals: false does not leak process signal handlers", async () => {
+    const beforeListeners = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")];
+
+    const result = await processRun(
+      ["node", "-e", "setTimeout(() => {}, 20);"],
+      process.cwd(),
+      1000,
+      undefined,
+      { manageSignals: false },
+    );
+    expect(result.exitCode).toBe(0);
+
+    const afterListeners = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")];
+    expect(afterListeners).toEqual(beforeListeners);
+  });
+
+  test("remediation: arbitrary observer on SIGTERM does not disable CLI signal exit", async () => {
+    const modulePath = join(process.cwd(), "scripts/loop/process.ts");
+    const childHost = spawn(
+      process.execPath,
+      [
+        "-e",
+        `
+        import { processRun } from ${JSON.stringify(modulePath)};
+        process.on("SIGTERM", () => {
+          // Arbitrary observer
+        });
+        await processRun(["node", "-e", "setInterval(()=>{}, 1000);"], process.cwd(), 30000);
+      `,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+
+    await Bun.sleep(150);
+    childHost.kill("SIGTERM");
+
+    const exitedCode = await Promise.race([
+      new Promise<number | null>((resolve) =>
+        childHost.once("exit", (code, signal) => resolve(code ?? (signal ? 128 : 1))),
+      ),
+      Bun.sleep(4000).then(() => "timeout"),
+    ]);
+
+    expect(exitedCode).toBe(143);
+  });
+
+  test("remediation: real in-process monitor cancellation and draining during in-flight operations", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "backend-monitor-cancellation-")));
+    const checkout = join(root, "checkout");
+    mkdirSync(checkout);
+    execFileSync("git", ["init", "-q", checkout]);
+    execFileSync("git", [
+      "-C",
+      checkout,
+      "remote",
+      "add",
+      "origin",
+      "https://github.com/test-org/cancel-repo.git",
+    ]);
+
+    try {
+      const forge = new SyntheticForgeAdapter({ "test-org/cancel-repo": 2002 });
+      let triageStarted = false;
+      let triageCompleted = false;
+
+      const runtime = await loadMonitorRuntime({
+        forge,
+        fetchBacklog: async () => ({
+          issues: [
+            {
+              number: 1,
+              title: "Pending",
+              state: "OPEN",
+              labels: ["ready-for-agent"],
+              dependencies: [],
+            },
+          ],
+          closedNumbers: new Set<number>(),
+        }),
+        triage: async () => {
+          triageStarted = true;
+          await Bun.sleep(120);
+          triageCompleted = true;
+          return {
+            processed: [{ issueNumber: 1, status: "succeeded" }],
+            skippedCount: 0,
+            successCount: 1,
+            failureCount: 0,
+            heldCount: 0,
+          };
+        },
+      });
+
+      const app = await createBackendApp({
+        stateDir: join(root, "state"),
+        startMonitor: false,
+        monitorRuntime: runtime,
+        forge,
+      });
+
+      const registry = new ProjectRegistryService(app.db, forge);
+      await registry.registerProject({
+        method: "local_checkout",
+        name: "Cancel Project",
+        checkout_path: checkout,
+      });
+
+      app.monitor.start();
+      app.monitor.wakeProject("test-org/cancel-repo");
+
+      for (let i = 0; i < 30; i++) {
+        if (triageStarted) break;
+        await Bun.sleep(20);
+      }
+      expect(triageStarted).toBe(true);
+
+      const stopStartTime = Date.now();
+      await app.monitor.stop();
+      const stopDuration = Date.now() - stopStartTime;
+
+      expect(app.monitor.status().stopping).toBe(true);
+      expect(app.monitor.status().enabled).toBe(false);
+      expect(triageCompleted).toBe(true);
+      expect(stopDuration).toBeGreaterThanOrEqual(40);
+
+      await app.stop();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("remediation: graceful SIGTERM to backend server process exits with code 0 without fake success", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "backend-sigterm-test-")));
+    const secret = randomBytes(32).toString("hex");
+    const mockHost = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => Response.json({ error: "unused" }, { status: 404 }),
+    });
+
+    const backend = Bun.spawn([process.execPath, "apps/backend/src/main.ts", "--port", "0"], {
+      env: {
+        ...process.env,
+        FACTORY_STATE_DIR: join(root, "state"),
+        FACTORY_HOST_URL: mockHost.url.origin,
+        FACTORY_HOST_TOKEN: secret,
+        FACTORY_RUNTIME_CANDIDATE: "sigterm-test",
+      },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    try {
+      const reader = backend.stdout.getReader();
+      const first = await Promise.race([
+        reader.read(),
+        Bun.sleep(5000).then(() => {
+          throw new Error("Backend startup deadline");
+        }),
+      ]);
+      if (!first.value) throw new Error(await new Response(backend.stderr).text());
+      const { url } = JSON.parse(new TextDecoder().decode(first.value));
+      reader.releaseLock();
+
+      const healthRes = await fetch(`${url}/health`);
+      expect(healthRes.status).toBe(200);
+
+      backend.kill("SIGTERM");
+
+      const exitCode = await Promise.race([
+        backend.exited,
+        Bun.sleep(5000).then(() => {
+          backend.kill("SIGKILL");
+          return -1;
+        }),
+      ]);
+
+      expect(exitCode).toBe(0);
+    } finally {
+      await mockHost.stop(true);
+      if (backend.exitCode === null) {
+        backend.kill("SIGKILL");
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
