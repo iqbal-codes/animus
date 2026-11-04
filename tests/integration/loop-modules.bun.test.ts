@@ -798,6 +798,7 @@ test("13. Verification Profiles: resolves appropriate profile and generates tune
     "animus-architecture",
     "animus-tickets",
     "animus-implement",
+    "animus-implement-spec",
     "animus-review",
   ] as const) {
     const skillText = readFileSync(join(root, ".agents/skills", stageSkill, "SKILL.md"), "utf-8");

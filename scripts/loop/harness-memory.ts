@@ -10,6 +10,7 @@ const NON_BUILDER_SKILLS = new Set([
   "animus-spec",
   "animus-architecture",
   "animus-tickets",
+  "animus-implement-spec",
   "animus-review",
   "animus-harness",
   "animus-learn",

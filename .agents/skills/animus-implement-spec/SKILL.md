@@ -1,0 +1,94 @@
+---
+name: animus-implement-spec
+description: Coordinate and implement an approved multi-ticket specification across its dependency task graph using isolated worktrees, concurrent implementer subagents, candidate-bound evidence, and a unified integration branch.
+disable-model-invocation: true
+---
+
+# Implement Multi-Ticket Specification
+
+Coordinate the end-to-end implementation of an approved specification decomposed into a dependency-ordered task graph (DAG) of tickets. Deliver the entire specification onto a single **integration branch** (`factory/spec-<parent>-integration`), with each ticket implemented in an isolated worktree via targeted `animus-implement` execution, verified with candidate-bound evidence (`docs/agents/pr-evidence-contract.md`), reviewed independently (`/animus-review`), and delivered through a single final pull request (or tracker resolution) that closes the parent spec and all associated tickets.
+
+Consult `docs/agents/issue-tracker.md` for issue tracker operations, triage labels, and `Depends on:` semantics, and `docs/agents/pr-evidence-contract.md` for the canonical PR body, evidence matrix, Before/After captures, and finding lifecycle contract.
+
+## When to Use
+
+Use this playbook when:
+- Implementing an approved parent specification (`/animus-spec`, `docs/spec-*.md`, or tracker issue labeled `spec`) with associated child tickets (`Part of #<parent>`, `Depends on: #...`).
+- Delivering complex, multi-ticket features requiring DAG-ordered concurrency, isolated worktrees, and serialized integration onto a single integration branch.
+- Coordinating parallel implementer subagents across an active ticket frontier while preserving native factory ownership, candidate-bound evidence gates, and independent review boundaries.
+
+## Core Principles & Task Graph Model
+
+- **Task Graph & Dynamic Frontier**: Child tickets are not a linear list of steps. They form a directed acyclic graph (DAG) with explicit blocking relationships (`Depends on: #12, #14` or `Depends on: None`). Tickets whose prerequisites are fully satisfied form the active **frontier** ready for concurrent execution.
+- **Single Integration Branch**: Exactly one integration branch per parent specification (canonical format: `factory/spec-<parent>-integration`). All child worktrees branch from and merge back into this integration branch. Individual child tickets never open PRs against `main`.
+- **Sparse Communication via Context Pointers**: Communication to and from subagents must remain sparse. Communicate primarily through explicit context pointers (paths to spec, ticket URLs, exploration notes, frozen contracts, base SHAs, and commit references) rather than duplicating large context blocks.
+- **Worktree Isolation & Targeted Concurrency**: Implementer subagents run concurrently in the background in dedicated, isolated git worktrees. Each implementer executes the targeted `animus-implement` primitive bound to a single ticket contract; unbound pickers are strictly prohibited.
+- **Two-Layer Critical Impact & Serialized Integration**: As tickets complete, a serialized merger validates checks and inspects the change against the Two-Layer Critical Impact Gate (`docs/spec-subticket-auto-merge-judgement.md`), integrating clean child branches into the integration branch via compare-and-swap locks without race conditions.
+- **Independent Quality & Review Boundary**: Final verification and line-by-line review (`/animus-review`) run in an independent, clean session on the unified integration branch before final delivery.
+
+## Steps
+
+1. **Ingest specification, child tickets, and construct the task graph (DAG).**
+   Read the parent specification (`docs/spec-*.md` or tracker issue labeled `spec`) and all associated child tickets (`Part of #<parent>`). Consult `docs/agents/issue-tracker.md`. Verify ticket admission: child tickets must have `ready-for-agent` (admitted), complete intent, explicit boundaries, and well-formed `Depends on:` lines. Parent specs must be labeled `spec` paired with `ready-for-human` (or `needs-info`) to prevent direct loop intake. If the spec lacks executable tickets or has ambiguous boundaries, invoke `/animus-tickets` first.
+   Parse dependencies to construct the DAG. Identify the initial **frontier**: all child tickets with `Depends on: None` or whose prerequisites are already satisfied on the target base. Verify the graph is acyclic; detect and reject dependency cycles or self-edges immediately.
+   *Completion Criterion*: Dependency DAG is constructed with verified acyclicity, ticket contracts are frozen, and the initial unblocked frontier is identified with zero ambiguous prerequisites or missing intent.
+
+2. **(Optional) Dispatch exploration subagent for shared codebase research.**
+   If tickets require preliminary codebase exploration, unfamiliar API investigation, or external documentation discovery, dispatch an **exploration subagent** before launching builders.
+   Ensure the exploration subagent writes structured markdown notes (`notes.md`, architecture sketches, subsystem navigation maps) to a dedicated directory outside the repository checkout (such as `.animus/exploration/spec-<specNumber>/` or `.scratch/spec-<specNumber>/exploration/`), accessible to all future subagents. Decoupling exploration from implementation ensures implementer subagents remain lean, fast, and focused purely on TDD and code delivery.
+   *Completion Criterion*: Exploration notes and reference pointers are saved in the external notes directory, accessible to all future subagents, with zero modifications or scratch files left in tracked repository paths.
+
+3. **Initialize the single integration branch and draft delivery surface.**
+   Identify the target base branch (e.g. `main`) and record its current stable commit SHA (`baseSha`). Create and check out the dedicated integration branch: `factory/spec-<specNumber>-integration` (or `<feature>-integration` if specified by repo conventions). Verify the branch is clean and passes baseline static checks (`bun run check` or configured harness check).
+   If the issue tracker closes work through pull requests (per `docs/agents/issue-tracker.md`), prepare the PR delivery tracking. (A draft PR will be formally opened after the first child merge in Step 5, since a branch with no commits ahead of `main` cannot open a PR, marking it as closing the spec and tickets).
+   *Completion Criterion*: Integration branch is created from baseSha, confirmed clean, and established as the single integration target for all child tickets.
+
+4. **Dispatch concurrent implementer subagents across the frontier in isolated worktrees.**
+   For each unblocked ticket currently on the frontier, allocate an isolated git worktree on its own child branch (`factory/spec-<specNumber>/ticket-<ticketNumber>`). Dispatch implementer subagents in the background for maximum concurrency (bounded by system capacity and configured parallelism).
+   Provide each implementer sparse context pointers: ticket issue number/URL, parent spec pointer, frozen contract digest, shared exploration notes path, and the current integration branch tip SHA.
+   Each implementer subagent executes targeted implementation via `animus-implement`:
+   - Confirms its worktree is branched from the latest integration branch tip, and resets/rebases onto it if behind.
+   - Enforces `CODING_STANDARDS.md` and Level 4 blast radius constraints (`.agents/skills/blueprint`).
+   - Implements the ticket using Test-Driven Development (`.agents/skills/tdd`) at agreed public seams.
+   - Applies security hardening rules (`.agents/skills/security-hardening`) and UI 7-state design where applicable (`.agents/skills/ui-quality`).
+   - Compiles candidate-bound evidence per `docs/agents/pr-evidence-contract.md` (criterion matrix, test outputs, Before/After local screenshot captures for UI changes).
+   - Fetches the integration branch tip and merges/rebases it into the child branch before declaring completion.
+   *Completion Criterion*: Each active frontier ticket is executed in an isolated worktree, producing passing tests, candidate-bound evidence, and a committed head SHA on its child branch.
+
+5. **Serialize integration of completed tickets into the integration branch.**
+   As each implementer subagent signals completion, a **merger subagent** (or coordinator integration step) validates and integrates the child branch:
+   - Validates that ordinary checks, unit tests, and ticket acceptance criteria pass.
+   - Evaluates the Two-Layer Critical Impact Gate (`docs/spec-subticket-auto-merge-judgement.md`) for high-impact mutations (database schemas, cross-domain contracts, security boundaries, build toolchains). If an unexpected critical impact is flagged, hold for operator confirmation rather than blindly cascading downstream.
+   - Integrates the child branch into the integration branch using serialized compare-and-swap integration to prevent race conditions.
+   - Records the local integration status (`integrated_to_branch`) and new integration branch HEAD SHA in the coordination state (e.g., SQLite ledger or coordinator memory).
+   - If this is the first merged child commit and a PR delivery path is active, open the draft PR targeting `main` from the integration branch with title `feat: <spec-title>` and initial summary marked as closing the spec and tickets (`Closes #<spec>`, `Closes #<child-tickets>`).
+   *Completion Criterion*: Completed child branch is cleanly integrated into the integration branch via serialized compare-and-swap, integration status is persisted, and draft PR is initialized if first merge.
+
+6. **Advance the frontier and dynamically launch subsequent implementer subagents.**
+   Update the DAG with the newly integrated ticket(s). Re-evaluate remaining tickets: any ticket whose full set of `Depends on:` prerequisites are now satisfied enters the **frontier**.
+   Immediately launch new implementer subagents in isolated worktrees for the newly unblocked tickets (returning to Step 4). Repeat Steps 4, 5, and 6 dynamically until every ticket in the specification task graph has been implemented, verified, and integrated into the integration branch.
+   If any child implementer fails or encounters a blocker, halt the affected branch of the DAG, preserve worktree state for attribution, and escalate via `needs-owner` without dropping completed sibling progress.
+   *Completion Criterion*: Dynamic frontier evaluation continues until all tickets in the DAG are successfully integrated into the integration branch with zero outstanding unblocked or stalled nodes.
+
+7. **Conduct independent code review and end-to-end integration verification.**
+   Once all tickets in the spec DAG are integrated, run full repository verification on the integration branch (static analysis, unit tests, integration scenarios, and black-box verification).
+   Request an independent line-by-line code review (`/animus-review`) in a clean, separate, read-only session against `CODING_STANDARDS.md`, module depth, external blast radius, and test quality. Never perform code review inside an implementer session.
+   If the reviewer raises any findings (`F<id>`), launch a single remediation implementer subagent on the integration branch:
+   - Fixes all raised issues using TDD (`.agents/skills/tdd`).
+   - Documents author remediation records (`F<id> | author response: implemented, awaiting independent recheck`) citing commit SHAs and changed files per `docs/agents/pr-evidence-contract.md`.
+   - Re-runs independent review until all findings are resolved cleanly.
+   *Completion Criterion*: Full test suite and ordinary checks pass cleanly on the integrated candidate, and `/animus-review` reports clean approval with zero unresolved blocking findings.
+
+8. **Format consolidated delivery PR and close tracker items.**
+   Format the candidate's PR body following `.agents/skills/pr/SKILL.md` and `docs/agents/pr-evidence-contract.md`:
+   - Lead with a plain-English `## Summary` and compact visual (diff-sketch, call-tree, or architecture diagram).
+   - Include explicit closing keywords: `Closes #<parent-spec>`, followed by `Closes #<child-1>`, `Closes #<child-2>`, etc., ensuring all tracker issues are resolved upon merge.
+   - Present consolidated Before/After proof and criterion matrix under `## Evidence` above the collapsible `<!-- BEGIN_FACTORY_EVIDENCE_INDEX -->` block.
+   - State `Door` (`Two-way` vs `One-way`) and `Blast Radius` under `## Merge Danger`.
+   If a draft PR exists, mark it ready for review. If the issue tracker closes work directly without PRs, close each ticket and the parent spec using `gh issue close` with completion summary comments per `docs/agents/issue-tracker.md`, and report the integration branch.
+   *Completion Criterion*: Single final PR is published or marked ready for review with visual Summary, delimited Evidence, Merge Danger assessment, and issue-closing keywords (or all tracker items are closed), and Git commit references are recorded.
+
+9. **Clean up worktrees and temporary branches.**
+   Remove all temporary child worktrees (`git worktree remove`) and prune stale worktree registrations (`git worktree prune`). Delete temporary child branches (`factory/spec-<specNumber>/ticket-<childNumber>`), leaving only the primary integration branch intact. Clean up any external exploration notes that are no longer needed.
+   Report the final delivery status, integration branch commit SHA, PR URL, and summary of resolved tickets to the operator.
+   *Completion Criterion*: All temporary implementer worktrees and child branches are removed with zero filesystem residue or dirty checkouts remaining.
