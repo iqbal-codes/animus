@@ -338,5 +338,3 @@ export async function verifyDeployment(
   }
 }
 
-export const verifyCandidateDeployment = verifyDeployment;
-
