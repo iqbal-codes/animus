@@ -22,5 +22,8 @@ export * from "./triage";
 export * from "./blast-radius";
 export * from "./prompt-context";
 export * from "./worktree";
+export * from "./lifecycle";
+export * from "./role-runner";
+export * from "./verification";
 export { acquireIssueLock } from "./triage";
 
