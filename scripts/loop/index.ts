@@ -19,4 +19,5 @@ export * from "./profiles";
 export * from "./ci";
 export * from "./triage-policy";
 export * from "./triage";
+export * from "./blast-radius";
 
