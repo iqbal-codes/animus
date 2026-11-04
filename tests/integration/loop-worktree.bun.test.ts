@@ -383,6 +383,22 @@ describe("scripts/loop/worktree", () => {
   });
 
   describe("AC2: barrel and facade re-exports", () => {
+    test("preserves the existing triage lock contract through the barrel", async () => {
+      const stateRoot = await mkdtemp(join(tmpdir(), "barrel-triage-lock-"));
+      tempDirs.push(stateRoot);
+      const lock = await loopExports.acquireIssueLock(stateRoot, 401);
+      expect(lock).not.toBeNull();
+      try {
+        expect(await loopExports.acquireIssueLock(stateRoot, 401)).toBeNull();
+        expect(existsSync(join(stateRoot, "locks", "issue-401"))).toBe(false);
+      } finally {
+        await lock!.release();
+      }
+      const reacquired = await loopExports.acquireIssueLock(stateRoot, 401);
+      expect(reacquired).not.toBeNull();
+      await reacquired!.release();
+    });
+
     test("scripts/loop/index.ts barrel exports worktree utilities", () => {
       expect(typeof loopExports.git).toBe("function");
       expect(typeof loopExports.inspectLocalLoop).toBe("function");

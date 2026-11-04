@@ -22,5 +22,5 @@ export * from "./triage";
 export * from "./blast-radius";
 export * from "./prompt-context";
 export * from "./worktree";
-export { acquireIssueLock } from "./worktree";
+export { acquireIssueLock } from "./triage";
 
