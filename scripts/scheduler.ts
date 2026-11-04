@@ -10,7 +10,7 @@ import {
   type SchedulerTickResult,
 } from "./loop/scheduler";
 import { readIssueContract } from "./loop";
-import { runLocalLoop } from "./local-loop";
+import { runAnimusLoop } from "./animus-loop";
 import { parseDependencies, isActiveClaim } from "../apps/backend/src/intake/parser";
 
 export function parseSchedulerCliArgs(args: string[]): {
@@ -133,7 +133,7 @@ if (import.meta.main) {
 
       console.log(`Launching autonomous lap for issue #${issue.number}...`);
       const contract = readIssueContract(root, issue.number, repo);
-      const result = await runLocalLoop(root, contract, { push: true });
+      const result = await runAnimusLoop(root, contract, { push: true });
       return { runId: result.candidate || `issue-${issue.number}` };
     };
 

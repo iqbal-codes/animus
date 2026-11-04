@@ -1,6 +1,6 @@
 import { parseArgs } from "node:util";
 import { join, resolve } from "node:path";
-import { inspectLocalLoop, runLocalLoop, type LocalIssue } from "./local-loop";
+import { inspectLocalLoop, runAnimusLoop, type LocalIssue } from "./animus-loop";
 import { getMergedIssueNumbers } from "./loop/scheduler";
 import { getProjectSlug, resolveAnimusHome } from "../packages/contracts/src/paths";
 import { isActiveClaim, parseDependencies } from "../apps/backend/src/intake/parser";
@@ -206,7 +206,7 @@ if (import.meta.main) {
       console.error(
         "Local trusted-code execution, not a sandbox. No automatic publication or merge. Holdouts are omitted from checkout but Git history/host remain reachable.",
       );
-      const result = await runLocalLoop(root, contract, { push });
+      const result = await runAnimusLoop(root, contract, { push });
       console.log(JSON.stringify(result, null, 2));
       if (result.status !== "waiting_approval" && result.status !== "merged") process.exitCode = 1;
     }

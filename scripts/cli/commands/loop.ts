@@ -1,6 +1,6 @@
 import { join, resolve } from "node:path";
 import { githubJson, issueSpecification, readIssueContract } from "../../loop";
-import { inspectLocalLoop, runLocalLoop } from "../../local-loop";
+import { inspectLocalLoop, runAnimusLoop } from "../../animus-loop";
 import { findRun, watchRun } from "../../loop-watch";
 import { fetchGithubBacklog, logTickResult } from "../../scheduler";
 import {
@@ -72,7 +72,7 @@ export async function runLoopCliCommand(opts: {
       console.error(
         "Local trusted-code execution, not a sandbox. No automatic publication or merge.",
       );
-      const result = await runLocalLoop(opts.repoRoot, contract, { push: !opts.noPush });
+      const result = await runAnimusLoop(opts.repoRoot, contract, { push: !opts.noPush });
       console.log(JSON.stringify(result, null, 2));
       return result.status === "waiting_approval" || result.status === "merged" ? 0 : 1;
     }
@@ -218,7 +218,7 @@ export async function runSchedulerCliCommand(opts: {
       }
       console.log(`Launching autonomous lap for issue #${issue.number}...`);
       const contract = readIssueContract(opts.repoRoot, issue.number, repo);
-      const result = await runLocalLoop(opts.repoRoot, contract, { push: true });
+      const result = await runAnimusLoop(opts.repoRoot, contract, { push: true });
       return { runId: result.candidate || `issue-${issue.number}` };
     };
 
