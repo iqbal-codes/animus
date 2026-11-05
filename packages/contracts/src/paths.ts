@@ -716,6 +716,8 @@ export function resolveProjectWorkspace(
 
 /**
  * Searches across canonical runsDir and fallback legacy runs directories for a matching run directory.
+ * Issue lookup selects the newest state-file mtime within the first matching directory,
+ * breaking timestamp ties by path. Canonical storage takes precedence over legacy storage.
  */
 export function findWorkspaceRunDirectory(
   workspace: ProjectWorkspace,
@@ -733,6 +735,7 @@ export function findWorkspaceRunDirectory(
   for (const runsDir of candidateDirs) {
     if (!existsSync(runsDir)) continue;
     try {
+      let newest: { path: string; modified: number } | undefined;
       const entries = readdirSync(runsDir);
       for (const entry of entries) {
         const runPath = join(runsDir, entry);
@@ -751,12 +754,20 @@ export function findWorkspaceRunDirectory(
                 state.issue === `#${issueStr}` ||
                 state.branch?.includes(`issue-${issueStr}`)
               ) {
-                return runPath;
+                const modified = statSync(stateFile).mtimeMs;
+                if (
+                  !newest ||
+                  modified > newest.modified ||
+                  (modified === newest.modified && runPath < newest.path)
+                ) {
+                  newest = { path: runPath, modified };
+                }
               }
             }
           } catch {}
         }
       }
+      if (newest) return newest.path;
     } catch {}
   }
 

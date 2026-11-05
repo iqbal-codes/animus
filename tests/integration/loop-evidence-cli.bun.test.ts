@@ -40,6 +40,7 @@ describe("Loop Evidence Operator Workflow", () => {
         }),
       );
       await utimes(join(run, "state.json"), new Date(1000), new Date(1000));
+      await utimes(join(latest, "state.json"), new Date(2000), new Date(2000));
       expect(await resolveRunDirectory(root, { issue: 91 })).toBe(latest);
     } finally {
       if (previous === undefined) delete process.env.ANIMUS_HOME;
