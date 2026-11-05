@@ -88,7 +88,7 @@ try {
       "buildId: z.string()",
       "buildId: z.number()",
     ),
-    () => run(["bun", "run", "typecheck"], "packages/client/src/index.ts"),
+    () => run(["bun", "run", "typecheck"], "tests/integration/health.bun.test.ts"),
   );
 
   const privateContract = "packages/contracts/src/host.ts";
