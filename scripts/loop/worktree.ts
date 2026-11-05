@@ -90,26 +90,9 @@ export async function findExistingWorktreeForBranch(
   return null;
 }
 
-/**
- * Check if an operating system process with the given PID is currently alive.
- * Invariant: 'age never proves dead, EPERM alive, only ESRCH proves dead'.
- * Returns false only if process.kill(pid, 0) throws with err.code === 'ESRCH'.
- */
-export function isPidAlive(pid: number): boolean {
-  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) {
-    return false;
-  }
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err: any) {
-    if (err?.code === "ESRCH") {
-      return false; // dead
-    }
-    // EPERM or other error indicates process exists in OS process table
-    return true;
-  }
-}
+import { isPidAlive, isProcessAlive } from "../../packages/contracts/src/paths";
+
+export { isPidAlive, isProcessAlive };
 
 /**
  * Acquire an issue directory lock with stale PID reclamation.

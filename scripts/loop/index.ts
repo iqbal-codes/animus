@@ -24,6 +24,7 @@ export {
   git,
   inspectLocalLoop,
   findExistingWorktreeForBranch,
+  acquireIssueLock,
   acquireWorktreeIssueLock,
   prepareLoopWorktree,
   assertCandidate,
@@ -51,7 +52,7 @@ export {
   type DeploymentVerificationResult,
 } from "./qa-runner";
 export { LoopPublisher, type LoopPublisherOptions } from "./publisher";
-export { acquireIssueLock } from "./triage";
+export { acquireTriageIssueLock } from "./triage";
 export {
   LapSession,
   runAnimusLoop,

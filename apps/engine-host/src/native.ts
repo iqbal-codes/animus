@@ -117,8 +117,40 @@ export function readLaps(repoRoot: string): LapSummary[] {
     } catch {}
   }
 
+  const workspace = resolveProjectWorkspace(repoRoot);
   const packPath = join(repoRoot, "factory/pack.json");
   if (!existsSync(packPath)) {
+    if (existsSync(workspace.runsDir)) {
+      const summaries: LapSummary[] = [];
+      try {
+        const candidateDirs = [workspace.runsDir, ...(workspace.fallbackRunsDirs ?? [])];
+        for (const dir of candidateDirs) {
+          if (!existsSync(dir)) continue;
+          for (const entry of readdirSync(dir)) {
+            const stateFile = join(dir, entry, "state.json");
+            if (existsSync(stateFile) && !summaries.some((s) => s.id === entry)) {
+              try {
+                const st = JSON.parse(readFileSync(stateFile, "utf-8"));
+                summaries.push({
+                  id: st.runId ?? entry,
+                  workflow_name: "animus-loop",
+                  native_status: st.status,
+                  product_status: st.status,
+                  started_at: st.startedAt ?? new Date().toISOString(),
+                  completed_at: st.completedAt ?? null,
+                  last_activity_at: st.updatedAt ?? new Date().toISOString(),
+                  candidate_head: st.candidate ?? null,
+                  work_item: st.issue,
+                  pull_request: st.pr ?? null,
+                  transitions: [],
+                });
+              } catch {}
+            }
+          }
+        }
+        return summaries;
+      } catch {}
+    }
     throw new Error("native_source_unavailable");
   }
   const pack = JSON.parse(readFileSync(packPath, "utf-8"));
@@ -131,6 +163,37 @@ export function readLaps(repoRoot: string): LapSummary[] {
   );
 
   if (!existsSync(cliPath)) {
+    if (existsSync(workspace.runsDir)) {
+      const summaries: LapSummary[] = [];
+      try {
+        const candidateDirs = [workspace.runsDir, ...(workspace.fallbackRunsDirs ?? [])];
+        for (const dir of candidateDirs) {
+          if (!existsSync(dir)) continue;
+          for (const entry of readdirSync(dir)) {
+            const stateFile = join(dir, entry, "state.json");
+            if (existsSync(stateFile) && !summaries.some((s) => s.id === entry)) {
+              try {
+                const st = JSON.parse(readFileSync(stateFile, "utf-8"));
+                summaries.push({
+                  id: st.runId ?? entry,
+                  workflow_name: "animus-loop",
+                  native_status: st.status,
+                  product_status: st.status,
+                  started_at: st.startedAt ?? new Date().toISOString(),
+                  completed_at: st.completedAt ?? null,
+                  last_activity_at: st.updatedAt ?? new Date().toISOString(),
+                  candidate_head: st.candidate ?? null,
+                  work_item: st.issue,
+                  pull_request: st.pr ?? null,
+                  transitions: [],
+                });
+              } catch {}
+            }
+          }
+        }
+        return summaries;
+      } catch {}
+    }
     return [];
   }
 

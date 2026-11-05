@@ -8,14 +8,10 @@ export interface ProcessRunOptions {
 
 const ownedExecutions = new Set<() => Promise<void>>();
 let stopping = false;
-let hostSignalManagement = true;
+const hostSignalManagement = true;
 
 const onInterrupt = () => { void stopHost(130); };
 const onTerminate = () => { void stopHost(143); };
-
-export function configureProcessLifecycle(options: { manageSignals?: boolean }): void {
-  hostSignalManagement = options.manageSignals ?? true;
-}
 
 export function stopOwnedExecutions(): Promise<void> {
   return Promise.all([...ownedExecutions].map((cleanup) => cleanup())).then(() => {});

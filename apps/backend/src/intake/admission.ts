@@ -1,11 +1,13 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type { EvaluatedIssue } from "@animus/contracts/operator";
 import {
   resolveProjectWorkspace,
   loadCascadedScheduleConfig,
   getMergedIssueNumbers,
   getIssuesWaitingApproval,
+  resolveAnimusStateDir,
   type ProjectWorkspace,
 } from "@animus/contracts/paths";
 import type { IssueForgeAdapter } from "../registry/forge";
@@ -355,6 +357,7 @@ export function evaluateIssueAdmission(
 
 export interface EvaluateBacklogAdmissionOptions {
   repo?: string;
+  root?: string;
   issues: RawIssue[];
   forge?: IssueForgeAdapter;
   workspace?: ProjectWorkspace | string;
@@ -362,11 +365,105 @@ export interface EvaluateBacklogAdmissionOptions {
   stateRoot?: string;
   dossiersDir?: string;
   maxLaps?: number;
+  db?: any;
+  dbPath?: string;
+  projectId?: string;
   branchIntegrations?: Set<number> | Map<number, string>;
   waitingApprovalIssueNumbers?: Set<number>;
   mergedIssueNumbers?: Set<number>;
   closedIssueNumbers?: Set<number>;
   nativeDependencies?: Map<number, number[]>;
+}
+
+export function readVerifiedBranchIntegrations(options: {
+  db?: any;
+  dbPath?: string;
+  projectId?: string;
+  root?: string;
+  branchIntegrations?: Set<number> | Map<number, string>;
+}): Set<number> {
+  const verified = new Set<number>();
+  if (options.branchIntegrations) {
+    const items =
+      options.branchIntegrations instanceof Map
+        ? options.branchIntegrations.keys()
+        : options.branchIntegrations;
+    for (const item of items) {
+      verified.add(item);
+    }
+  }
+
+  // If db instance is provided with .prepare
+  if (options.db && typeof options.db.prepare === "function") {
+    try {
+      const tableCheck = options.db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='project_issue_integrations'",
+        )
+        .get();
+      if (tableCheck) {
+        const rows = options.projectId
+          ? options.db
+              .prepare("SELECT issue_number FROM project_issue_integrations WHERE project_id = ?")
+              .all(options.projectId)
+          : options.db.prepare("SELECT issue_number FROM project_issue_integrations").all();
+        for (const r of rows as any[]) {
+          if (typeof r?.issue_number === "number") verified.add(r.issue_number);
+        }
+      }
+    } catch {}
+  }
+
+  // If dbPath is provided
+  if (options.dbPath && existsSync(options.dbPath)) {
+    try {
+      const db = new DatabaseSync(options.dbPath, { readOnly: true });
+      try {
+        const rows = options.projectId
+          ? db
+              .prepare("SELECT issue_number FROM project_issue_integrations WHERE project_id = ?")
+              .all(options.projectId)
+          : db.prepare("SELECT issue_number FROM project_issue_integrations").all();
+        for (const r of rows as any[]) {
+          if (typeof r?.issue_number === "number") verified.add(r.issue_number);
+        }
+      } finally {
+        db.close();
+      }
+    } catch {}
+  }
+
+  // If neither db nor dbPath is provided, check default console.db in state directory
+  if (!options.db && !options.dbPath) {
+    try {
+      const defaultDb = join(resolveAnimusStateDir(), "console.db");
+      if (existsSync(defaultDb)) {
+        const db = new DatabaseSync(defaultDb, { readOnly: true });
+        try {
+          let projId = options.projectId;
+          if (!projId && options.root) {
+            const canonicalRoot = resolve(options.root);
+            const projRow = db
+              .prepare("SELECT id FROM projects WHERE checkout_path = ?")
+              .get(canonicalRoot) as any;
+            if (projRow?.id) projId = projRow.id;
+          }
+          const rows = projId
+            ? db
+                .prepare("SELECT issue_number FROM project_issue_integrations WHERE project_id = ?")
+                .all(projId)
+            : db.prepare("SELECT issue_number FROM project_issue_integrations").all();
+          for (const r of rows as any[]) {
+            if (typeof r?.issue_number === "number") verified.add(r.issue_number);
+          }
+        } finally {
+          db.close();
+        }
+      }
+    } catch {}
+  }
+
+  return verified;
 }
 
 export interface BacklogAdmissionResult {
@@ -408,6 +505,8 @@ export async function evaluateBacklogAdmission(
   let stateRoot = options.stateRoot;
   let dossiersDir = options.dossiersDir;
   let maxLaps = options.maxLaps;
+  const candidateRunsDirs: string[] = [];
+  if (runsDir) candidateRunsDirs.push(runsDir);
 
   if (options.workspace) {
     try {
@@ -418,6 +517,9 @@ export async function evaluateBacklogAdmission(
       runsDir = runsDir ?? ws.runsDir;
       stateRoot = stateRoot ?? ws.stateRoot;
       dossiersDir = dossiersDir ?? ws.dossiersDir;
+      for (const fallback of ws.fallbackRunsDirs ?? []) {
+        if (!candidateRunsDirs.includes(fallback)) candidateRunsDirs.push(fallback);
+      }
       if (maxLaps === undefined) {
         try {
           const sched = loadCascadedScheduleConfig(ws);
@@ -429,15 +531,42 @@ export async function evaluateBacklogAdmission(
     } catch {}
   }
 
+  if (options.root) {
+    try {
+      const ws = resolveProjectWorkspace(options.root);
+      runsDir = runsDir ?? ws.runsDir;
+      stateRoot = stateRoot ?? ws.stateRoot;
+      dossiersDir = dossiersDir ?? ws.dossiersDir;
+      for (const fallback of ws.fallbackRunsDirs ?? []) {
+        if (!candidateRunsDirs.includes(fallback)) candidateRunsDirs.push(fallback);
+      }
+    } catch {}
+  }
+  if (runsDir && !candidateRunsDirs.includes(runsDir)) {
+    candidateRunsDirs.unshift(runsDir);
+  }
+
   const mergedIssueNumbers = new Set<number>(options.mergedIssueNumbers ?? []);
   const waitingApprovalIssueNumbers = new Set<number>(options.waitingApprovalIssueNumbers ?? []);
   const runStates = new Map<number, string>();
 
-  if (runsDir && existsSync(runsDir)) {
-    for (const n of getMergedIssueNumbers(runsDir)) mergedIssueNumbers.add(n);
-    for (const n of getIssuesWaitingApproval(runsDir)) waitingApprovalIssueNumbers.add(n);
-    for (const [n, st] of readRunStates(runsDir)) runStates.set(n, st);
+  for (const dir of candidateRunsDirs) {
+    if (existsSync(dir)) {
+      for (const n of getMergedIssueNumbers(dir)) mergedIssueNumbers.add(n);
+      for (const n of getIssuesWaitingApproval(dir)) waitingApprovalIssueNumbers.add(n);
+      for (const [n, st] of readRunStates(dir)) {
+        if (!runStates.has(n)) runStates.set(n, st);
+      }
+    }
   }
+
+  const branchIntegrations = readVerifiedBranchIntegrations({
+    db: options.db,
+    dbPath: options.dbPath,
+    projectId: options.projectId,
+    root: options.root,
+    branchIntegrations: options.branchIntegrations,
+  });
 
   const nativeDependenciesMap = new Map<number, number[]>(options.nativeDependencies ?? []);
   const failedNativeLookup = new Set<number>();
@@ -458,7 +587,6 @@ export async function evaluateBacklogAdmission(
 
   const byNumber = new Map<number, RawIssue>(options.issues.map((issue) => [issue.number, issue]));
   const missingDependencyNumbers = new Set<number>();
-  const branchIntegrations = options.branchIntegrations;
 
   for (const issue of options.issues) {
     const rawDeps = [

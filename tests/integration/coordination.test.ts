@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import {
   initializeDatabase,
@@ -27,6 +28,7 @@ import {
   SerializedIntegrationManager,
   handleProjectCoordinationRoute,
 } from "../../apps/backend/src/coordination";
+import { acquireCrossProcessIntegrationLock } from "../../apps/backend/src/coordination/integration";
 import { createFactoryClient } from "@animus/client";
 import { specCoordinationPlanSchema } from "@animus/contracts/operator";
 
@@ -527,6 +529,41 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
   });
 
   describe("AC3 (Parent AC10, P2): Serialized Integration Branch & unblocking dependent child tickets", () => {
+    test("lock contention does not block event loop, preserving heartbeat responsiveness (ASYNC await timer)", async () => {
+      const lockPath = join(repoPath, ".git", "animus-spec-integration.lock");
+      // Simulate another process holding the cross-process integration lock
+      const token = randomUUID();
+      writeFileSync(
+        lockPath,
+        JSON.stringify({ pid: process.pid, lockedAt: new Date().toISOString(), token }),
+      );
+
+      let heartbeatCount = 0;
+      const interval = setInterval(() => {
+        heartbeatCount++;
+      }, 10);
+
+      // Release lock after 100ms from the timer
+      setTimeout(() => {
+        try {
+          unlinkSync(lockPath);
+        } catch {}
+      }, 100);
+
+      const releaseLock = await acquireCrossProcessIntegrationLock(
+        repoPath,
+        (cmd, opts) => execFileSync("git", cmd, { cwd: opts.cwd, encoding: "utf-8" }),
+        5000,
+      );
+
+      clearInterval(interval);
+      releaseLock();
+
+      // If the lock acquisition had used a synchronous busy-wait spin loop, heartbeatCount would be 0.
+      // With async await timer (setTimeout), heartbeats tick normally during contention.
+      expect(heartbeatCount).toBeGreaterThanOrEqual(2);
+    });
+
     test("successful child run merges into local integration branch, sets integrated_to_branch, and unblocks downstream children", async () => {
       forge.addIssue("owner/repo-spec", {
         number: 58,
@@ -830,6 +867,14 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
       expect(mergeResult.success).toBe(false);
       expect(mergeResult.finalStatus).toBe("waiting_approval");
       expect(mergeResult.error).toBeDefined();
+
+      // Invariant: Git ref was rolled back to baseTip when DB write failed, preventing drift
+      const currentBranchSha = execFileSync(
+        "git",
+        ["rev-parse", "refs/heads/factory/spec-58-integration"],
+        { cwd: repoPath, encoding: "utf-8" },
+      ).trim();
+      expect(currentBranchSha).toBe(baseTip);
 
       execFileSync("git", ["worktree", "remove", "--force", wtDir], {
         cwd: repoPath,

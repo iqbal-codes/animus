@@ -694,4 +694,121 @@ describe("Canonical Animus Loop Orchestrator & Facade Shim", () => {
       await rm(root, { recursive: true, force: true }).catch(() => {});
     }
   });
+
+  test("LapSession resolves canonical workspace paths when ANIMUS_HOME is set, visible via monitor and engine host", async () => {
+    const root = await createGitRepoFixture();
+    const animusHome = await mkdtemp(join(tmpdir(), "animus-home-canonical-"));
+    const origAnimusHome = process.env.ANIMUS_HOME;
+    process.env.ANIMUS_HOME = animusHome;
+
+    try {
+      const issue: LocalIssue = {
+        number: 143,
+        title: "Canonical Workspace Resolution Test",
+        url: "https://github.com/owner/repo/issues/143",
+        body: "## Source and problem\nNeed canonical workspace path resolution.\n\n## Outcome\nVisible to host and monitor.\n\n## Invariants\nAll paths derive via ProjectWorkspace.\n\n## Acceptance criteria\n- [ ] AC1: Passes canonical check\n\n## Boundary\nLocal loop session only.",
+        labels: ["ready-for-agent"],
+        comments: [],
+        dependencies: [],
+        activeClaim: false,
+      };
+
+      const transport: AgentTransport = async ({ cwd, role }) => {
+        if (role === "builder") {
+          await Bun.write(join(cwd, "canonical.txt"), "canonical content\n");
+          runCmd(cwd, "git", "add", "canonical.txt");
+          runCmd(cwd, "git", "commit", "-m", "feat: canonical paths");
+        }
+        const head = runCmd(cwd, "git", "rev-parse", "HEAD");
+        return {
+          exitCode: 0,
+          stdout:
+            JSON.stringify({ type: "agent_settled", aborted: false }) +
+            "\n" +
+            JSON.stringify({
+              type: "message_end",
+              message: {
+                role: "assistant",
+                stopReason: "stop",
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      candidate: head,
+                      sha: head,
+                      verdict: "pass",
+                      passed: true,
+                      overall: "PASS",
+                      outcome: "approved",
+                      summary: "Review approved",
+                      checks: [
+                        { criterion: "AC1", result: "pass", evidence: "builder-checks.log" },
+                      ],
+                      lines: [
+                        {
+                          id: "AC1",
+                          kind: "criterion",
+                          verdict: "PASS",
+                          evidence: ["builder-checks.log"],
+                        },
+                      ],
+                      findings: [],
+                    }),
+                  },
+                ],
+              },
+            }),
+          stderr: "",
+        };
+      };
+
+      const result = await runAnimusLoop(root, issue, {
+        transport,
+        push: false,
+      });
+
+      expect(result.status).toBe("waiting_approval");
+
+      const { resolveProjectWorkspace } = await import("@animus/contracts/paths");
+      const ws = resolveProjectWorkspace(root);
+
+      // Verify LapSession wrote into canonical workspace.runsDir under ANIMUS_HOME
+      expect(ws.isExternalState).toBe(true);
+      expect(ws.runsDir.startsWith(animusHome)).toBe(true);
+      expect(result.runDirectory.startsWith(ws.runsDir)).toBe(true);
+
+      const statePath = join(ws.runsDir, result.runId, "state.json");
+      expect(existsSync(statePath)).toBe(true);
+
+      // Verify visible via actual engine host
+      const { readLapDetail, readLapEvidence, readLapReport } =
+        await import("../../apps/engine-host/src/native");
+      const hostDetail = readLapDetail(root, result.runId);
+      expect(hostDetail.id).toBe(result.runId);
+      expect(hostDetail.product_status).toBe("waiting_approval");
+
+      const hostEvidence = readLapEvidence(root, result.runId);
+      expect(hostEvidence.peer_review?.outcome).toBe("approved");
+
+      const hostReport = readLapReport(root, result.runId);
+      expect(hostReport).toContain("Review approved");
+
+      // Verify visible via monitor service
+      const { getIssuesWaitingApproval } = await import("@animus/contracts/paths");
+      const waiting = getIssuesWaitingApproval(ws.runsDir);
+      expect(waiting.has(143)).toBe(true);
+
+      const { readRunStates } = await import("../../apps/backend/src/intake/admission");
+      const runStates = readRunStates(ws.runsDir);
+      expect(runStates.get(143)).toBe("waiting_approval");
+    } finally {
+      if (origAnimusHome !== undefined) {
+        process.env.ANIMUS_HOME = origAnimusHome;
+      } else {
+        delete process.env.ANIMUS_HOME;
+      }
+      await rm(root, { recursive: true, force: true }).catch(() => {});
+      await rm(animusHome, { recursive: true, force: true }).catch(() => {});
+    }
+  });
 });

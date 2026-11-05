@@ -135,30 +135,8 @@ export async function loadMonitorRuntime(
           throw new Error(`Missing configured model for ${role}`);
       }
       // Malformed schedule data must not silently fall back to an unrestricted schedule.
-      let raw: Record<string, any>;
-      try {
-        raw = JSON.parse(readFileSync(`${root}/.factory/schedule.json`, "utf-8"));
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-        throw error;
-      }
-      if (
-        raw.interval_seconds !== undefined &&
-        (!Number.isFinite(raw.interval_seconds) || raw.interval_seconds <= 0)
-      )
-        throw new Error("Invalid schedule interval");
-      if (raw.parallel !== undefined && (!Number.isSafeInteger(raw.parallel) || raw.parallel <= 0))
-        throw new Error("Invalid schedule parallel capacity");
-      if (raw.work_window?.enabled) {
-        const window = raw.work_window;
-        if (
-          ![window.start_time, window.end_time].every(
-            (time) => typeof time === "string" && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time),
-          )
-        )
-          throw new Error("Invalid schedule work window");
-        new Intl.DateTimeFormat("en-US", { timeZone: window.timezone }).format();
-      }
+      // Delegated to shared cascaded schedule config preflight
+      loadCascadedScheduleConfig(root);
     },
     interval: (root) => scheduler.loadScheduleConfig(root).interval_seconds * 1000,
     schedule: scheduler.runSchedulerTick,

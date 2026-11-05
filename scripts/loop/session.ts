@@ -18,6 +18,7 @@ import { resolveAllowedSkills, resolveLoopExtensions, buildCuratedAppendPrompts 
 import { loadScheduleConfig } from "./scheduler";
 import { LoopPublisher } from "./publisher";
 import { runBoundedRole } from "./role-runner";
+import { resolveProjectWorkspace } from "../../packages/contracts/src/paths";
 import type {
   LocalIssue,
   LocalLoopOptions,
@@ -324,9 +325,14 @@ export class LapSession {
       base = defaultBaseSha;
     }
 
-    const stateRoot = join(common, "factory-local-loop");
-    const runsDir = join(stateRoot, "runs");
-    const dossiersDir = join(stateRoot, "dossiers");
+    const workspace = resolveProjectWorkspace(root, {
+      stateRoot: options.stateRoot ?? options.stateDirectory,
+      customRunsDir: options.runsDir,
+    });
+    const stateRoot = workspace.stateRoot;
+    const runsDir = workspace.runsDir;
+    const dossiersDir = workspace.dossiersDir;
+    const worktreesDir = workspace.worktreesDir;
     await mkdir(runsDir, { recursive: true });
     await mkdir(dossiersDir, { recursive: true });
 
@@ -383,7 +389,7 @@ export class LapSession {
         route,
         status: "preparing",
         runDirectory,
-        worktree: existingWorktree ?? join(stateRoot, "worktrees", `issue-${issue.number}`),
+        worktree: existingWorktree ?? join(worktreesDir, `issue-${issue.number}`),
         branch,
         base,
         pr: existingPr,
@@ -1316,6 +1322,12 @@ export class LapSession {
       this.state.reviewerReport = reviewReport;
       await this.assertCandidate(this.state.candidate);
       await Bun.write(join(this.artifactsDir, "review.json"), JSON.stringify(reviewReport, null, 2));
+      const reviewerDir = join(this.runDirectory, "reviewer");
+      await mkdir(reviewerDir, { recursive: true });
+      await Bun.write(
+        join(reviewerDir, "report.md"),
+        reviewReport.summary ?? "Review approved",
+      );
 
       let reviewEval: {
         readiness: any;

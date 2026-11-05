@@ -27,6 +27,7 @@ import { resolveTriageStateRoot } from "./triage-state";
 import {
   evaluateIssueAdmission,
   readRunStates,
+  readVerifiedBranchIntegrations,
   type RawIssue,
 } from "../../apps/backend/src/intake/admission";
 
@@ -109,6 +110,12 @@ export interface FilterAdmittedIssuesOptions {
   runsDir?: string;
   dossiersDir?: string;
   runStates?: Map<number, string>;
+  integratedBranchIssues?: Set<number> | Map<number, string>;
+  branchIntegrations?: Set<number> | Map<number, string>;
+  db?: any;
+  dbPath?: string;
+  projectId?: string;
+  root?: string;
 }
 
 export function filterAdmittedIssues(
@@ -127,6 +134,14 @@ export function filterAdmittedIssues(
   const waitingApprovalSet =
     options.waitingApprovalIssueNumbers ??
     (runsDir ? getIssuesWaitingApproval(runsDir) : new Set<number>());
+
+  const verifiedIntegrations = readVerifiedBranchIntegrations({
+    db: options.db,
+    dbPath: options.dbPath,
+    projectId: options.projectId,
+    root: options.root,
+    branchIntegrations: options.integratedBranchIssues ?? options.branchIntegrations,
+  });
 
   const rawIssues: RawIssue[] = issues.map((c) => ({
     number: c.number,
@@ -155,6 +170,7 @@ export function filterAdmittedIssues(
       stateRoot: options.stateRoot,
       dossiersDir: options.dossiersDir,
       maxLaps: options.maxLaps,
+      integratedBranchIssues: verifiedIntegrations,
     });
     if (evaluated.admission_status === "admitted") {
       const candidate = candidateMap.get(raw.number);
@@ -475,6 +491,9 @@ export interface SchedulerTickOptions {
   triage?: TriagePassHandler | null;
   fetchBacklog: () => Promise<{ issues: BacklogCandidate[]; closedNumbers: Set<number> }>;
   launchLap: (issue: BacklogCandidate) => Promise<{ runId: string }>;
+  db?: any;
+  dbPath?: string;
+  branchIntegrations?: Set<number> | Map<number, string>;
 }
 
 export async function runSchedulerTick(options: SchedulerTickOptions): Promise<SchedulerTickResult> {
@@ -546,10 +565,18 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
     triageFn: options.triage,
   });
 
-  // 6. Check active builder laps & capacity
-  const activeCount = countActiveLaps(runsDir);
-  const waitingApprovalNumbers = getIssuesWaitingApproval(runsDir);
-  const mergedNumbers = getMergedIssueNumbers(runsDir);
+  // 6. Check active builder laps & capacity across candidate run directories
+  const candidateRunsDirs = [runsDir, ...(workspace.fallbackRunsDirs ?? [])];
+  let activeCount = 0;
+  const waitingApprovalNumbers = new Set<number>();
+  const mergedNumbers = new Set<number>();
+  for (const dir of candidateRunsDirs) {
+    if (existsSync(dir)) {
+      activeCount += countActiveLaps(dir);
+      for (const n of getIssuesWaitingApproval(dir)) waitingApprovalNumbers.add(n);
+      for (const n of getMergedIssueNumbers(dir)) mergedNumbers.add(n);
+    }
+  }
   if (activeCount >= mergedConfig.parallel) {
     return {
       action: "skipped",
@@ -576,12 +603,25 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
     };
   }
 
+  const verifiedIntegrations = readVerifiedBranchIntegrations({
+    db: options.db,
+    dbPath: options.dbPath,
+    projectId: options.projectId,
+    root,
+    branchIntegrations: options.branchIntegrations,
+  });
+
   const admitted = filterAdmittedIssues(backlog.issues, backlog.closedNumbers, {
     waitingApprovalIssueNumbers: waitingApprovalNumbers,
     mergedIssueNumbers: mergedNumbers,
     runsDir,
     stateRoot,
     maxLaps: mergedConfig.max_laps,
+    integratedBranchIssues: verifiedIntegrations,
+    db: options.db,
+    dbPath: options.dbPath,
+    projectId: options.projectId,
+    root,
   });
   if (admitted.length === 0) {
     return {

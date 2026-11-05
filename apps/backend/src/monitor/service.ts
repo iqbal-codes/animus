@@ -1,12 +1,16 @@
-import { existsSync } from "node:fs";
-import { mkdir, rmdir } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { BrakeService } from "../command/brakes";
 import { ProjectRegistryService } from "../registry/service";
 import { ProjectOnboardingService, verifyRepositoryIdentity } from "../registry/onboarding";
 import type { Project, ProjectMonitorStatus, MonitoringStatus } from "@animus/contracts/operator";
-import { resolveProjectWorkspace, evaluateWorkspacePreflight } from "@animus/contracts/paths";
+import {
+  resolveProjectWorkspace,
+  evaluateWorkspacePreflight,
+  isPidAlive,
+} from "@animus/contracts/paths";
 import type { MonitorRuntime } from "./runtime";
 
 export class RegisteredProjectMonitor {
@@ -492,18 +496,60 @@ export class RegisteredProjectMonitor {
       const stateRoot = workspace.stateRoot;
       await mkdir(stateRoot, { recursive: true });
       const candidateLock = join(stateRoot, "registered-project-monitor.lock");
+      const ownerPath = join(candidateLock, "owner.json");
+      let acquired = false;
       try {
         await mkdir(candidateLock);
+        await writeFile(
+          ownerPath,
+          JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }),
+        );
         lock = candidateLock;
+        acquired = true;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        status.state = "skipped";
-        status.reason = "project_locked";
-        if (fromWake) {
-          this.pendingWake.add(project.id);
-          status.pending_wake = true;
+
+        // Check stale lock ownership: only reclaim when owner.json has a dead PID (ESRCH).
+        // If owner.json is missing or malformed, fail closed (age never proves dead).
+        let isStale = false;
+        try {
+          if (existsSync(ownerPath)) {
+            const raw = readFileSync(ownerPath, "utf-8");
+            const owner = JSON.parse(raw);
+            if (
+              typeof owner.pid === "number" &&
+              Number.isInteger(owner.pid) &&
+              owner.pid > 0 &&
+              !isPidAlive(owner.pid)
+            ) {
+              // Dead PID (ESRCH): safe to reclaim stale lock
+              isStale = true;
+            }
+          }
+        } catch {}
+
+        if (isStale) {
+          try {
+            await rm(candidateLock, { recursive: true, force: true });
+            await mkdir(candidateLock);
+            await writeFile(
+              ownerPath,
+              JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }),
+            );
+            lock = candidateLock;
+            acquired = true;
+          } catch {}
         }
-        return;
+
+        if (!acquired) {
+          status.state = "skipped";
+          status.reason = "project_locked";
+          if (fromWake) {
+            this.pendingWake.add(project.id);
+            status.pending_wake = true;
+          }
+          return;
+        }
       }
       this.assertDispatch(project);
       await new ProjectOnboardingService(this.registry).prepareLabels(project.repo_name);
@@ -563,7 +609,7 @@ export class RegisteredProjectMonitor {
     } finally {
       if (lock) {
         try {
-          await rmdir(lock);
+          await rm(lock, { recursive: true, force: true });
         } catch (error) {
           status.state = "error";
           status.reason = "lock_release_failed";

@@ -90,6 +90,9 @@ export interface LocalLoopOptions {
   stateRoot?: string;
   /** Alias for stateRoot */
   stateDirectory?: string;
+  /** Optional custom runs directory override. */
+  runsDir?: string;
+  customRunsDir?: string;
 }
 
 export interface LoopEvidence {

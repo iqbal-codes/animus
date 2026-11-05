@@ -15,6 +15,8 @@ import {
   formatTicketMarkdown,
   computeDiff,
   computeLabelEffects,
+  evaluateBacklogAdmission,
+  bindIssueContract,
 } from "../../apps/backend/src/intake";
 import { resolveProjectWorkspace } from "@animus/contracts/paths";
 import { createFactoryClient } from "@animus/client";
@@ -339,6 +341,174 @@ Depends on: #59, #60
       expect(afterIntegration.admission_status).toBe("admitted");
       expect(afterIntegration.reason).toBe("admitted_ready");
       expect(afterIntegration.unsatisfied_dependencies).toEqual([]);
+    });
+
+    test("evaluates admission and contract binding by detecting merged dependencies in legacy fallback runs directory (ws.fallbackRunsDirs)", async () => {
+      const checkoutPath = createMockCheckout("co-fallback", "owner/repo-fallback");
+      const ws = resolveProjectWorkspace(checkoutPath);
+      expect(ws.fallbackRunsDirs.length).toBeGreaterThan(0);
+      const fallbackRunsDir = ws.fallbackRunsDirs[0]!;
+
+      // Write a legacy run for issue #101 marked "merged"
+      const runDir = join(fallbackRunsDir, "run-legacy-101");
+      mkdirSync(runDir, { recursive: true });
+      writeFileSync(join(runDir, "state.json"), JSON.stringify({ issue: 101, status: "merged" }));
+
+      // Issue #102 depends on #101. Remote state for #101 is OPEN (or missing on forge).
+      const rawIssues = [
+        {
+          number: 102,
+          title: "Downstream Ticket",
+          state: "OPEN",
+          labels: [{ name: "ready-for-agent" }],
+          body: "Depends on: #101",
+        },
+      ];
+
+      const admissionResult = await evaluateBacklogAdmission({
+        root: checkoutPath,
+        workspace: ws,
+        issues: rawIssues,
+      });
+
+      const issue102 = admissionResult.byNumber.get(102);
+      expect(issue102).toBeDefined();
+      expect(issue102!.admission_status).toBe("admitted");
+      expect(issue102!.reason).toBe("admitted_ready");
+      expect(issue102!.unsatisfied_dependencies).toEqual([]);
+
+      // Also verify bindIssueContract succeeds on issue 102 without throwing Unresolved dependency #101
+      const readMock = (args: string[]) => {
+        if (args[0] === "api") return [];
+        if (args.slice(0, 2).join(" ") === "issue view") {
+          const num = Number(args[2]);
+          if (num === 102) {
+            return {
+              number: 102,
+              url: "https://github.com/owner/repo-fallback/issues/102",
+              state: "OPEN",
+              title: "Downstream Ticket",
+              labels: [{ name: "ready-for-agent" }],
+              body: [
+                "## Source and problem",
+                "Prob",
+                "## Outcome",
+                "Out",
+                "## Invariants",
+                "- Inv",
+                "## Acceptance criteria",
+                "- [ ] AC1",
+                "## Boundary",
+                "- Bound",
+                "Depends on: #101",
+              ].join("\n"),
+              comments: [],
+            };
+          }
+          if (num === 101) {
+            return {
+              number: 101,
+              url: "https://github.com/owner/repo-fallback/issues/101",
+              state: "OPEN",
+            };
+          }
+        }
+        return {};
+      };
+
+      const contract = bindIssueContract({
+        root: checkoutPath,
+        number: 102,
+        repo: "owner/repo-fallback",
+        read: readMock as any,
+      });
+      expect(contract.number).toBe(102);
+      expect(contract.dependencies).toEqual([{ number: 101, state: "CLOSED" }]);
+    });
+
+    test("evaluates admission, contract binding, and scheduler by verifying SQLite project_issue_integrations parity", async () => {
+      const checkoutPath = createMockCheckout("co-sqlite-parity", "owner/repo-sqlite-parity");
+      const project = await registry.registerProject({
+        method: "local_checkout",
+        name: "SQLite Parity Project",
+        checkout_path: checkoutPath,
+      });
+
+      // Record verified branch integration for issue #201 in project database
+      intake.recordBranchIntegration(
+        project.id,
+        201,
+        "factory/spec-50-integration",
+        "sha201commit",
+      );
+
+      // Verify bindIssueContract with db/projectId recognizes #201 as satisfied even though GitHub state is OPEN
+      const readMock = (args: string[]) => {
+        if (args[0] === "api") return [];
+        if (args.slice(0, 2).join(" ") === "issue view") {
+          const num = Number(args[2]);
+          if (num === 202) {
+            return {
+              number: 202,
+              url: "https://github.com/owner/repo-sqlite-parity/issues/202",
+              state: "OPEN",
+              title: "Ticket 202",
+              labels: [{ name: "ready-for-agent" }],
+              body: [
+                "## Source and problem",
+                "Prob",
+                "## Outcome",
+                "Out",
+                "## Invariants",
+                "- Inv",
+                "## Acceptance criteria",
+                "- [ ] AC1",
+                "## Boundary",
+                "- Bound",
+                "Depends on: #201",
+              ].join("\n"),
+              comments: [],
+            };
+          }
+          if (num === 201) {
+            return {
+              number: 201,
+              url: "https://github.com/owner/repo-sqlite-parity/issues/201",
+              state: "OPEN", // Still OPEN on forge awaiting parent PR!
+            };
+          }
+        }
+        return {};
+      };
+
+      const contract = bindIssueContract({
+        root: checkoutPath,
+        number: 202,
+        repo: "owner/repo-sqlite-parity",
+        read: readMock as any,
+        db,
+        projectId: project.id,
+      });
+      expect(contract.number).toBe(202);
+      expect(contract.dependencies).toEqual([{ number: 201, state: "CLOSED" }]);
+
+      // Verify filterAdmittedIssues also admits #202 via SQLite project_issue_integrations
+      const { filterAdmittedIssues } = await import("../../scripts/loop/scheduler");
+      const candidate202 = {
+        number: 202,
+        title: "Ticket 202",
+        state: "OPEN",
+        labels: ["ready-for-agent"],
+        dependencies: [201],
+        activeClaim: false,
+      };
+
+      const admitted = filterAdmittedIssues([candidate202], new Set(), {
+        db,
+        projectId: project.id,
+        root: checkoutPath,
+      });
+      expect(admitted.map((c) => c.number)).toEqual([202]);
     });
 
     test("blocks admission on blocking labels (needs-info, ready-for-human, needs-triage, needs-owner)", async () => {

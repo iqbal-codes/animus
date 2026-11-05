@@ -3,7 +3,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { CoordinationError } from "./errors";
-import { isPidAlive } from "../../../../scripts/loop/worktree";
+import { isPidAlive } from "@animus/contracts/paths";
 
 export interface IntegrationParams {
   repoRoot: string;
@@ -40,14 +40,14 @@ function defaultGitRunner(cmd: string[], options: { cwd: string }): string {
   }
 }
 
-function acquireCrossProcessIntegrationLock(
+export async function acquireCrossProcessIntegrationLock(
   repoRoot: string,
   runner: (cmd: string[], options: { cwd: string }) => string,
   maxWaitMs = 15_000,
-): () => void {
+): Promise<() => void> {
   let lockDir = repoRoot;
   try {
-    const gitDir = runner(["rev-parse", "--git-dir"], { cwd: repoRoot });
+    const gitDir = runner(["rev-parse", "--git-dir"], { cwd: repoRoot }).trim();
     lockDir = resolve(repoRoot, gitDir);
   } catch {}
 
@@ -113,8 +113,7 @@ function acquireCrossProcessIntegrationLock(
             `Timed out waiting for integration lock ${lockPath} after ${maxWaitMs}ms`,
           );
         }
-        const waitUntil = Date.now() + 25;
-        while (Date.now() < waitUntil) {}
+        await new Promise((resolve) => setTimeout(resolve, 25));
         continue;
       }
       throw err;
@@ -147,7 +146,7 @@ export class SerializedIntegrationManager {
 
     let releaseCrossProcessLock: (() => void) | undefined;
     try {
-      releaseCrossProcessLock = acquireCrossProcessIntegrationLock(
+      releaseCrossProcessLock = await acquireCrossProcessIntegrationLock(
         params.repoRoot,
         params.gitRunner ?? this.runner,
       );

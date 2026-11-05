@@ -7,8 +7,13 @@ import {
   type WorktreeLockInfo,
 } from "../../../../scripts/loop/worktree";
 
+export { allocateWorktree };
 export type { WorktreeAllocation, WorktreeAllocationOptions, WorktreeLockInfo };
 
+/**
+ * Backward compatibility wrapper for worktree allocation.
+ * Prefer importing allocateWorktree directly.
+ */
 export class WorktreeManager {
   private runner?: (cmd: string[], options: { cwd: string }) => string;
 

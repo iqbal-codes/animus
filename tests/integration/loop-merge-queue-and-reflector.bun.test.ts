@@ -692,6 +692,91 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
     expect(result.success).toBe(false);
     expect(result.finalStatus).toBe("waiting_approval");
     expect(result.error).toBeDefined();
+
+    // Verify ref rollback: integration branch must have rolled back to baseSha, NOT left at candidateSha!
+    const intBranchSha = (await git(repo, "rev-parse", `refs/heads/${integrationBranch}`)).trim();
+    expect(intBranchSha).toBe(baseSha);
+  });
+
+  test("executeSubticketAutoMerge handles post-publication forge failure with honest persisted recovery rather than pretend unmerged", async () => {
+    const { repo, baseSha } = await initGitRepo();
+    const integrationBranch = "factory/spec-108-integration";
+    await git(repo, "branch", integrationBranch, baseSha);
+
+    const wtDir = await mkdtemp(join(tmpdir(), "wt-cand-forge-fail-"));
+    tempDirs.push(wtDir);
+    await git(repo, "worktree", "add", "-b", "subticket-53", wtDir, baseSha);
+    await writeFile(join(wtDir, "sub-53.txt"), "subticket 53\n");
+    await git(wtDir, "add", "sub-53.txt");
+    await git(wtDir, "commit", "-m", "feat: subticket 53");
+    const candidateSha = (await git(wtDir, "rev-parse", "HEAD")).trim();
+
+    const dbDir = await mkdtemp(join(tmpdir(), "db-forge-fail-"));
+    tempDirs.push(dbDir);
+    const dbPath = join(dbDir, "console.db");
+    const db = new DatabaseSync(dbPath);
+    db.exec(`
+      CREATE TABLE projects (id TEXT PRIMARY KEY);
+      CREATE TABLE project_issue_integrations (
+        project_id TEXT NOT NULL,
+        issue_number INTEGER NOT NULL,
+        branch TEXT NOT NULL,
+        commit_sha TEXT NOT NULL,
+        integrated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, issue_number)
+      );
+      INSERT INTO projects (id) VALUES ('proj-108');
+    `);
+
+    // Injected failing processRun simulates forge outage during gh pr merge or gh issue close
+    const failingProcessRun = async (cmd: string[]) => {
+      if (cmd[0] === "gh") {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: "HTTP 503: GitHub Service Unavailable (outage)",
+        };
+      }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+
+    const result = await executeSubticketAutoMerge({
+      root: repo,
+      candidate: candidateSha,
+      integrationBranch,
+      targetBaseTip: baseSha,
+      worktree: wtDir,
+      issueNumber: 53,
+      partOf: 108,
+      defaultBaseBranch: "main",
+      pr: "53",
+      push: true,
+      hasOrigin: false,
+      db,
+      projectId: "proj-108",
+      autoMergeEval: makeStubEval(),
+      assertCandidateFn: async () => {},
+      processRunFn: failingProcessRun as any,
+    });
+
+    // Invariant: Post-publication failure must NOT pretend unmerged waiting_approval.
+    // The integration branch ref IS updated and DB integration IS saved.
+    expect(result.finalStatus).toBe("merged");
+    expect(result.reviewOutcome).toBe("merged");
+    expect(result.error).toContain("Post-publication failed");
+
+    // Integration branch ref is updated
+    const intBranchSha = (await git(repo, "rev-parse", `refs/heads/${integrationBranch}`)).trim();
+    expect(intBranchSha).toBe(candidateSha);
+
+    // Database record was successfully persisted
+    const row = db
+      .prepare("SELECT * FROM project_issue_integrations WHERE project_id = ? AND issue_number = ?")
+      .get("proj-108", 53) as any;
+    expect(row).toBeDefined();
+    expect(row.commit_sha).toBe(candidateSha);
+
+    db.close();
   });
 });
 
@@ -1010,10 +1095,10 @@ describe("AC3: barrel and facade re-exports", () => {
   test("preserves existing triage lock contract through scripts/loop/index.ts barrel", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "barrel-triage-lock-"));
     tempDirs.push(stateRoot);
-    const lock = await loopExports.acquireIssueLock(stateRoot, 501);
+    const lock = await loopExports.acquireTriageIssueLock(stateRoot, 501);
     expect(lock).not.toBeNull();
     try {
-      expect(await loopExports.acquireIssueLock(stateRoot, 501)).toBeNull();
+      expect(await loopExports.acquireTriageIssueLock(stateRoot, 501)).toBeNull();
       expect(existsSync(join(stateRoot, "locks", "issue-501"))).toBe(false);
     } finally {
       await lock!.release();

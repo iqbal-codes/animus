@@ -1081,16 +1081,27 @@ export function isWithinWorkWindow(window?: WorkWindowConfig, now = new Date()):
 }
 
 /**
- * Inspects process liveness using kill(pid, 0).
+ * Canonical PID liveness verification.
+ * Invariant: 'age never proves dead, EPERM alive, only ESRCH proves dead'.
+ * Returns false only if pid is not a positive integer or process.kill(pid, 0) throws ESRCH.
  */
 export function isProcessAlive(pid: number): boolean {
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (err: any) {
+    if (err?.code === "ESRCH") {
+      return false; // dead
+    }
+    // EPERM or other error indicates process exists in OS process table
+    return true;
   }
 }
+
+export const isPidAlive = isProcessAlive;
 
 /**
  * Counts active laps in runsDir, ignoring abandoned runs with dead PIDs.

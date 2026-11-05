@@ -14,7 +14,7 @@ import { CommandService } from "../command/service";
 import { evaluateIssueAdmission, type RawIssue } from "../intake/admission";
 import { parseDependencies } from "../intake/parser";
 import { buildDependencyDAG } from "./dag";
-import { WorktreeManager } from "./worktree";
+import { WorktreeManager, allocateWorktree } from "./worktree";
 import { freezeContract, executeTargetedImplement, type ImplementRunner } from "./primitive";
 import { SerializedIntegrationManager } from "./integration";
 import { CoordinationError } from "./errors";
@@ -38,7 +38,8 @@ export class SpecCoordinatorService {
   private forge: IssueForgeAdapter;
   private ledger: CommandLedger;
   private commandService: CommandService;
-  private worktreeManager: WorktreeManager;
+  private worktreeManager?: WorktreeManager;
+  private worktreeAllocator: typeof allocateWorktree;
   private integrationManager: SerializedIntegrationManager;
   private gitRunner?: (cmd: string[], options: { cwd: string }) => string;
   private implementRunner?: ImplementRunner;
@@ -49,6 +50,7 @@ export class SpecCoordinatorService {
     options?: {
       ledger?: CommandLedger;
       commandService?: CommandService;
+      worktreeAllocator?: typeof allocateWorktree;
       worktreeManager?: WorktreeManager;
       integrationManager?: SerializedIntegrationManager;
       gitRunner?: (cmd: string[], options: { cwd: string }) => string;
@@ -61,7 +63,12 @@ export class SpecCoordinatorService {
     this.commandService = options?.commandService ?? new CommandService(db);
     this.gitRunner = options?.gitRunner;
     this.implementRunner = options?.implementRunner;
-    this.worktreeManager = options?.worktreeManager ?? new WorktreeManager(this.gitRunner);
+    this.worktreeAllocator =
+      options?.worktreeAllocator ??
+      (options?.worktreeManager
+        ? options.worktreeManager.allocateWorktree.bind(options.worktreeManager)
+        : allocateWorktree);
+    this.worktreeManager = options?.worktreeManager;
     this.integrationManager =
       options?.integrationManager ?? new SerializedIntegrationManager(this.gitRunner);
   }
@@ -391,7 +398,7 @@ export class SpecCoordinatorService {
     // AC2: Allocate isolated worktree with exclusive lock & validate start SHA and cleanliness
     let allocation;
     try {
-      allocation = this.worktreeManager.allocateWorktree({
+      allocation = this.worktreeAllocator({
         repoRoot: project.checkout_path,
         worktreeDir,
         branch: childBranch,

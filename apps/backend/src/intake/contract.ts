@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import {
   resolveProjectWorkspace,
   getMergedIssueNumbers,
@@ -11,8 +12,12 @@ import {
   isActiveClaim,
   type StructuredTicketSections,
 } from "./parser";
-import { evaluateIssueAdmission, readRunStates, type RawIssue } from "./admission";
-import type { IssueForgeAdapter } from "../registry/forge";
+import {
+  evaluateIssueAdmission,
+  readRunStates,
+  readVerifiedBranchIntegrations,
+  type RawIssue,
+} from "./admission";
 
 export type GithubRead = (args: string[], cwd: string) => unknown;
 
@@ -21,8 +26,11 @@ export interface BindIssueContractOptions {
   number: number;
   repo: string;
   read?: GithubRead;
-  forge?: IssueForgeAdapter;
   validateSections?: boolean;
+  db?: any;
+  dbPath?: string;
+  projectId?: string;
+  branchIntegrations?: Set<number> | Map<number, string>;
 }
 
 export interface BoundIssueContract {
@@ -157,7 +165,7 @@ export function computeContractSha256(normalizedJson: string): string {
 }
 
 export function bindIssueContract(options: BindIssueContractOptions): BoundIssueContract {
-  const { root = process.cwd(), number, repo, read, forge, validateSections = true } = options;
+  const { root = process.cwd(), number, repo, read, validateSections = true } = options;
 
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) {
     throw new Error("Invalid repository identity");
@@ -170,12 +178,6 @@ export function bindIssueContract(options: BindIssueContractOptions): BoundIssue
   let comments: string[] = [];
   let nativeDependencies: number[] = [];
   let issueState = "OPEN";
-
-  if (forge) {
-    throw new Error(
-      "Synchronous bindIssueContract requires 'read' adapter or preloaded data; use bindIssueContractAsync for forge",
-    );
-  }
 
   if (!read) {
     throw new Error("bindIssueContract requires a 'read' adapter (e.g. githubJson)");
@@ -320,9 +322,19 @@ export function bindIssueContract(options: BindIssueContractOptions): BoundIssue
     runsDir = ws.runsDir;
     stateRoot = ws.stateRoot;
     dossiersDir = ws.dossiersDir;
-    localMergedIssues = getMergedIssueNumbers(ws.runsDir);
-    waitingApprovalIssues = getIssuesWaitingApproval(ws.runsDir);
-    runStates = readRunStates(ws.runsDir);
+    const candidateRunsDirs = [ws.runsDir, ...(ws.fallbackRunsDirs ?? [])];
+    localMergedIssues = new Set<number>();
+    waitingApprovalIssues = new Set<number>();
+    runStates = new Map<number, string>();
+    for (const dir of candidateRunsDirs) {
+      if (existsSync(dir)) {
+        for (const n of getMergedIssueNumbers(dir)) localMergedIssues.add(n);
+        for (const n of getIssuesWaitingApproval(dir)) waitingApprovalIssues.add(n);
+        for (const [n, st] of readRunStates(dir)) {
+          if (!runStates.has(n)) runStates.set(n, st);
+        }
+      }
+    }
     try {
       const sched = loadCascadedScheduleConfig(ws);
       maxLaps = sched.max_laps ?? 3;
@@ -331,7 +343,16 @@ export function bindIssueContract(options: BindIssueContractOptions): BoundIssue
     }
   } catch {}
 
+  const verifiedIntegrations = readVerifiedBranchIntegrations({
+    db: options.db,
+    dbPath: options.dbPath,
+    projectId: options.projectId,
+    root,
+    branchIntegrations: options.branchIntegrations,
+  });
+
   const admissionCheck = evaluateIssueAdmission(rawForAdmission, new Map(), {
+    integratedBranchIssues: verifiedIntegrations,
     mergedIssueNumbers: localMergedIssues,
     waitingApprovalIssueNumbers: waitingApprovalIssues,
     runStates,
@@ -398,7 +419,10 @@ export function bindIssueContract(options: BindIssueContractOptions): BoundIssue
       ["issue", "view", String(dependency), "--repo", repo, "--json", "number,url,state"],
       root,
     ) as { number: number; url: string; state: string };
-    const isClosedOrMerged = data?.state === "CLOSED" || localMergedIssues.has(dependency);
+    const isClosedOrMerged =
+      data?.state === "CLOSED" ||
+      localMergedIssues.has(dependency) ||
+      verifiedIntegrations.has(dependency);
     if (
       !data ||
       data.number !== dependency ||

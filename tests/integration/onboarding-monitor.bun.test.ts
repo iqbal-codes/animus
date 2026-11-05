@@ -11,6 +11,7 @@ import {
 import { RegisteredProjectMonitor } from "../../apps/backend/src/monitor/service";
 import { loadMonitorRuntime, type MonitorRuntime } from "../../apps/backend/src/monitor/runtime";
 import { BrakeService } from "../../apps/backend/src/command/brakes";
+import { resolveProjectWorkspace } from "@animus/contracts/paths";
 
 describe("registered project monitoring", () => {
   let root: string;
@@ -326,6 +327,44 @@ describe("registered project monitoring", () => {
     expect(monitor.status().projects.find((entry) => entry.project_id === beta.id)?.reason).toBe(
       "project_locked",
     );
+  });
+
+  test("reclaims stale candidateLock when owning PID is dead (ESRCH), fails closed when PID is alive", async () => {
+    const alpha = await project("alpha");
+    const ws = resolveProjectWorkspace(alpha.checkout_path);
+    const lockDir = join(ws.stateRoot, "registered-project-monitor.lock");
+    mkdirSync(lockDir, { recursive: true });
+    // Write dead PID (e.g. 99999999)
+    writeFileSync(
+      join(lockDir, "owner.json"),
+      JSON.stringify({ pid: 99999999, createdAt: new Date().toISOString() }),
+    );
+
+    // Stale lock with dead PID must be reclaimed and allow the tick to proceed
+    await monitor.tick();
+    await monitor.drain();
+
+    const statusAfterStale = monitor
+      .status()
+      .projects.find((entry) => entry.project_id === alpha.id);
+    expect(statusAfterStale?.reason).not.toBe("project_locked");
+
+    // Now write a live PID (process.pid)
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(
+      join(lockDir, "owner.json"),
+      JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }),
+    );
+
+    // Live lock must fail closed with project_locked
+    monitor.wakeProject(alpha.id);
+    await monitor.tick();
+    await monitor.drain();
+
+    const statusAfterLive = monitor
+      .status()
+      .projects.find((entry) => entry.project_id === alpha.id);
+    expect(statusAfterLive?.reason).toBe("project_locked");
   });
 
   test("one long lap cannot block another project or permit overlapping monitor dispatch", async () => {
