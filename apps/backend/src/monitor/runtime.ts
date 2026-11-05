@@ -118,7 +118,7 @@ export async function loadMonitorRuntime(
       import(new URL("scripts/scheduler.ts", factory).href),
       import(new URL("scripts/loop/process.ts", factory).href),
     ]);
-  return {
+  const runtime: MonitorRuntime = {
     inspect: loop.inspectLocalLoop,
     setup(root) {
       const harness = JSON.parse(readFileSync(`${root}/harness/harness.config.json`, "utf-8"));
@@ -197,5 +197,30 @@ export async function loadMonitorRuntime(
     },
     resolveTriageStateRoot: (root, customStateRoot) =>
       resolveTriageStateRoot(root, customStateRoot),
+  };
+  return {
+    ...runtime,
+    inspect: (...args) =>
+      processModule.withProcessPolicy({ manageSignals: false }, () => runtime.inspect(...args)),
+    schedule: (...args) =>
+      processModule.withProcessPolicy({ manageSignals: false }, () => runtime.schedule(...args)),
+    fetchBacklog: (...args) =>
+      processModule.withProcessPolicy({ manageSignals: false }, () =>
+        runtime.fetchBacklog(...args),
+      ),
+    readContract: (...args) =>
+      processModule.withProcessPolicy({ manageSignals: false }, () =>
+        runtime.readContract(...args),
+      ),
+    launch: (...args) =>
+      processModule.withProcessPolicy({ manageSignals: false }, () => runtime.launch(...args)),
+    ...(runtime.triage
+      ? {
+          triage: (...args: Parameters<NonNullable<MonitorRuntime["triage"]>>) =>
+            processModule.withProcessPolicy({ manageSignals: false }, () =>
+              runtime.triage!(...args),
+            ),
+        }
+      : {}),
   };
 }

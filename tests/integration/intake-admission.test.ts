@@ -1,5 +1,6 @@
 import { describe, expect, test, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -17,6 +18,7 @@ import {
   computeLabelEffects,
   evaluateBacklogAdmission,
   bindIssueContract,
+  readVerifiedBranchIntegrations,
 } from "../../apps/backend/src/intake";
 import { resolveProjectWorkspace } from "@animus/contracts/paths";
 import { createFactoryClient } from "@animus/client";
@@ -61,11 +63,15 @@ describe("Structured Intake, Admission Gate & Exact-Target Enforcement (Issue #6
 
   function createMockCheckout(name: string, remoteRepo = "owner/repo-alpha"): string {
     const checkoutPath = join(tempDir, name);
-    mkdirSync(join(checkoutPath, ".git"), { recursive: true });
-    writeFileSync(
-      join(checkoutPath, ".git", "config"),
-      `[remote "origin"]\n  url = https://github.com/${remoteRepo}.git\n`,
-    );
+    mkdirSync(checkoutPath, { recursive: true });
+    execFileSync("git", ["init"], { cwd: checkoutPath });
+    execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: checkoutPath });
+    execFileSync("git", ["config", "user.name", "test"], { cwd: checkoutPath });
+    execFileSync("git", ["checkout", "-b", "main"], { cwd: checkoutPath });
+    execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: checkoutPath });
+    execFileSync("git", ["remote", "add", "origin", `https://github.com/${remoteRepo}.git`], {
+      cwd: checkoutPath,
+    });
     return checkoutPath;
   }
 
@@ -327,11 +333,22 @@ Depends on: #59, #60
       expect(initial.unsatisfied_dependencies).toEqual([10]);
 
       // Record verified branch integration for #10 in project Alpha
+      execFileSync("git", ["checkout", "-b", "feat/spec-integration-branch"], {
+        cwd: checkoutPath,
+      });
+      execFileSync("git", ["commit", "--allow-empty", "-m", "integrated #10"], {
+        cwd: checkoutPath,
+      });
+      const sha10 = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: checkoutPath,
+        encoding: "utf-8",
+      }).trim();
+
       const integration = intake.recordBranchIntegration(
         project.id,
         10,
         "feat/spec-integration-branch",
-        "abc12345def",
+        sha10,
       );
       expect(integration.branch).toBe("feat/spec-integration-branch");
       expect(branchIntegrationResultSchema.parse(integration)).toEqual(integration);
@@ -428,6 +445,15 @@ Depends on: #59, #60
 
     test("evaluates admission, contract binding, and scheduler by verifying SQLite project_issue_integrations parity", async () => {
       const checkoutPath = createMockCheckout("co-sqlite-parity", "owner/repo-sqlite-parity");
+      execFileSync("git", ["checkout", "-b", "factory/spec-50-integration"], { cwd: checkoutPath });
+      execFileSync("git", ["commit", "--allow-empty", "-m", "integrated 201"], {
+        cwd: checkoutPath,
+      });
+      const sha201 = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: checkoutPath,
+        encoding: "utf-8",
+      }).trim();
+
       const project = await registry.registerProject({
         method: "local_checkout",
         name: "SQLite Parity Project",
@@ -435,12 +461,7 @@ Depends on: #59, #60
       });
 
       // Record verified branch integration for issue #201 in project database
-      intake.recordBranchIntegration(
-        project.id,
-        201,
-        "factory/spec-50-integration",
-        "sha201commit",
-      );
+      intake.recordBranchIntegration(project.id, 201, "factory/spec-50-integration", sha201);
 
       // Verify bindIssueContract with db/projectId recognizes #201 as satisfied even though GitHub state is OPEN
       const readMock = (args: string[]) => {
@@ -509,6 +530,92 @@ Depends on: #59, #60
         root: checkoutPath,
       });
       expect(admitted.map((c) => c.number)).toEqual([202]);
+    });
+
+    test("readVerifiedBranchIntegrations scopes by project, rejects unregistered repo, stale/forged rows, and accepts verified commit", () => {
+      // 1. Setup real Git repository with a verified commit on factory/spec-50-integration
+      const repoDir1 = join(tempDir, "repo-proj1");
+      mkdirSync(repoDir1, { recursive: true });
+      execFileSync("git", ["init"], { cwd: repoDir1 });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repoDir1 });
+      execFileSync("git", ["config", "user.name", "test"], { cwd: repoDir1 });
+      execFileSync("git", ["checkout", "-b", "main"], { cwd: repoDir1 });
+      execFileSync("git", ["commit", "--allow-empty", "-m", "initial commit"], { cwd: repoDir1 });
+      execFileSync("git", ["checkout", "-b", "factory/spec-50-integration"], { cwd: repoDir1 });
+      execFileSync("git", ["commit", "--allow-empty", "-m", "integrated #50"], { cwd: repoDir1 });
+      const realSha50 = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: repoDir1,
+        encoding: "utf-8",
+      }).trim();
+
+      // Repo 2 for second project
+      const repoDir2 = join(tempDir, "repo-proj2");
+      mkdirSync(repoDir2, { recursive: true });
+      execFileSync("git", ["init"], { cwd: repoDir2 });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repoDir2 });
+      execFileSync("git", ["config", "user.name", "test"], { cwd: repoDir2 });
+      execFileSync("git", ["checkout", "-b", "main"], { cwd: repoDir2 });
+      execFileSync("git", ["commit", "--allow-empty", "-m", "initial commit"], { cwd: repoDir2 });
+
+      // Register two projects in db
+      db.prepare(`
+        INSERT INTO projects (id, name, repo_id, repo_name, checkout_path, status, created_at, updated_at)
+        VALUES ('proj-1', 'Project 1', 101, 'owner/repo-1', ?, 'active', datetime('now'), datetime('now')),
+               ('proj-2', 'Project 2', 102, 'owner/repo-2', ?, 'active', datetime('now'), datetime('now'))
+      `).run(repoDir1, repoDir2);
+
+      // In proj-1:
+      // Issue 50: real verified commit
+      // Issue 51: forged commit that does not exist in git
+      // Issue 52: commit that exists in git on an unrelated branch, but NOT reachable from factory/spec-50-integration
+      execFileSync("git", ["checkout", "-b", "unrelated-branch", "main"], { cwd: repoDir1 });
+      execFileSync("git", ["commit", "--allow-empty", "-m", "unrelated work"], { cwd: repoDir1 });
+      const unrelatedSha = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: repoDir1,
+        encoding: "utf-8",
+      }).trim();
+
+      db.prepare(`
+        INSERT INTO project_issue_integrations (project_id, issue_number, branch, commit_sha, integrated_at)
+        VALUES ('proj-1', 50, 'factory/spec-50-integration', ?, datetime('now')),
+               ('proj-1', 51, 'factory/spec-50-integration', 'deadbeef00000000000000000000000000000000', datetime('now')),
+               ('proj-1', 52, 'factory/spec-50-integration', ?, datetime('now'))
+      `).run(realSha50, unrelatedSha);
+
+      // (Case 1) Two projects same issue number:
+      // proj-2 does NOT have issue 50 integrated.
+      const proj2Verified = readVerifiedBranchIntegrations({
+        db,
+        projectId: "proj-2",
+        root: repoDir2,
+      });
+      expect(proj2Verified.has(50)).toBe(false);
+      expect(proj2Verified.size).toBe(0);
+
+      // (Case 2) Unregistered repo:
+      // Querying with an unregistered repo root must return empty set (fail closed, never unscoped SQL)
+      const unregVerified = readVerifiedBranchIntegrations({
+        db,
+        root: join(tempDir, "unregistered-repo"),
+      });
+      expect(unregVerified.size).toBe(0);
+
+      // (Case 3) Forged/stale row:
+      // Issue 51 has forged deadbeef SHA; Issue 52 has SHA not reachable from intended integration ref.
+      // Neither should be verified.
+      const proj1Verified = readVerifiedBranchIntegrations({
+        db,
+        projectId: "proj-1",
+        root: repoDir1,
+        integrationRef: "factory/spec-50-integration",
+      });
+      expect(proj1Verified.has(51)).toBe(false);
+      expect(proj1Verified.has(52)).toBe(false);
+
+      // (Case 4) Real verified Git commit:
+      // Issue 50 is reachable from factory/spec-50-integration -> verified!
+      expect(proj1Verified.has(50)).toBe(true);
+      expect(proj1Verified.size).toBe(1);
     });
 
     test("blocks admission on blocking labels (needs-info, ready-for-human, needs-triage, needs-owner)", async () => {
@@ -1013,12 +1120,28 @@ Depends on: #59, #60
       expect(betaIssue20.unsatisfied_dependencies).toEqual([]);
 
       // 3. Branch integration in Project Beta does NOT satisfy Project Alpha
-      intake.recordBranchIntegration(projectBeta.id, 10, "feat/beta-branch");
+      execFileSync("git", ["checkout", "-b", "feat/beta-branch"], { cwd: checkoutBeta });
+      execFileSync("git", ["commit", "--allow-empty", "-m", "integrated beta #10"], {
+        cwd: checkoutBeta,
+      });
+      const shaBeta10 = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: checkoutBeta,
+        encoding: "utf-8",
+      }).trim();
+      intake.recordBranchIntegration(projectBeta.id, 10, "feat/beta-branch", shaBeta10);
       const alphaStillHeld = await intake.getProjectIssue(projectAlpha.id, 20);
       expect(alphaStillHeld.admission_status).toBe("held");
 
       // 4. Branch integration in Project Alpha satisfies Alpha, leaves Beta unaffected
-      intake.recordBranchIntegration(projectAlpha.id, 10, "feat/alpha-branch");
+      execFileSync("git", ["checkout", "-b", "feat/alpha-branch"], { cwd: checkoutAlpha });
+      execFileSync("git", ["commit", "--allow-empty", "-m", "integrated alpha #10"], {
+        cwd: checkoutAlpha,
+      });
+      const shaAlpha10 = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: checkoutAlpha,
+        encoding: "utf-8",
+      }).trim();
+      intake.recordBranchIntegration(projectAlpha.id, 10, "feat/alpha-branch", shaAlpha10);
       const alphaNowAdmitted = await intake.getProjectIssue(projectAlpha.id, 20);
       expect(alphaNowAdmitted.admission_status).toBe("admitted");
       expect(alphaNowAdmitted.reason).toBe("admitted_ready");

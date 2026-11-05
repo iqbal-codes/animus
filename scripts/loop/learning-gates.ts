@@ -142,6 +142,9 @@ export async function evaluateLearningWithHarness(
     cwd,
     role,
     provider,
+    model,
+    effort,
+    prompt,
     timeoutMs,
     env: options?.env,
   });

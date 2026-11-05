@@ -586,8 +586,6 @@ export async function acquireTriageIssueLock(
   }
 }
 
-export const acquireIssueLock = acquireTriageIssueLock;
-
 export function getWorkspaceSnapshot(root: string): string {
   // Fail closed on git failures: do NOT catch and swallow as empty string
   const head = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], {

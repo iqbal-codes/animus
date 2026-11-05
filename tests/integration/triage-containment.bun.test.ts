@@ -8,7 +8,7 @@ import {
   isStateRootOutsideCheckout,
   resolveCanonicalGitCommon,
 } from "../../scripts/loop/triage-state";
-import { runTriagePass, acquireIssueLock } from "../../scripts/loop/triage";
+import { runTriagePass, acquireTriageIssueLock } from "../../scripts/loop/triage";
 import { SyntheticForgeAdapter } from "../../apps/backend/src/registry";
 
 describe("Triage State Containment & Linked Worktrees (#122 / #123 remediation)", () => {
@@ -181,18 +181,18 @@ describe("Triage State Containment & Linked Worktrees (#122 / #123 remediation)"
     expect(stateRootMain).toBe(stateRootWt);
 
     // Acquire lock in primary repo checkout
-    const lock1 = await acquireIssueLock(stateRootMain, 42);
+    const lock1 = await acquireTriageIssueLock(stateRootMain, 42);
     expect(lock1).not.toBeNull();
 
     // Attempting to acquire lock for issue #42 from linked worktree must fail (already locked)
-    const lock2 = await acquireIssueLock(stateRootWt, 42);
+    const lock2 = await acquireTriageIssueLock(stateRootWt, 42);
     expect(lock2).toBeNull();
 
     // Release lock in primary repo
     await lock1!.release();
 
     // Now linked worktree can acquire lock
-    const lock3 = await acquireIssueLock(stateRootWt, 42);
+    const lock3 = await acquireTriageIssueLock(stateRootWt, 42);
     expect(lock3).not.toBeNull();
     await lock3!.release();
   });

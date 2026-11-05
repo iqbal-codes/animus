@@ -30,7 +30,6 @@ export interface BindIssueContractOptions {
   db?: any;
   dbPath?: string;
   projectId?: string;
-  branchIntegrations?: Set<number> | Map<number, string>;
 }
 
 export interface BoundIssueContract {
@@ -348,7 +347,6 @@ export function bindIssueContract(options: BindIssueContractOptions): BoundIssue
     dbPath: options.dbPath,
     projectId: options.projectId,
     root,
-    branchIntegrations: options.branchIntegrations,
   });
 
   const admissionCheck = evaluateIssueAdmission(rawForAdmission, new Map(), {

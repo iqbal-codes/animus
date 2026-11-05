@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +17,7 @@ import {
 import { git } from "../../scripts/loop/worktree";
 import { RoleInterrupted } from "../../scripts/loop/deadlines";
 import type { AutoMergeEvaluationResult } from "../../scripts/loop/types";
+import { resolveAnimusStateDir } from "@animus/contracts/paths";
 import type { IssueDossier } from "../../scripts/loop/dossier";
 import * as loopExports from "../../scripts/loop/index";
 import * as localLoopExports from "../../scripts/local-loop";
@@ -698,23 +699,22 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
     expect(intBranchSha).toBe(baseSha);
   });
 
-  test("executeSubticketAutoMerge handles post-publication forge failure with honest persisted recovery rather than pretend unmerged", async () => {
+  test("prMerge fail: stops remote chain immediately, never closes issue, reports remote_reconciliation_pending with no later forge calls", async () => {
     const { repo, baseSha } = await initGitRepo();
     const integrationBranch = "factory/spec-108-integration";
     await git(repo, "branch", integrationBranch, baseSha);
 
-    const wtDir = await mkdtemp(join(tmpdir(), "wt-cand-forge-fail-"));
+    const wtDir = await mkdtemp(join(tmpdir(), "wt-cand-prmerge-fail-"));
     tempDirs.push(wtDir);
-    await git(repo, "worktree", "add", "-b", "subticket-53", wtDir, baseSha);
-    await writeFile(join(wtDir, "sub-53.txt"), "subticket 53\n");
-    await git(wtDir, "add", "sub-53.txt");
-    await git(wtDir, "commit", "-m", "feat: subticket 53");
+    await git(repo, "worktree", "add", "-b", "subticket-54", wtDir, baseSha);
+    await writeFile(join(wtDir, "sub-54.txt"), "subticket 54\n");
+    await git(wtDir, "add", "sub-54.txt");
+    await git(wtDir, "commit", "-m", "feat: subticket 54");
     const candidateSha = (await git(wtDir, "rev-parse", "HEAD")).trim();
 
-    const dbDir = await mkdtemp(join(tmpdir(), "db-forge-fail-"));
+    const dbDir = await mkdtemp(join(tmpdir(), "db-prmerge-fail-"));
     tempDirs.push(dbDir);
-    const dbPath = join(dbDir, "console.db");
-    const db = new DatabaseSync(dbPath);
+    const db = new DatabaseSync(join(dbDir, "console.db"));
     db.exec(`
       CREATE TABLE projects (id TEXT PRIMARY KEY);
       CREATE TABLE project_issue_integrations (
@@ -728,13 +728,14 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
       INSERT INTO projects (id) VALUES ('proj-108');
     `);
 
-    // Injected failing processRun simulates forge outage during gh pr merge or gh issue close
+    const executedCmds: string[][] = [];
     const failingProcessRun = async (cmd: string[]) => {
-      if (cmd[0] === "gh") {
+      executedCmds.push(cmd);
+      if (cmd[0] === "gh" && cmd[1] === "pr" && cmd[2] === "merge") {
         return {
           exitCode: 1,
           stdout: "",
-          stderr: "HTTP 503: GitHub Service Unavailable (outage)",
+          stderr: "GraphQL error: Pull request is not mergeable",
         };
       }
       return { exitCode: 0, stdout: "", stderr: "" };
@@ -746,10 +747,10 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
       integrationBranch,
       targetBaseTip: baseSha,
       worktree: wtDir,
-      issueNumber: 53,
+      issueNumber: 54,
       partOf: 108,
       defaultBaseBranch: "main",
-      pr: "53",
+      pr: "54",
       push: true,
       hasOrigin: false,
       db,
@@ -759,22 +760,317 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
       processRunFn: failingProcessRun as any,
     });
 
-    // Invariant: Post-publication failure must NOT pretend unmerged waiting_approval.
-    // The integration branch ref IS updated and DB integration IS saved.
-    expect(result.finalStatus).toBe("merged");
-    expect(result.reviewOutcome).toBe("merged");
-    expect(result.error).toContain("Post-publication failed");
+    // Invariant: Must NOT claim success, must NOT report false completion
+    expect(result.success).toBe(false);
+    expect(result.finalStatus).toBe("remote_reconciliation_pending");
+    expect(result.error).toContain("gh pr merge failed");
+    expect(result.error).toContain("remote pending");
 
-    // Integration branch ref is updated
+    // Exact no later forge calls: only gh pr merge was attempted! No issue close or pr create!
+    expect(executedCmds.length).toBe(1);
+    expect(executedCmds[0]!.slice(0, 3)).toEqual(["gh", "pr", "merge"]);
+
+    // Local state: git ref is updated and DB record committed
     const intBranchSha = (await git(repo, "rev-parse", `refs/heads/${integrationBranch}`)).trim();
     expect(intBranchSha).toBe(candidateSha);
+    const recoveryDir = join(resolveAnimusStateDir(), "integration-recovery");
+    const recovery = readdirSync(recoveryDir)
+      .filter((file) => file.endsWith(".json"))
+      .map((file) => JSON.parse(readFileSync(join(recoveryDir, file), "utf8")))
+      .find((entry) => entry.root === repo && entry.candidate === candidateSha);
+    expect(recovery.phase).toBe("remote_reconciliation_pending");
+    expect(recovery.error).toContain("Pull request is not mergeable");
+    expect(recovery.targetBaseTip).toBe(baseSha);
 
-    // Database record was successfully persisted
-    const row = db
-      .prepare("SELECT * FROM project_issue_integrations WHERE project_id = ? AND issue_number = ?")
-      .get("proj-108", 53) as any;
-    expect(row).toBeDefined();
-    expect(row.commit_sha).toBe(candidateSha);
+    db.close();
+  });
+
+  test("push fail: stops remote chain immediately, never closes issue, reports remote_reconciliation_pending with no later forge calls", async () => {
+    const { repo, baseSha } = await initGitRepo();
+    const integrationBranch = "factory/spec-109-integration";
+    await git(repo, "branch", integrationBranch, baseSha);
+
+    const wtDir = await mkdtemp(join(tmpdir(), "wt-cand-push-fail-"));
+    tempDirs.push(wtDir);
+    await git(repo, "worktree", "add", "-b", "subticket-55", wtDir, baseSha);
+    await writeFile(join(wtDir, "sub-55.txt"), "subticket 55\n");
+    await git(wtDir, "add", "sub-55.txt");
+    await git(wtDir, "commit", "-m", "feat: subticket 55");
+    const candidateSha = (await git(wtDir, "rev-parse", "HEAD")).trim();
+
+    const dbDir = await mkdtemp(join(tmpdir(), "db-push-fail-"));
+    tempDirs.push(dbDir);
+    const db = new DatabaseSync(join(dbDir, "console.db"));
+    db.exec(`
+      CREATE TABLE projects (id TEXT PRIMARY KEY);
+      CREATE TABLE project_issue_integrations (
+        project_id TEXT NOT NULL,
+        issue_number INTEGER NOT NULL,
+        branch TEXT NOT NULL,
+        commit_sha TEXT NOT NULL,
+        integrated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, issue_number)
+      );
+      INSERT INTO projects (id) VALUES ('proj-109');
+    `);
+
+    const executedCmds: string[][] = [];
+    const processRunSpy = async (cmd: string[]) => {
+      executedCmds.push(cmd);
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+
+    const failingGit = async (cwd: string, ...args: string[]) => {
+      if (args[0] === "push") {
+        throw new Error("fatal: remote rejected: pre-receive hook declined");
+      }
+      return git(cwd, ...args);
+    };
+
+    const result = await executeSubticketAutoMerge({
+      root: repo,
+      candidate: candidateSha,
+      integrationBranch,
+      targetBaseTip: baseSha,
+      worktree: wtDir,
+      issueNumber: 55,
+      partOf: 109,
+      defaultBaseBranch: "main",
+      push: true,
+      hasOrigin: true,
+      db,
+      projectId: "proj-109",
+      autoMergeEval: makeStubEval(),
+      assertCandidateFn: async () => {},
+      processRunFn: processRunSpy as any,
+      gitFn: failingGit as any,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.finalStatus).toBe("remote_reconciliation_pending");
+    expect(result.error).toContain("git push origin failed");
+
+    // Exact no later forge calls: issue was NEVER closed!
+    const closedCalls = executedCmds.filter(
+      (c) => c[0] === "gh" && c[1] === "issue" && c[2] === "close",
+    );
+    expect(closedCalls.length).toBe(0);
+
+    db.close();
+  });
+
+  test("close fail: stops remote chain, reports remote_reconciliation_pending with no parent PR create", async () => {
+    const { repo, baseSha } = await initGitRepo();
+    const integrationBranch = "factory/spec-109b-integration";
+    await git(repo, "branch", integrationBranch, baseSha);
+
+    const wtDir = await mkdtemp(join(tmpdir(), "wt-cand-close-fail-"));
+    tempDirs.push(wtDir);
+    await git(repo, "worktree", "add", "-b", "subticket-55b", wtDir, baseSha);
+    await writeFile(join(wtDir, "sub-55b.txt"), "subticket 55b\n");
+    await git(wtDir, "add", "sub-55b.txt");
+    await git(wtDir, "commit", "-m", "feat: subticket 55b");
+    const candidateSha = (await git(wtDir, "rev-parse", "HEAD")).trim();
+
+    const dbDir = await mkdtemp(join(tmpdir(), "db-close-fail-"));
+    tempDirs.push(dbDir);
+    const db = new DatabaseSync(join(dbDir, "console.db"));
+    db.exec(`
+      CREATE TABLE projects (id TEXT PRIMARY KEY);
+      CREATE TABLE project_issue_integrations (
+        project_id TEXT NOT NULL,
+        issue_number INTEGER NOT NULL,
+        branch TEXT NOT NULL,
+        commit_sha TEXT NOT NULL,
+        integrated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, issue_number)
+      );
+      INSERT INTO projects (id) VALUES ('proj-109b');
+    `);
+
+    const executedCmds: string[][] = [];
+    const processRunSpy = async (cmd: string[]) => {
+      executedCmds.push(cmd);
+      if (cmd[0] === "gh" && cmd[1] === "issue" && cmd[2] === "close") {
+        return { exitCode: 1, stdout: "", stderr: "HTTP 500: Issue close failed" };
+      }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+
+    const result = await executeSubticketAutoMerge({
+      root: repo,
+      candidate: candidateSha,
+      integrationBranch,
+      targetBaseTip: baseSha,
+      worktree: wtDir,
+      issueNumber: 55,
+      partOf: 109,
+      defaultBaseBranch: "main",
+      push: true,
+      hasOrigin: false,
+      db,
+      projectId: "proj-109b",
+      autoMergeEval: makeStubEval(),
+      assertCandidateFn: async () => {},
+      processRunFn: processRunSpy as any,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.finalStatus).toBe("remote_reconciliation_pending");
+    expect(result.error).toContain("gh issue close failed");
+
+    // Exact no later forge calls: pr create was NEVER called!
+    const createCalls = executedCmds.filter(
+      (c) => c[0] === "gh" && c[1] === "pr" && c[2] === "create",
+    );
+    expect(createCalls.length).toBe(0);
+
+    db.close();
+  });
+
+  test("DB constraint fail: triggers rollback to targetBaseTip, returns waiting_approval with no forge calls", async () => {
+    const { repo, baseSha } = await initGitRepo();
+    const integrationBranch = "factory/spec-110-integration";
+    await git(repo, "branch", integrationBranch, baseSha);
+
+    const wtDir = await mkdtemp(join(tmpdir(), "wt-cand-db-fail-"));
+    tempDirs.push(wtDir);
+    await git(repo, "worktree", "add", "-b", "subticket-56", wtDir, baseSha);
+    await writeFile(join(wtDir, "sub-56.txt"), "subticket 56\n");
+    await git(wtDir, "add", "sub-56.txt");
+    await git(wtDir, "commit", "-m", "feat: subticket 56");
+    const candidateSha = (await git(wtDir, "rev-parse", "HEAD")).trim();
+
+    const dbDir = await mkdtemp(join(tmpdir(), "db-constraint-fail-"));
+    tempDirs.push(dbDir);
+    const db = new DatabaseSync(join(dbDir, "console.db"));
+    // Foreign key constraint that will fail because proj-999 is NOT in projects
+    db.exec(`
+      PRAGMA foreign_keys = ON;
+      CREATE TABLE projects (id TEXT PRIMARY KEY);
+      CREATE TABLE project_issue_integrations (
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        issue_number INTEGER NOT NULL,
+        branch TEXT NOT NULL,
+        commit_sha TEXT NOT NULL,
+        integrated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, issue_number)
+      );
+    `);
+
+    const executedCmds: string[][] = [];
+    const processRunSpy = async (cmd: string[]) => {
+      executedCmds.push(cmd);
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+
+    const result = await executeSubticketAutoMerge({
+      root: repo,
+      candidate: candidateSha,
+      integrationBranch,
+      targetBaseTip: baseSha,
+      worktree: wtDir,
+      issueNumber: 56,
+      partOf: 110,
+      defaultBaseBranch: "main",
+      push: true,
+      hasOrigin: true,
+      db,
+      projectId: "unregistered-proj",
+      autoMergeEval: makeStubEval(),
+      assertCandidateFn: async () => {},
+      processRunFn: processRunSpy as any,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.finalStatus).toBe("waiting_approval");
+    expect(result.error).toBeDefined();
+
+    // Ref rolled back to baseSha
+    const intBranchSha = (await git(repo, "rev-parse", `refs/heads/${integrationBranch}`)).trim();
+    expect(intBranchSha).toBe(baseSha);
+
+    // Exact NO forge calls made
+    expect(executedCmds.length).toBe(0);
+
+    db.close();
+  });
+
+  test("DB fail with rollback CAS conflict: preserves observed SHA, reports distinct manual intervention error", async () => {
+    const { repo, baseSha } = await initGitRepo();
+    const integrationBranch = "factory/spec-111-integration";
+    await git(repo, "branch", integrationBranch, baseSha);
+
+    const wtDir = await mkdtemp(join(tmpdir(), "wt-cand-cas-conflict-"));
+    tempDirs.push(wtDir);
+    await git(repo, "worktree", "add", "-b", "subticket-57", wtDir, baseSha);
+    await writeFile(join(wtDir, "sub-57.txt"), "subticket 57\n");
+    await git(wtDir, "add", "sub-57.txt");
+    await git(wtDir, "commit", "-m", "feat: subticket 57");
+    const candidateSha = (await git(wtDir, "rev-parse", "HEAD")).trim();
+
+    const dbDir = await mkdtemp(join(tmpdir(), "db-cas-conflict-"));
+    tempDirs.push(dbDir);
+    const db = new DatabaseSync(join(dbDir, "console.db"));
+    db.exec(`
+      PRAGMA foreign_keys = ON;
+      CREATE TABLE projects (id TEXT PRIMARY KEY);
+      CREATE TABLE project_issue_integrations (
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        issue_number INTEGER NOT NULL,
+        branch TEXT NOT NULL,
+        commit_sha TEXT NOT NULL,
+        integrated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, issue_number)
+      );
+    `);
+
+    // Injected git runner where rollback update-ref fails with CAS conflict
+    let rollbackAttempted = false;
+    const failingGit = async (cwd: string, ...args: string[]) => {
+      if (args[0] === "update-ref" && args[2] === baseSha && args[3] === candidateSha) {
+        rollbackAttempted = true;
+        throw new Error(
+          "fatal: cannot update ref: target ref was updated concurrently (CAS mismatch)",
+        );
+      }
+      return git(cwd, ...args);
+    };
+
+    const executedCmds: string[][] = [];
+    const processRunSpy = async (cmd: string[]) => {
+      executedCmds.push(cmd);
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+
+    const result = await executeSubticketAutoMerge({
+      root: repo,
+      candidate: candidateSha,
+      integrationBranch,
+      targetBaseTip: baseSha,
+      worktree: wtDir,
+      issueNumber: 57,
+      partOf: 111,
+      defaultBaseBranch: "main",
+      push: true,
+      hasOrigin: true,
+      db,
+      projectId: "unregistered-proj",
+      autoMergeEval: makeStubEval(),
+      assertCandidateFn: async () => {},
+      processRunFn: processRunSpy as any,
+      gitFn: failingGit as any,
+    });
+
+    expect(rollbackAttempted).toBe(true);
+    expect(result.success).toBe(false);
+    expect(result.finalStatus).toBe("manual_intervention_required");
+    expect(result.error).toContain("ref rollback failed");
+    expect(result.error).toContain(candidateSha); // preserved observed SHA
+    expect(result.error).toContain("explicit manual intervention required");
+
+    // Exact NO forge calls made
+    expect(executedCmds.length).toBe(0);
 
     db.close();
   });
@@ -821,6 +1117,8 @@ describe("scripts/loop/reflector (createBoundedReflectionTransport)", () => {
       cwd: repo,
       role: "reflector",
       provider: "test",
+      model: "test-reflector",
+      prompt: "reflector prompt",
       timeoutMs: 30000,
     });
 
@@ -868,6 +1166,9 @@ describe("scripts/loop/reflector (createBoundedReflectionTransport)", () => {
         argv: ["pi", "prompt"],
         cwd: repo,
         role: "reflector",
+        provider: "pi",
+        model: "test-reflector",
+        prompt: "prompt",
         timeoutMs: 30000,
       }),
     ).rejects.toThrow(RoleInterrupted);
@@ -877,6 +1178,71 @@ describe("scripts/loop/reflector (createBoundedReflectionTransport)", () => {
     const content = readFileSync(checkpointPath, "utf8");
     expect(content).toContain("hard deadline exceeded");
     expect(content).toContain("dirty-reflection.txt");
+  });
+
+  test("preserves structured configuration (provider, model, effort, skills) without default substitution for multiple providers", async () => {
+    const { repo } = await initGitRepo();
+    const handoffDir = join(repo, "handoff");
+    const runDir = join(repo, "run");
+    await mkdir(handoffDir, { recursive: true });
+    await mkdir(runDir, { recursive: true });
+
+    const capturedArgvs: Record<string, string[]> = {};
+    const rawTransport = async (req: { argv: string[]; provider?: string }) => {
+      capturedArgvs[req.provider ?? "unknown"] = req.argv;
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          schema_version: 1,
+          attribution: "no_observed_effect",
+          mutations: [],
+        }),
+        stderr: "",
+      };
+    };
+
+    const providers = ["pi", "claude", "codex", "omp"] as const;
+    for (const prov of providers) {
+      const bounded = createBoundedReflectionTransport({
+        transport: rawTransport,
+        budget: { softMs: 2000, hardMs: 4000 },
+        handoffDir,
+        runDirectory: runDir,
+        provider: prov,
+        model: "custom/my-reflector-model",
+        effort: "high",
+        prompt: "Reflect on test",
+      });
+
+      await bounded({
+        argv: [prov, "dummy"],
+        cwd: repo,
+        role: "reflector",
+        provider: prov,
+        timeoutMs: 30000,
+      });
+    }
+
+    // Verify each provider received the actual configured model and effort, not model: 'default'
+    expect(capturedArgvs.pi).toContain("--model");
+    expect(capturedArgvs.pi).toContain("custom/my-reflector-model");
+    expect(capturedArgvs.pi).toContain("--thinking");
+    expect(capturedArgvs.pi).toContain("high");
+
+    expect(capturedArgvs.claude).toContain("--model");
+    expect(capturedArgvs.claude).toContain("custom/my-reflector-model");
+    expect(capturedArgvs.claude).toContain("--effort");
+    expect(capturedArgvs.claude).toContain("high");
+
+    expect(capturedArgvs.codex).toContain("--model");
+    expect(capturedArgvs.codex).toContain("custom/my-reflector-model");
+    expect(capturedArgvs.codex).toContain("-c");
+    expect(capturedArgvs.codex).toContain('model_reasoning_effort="high"');
+
+    expect(capturedArgvs.omp).toContain("--model");
+    expect(capturedArgvs.omp).toContain("custom/my-reflector-model");
+    expect(capturedArgvs.omp).toContain("--thinking");
+    expect(capturedArgvs.omp).toContain("high");
   });
 });
 

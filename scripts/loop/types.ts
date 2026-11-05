@@ -55,6 +55,12 @@ export type AgentTransport = (request: {
   cwd: string;
   role: LoopRole;
   provider?: string;
+  model?: string;
+  effort?: string;
+  prompt?: string;
+  skills?: string[];
+  extensions?: string[];
+  appendSystemPrompts?: string[];
   timeoutMs: number;
   env?: Record<string, string>;
 }) => Promise<ProcessResult>;
@@ -173,7 +179,11 @@ export interface AutoMergeEvaluationResult {
 export interface AutoMergeExecutionResult {
   success: boolean;
   evaluation: AutoMergeEvaluationResult;
-  finalStatus: "merged" | "waiting_approval";
+  finalStatus:
+    | "merged"
+    | "waiting_approval"
+    | "remote_reconciliation_pending"
+    | "manual_intervention_required";
   reviewOutcome: "merged" | "approved";
   finalIntegrationPr?: string;
   error?: string;

@@ -166,6 +166,69 @@ describe("scripts/loop/worktree", () => {
       // No owner.json -> stale=false -> fails closed
       expect(acquireIssueLock(stateRoot, 104)).rejects.toThrow("Issue 104 is locked");
     });
+
+    test("ownerToken protects lock against replacement and same-PID ABA release", async () => {
+      const stateRoot = await mkdtemp(join(tmpdir(), "lock-root-"));
+      tempDirs.push(stateRoot);
+
+      const release1 = await acquireIssueLock(stateRoot, 105);
+      const lockDir = join(stateRoot, "locks", "issue-105");
+      const ownerFile = join(lockDir, "owner.json");
+
+      const owner1 = JSON.parse(readFileSync(ownerFile, "utf-8"));
+      expect(owner1.ownerToken).toBeDefined();
+
+      // Simulate same-PID replacement with a new ownerToken (e.g. renewal or nested run)
+      const replacedPayload = {
+        pid: process.pid,
+        ownerToken: "new-replacement-token",
+        runId: "replacement-run",
+      };
+      await writeFile(ownerFile, JSON.stringify(replacedPayload, null, 2));
+
+      // Attempting to release via the FIRST callback must NOT delete the replaced lock!
+      await release1();
+      expect(existsSync(lockDir)).toBe(true);
+      expect(existsSync(ownerFile)).toBe(true);
+
+      const afterAttempt = JSON.parse(readFileSync(ownerFile, "utf-8"));
+      expect(afterAttempt.ownerToken).toBe("new-replacement-token");
+    });
+
+    test("competing stale lock reclamation atomically reclaims without cross-process corruption", async () => {
+      const stateRoot = await mkdtemp(join(tmpdir(), "lock-root-"));
+      tempDirs.push(stateRoot);
+
+      const lockDir = join(stateRoot, "locks", "issue-106");
+      await mkdir(lockDir, { recursive: true });
+      await writeFile(
+        join(lockDir, "owner.json"),
+        JSON.stringify({ pid: 99999999, runId: "dead-run" }),
+      );
+
+      // Two competing workers try to reclaim the stale lock concurrently
+      const results = await Promise.allSettled([
+        acquireIssueLock(stateRoot, 106, { worker: "A" }),
+        acquireIssueLock(stateRoot, 106, { worker: "B" }),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === "fulfilled");
+
+      // At least one must succeed; lock must be in a clean, consistent state
+      expect(fulfilled.length).toBeGreaterThanOrEqual(1);
+      expect(existsSync(lockDir)).toBe(true);
+
+      const owner = JSON.parse(readFileSync(join(lockDir, "owner.json"), "utf-8"));
+      expect(owner.pid).toBe(process.pid);
+      expect(owner.ownerToken).toBeDefined();
+
+      // Clean up the successful lock
+      for (const res of fulfilled) {
+        if (res.status === "fulfilled") {
+          await res.value();
+        }
+      }
+    });
   });
 
   describe("AC1: prepareLoopWorktree", () => {

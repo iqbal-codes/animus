@@ -156,17 +156,24 @@ export async function runPostIssueReflection(options: RunPostIssueReflectionOpti
     try { template = loadPrompt("loop-reflect", root); }
     catch { template = "Return a schema_version:1 learning proposal with attribution and mutations. Never write files. Dossier: $INPUTS.dossier_json"; }
     const prompt = renderPrompt(template, { target: dossier.issueUrl, reason: dossier.issueTitle, dossier_json: JSON.stringify(dossier) }, artifactsDir);
+    const skills = resolveAllowedSkills(root, "reflector", options.acceptedRef);
+    const extensions = resolveLoopExtensions(root, options.acceptedRef);
     const response = await transport({
       argv: buildProviderArgv(config.provider, {
         model: config.model,
         effort: config.effort,
         prompt,
-        skills: resolveAllowedSkills(root, "reflector", options.acceptedRef),
-        extensions: resolveLoopExtensions(root, options.acceptedRef),
+        skills,
+        extensions,
       }),
       cwd: worktree,
       role: "reflector",
       provider: config.provider,
+      model: config.model,
+      effort: config.effort,
+      skills,
+      extensions,
+      prompt,
       timeoutMs: options.timeoutMs ?? 300000,
     });
     if (response.exitCode !== 0) return { ...empty, triggered: true, status: "error", reasons: ["reflector_transport_failed"] };
@@ -215,6 +222,13 @@ export interface BoundedReflectionTransportOptions {
   handoffDir: string;
   runDirectory: string;
   maxContinuations?: number;
+  provider?: string;
+  model?: string;
+  effort?: string;
+  skills?: string[];
+  extensions?: string[];
+  appendSystemPrompts?: string[];
+  prompt?: string;
   onEvidence?: (evidence: LoopEvidence) => Promise<void> | void;
   onSave?: () => Promise<void> | void;
   getStage?: () => string;
@@ -223,7 +237,8 @@ export interface BoundedReflectionTransportOptions {
 
 /**
  * Creates an agent transport wrapped with bounded execution invariants,
- * delegating to the unified runBoundedRole runner without mutating positional argv.
+ * delegating directly to runBoundedRole from structured configuration
+ * without positional argv parsing or model default substitution.
  */
 export function createBoundedReflectionTransport(
   options: BoundedReflectionTransportOptions,
@@ -232,8 +247,17 @@ export function createBoundedReflectionTransport(
   const gitCmd = options.gitFn ?? git;
 
   return async (request) => {
-    const prompt = request.argv[request.argv.length - 1] ?? "";
-    const provider = request.provider ?? "pi";
+    const prompt = request.prompt ?? options.prompt;
+    const provider = request.provider ?? options.provider;
+    const model = request.model ?? options.model;
+    if (prompt === undefined || !provider) {
+      throw new Error("Bounded reflection requires a structured prompt and provider");
+    }
+    const effort = request.effort ?? options.effort;
+    const skills = request.skills ?? options.skills;
+    const extensions = request.extensions ?? options.extensions;
+    const appendSystemPrompts = request.appendSystemPrompts ?? options.appendSystemPrompts;
+
     const boundedRes = await runBoundedRole({
       role: "reflector",
       root: request.cwd,
@@ -245,7 +269,11 @@ export function createBoundedReflectionTransport(
       budget,
       maxContinuations: options.maxContinuations ?? 1,
       provider,
-      model: "default",
+      model,
+      effort,
+      skills,
+      extensions,
+      appendSystemPrompts,
       transport,
       onEvidence: options.onEvidence,
       onSave: options.onSave ? async () => { await options.onSave!(); } : undefined,
@@ -363,12 +391,21 @@ export async function executeTerminalReflection(
     const historicalCommands =
       commandRecords ?? dossier.attempts.flatMap((attempt) => attempt.commandRecords ?? []);
 
+    const config = resolveRoleConfig(root, "reflector");
+    const allowedSkills = resolveAllowedSkills(root, "reflector", acceptedRef);
+    const loopExtensions = resolveLoopExtensions(root, acceptedRef);
+
     const reflectionTransport = createBoundedReflectionTransport({
       transport,
       budget,
       handoffDir,
       runDirectory,
       maxContinuations,
+      provider: config.provider,
+      model: config.model,
+      effort: config.effort,
+      skills: allowedSkills,
+      extensions: loopExtensions,
       onEvidence,
       onSave,
       getStage: () => "reflecting",

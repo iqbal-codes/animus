@@ -29,6 +29,33 @@ all network interfaces. When `FACTORY_REMOTE_ACCESS=true`, private IP binding an
   and they do not need a default state directory. Future persistence must use
   this input, not write into the source checkout or shared factory directories.
 
+## Subticket integration recovery
+
+Subticket auto-merge writes a phase journal under the Animus state directory's
+`integration-recovery/` before changing a Git ref. Each journal records the checkout,
+issue, integration branch, old and candidate SHAs, PR, and last attempted phase.
+`completed` and `rolled_back` are terminal. Any other phase requires inspection;
+do not infer remote success from a local integration record.
+
+For recovery, compare the recorded branch with local and remote refs, inspect the
+PR and issue on the forge, and check the project's SQLite integration and coordination
+records in `state/console.db` under Animus Home. Resolve the exact failed step before
+resuming scheduling. A `manual_intervention_required` result means database sync and
+Git rollback both failed: preserve the journal and reconcile the observed ref before
+retrying. A `remote_reconciliation_pending` result means local integration succeeded
+but publication did not finish; later forge operations were not attempted. Recovery
+is operator-driven, never an automatic replay of potentially completed forge actions.
+
+Monitor and issue locks serialize ownership changes with a sibling `.mutex` directory.
+Only an ESRCH-confirmed dead PID permits stale-owner reclamation. Missing or malformed
+owner data, or an abandoned mutation mutex, requires operator inspection rather than
+age-based deletion. Stop competing workers before manually recovering either lock.
+
+Embedded monitor operations inherit an async-local subprocess policy that leaves
+SIGTERM/SIGINT ownership with the backend. Nested Git and agent processes still have
+bounded owned-process cleanup, but cannot terminate the backend with the standalone
+loop's signal exit code. Standalone loop commands retain their signal handlers.
+
 ## HTTP contract
 
 | Request | Status | Content type | Response body |

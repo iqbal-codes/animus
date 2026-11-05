@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { BrakeService } from "../command/brakes";
@@ -10,6 +10,7 @@ import {
   resolveProjectWorkspace,
   evaluateWorkspacePreflight,
   isPidAlive,
+  withLockMutation,
 } from "@animus/contracts/paths";
 import type { MonitorRuntime } from "./runtime";
 
@@ -452,6 +453,8 @@ export class RegisteredProjectMonitor {
     };
     this.statuses.set(project.id, status);
     let lock: string | null = null;
+    let lockToken: string | null = null;
+    let ownerPath: string | null = null;
     let interval = this.intervalMs;
     try {
       if (project.status !== "active") {
@@ -496,60 +499,49 @@ export class RegisteredProjectMonitor {
       const stateRoot = workspace.stateRoot;
       await mkdir(stateRoot, { recursive: true });
       const candidateLock = join(stateRoot, "registered-project-monitor.lock");
-      const ownerPath = join(candidateLock, "owner.json");
+      ownerPath = join(candidateLock, "owner.json");
+      const ownerToken = randomUUID();
       let acquired = false;
+      let lockError: string | undefined;
       try {
-        await mkdir(candidateLock);
-        await writeFile(
-          ownerPath,
-          JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }),
-        );
-        lock = candidateLock;
-        acquired = true;
+        await withLockMutation(candidateLock, () => {
+          if (existsSync(candidateLock)) {
+            let owner: { pid?: number };
+            try {
+              owner = JSON.parse(readFileSync(ownerPath!, "utf8"));
+            } catch {
+              lockError =
+                "Lock owner information missing or unreadable; cannot safely verify ESRCH. Manual operator inspection required.";
+              return;
+            }
+            if (!Number.isSafeInteger(owner.pid) || owner.pid! <= 0) {
+              lockError = "Lock owner information invalid; cannot safely verify ESRCH.";
+              return;
+            }
+            if (isPidAlive(owner.pid!)) return;
+            rmSync(candidateLock, { recursive: true });
+          }
+          mkdirSync(candidateLock);
+          writeFileSync(
+            ownerPath!,
+            JSON.stringify({ pid: process.pid, ownerToken, createdAt: new Date().toISOString() }),
+          );
+          lock = candidateLock;
+          lockToken = ownerToken;
+          acquired = true;
+        });
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-
-        // Check stale lock ownership: only reclaim when owner.json has a dead PID (ESRCH).
-        // If owner.json is missing or malformed, fail closed (age never proves dead).
-        let isStale = false;
-        try {
-          if (existsSync(ownerPath)) {
-            const raw = readFileSync(ownerPath, "utf-8");
-            const owner = JSON.parse(raw);
-            if (
-              typeof owner.pid === "number" &&
-              Number.isInteger(owner.pid) &&
-              owner.pid > 0 &&
-              !isPidAlive(owner.pid)
-            ) {
-              // Dead PID (ESRCH): safe to reclaim stale lock
-              isStale = true;
-            }
-          }
-        } catch {}
-
-        if (isStale) {
-          try {
-            await rm(candidateLock, { recursive: true, force: true });
-            await mkdir(candidateLock);
-            await writeFile(
-              ownerPath,
-              JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }),
-            );
-            lock = candidateLock;
-            acquired = true;
-          } catch {}
+      }
+      if (!acquired) {
+        status.state = "skipped";
+        status.reason = "project_locked";
+        if (lockError) status.error = lockError;
+        if (fromWake) {
+          this.pendingWake.add(project.id);
+          status.pending_wake = true;
         }
-
-        if (!acquired) {
-          status.state = "skipped";
-          status.reason = "project_locked";
-          if (fromWake) {
-            this.pendingWake.add(project.id);
-            status.pending_wake = true;
-          }
-          return;
-        }
+        return;
       }
       this.assertDispatch(project);
       await new ProjectOnboardingService(this.registry).prepareLabels(project.repo_name);
@@ -607,9 +599,15 @@ export class RegisteredProjectMonitor {
       status.reason = "monitor_check_failed";
       status.error = error instanceof Error ? error.message : String(error);
     } finally {
-      if (lock) {
+      if (lock && lockToken && ownerPath) {
         try {
-          await rm(lock, { recursive: true, force: true });
+          await withLockMutation(lock, () => {
+            if (!existsSync(ownerPath!)) return;
+            const cur = JSON.parse(readFileSync(ownerPath!, "utf-8"));
+            if (cur?.pid === process.pid && cur?.ownerToken === lockToken) {
+              rmSync(lock!, { recursive: true });
+            }
+          });
         } catch (error) {
           status.state = "error";
           status.reason = "lock_release_failed";

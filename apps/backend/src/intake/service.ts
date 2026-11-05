@@ -1,4 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import {
   intakeResultSchema,
   evaluatedIssueSchema,
@@ -94,20 +97,6 @@ export class IntakeService {
     return row;
   }
 
-  private getBranchIntegrations(projectId: string): Map<number, string> {
-    const map = new Map<number, string>();
-    if (!this.db) return map;
-    try {
-      const rows = this.db
-        .prepare("SELECT issue_number, branch FROM project_issue_integrations WHERE project_id = ?")
-        .all(projectId) as unknown as Array<{ issue_number: number; branch: string }>;
-      for (const r of rows) {
-        map.set(r.issue_number, r.branch);
-      }
-    } catch {}
-    return map;
-  }
-
   async evaluateProjectBacklog(projectId: string, forceRefresh = false): Promise<IntakeResult> {
     const project = this.resolveProject(projectId);
     const now = Date.now() / 1000;
@@ -122,12 +111,11 @@ export class IntakeService {
     const rawIssues = (await forge.listIssues(project.repo_name)).filter(
       (issue) => issue.state.toUpperCase() === "OPEN",
     );
-    const branchIntegrations = this.getBranchIntegrations(projectId);
     const evaluated = await this.evaluateIssues(
       project.repo_name,
       rawIssues,
-      branchIntegrations,
       project.checkout_path,
+      projectId,
     );
 
     evaluated.sort((a, b) => a.number - b.number);
@@ -155,14 +143,7 @@ export class IntakeService {
     const project = this.resolveProject(projectId);
     const raw = await this.getIssueForge().getIssue(project.repo_name, issueNumber);
     const found = raw
-      ? (
-          await this.evaluateIssues(
-            project.repo_name,
-            [raw],
-            this.getBranchIntegrations(projectId),
-            project.checkout_path,
-          )
-        )[0]
+      ? (await this.evaluateIssues(project.repo_name, [raw], project.checkout_path, projectId))[0]
       : null;
     if (!found) {
       throw new ProjectRegistryError("issue_not_found", `Issue #${issueNumber} not found`);
@@ -191,7 +172,6 @@ export class IntakeService {
 
     const labelEffects = computeLabelEffects(currentLabels, submission.labels || []);
 
-    const branchIntegrations = this.getBranchIntegrations(projectId);
     const simulatedIssue: RawIssue = {
       number: submission.issue_number || 999999,
       title: submission.title,
@@ -204,8 +184,8 @@ export class IntakeService {
     const [simulatedAdmission] = await this.evaluateIssues(
       project.repo_name,
       [simulatedIssue],
-      branchIntegrations,
       project.checkout_path,
+      projectId,
     );
     if (!simulatedAdmission) throw new Error("Admission preview unavailable");
 
@@ -322,6 +302,15 @@ export class IntakeService {
     if (!this.db) {
       throw new ProjectRegistryError("project_not_found", "Database not initialized");
     }
+    let resolvedSha = commitSha ?? null;
+    if (!resolvedSha && existsSync(join(project.checkout_path, ".git"))) {
+      try {
+        resolvedSha = execFileSync("git", ["rev-parse", "HEAD"], {
+          cwd: project.checkout_path,
+          encoding: "utf-8",
+        }).trim();
+      } catch {}
+    }
     const now = new Date().toISOString();
     this.db
       .prepare(
@@ -332,7 +321,7 @@ export class IntakeService {
            commit_sha = excluded.commit_sha,
            integrated_at = excluded.integrated_at`,
       )
-      .run(project.id, issueNumber, branch, commitSha ?? null, now);
+      .run(project.id, issueNumber, branch, resolvedSha, now);
 
     // Invalidate cache so dependent issues can re-evaluate with this branch integration
     this.cache.delete(`proj:${projectId}`);
@@ -341,7 +330,7 @@ export class IntakeService {
       project_id: project.id,
       issue_number: issueNumber,
       branch,
-      commit_sha: commitSha ?? null,
+      commit_sha: resolvedSha,
       integrated_at: now,
     };
   }
@@ -375,15 +364,17 @@ export class IntakeService {
   private async evaluateIssues(
     repo: string,
     issues: RawIssue[],
-    integrations = new Map<number, string>(),
     workspaceOrCheckout?: string,
+    projectId?: string,
   ): Promise<EvaluatedIssue[]> {
     const admissionResult = await evaluateBacklogAdmission({
       repo,
       issues,
       forge: this.getIssueForge(),
       workspace: workspaceOrCheckout,
-      branchIntegrations: integrations,
+      root: workspaceOrCheckout,
+      db: this.db,
+      projectId,
     });
     return admissionResult.issues;
   }

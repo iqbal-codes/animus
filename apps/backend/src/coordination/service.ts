@@ -14,7 +14,7 @@ import { CommandService } from "../command/service";
 import { evaluateIssueAdmission, type RawIssue } from "../intake/admission";
 import { parseDependencies } from "../intake/parser";
 import { buildDependencyDAG } from "./dag";
-import { WorktreeManager, allocateWorktree } from "./worktree";
+import { allocateWorktree } from "./worktree";
 import { freezeContract, executeTargetedImplement, type ImplementRunner } from "./primitive";
 import { SerializedIntegrationManager } from "./integration";
 import { CoordinationError } from "./errors";
@@ -38,7 +38,6 @@ export class SpecCoordinatorService {
   private forge: IssueForgeAdapter;
   private ledger: CommandLedger;
   private commandService: CommandService;
-  private worktreeManager?: WorktreeManager;
   private worktreeAllocator: typeof allocateWorktree;
   private integrationManager: SerializedIntegrationManager;
   private gitRunner?: (cmd: string[], options: { cwd: string }) => string;
@@ -51,7 +50,6 @@ export class SpecCoordinatorService {
       ledger?: CommandLedger;
       commandService?: CommandService;
       worktreeAllocator?: typeof allocateWorktree;
-      worktreeManager?: WorktreeManager;
       integrationManager?: SerializedIntegrationManager;
       gitRunner?: (cmd: string[], options: { cwd: string }) => string;
       implementRunner?: ImplementRunner;
@@ -63,12 +61,7 @@ export class SpecCoordinatorService {
     this.commandService = options?.commandService ?? new CommandService(db);
     this.gitRunner = options?.gitRunner;
     this.implementRunner = options?.implementRunner;
-    this.worktreeAllocator =
-      options?.worktreeAllocator ??
-      (options?.worktreeManager
-        ? options.worktreeManager.allocateWorktree.bind(options.worktreeManager)
-        : allocateWorktree);
-    this.worktreeManager = options?.worktreeManager;
+    this.worktreeAllocator = options?.worktreeAllocator ?? allocateWorktree;
     this.integrationManager =
       options?.integrationManager ?? new SerializedIntegrationManager(this.gitRunner);
   }

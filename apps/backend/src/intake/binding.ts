@@ -56,15 +56,6 @@ export async function verifyTargetBinding(
     .prepare("SELECT checkout_path FROM projects WHERE id = ?")
     .get(projectId) as { checkout_path?: string } | undefined;
 
-  const integrations = db
-    .prepare("SELECT issue_number, branch FROM project_issue_integrations WHERE project_id = ?")
-    .all(projectId) as unknown as Array<{ issue_number: number; branch: string }>;
-
-  const integratedMap = new Map<number, string>();
-  for (const row of integrations) {
-    integratedMap.set(row.issue_number, row.branch);
-  }
-
   let nativeDeps: number[] = [];
   if (issueForge.getIssueDependencies) {
     try {
@@ -83,7 +74,9 @@ export async function verifyTargetBinding(
     issues: [liveIssue],
     forge: issueForge,
     workspace: projectRow?.checkout_path,
-    branchIntegrations: integratedMap,
+    db,
+    projectId,
+    root: projectRow?.checkout_path,
     nativeDependencies: new Map([[issueNumber, nativeDeps]]),
   });
 

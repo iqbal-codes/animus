@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { EvaluatedIssue } from "@animus/contracts/operator";
@@ -368,7 +369,6 @@ export interface EvaluateBacklogAdmissionOptions {
   db?: any;
   dbPath?: string;
   projectId?: string;
-  branchIntegrations?: Set<number> | Map<number, string>;
   waitingApprovalIssueNumbers?: Set<number>;
   mergedIssueNumbers?: Set<number>;
   closedIssueNumbers?: Set<number>;
@@ -380,87 +380,116 @@ export function readVerifiedBranchIntegrations(options: {
   dbPath?: string;
   projectId?: string;
   root?: string;
-  branchIntegrations?: Set<number> | Map<number, string>;
+  integrationRef?: string;
+  targetBranch?: string;
 }): Set<number> {
   const verified = new Set<number>();
-  if (options.branchIntegrations) {
-    const items =
-      options.branchIntegrations instanceof Map
-        ? options.branchIntegrations.keys()
-        : options.branchIntegrations;
-    for (const item of items) {
-      verified.add(item);
+
+  let db = options.db && typeof options.db.prepare === "function" ? options.db : undefined;
+  let shouldClose = false;
+
+  if (!db) {
+    if (options.dbPath && existsSync(options.dbPath)) {
+      try {
+        db = new DatabaseSync(options.dbPath, { readOnly: true });
+        shouldClose = true;
+      } catch {}
+    } else if (!options.dbPath) {
+      const defaultDb = join(resolveAnimusStateDir(), "console.db");
+      if (existsSync(defaultDb)) {
+        try {
+          db = new DatabaseSync(defaultDb, { readOnly: true });
+          shouldClose = true;
+        } catch {}
+      }
     }
   }
 
-  // If db instance is provided with .prepare
-  if (options.db && typeof options.db.prepare === "function") {
-    try {
-      const tableCheck = options.db
+  try {
+    let projId = options.projectId;
+    let checkoutPath = options.root ? resolve(options.root) : undefined;
+
+    if (db) {
+      if (!projId && checkoutPath) {
+        try {
+          const projRow = db
+            .prepare(
+              "SELECT id, checkout_path FROM projects WHERE checkout_path = ? OR checkout_path = ?",
+            )
+            .get(checkoutPath, options.root) as any;
+          if (projRow?.id) {
+            projId = projRow.id;
+            if (!checkoutPath && projRow.checkout_path) checkoutPath = projRow.checkout_path;
+          }
+        } catch {}
+      } else if (projId && !checkoutPath) {
+        try {
+          const projRow = db
+            .prepare("SELECT checkout_path FROM projects WHERE id = ?")
+            .get(projId) as any;
+          if (projRow?.checkout_path) checkoutPath = projRow.checkout_path;
+        } catch {}
+      }
+    }
+
+    // Invariant: Unresolved project returns empty set / fail closed, NEVER an unscoped query.
+    if (!projId) {
+      return verified;
+    }
+
+    if (db) {
+      const tableCheck = db
         .prepare(
           "SELECT name FROM sqlite_master WHERE type='table' AND name='project_issue_integrations'",
         )
         .get();
       if (tableCheck) {
-        const rows = options.projectId
-          ? options.db
-              .prepare("SELECT issue_number FROM project_issue_integrations WHERE project_id = ?")
-              .all(options.projectId)
-          : options.db.prepare("SELECT issue_number FROM project_issue_integrations").all();
-        for (const r of rows as any[]) {
-          if (typeof r?.issue_number === "number") verified.add(r.issue_number);
+        const rows = db
+          .prepare(
+            "SELECT issue_number, branch, commit_sha FROM project_issue_integrations WHERE project_id = ?",
+          )
+          .all(projId) as Array<{
+          issue_number: number;
+          branch: string;
+          commit_sha?: string;
+        }>;
+
+        const gitCwd = checkoutPath ?? (options.root ? resolve(options.root) : undefined);
+
+        for (const r of rows) {
+          if (typeof r?.issue_number !== "number" || !r.commit_sha || !gitCwd) {
+            continue;
+          }
+
+          // Verify commit exists in git and is reachable from intended integration ref
+          try {
+            // 1. Commit must exist in git
+            execFileSync("git", ["cat-file", "-e", `${r.commit_sha}^{commit}`], {
+              cwd: gitCwd,
+              stdio: "ignore",
+            });
+
+            const intendedRef = options.integrationRef ?? options.targetBranch ?? r.branch;
+
+            // 3. Verify reachability: r.commit_sha must be an ancestor of intendedRef
+            execFileSync("git", ["merge-base", "--is-ancestor", r.commit_sha, intendedRef], {
+              cwd: gitCwd,
+              stdio: "ignore",
+            });
+
+            verified.add(r.issue_number);
+          } catch {
+            // Commit is forged, non-existent, or not reachable from intendedRef -> skip!
+          }
         }
       }
-    } catch {}
-  }
-
-  // If dbPath is provided
-  if (options.dbPath && existsSync(options.dbPath)) {
-    try {
-      const db = new DatabaseSync(options.dbPath, { readOnly: true });
+    }
+  } finally {
+    if (shouldClose && db) {
       try {
-        const rows = options.projectId
-          ? db
-              .prepare("SELECT issue_number FROM project_issue_integrations WHERE project_id = ?")
-              .all(options.projectId)
-          : db.prepare("SELECT issue_number FROM project_issue_integrations").all();
-        for (const r of rows as any[]) {
-          if (typeof r?.issue_number === "number") verified.add(r.issue_number);
-        }
-      } finally {
         db.close();
-      }
-    } catch {}
-  }
-
-  // If neither db nor dbPath is provided, check default console.db in state directory
-  if (!options.db && !options.dbPath) {
-    try {
-      const defaultDb = join(resolveAnimusStateDir(), "console.db");
-      if (existsSync(defaultDb)) {
-        const db = new DatabaseSync(defaultDb, { readOnly: true });
-        try {
-          let projId = options.projectId;
-          if (!projId && options.root) {
-            const canonicalRoot = resolve(options.root);
-            const projRow = db
-              .prepare("SELECT id FROM projects WHERE checkout_path = ?")
-              .get(canonicalRoot) as any;
-            if (projRow?.id) projId = projRow.id;
-          }
-          const rows = projId
-            ? db
-                .prepare("SELECT issue_number FROM project_issue_integrations WHERE project_id = ?")
-                .all(projId)
-            : db.prepare("SELECT issue_number FROM project_issue_integrations").all();
-          for (const r of rows as any[]) {
-            if (typeof r?.issue_number === "number") verified.add(r.issue_number);
-          }
-        } finally {
-          db.close();
-        }
-      }
-    } catch {}
+      } catch {}
+    }
   }
 
   return verified;
@@ -565,7 +594,6 @@ export async function evaluateBacklogAdmission(
     dbPath: options.dbPath,
     projectId: options.projectId,
     root: options.root,
-    branchIntegrations: options.branchIntegrations,
   });
 
   const nativeDependenciesMap = new Map<number, number[]>(options.nativeDependencies ?? []);

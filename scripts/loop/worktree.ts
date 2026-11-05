@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { processRun } from "./process";
 import { evaluateCodebaseRulesOnEdit } from "../../.factory/hooks/loop-guard";
@@ -90,13 +91,13 @@ export async function findExistingWorktreeForBranch(
   return null;
 }
 
-import { isPidAlive, isProcessAlive } from "../../packages/contracts/src/paths";
+import { isPidAlive, withLockMutation } from "../../packages/contracts/src/paths";
 
-export { isPidAlive, isProcessAlive };
+export { isPidAlive };
 
 /**
  * Acquire an issue directory lock with stale PID reclamation.
- * Writes owner.json with PID and metadata payload, and returns a release callback.
+ * Writes owner.json with PID, unique ownerToken, and metadata payload, and returns a release callback.
  */
 export async function acquireIssueLock(
   stateRoot: string,
@@ -104,47 +105,44 @@ export async function acquireIssueLock(
   ownerPayload: object = {},
 ): Promise<() => Promise<void>> {
   const lock = join(stateRoot, "locks", `issue-${issueNumber}`);
-  await mkdir(dirname(lock), { recursive: true });
-  try {
-    await mkdir(lock);
-  } catch {
-    const ownerFile = join(lock, "owner.json");
-    let stale = false;
-    if (existsSync(ownerFile)) {
-      try {
-        const owner = JSON.parse(readFileSync(ownerFile, "utf8"));
-        if (typeof owner.pid === "number" && Number.isInteger(owner.pid) && owner.pid > 0) {
-          if (!isPidAlive(owner.pid)) {
-            stale = true;
-          }
-        }
-      } catch {}
-    }
-    if (stale) {
-      await rm(lock, { recursive: true, force: true });
-      await mkdir(lock);
-    } else {
-      throw new Error(`Issue ${issueNumber} is locked; inspect ${lock} before manual release`);
-    }
-  }
-
+  const ownerToken = randomUUID();
   const ownerFile = join(lock, "owner.json");
-  const payload = {
-    pid: process.pid,
-    ...ownerPayload,
-  };
-  await Bun.write(ownerFile, JSON.stringify(payload, null, 2));
+  await mkdir(dirname(lock), { recursive: true });
+
+  await withLockMutation(lock, () => {
+    if (existsSync(lock)) {
+      let owner: { pid?: number };
+      try {
+        owner = JSON.parse(readFileSync(ownerFile, "utf8"));
+      } catch {
+        throw new Error(`Issue ${issueNumber} is locked but owner information is missing or unreadable; cannot safely verify ESRCH. Inspect ${lock}`);
+      }
+      if (!Number.isSafeInteger(owner.pid) || owner.pid! <= 0 || isPidAlive(owner.pid!)) {
+        throw new Error(`Issue ${issueNumber} is locked; inspect ${lock} before manual release`);
+      }
+      rmSync(lock, { recursive: true });
+    }
+    mkdirSync(lock);
+    writeFileSync(ownerFile, JSON.stringify({
+      ...ownerPayload,
+      pid: process.pid,
+      ownerToken,
+      createdAt: new Date().toISOString(),
+    }));
+  });
+
+  let released = false;
 
   return async () => {
-    try {
-      if (existsSync(ownerFile)) {
-        const raw = readFileSync(ownerFile, "utf8");
-        const cur = JSON.parse(raw);
-        if (cur?.pid === process.pid) {
-          await rm(lock, { recursive: true, force: true });
-        }
+    if (released) return;
+    await withLockMutation(lock, () => {
+      if (!existsSync(ownerFile)) return;
+      const cur = JSON.parse(readFileSync(ownerFile, "utf8"));
+      if (cur?.pid === process.pid && cur?.ownerToken === ownerToken) {
+        rmSync(lock, { recursive: true });
       }
-    } catch {}
+    });
+    released = true;
   };
 }
 

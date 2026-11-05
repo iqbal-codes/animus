@@ -1,42 +1,6 @@
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
-import {
+export {
   allocateWorktree,
   type WorktreeAllocation,
   type WorktreeAllocationOptions,
   type WorktreeLockInfo,
 } from "../../../../scripts/loop/worktree";
-
-export { allocateWorktree };
-export type { WorktreeAllocation, WorktreeAllocationOptions, WorktreeLockInfo };
-
-/**
- * Backward compatibility wrapper for worktree allocation.
- * Prefer importing allocateWorktree directly.
- */
-export class WorktreeManager {
-  private runner?: (cmd: string[], options: { cwd: string }) => string;
-
-  constructor(runner?: (cmd: string[], options: { cwd: string }) => string) {
-    this.runner = runner;
-  }
-
-  allocateWorktree(options: WorktreeAllocationOptions): WorktreeAllocation {
-    return allocateWorktree({
-      ...options,
-      gitRunner: options.gitRunner ?? this.runner,
-    });
-  }
-
-  releaseLock(worktreeDir: string): void {
-    const lockPath = join(worktreeDir, ".worktree.lock");
-    if (existsSync(lockPath)) {
-      try {
-        const cur = JSON.parse(readFileSync(lockPath, "utf-8"));
-        if (cur?.pid === process.pid) {
-          unlinkSync(lockPath);
-        }
-      } catch {}
-    }
-  }
-}

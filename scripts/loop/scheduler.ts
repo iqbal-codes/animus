@@ -15,7 +15,7 @@ import {
   checkBrakes,
   checkWorkspaceBrakes,
   isWithinWorkWindow,
-  isProcessAlive,
+  isPidAlive,
   countActiveLaps,
   getIssuesWaitingApproval,
   getMergedIssueNumbers,
@@ -42,7 +42,7 @@ export {
   checkBrakes,
   checkWorkspaceBrakes,
   isWithinWorkWindow,
-  isProcessAlive,
+  isPidAlive,
   countActiveLaps,
   getIssuesWaitingApproval,
   getMergedIssueNumbers,
@@ -110,8 +110,6 @@ export interface FilterAdmittedIssuesOptions {
   runsDir?: string;
   dossiersDir?: string;
   runStates?: Map<number, string>;
-  integratedBranchIssues?: Set<number> | Map<number, string>;
-  branchIntegrations?: Set<number> | Map<number, string>;
   db?: any;
   dbPath?: string;
   projectId?: string;
@@ -140,7 +138,6 @@ export function filterAdmittedIssues(
     dbPath: options.dbPath,
     projectId: options.projectId,
     root: options.root,
-    branchIntegrations: options.integratedBranchIssues ?? options.branchIntegrations,
   });
 
   const rawIssues: RawIssue[] = issues.map((c) => ({
@@ -493,7 +490,6 @@ export interface SchedulerTickOptions {
   launchLap: (issue: BacklogCandidate) => Promise<{ runId: string }>;
   db?: any;
   dbPath?: string;
-  branchIntegrations?: Set<number> | Map<number, string>;
 }
 
 export async function runSchedulerTick(options: SchedulerTickOptions): Promise<SchedulerTickResult> {
@@ -603,21 +599,12 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
     };
   }
 
-  const verifiedIntegrations = readVerifiedBranchIntegrations({
-    db: options.db,
-    dbPath: options.dbPath,
-    projectId: options.projectId,
-    root,
-    branchIntegrations: options.branchIntegrations,
-  });
-
   const admitted = filterAdmittedIssues(backlog.issues, backlog.closedNumbers, {
     waitingApprovalIssueNumbers: waitingApprovalNumbers,
     mergedIssueNumbers: mergedNumbers,
     runsDir,
     stateRoot,
     maxLaps: mergedConfig.max_laps,
-    integratedBranchIssues: verifiedIntegrations,
     db: options.db,
     dbPath: options.dbPath,
     projectId: options.projectId,

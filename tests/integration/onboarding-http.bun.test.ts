@@ -12,7 +12,7 @@ import { ProjectRegistryService } from "../../apps/backend/src/registry/service"
 import { SyntheticForgeAdapter } from "../../apps/backend/src/registry/forge";
 import { RegisteredProjectMonitor } from "../../apps/backend/src/monitor/service";
 import { loadMonitorRuntime } from "../../apps/backend/src/monitor/runtime";
-import { processRun } from "../../scripts/loop/process";
+import { processRun, withProcessPolicy } from "../../scripts/loop/process";
 
 test("real backend enrolls a checkout, provisions labels, reports held setup, and preserves admission", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "factory-onboarding-http-")));
@@ -533,6 +533,21 @@ describe("In-Process Backend Application Kernel & Monitor Runtime (Ticket #147)"
 
     const afterListeners = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")];
     expect(afterListeners).toEqual(beforeListeners);
+  });
+
+  test("embedded subprocess policy propagates across await without taking host signal ownership", async () => {
+    const before = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")];
+    await withProcessPolicy({ manageSignals: false }, async () => {
+      await Promise.resolve();
+      const child = processRun(
+        [process.execPath, "-e", "console.log('done')"],
+        process.cwd(),
+        1000,
+      );
+      expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(before);
+      expect((await child).exitCode).toBe(0);
+    });
+    expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(before);
   });
 
   test("remediation: arbitrary observer on SIGTERM does not disable CLI signal exit", async () => {

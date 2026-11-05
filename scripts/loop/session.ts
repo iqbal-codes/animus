@@ -1370,12 +1370,22 @@ export class LapSession {
           dbPath: (this.options as any).dbPath,
           projectId: (this.options as any).projectId,
         });
+        const sessionFinalStatus: "waiting_approval" | "needs_owner" | "sent_back" | "merged" =
+          mergeRes.finalStatus === "merged"
+            ? "merged"
+            : mergeRes.finalStatus === "manual_intervention_required"
+              ? "needs_owner"
+              : "waiting_approval";
+
         reviewEval = {
           ...reviewEval,
           autoMergeEval: mergeRes.evaluation,
-          finalStatus: mergeRes.finalStatus,
+          finalStatus: sessionFinalStatus,
           reviewOutcome: mergeRes.reviewOutcome,
         };
+        if (mergeRes.error) {
+          this.state.error = mergeRes.error;
+        }
         this.state.autoMerge = mergeRes.evaluation;
         await Bun.write(
           join(this.artifactsDir, "auto-merge-judgement.json"),

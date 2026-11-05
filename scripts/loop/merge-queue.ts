@@ -1,7 +1,8 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { git, assertCandidate, type AssertCandidateOptions } from "./worktree";
+import { resolveAnimusStateDir } from "../../packages/contracts/src/paths";
 import { processRun } from "./process";
 import { parsePartOf } from "../../apps/backend/src/intake/parser";
 import type {
@@ -449,12 +450,7 @@ export function recordSubticketIntegration(
   if (!db) {
     let resolvedDbPath = options.dbPath;
     if (!resolvedDbPath) {
-      const candidates = [
-        join(root, "factory-local-loop", "console.db"),
-        join(root, "state", "console.db"),
-        join(root, ".factory/state/console.db"),
-        join(root, "console.db"),
-      ];
+      const candidates = [join(resolveAnimusStateDir(), "console.db")];
       for (const cand of candidates) {
         if (existsSync(cand)) {
           resolvedDbPath = cand;
@@ -527,8 +523,6 @@ export function recordSubticketIntegration(
           );
           if (match) {
             projectId = match.id;
-          } else if (allProjects.length === 1) {
-            projectId = allProjects[0]?.id;
           }
         }
       } catch (err: any) {
@@ -551,6 +545,7 @@ export function recordSubticketIntegration(
       return { integrated: false };
     }
 
+    db.exec("SAVEPOINT subticket_integration");
     const now = new Date().toISOString();
     db.prepare(
       `INSERT INTO project_issue_integrations (project_id, issue_number, branch, commit_sha, integrated_at)
@@ -648,17 +643,17 @@ export function recordSubticketIntegration(
           }
         }
       } catch (err: any) {
-        if (dbAttached) {
-          return {
-            integrated: false,
-            error: `Failed to update project_spec_coordinations in attached database: ${err.message}`,
-          };
-        }
+        throw err;
       }
     }
 
+    db.exec("RELEASE SAVEPOINT subticket_integration");
     return { integrated: true, projectId };
   } catch (err: any) {
+    try {
+      db.exec("ROLLBACK TO SAVEPOINT subticket_integration");
+      db.exec("RELEASE SAVEPOINT subticket_integration");
+    } catch {}
     if (dbAttached) {
       return {
         integrated: false,
@@ -708,6 +703,21 @@ export async function executeSubticketAutoMerge(
   const parsePartOfCmd = options.parsePartOfFn ?? parsePartOf;
 
   let finalIntegrationPr: string | undefined;
+  const journalDir = join(resolveAnimusStateDir(), "integration-recovery");
+  const journalPath = join(journalDir, `${crypto.randomUUID()}.json`);
+  const journal = {
+    root, candidate, integrationBranch, targetBaseTip, issueNumber, partOf, pr,
+    phase: "prepared", updatedAt: new Date().toISOString(), error: undefined as string | undefined,
+  };
+  const persistPhase = (phase: string, error?: string) => {
+    journal.phase = phase;
+    journal.error = error;
+    journal.updatedAt = new Date().toISOString();
+    mkdirSync(journalDir, { recursive: true });
+    const temporary = `${journalPath}.tmp`;
+    writeFileSync(temporary, JSON.stringify(journal, null, 2));
+    renameSync(temporary, journalPath);
+  };
 
   try {
     await assertCandidateCmd({
@@ -730,7 +740,9 @@ export async function executeSubticketAutoMerge(
       : `refs/heads/${integrationBranch}`;
 
     // 1. Git Compare-and-Swap (CAS) ref update
+    persistPhase("ref_update_pending");
     await gitCmd(root, "update-ref", cleanRef, candidate, targetBaseTip);
+    persistPhase("database_sync_pending");
 
     // 2. Database synchronization BEFORE irreversible remote publication
     // Record verified integration in SQLite project_issue_integrations and synchronize coordination truth
@@ -760,11 +772,39 @@ export async function executeSubticketAutoMerge(
     // If attached DB synchronization failed, roll back the Git ref update immediately!
     // Fail closed BEFORE executing any irreversible remote publication (push, PR merge, issue close).
     if (syncError) {
+      let rollbackErr: Error | undefined;
       try {
         await gitCmd(root, "update-ref", cleanRef, targetBaseTip, candidate);
-      } catch (rollbackErr: any) {
-        syncError += `; ref rollback failed: ${rollbackErr.message}`;
+      } catch (err: any) {
+        rollbackErr = err instanceof Error ? err : new Error(String(err));
       }
+
+      if (rollbackErr) {
+        // DB sync failed AND Git ref rollback failed: split-brain state detected!
+        // Preserve observed SHA and report distinct explicit manual intervention error state!
+        let observedSha = candidate;
+        try {
+          observedSha = (await gitCmd(root, "rev-parse", cleanRef)).trim();
+        } catch {}
+
+        persistPhase("manual_intervention_required", `${syncError}; rollback: ${rollbackErr.message}`);
+        const errDetail = `Attached database synchronization failed (${syncError}) AND Git ref rollback failed: ${rollbackErr.message}. Observed ref at SHA ${observedSha}; explicit manual intervention required.`;
+        return {
+          success: false,
+          evaluation: {
+            ...autoMergeEval,
+            authorized: false,
+            decision: "hold_for_human",
+            reasons: [...autoMergeEval.reasons, errDetail],
+          },
+          finalStatus: "manual_intervention_required",
+          reviewOutcome: "approved",
+          error: errDetail,
+          finalIntegrationPr,
+        };
+      }
+
+      persistPhase("rolled_back", syncError);
       return {
         success: false,
         evaluation: {
@@ -780,11 +820,14 @@ export async function executeSubticketAutoMerge(
       };
     }
 
+    persistPhase("publication_pending");
     // 3. Irreversible Remote Publication (only after CAS and DB sync succeeded)
     let publicationError: string | undefined;
     if (push !== false) {
-      try {
-        if (pr) {
+      // Step A: gh pr merge
+      if (pr) {
+        try {
+          persistPhase("pr_merge_pending");
           const prRes = await processCmd(
             ["gh", "pr", "merge", pr, "--squash", "--match-head-commit", candidate],
             worktree,
@@ -793,126 +836,143 @@ export async function executeSubticketAutoMerge(
           if (prRes.exitCode !== 0) {
             publicationError = `gh pr merge failed: ${prRes.stderr || prRes.stdout}`;
           }
+        } catch (err: any) {
+          publicationError = `gh pr merge failed: ${err.message}`;
         }
-        if (hasOrigin) {
-          try {
-            await gitCmd(
-              root,
-              "push",
-              "origin",
-              `refs/heads/${integrationBranch}:refs/heads/${integrationBranch}`,
-            );
-          } catch (pushErr: any) {
-            publicationError = `git push origin failed: ${pushErr.message}`;
-          }
-        }
-        const closeRes = await processCmd(
-          [
-            "gh",
-            "issue",
-            "close",
-            String(issueNumber),
-            "--comment",
-            `Auto-merged into integration branch \`${integrationBranch}\` at commit \`${candidate}\`.`,
-          ],
-          worktree,
-          15_000,
-        );
-        if (closeRes.exitCode !== 0 && !publicationError) {
-          publicationError = `gh issue close failed: ${closeRes.stderr || closeRes.stdout}`;
-        }
+      }
 
-        if (partOf !== undefined) {
-          try {
-            const openIssuesRes = await processCmd(
-              ["gh", "issue", "list", "--state", "open", "--json", "number,body"],
-              root,
-              15_000,
+      // Step B: git push origin (STOP if PR merge failed!)
+      if (!publicationError && hasOrigin) {
+        try {
+          persistPhase("push_pending");
+          await gitCmd(
+            root,
+            "push",
+            "origin",
+            `refs/heads/${integrationBranch}:refs/heads/${integrationBranch}`,
+          );
+        } catch (pushErr: any) {
+          publicationError = `git push origin failed: ${pushErr.message}`;
+        }
+      }
+
+      // Step C: gh issue close (STOP if PR merge or push failed!)
+      if (!publicationError) {
+        try {
+          persistPhase("issue_close_pending");
+          const closeRes = await processCmd(
+            [
+              "gh",
+              "issue",
+              "close",
+              String(issueNumber),
+              "--comment",
+              `Auto-merged into integration branch \`${integrationBranch}\` at commit \`${candidate}\`.`,
+            ],
+            worktree,
+            15_000,
+          );
+          if (closeRes.exitCode !== 0) {
+            publicationError = `gh issue close failed: ${closeRes.stderr || closeRes.stdout}`;
+          }
+        } catch (err: any) {
+          publicationError = `gh issue close failed: ${err.message}`;
+        }
+      }
+
+      // Step D: Parent integration PR (STOP if any prior remote step failed!)
+      if (!publicationError && partOf !== undefined) {
+        try {
+          const openIssuesRes = await processCmd(
+            ["gh", "issue", "list", "--state", "open", "--json", "number,body"],
+            root,
+            15_000,
+          );
+          if (openIssuesRes.exitCode === 0) {
+            const openIssues = JSON.parse(openIssuesRes.stdout) as Array<{
+              number: number;
+              body?: string;
+            }>;
+            const remainingSiblings = openIssues.filter(
+              (i) =>
+                i.number !== issueNumber &&
+                i.number !== partOf &&
+                parsePartOfCmd(i.body ?? "") === partOf,
             );
-            if (openIssuesRes.exitCode === 0) {
-              const openIssues = JSON.parse(openIssuesRes.stdout) as Array<{
-                number: number;
-                body?: string;
-              }>;
-              const remainingSiblings = openIssues.filter(
-                (i) =>
-                  i.number !== issueNumber &&
-                  i.number !== partOf &&
-                  parsePartOfCmd(i.body ?? "") === partOf,
+            if (remainingSiblings.length === 0) {
+              const existingFinalPr = await processCmd(
+                [
+                  "gh",
+                  "pr",
+                  "list",
+                  "--state",
+                  "open",
+                  "--head",
+                  integrationBranch,
+                  "--base",
+                  defaultBaseBranch,
+                  "--json",
+                  "url",
+                ],
+                root,
+                15_000,
               );
-              if (remainingSiblings.length === 0) {
-                const existingFinalPr = await processCmd(
+              let finalPrUrl: string | undefined;
+              if (existingFinalPr.exitCode === 0) {
+                const parsedPrs = JSON.parse(existingFinalPr.stdout) as Array<{ url?: string }>;
+                finalPrUrl = parsedPrs[0]?.url;
+              }
+              if (!finalPrUrl) {
+                const createFinal = await processCmd(
                   [
                     "gh",
                     "pr",
-                    "list",
-                    "--state",
-                    "open",
-                    "--head",
-                    integrationBranch,
+                    "create",
                     "--base",
                     defaultBaseBranch,
-                    "--json",
-                    "url",
+                    "--head",
+                    integrationBranch,
+                    "--title",
+                    `feat(spec-${partOf}): integrated delivery for spec #${partOf}`,
+                    "--body",
+                    `Closes #${partOf}\n\nAll subticket PRs for spec #${partOf} have been verified and integrated into \`${integrationBranch}\`. Ready for human review.`,
                   ],
                   root,
-                  15_000,
+                  30_000,
                 );
-                let finalPrUrl: string | undefined;
-                if (existingFinalPr.exitCode === 0) {
-                  const parsedPrs = JSON.parse(existingFinalPr.stdout) as Array<{ url?: string }>;
-                  finalPrUrl = parsedPrs[0]?.url;
-                }
-                if (!finalPrUrl) {
-                  const createFinal = await processCmd(
-                    [
-                      "gh",
-                      "pr",
-                      "create",
-                      "--base",
-                      defaultBaseBranch,
-                      "--head",
-                      integrationBranch,
-                      "--title",
-                      `feat(spec-${partOf}): integrated delivery for spec #${partOf}`,
-                      "--body",
-                      `Closes #${partOf}\n\nAll subticket PRs for spec #${partOf} have been verified and integrated into \`${integrationBranch}\`. Ready for human review.`,
-                    ],
-                    root,
-                    30_000,
-                  );
-                  if (createFinal.exitCode === 0) {
-                    finalPrUrl = createFinal.stdout.trim();
-                  }
-                }
-                if (finalPrUrl) {
-                  finalIntegrationPr = finalPrUrl;
+                if (createFinal.exitCode === 0) {
+                  finalPrUrl = createFinal.stdout.trim();
                 }
               }
+              if (finalPrUrl) {
+                finalIntegrationPr = finalPrUrl;
+              }
             }
-          } catch {}
-        }
-      } catch (pubErr: any) {
-        publicationError = `Remote publication error: ${pubErr.message}`;
+          }
+        } catch {}
       }
     }
 
     if (publicationError) {
-      // Post-publication failure: honest persisted recovery, NOT pretend unmerged waiting_approval.
-      // The integration branch ref IS updated and DB record IS saved.
+      // Remote publication failed: honest durable reconciliation state, NOT false completion or remote success!
+      // Local branch ref was updated and DB record committed, but remote publication failed.
+      persistPhase("remote_reconciliation_pending", publicationError);
       return {
         success: false,
         evaluation: {
           ...autoMergeEval,
+          authorized: false,
+          decision: "hold_for_human",
           reasons: [...autoMergeEval.reasons, publicationError],
         },
-        finalStatus: "merged",
-        reviewOutcome: "merged",
-        error: `Post-publication failed: ${publicationError}. Branch and database integration persisted; requires remote reconciliation.`,
+        finalStatus: "remote_reconciliation_pending",
+        reviewOutcome: "approved",
+        error: `Remote publication failed: ${publicationError}. Local git merged at commit \`${candidate}\` and database committed, remote pending durable reconciliation.`,
         finalIntegrationPr,
       };
     }
 
+    persistPhase("completed");
     return {
       success: true,
       evaluation: autoMergeEval,
@@ -921,7 +981,7 @@ export async function executeSubticketAutoMerge(
       finalIntegrationPr,
     };
   } catch (mergeErr: unknown) {
-    const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
+    const msg = `${mergeErr instanceof Error ? mergeErr.message : String(mergeErr)}; inspect recovery journal ${journalPath}`;
     const updatedEval: AutoMergeEvaluationResult = {
       ...autoMergeEval,
       authorized: false,
@@ -931,7 +991,9 @@ export async function executeSubticketAutoMerge(
     return {
       success: false,
       evaluation: updatedEval,
-      finalStatus: "waiting_approval",
+      finalStatus: journal.phase === "prepared" || journal.phase === "ref_update_pending"
+        ? "waiting_approval"
+        : "manual_intervention_required",
       reviewOutcome: "approved",
       error: msg,
     };

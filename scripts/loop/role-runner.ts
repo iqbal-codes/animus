@@ -27,7 +27,7 @@ export interface BoundedRoleOptions {
   budget: RoleBudget;
   maxContinuations?: number;
   provider: string;
-  model: string;
+  model?: string;
   effort?: string;
   skills?: string[];
   extensions?: string[];

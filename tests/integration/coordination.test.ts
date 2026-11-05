@@ -23,7 +23,7 @@ import {
   SpecCoordinatorService,
   CoordinationError,
   buildDependencyDAG,
-  WorktreeManager,
+  allocateWorktree,
   validateTargetedPrimitive,
   SerializedIntegrationManager,
   handleProjectCoordinationRoute,
@@ -257,14 +257,13 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
 
   describe("AC2 (Parent AC10, P2): Isolated Git Worktree Lifecycle & Exclusive Lock", () => {
     test("worker allocates isolated git worktree with verified starting SHA and cleanliness", () => {
-      const worktreeManager = new WorktreeManager();
       const worktreeDir = join(tempDir, "worktree-clean");
       const startSha = execFileSync("git", ["rev-parse", "HEAD"], {
         cwd: repoPath,
         encoding: "utf-8",
       }).trim();
 
-      const allocation = worktreeManager.allocateWorktree({
+      const allocation = allocateWorktree({
         repoRoot: repoPath,
         worktreeDir,
         branch: "test/isolated-branch-clean",
@@ -295,14 +294,13 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
         stdio: "ignore",
       });
 
-      const worktreeManager = new WorktreeManager();
       const worktreeDir = join(tempDir, "worktree-holdout-fenced");
       const startSha = execFileSync("git", ["rev-parse", "HEAD"], {
         cwd: repoPath,
         encoding: "utf-8",
       }).trim();
 
-      const allocation = worktreeManager.allocateWorktree({
+      const allocation = allocateWorktree({
         repoRoot: repoPath,
         worktreeDir,
         branch: "test/isolated-branch-holdout",
@@ -333,7 +331,6 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
     });
 
     test("stale worktree lock is reclaimed when holding PID is dead (ESRCH), while live PID or EPERM fails closed", () => {
-      const worktreeManager = new WorktreeManager();
       const worktreeDir = join(tempDir, "worktree-stale-lock");
       const startSha = execFileSync("git", ["rev-parse", "HEAD"], {
         cwd: repoPath,
@@ -356,7 +353,7 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
       );
 
       // Allocation reclaims the stale lock and succeeds
-      const alloc = worktreeManager.allocateWorktree({
+      const alloc = allocateWorktree({
         repoRoot: repoPath,
         worktreeDir,
         branch: "test/stale-branch",
@@ -370,7 +367,7 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
 
       // Concurrent allocation with live PID fails closed with worktree_lock_conflict
       expect(() =>
-        worktreeManager.allocateWorktree({
+        allocateWorktree({
           repoRoot: repoPath,
           worktreeDir,
           branch: "test/stale-branch",
@@ -393,7 +390,7 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
       );
 
       expect(() =>
-        worktreeManager.allocateWorktree({
+        allocateWorktree({
           repoRoot: repoPath,
           worktreeDir,
           branch: "test/stale-branch",
@@ -405,7 +402,7 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
       // Corrupted / invalid lock file fails closed and is never stolen
       writeFileSync(lockPath, "CORRUPTED_JSON_NOT_VALID{{{");
       expect(() =>
-        worktreeManager.allocateWorktree({
+        allocateWorktree({
           repoRoot: repoPath,
           worktreeDir,
           branch: "test/stale-branch",
@@ -428,7 +425,7 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
           }),
         );
         expect(() =>
-          worktreeManager.allocateWorktree({
+          allocateWorktree({
             repoRoot: repoPath,
             worktreeDir,
             branch: "test/stale-branch",
@@ -456,12 +453,11 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
     });
 
     test("fails closed if starting SHA mismatches expected base", () => {
-      const worktreeManager = new WorktreeManager();
       const worktreeDir = join(tempDir, "worktree-sha-mismatch");
       const bogusSha = "0000000000000000000000000000000000000000";
 
       expect(() =>
-        worktreeManager.allocateWorktree({
+        allocateWorktree({
           repoRoot: repoPath,
           worktreeDir,
           branch: "test/isolated-branch-bad-sha",
@@ -472,7 +468,6 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
     });
 
     test("fails closed if worktree is dirty with uncommitted changes", () => {
-      const worktreeManager = new WorktreeManager();
       const worktreeDir = join(tempDir, "worktree-dirty");
       const startSha = execFileSync("git", ["rev-parse", "HEAD"], {
         cwd: repoPath,
@@ -487,7 +482,7 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
       writeFileSync(join(worktreeDir, "uncommitted.txt"), "dirty untracked file");
 
       expect(() =>
-        worktreeManager.allocateWorktree({
+        allocateWorktree({
           repoRoot: repoPath,
           worktreeDir,
           branch: "test/dirty-branch",
@@ -498,14 +493,13 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
     });
 
     test("enforces exclusive locking: concurrent allocation on locked worktree is rejected", () => {
-      const worktreeManager = new WorktreeManager();
       const worktreeDir = join(tempDir, "worktree-locked");
       const startSha = execFileSync("git", ["rev-parse", "HEAD"], {
         cwd: repoPath,
         encoding: "utf-8",
       }).trim();
 
-      const alloc1 = worktreeManager.allocateWorktree({
+      const alloc1 = allocateWorktree({
         repoRoot: repoPath,
         worktreeDir,
         branch: "test/locked-branch",
@@ -515,7 +509,7 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
 
       // Attempting to allocate second worker while lock is held throws worktree_lock_conflict
       expect(() =>
-        worktreeManager.allocateWorktree({
+        allocateWorktree({
           repoRoot: repoPath,
           worktreeDir,
           branch: "test/locked-branch",

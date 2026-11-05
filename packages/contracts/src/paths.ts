@@ -8,12 +8,34 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+/** Serialize owner inspection and replacement; abandoned guards require operator recovery. */
+export async function withLockMutation<T>(lock: string, mutate: () => T): Promise<T> {
+  const guard = `${lock}.mutex`;
+  const deadline = Date.now() + 5000;
+  for (;;) {
+    try {
+      mkdirSync(guard);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST" || Date.now() >= deadline) throw error;
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 10);
+      await promise;
+    }
+  }
+  try {
+    return mutate();
+  } finally {
+    rmSync(guard, { recursive: true });
+  }
+}
 
 export interface WorkWindowConfig {
   enabled: boolean;
@@ -1085,7 +1107,7 @@ export function isWithinWorkWindow(window?: WorkWindowConfig, now = new Date()):
  * Invariant: 'age never proves dead, EPERM alive, only ESRCH proves dead'.
  * Returns false only if pid is not a positive integer or process.kill(pid, 0) throws ESRCH.
  */
-export function isProcessAlive(pid: number): boolean {
+export function isPidAlive(pid?: number | null): boolean {
   if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) {
     return false;
   }
@@ -1100,8 +1122,6 @@ export function isProcessAlive(pid: number): boolean {
     return true;
   }
 }
-
-export const isPidAlive = isProcessAlive;
 
 /**
  * Counts active laps in runsDir, ignoring abandoned runs with dead PIDs.
@@ -1123,7 +1143,7 @@ export function countActiveLaps(runsDir: string): number {
           state.status === "reviewing" ||
           state.status === "reflecting"
         ) {
-          if (typeof state.pid === "number" && !isProcessAlive(state.pid)) {
+          if (typeof state.pid === "number" && !isPidAlive(state.pid)) {
             continue;
           }
           active++;

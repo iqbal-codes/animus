@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -1159,5 +1159,74 @@ describe("registered project monitoring", () => {
     expect(betaTriageRan).toBe(true);
 
     rmSync(join(alpha.checkout_path, ".factory/schedule.json"));
+  });
+
+  test("candidateLock release in finally block does not delete replaced lock directory", async () => {
+    const alpha = await project("alpha");
+    const workspace = resolveProjectWorkspace(alpha.checkout_path);
+    const candidateLock = join(workspace.stateRoot, "registered-project-monitor.lock");
+    const ownerPath = join(candidateLock, "owner.json");
+
+    let launchStarted!: () => void;
+    const launchStartedPromise = new Promise<void>((resolve) => {
+      launchStarted = resolve;
+    });
+
+    const delayingRuntime = {
+      ...runtime,
+      launch: async (root: string, issue: any) => {
+        launchStarted();
+        // Overwrite candidateLock owner.json with replacement token before launch finishes
+        await Bun.write(
+          ownerPath,
+          JSON.stringify({
+            pid: process.pid,
+            ownerToken: "replacement-token",
+            createdAt: new Date().toISOString(),
+          }),
+        );
+        return runtime.launch(root, issue);
+      },
+    };
+
+    await monitor.stop();
+    monitor = new RegisteredProjectMonitor(registry, { runtime: delayingRuntime });
+    const tickPromise = monitor.tick();
+    await launchStartedPromise;
+    await tickPromise;
+    await monitor.drain();
+
+    // Invariant: The finally block must NOT delete candidateLock because ownerToken was replaced!
+    expect(existsSync(candidateLock)).toBe(true);
+    expect(existsSync(ownerPath)).toBe(true);
+    const curOwner = JSON.parse(readFileSync(ownerPath, "utf-8"));
+    expect(curOwner.ownerToken).toBe("replacement-token");
+
+    // Cleanup
+    rmSync(candidateLock, { recursive: true, force: true });
+  });
+
+  test("missing owner crash recovery fails closed with honest manual reason and does not steal lock", async () => {
+    const alpha = await project("alpha");
+    const workspace = resolveProjectWorkspace(alpha.checkout_path);
+    const candidateLock = join(workspace.stateRoot, "registered-project-monitor.lock");
+    mkdirSync(candidateLock, { recursive: true });
+    // Candidate lock directory exists WITHOUT owner.json (simulating crash between mkdir and writeFile)
+
+    await monitor.stop();
+    monitor = new RegisteredProjectMonitor(registry, { runtime });
+    await monitor.tick();
+    await monitor.drain();
+
+    const alphaStatus = monitor.status().projects.find((p) => p.project_id === alpha.id);
+    expect(alphaStatus?.state).toBe("skipped");
+    expect(alphaStatus?.reason).toBe("project_locked");
+    expect(alphaStatus?.error).toContain("cannot safely verify ESRCH");
+
+    // Lock was NOT stolen or deleted
+    expect(existsSync(candidateLock)).toBe(true);
+
+    // Cleanup
+    rmSync(candidateLock, { recursive: true, force: true });
   });
 });
