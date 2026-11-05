@@ -1,6 +1,12 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
+import {
+  resolveProjectWorkspace,
+  loadCascadedScheduleConfig,
+  countActiveLaps,
+  isWithinWorkWindow,
+  resolveTriageStateRoot,
+} from "@animus/contracts/paths";
+import { SystemForgeAdapter, type ForgeAdapter, type IssueForgeAdapter } from "../registry/forge";
 
 export interface MonitorIssue {
   number: number;
@@ -90,44 +96,6 @@ export interface MonitorRuntime {
   resolveTriageStateRoot?(this: void, root: string, customStateRoot?: string): string;
 }
 
-async function githubWorker(
-  operation: string,
-  root: string,
-  repo: string,
-  number?: number,
-  stateRoot?: string,
-  dryRun?: boolean,
-): Promise<unknown> {
-  const child = Bun.spawn(
-    [
-      process.execPath,
-      fileURLToPath(new URL("./worker.ts", import.meta.url)),
-      operation,
-      root,
-      repo,
-      String(number ?? ""),
-      stateRoot ?? "",
-      String(dryRun ?? false),
-    ],
-    { stdout: "pipe", stderr: "pipe" },
-  );
-  // Triage has its own harness deadline bounds and lifecycle management.
-  // Do NOT impose a 120s worker timeout on triage which would kill the worker while
-  // leaving child/grandchild processes and locks orphaned.
-  const timer = operation === "triage" ? null : setTimeout(() => child.kill(), 120_000);
-  try {
-    const [code, output, error] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ]);
-    if (code !== 0) throw new Error(`GitHub ${operation} failed: ${error.trim()}`);
-    return JSON.parse(output);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
 export async function loadMonitorRuntime(
   overrides: {
     githubRead?: (args: string[], cwd: string) => unknown;
@@ -135,18 +103,22 @@ export async function loadMonitorRuntime(
     launch?: MonitorRuntime["launch"];
     hasCapacityFull?: MonitorRuntime["hasCapacityFull"];
     triage?: MonitorRuntime["triage"];
+    forge?: ForgeAdapter | IssueForgeAdapter;
   } = {},
 ): Promise<MonitorRuntime> {
   // Resolve from the installed factory, never from a registered project's source tree.
   const factory = new URL("../../../../", import.meta.url);
-  const [scheduler, loop, contracts, config, triageState] = await Promise.all([
-    import(new URL("scripts/loop/scheduler.ts", factory).href),
-    import(new URL("scripts/local-loop.ts", factory).href),
-    import(new URL("scripts/loop.ts", factory).href),
-    import(new URL("scripts/loop/config.ts", factory).href),
-    import(new URL("scripts/loop/triage-state.ts", factory).href),
-  ]);
-  return {
+  const [scheduler, loop, contracts, config, triageModule, backlogModule, processModule] =
+    await Promise.all([
+      import(new URL("scripts/loop/scheduler.ts", factory).href),
+      import(new URL("scripts/local-loop.ts", factory).href),
+      import(new URL("scripts/loop.ts", factory).href),
+      import(new URL("scripts/loop/config.ts", factory).href),
+      import(new URL("scripts/loop/triage.ts", factory).href),
+      import(new URL("scripts/scheduler.ts", factory).href),
+      import(new URL("scripts/loop/process.ts", factory).href),
+    ]);
+  const runtime: MonitorRuntime = {
     inspect: loop.inspectLocalLoop,
     setup(root) {
       const harness = JSON.parse(readFileSync(`${root}/harness/harness.config.json`, "utf-8"));
@@ -163,81 +135,92 @@ export async function loadMonitorRuntime(
           throw new Error(`Missing configured model for ${role}`);
       }
       // Malformed schedule data must not silently fall back to an unrestricted schedule.
-      let raw: Record<string, any>;
-      try {
-        raw = JSON.parse(readFileSync(`${root}/.factory/schedule.json`, "utf-8"));
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-        throw error;
-      }
-      if (
-        raw.interval_seconds !== undefined &&
-        (!Number.isFinite(raw.interval_seconds) || raw.interval_seconds <= 0)
-      )
-        throw new Error("Invalid schedule interval");
-      if (raw.parallel !== undefined && (!Number.isSafeInteger(raw.parallel) || raw.parallel <= 0))
-        throw new Error("Invalid schedule parallel capacity");
-      if (raw.work_window?.enabled) {
-        const window = raw.work_window;
-        if (
-          ![window.start_time, window.end_time].every(
-            (time) => typeof time === "string" && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time),
-          )
-        )
-          throw new Error("Invalid schedule work window");
-        new Intl.DateTimeFormat("en-US", { timeZone: window.timezone }).format();
-      }
+      // Delegated to shared cascaded schedule config preflight
+      loadCascadedScheduleConfig(root);
     },
     interval: (root) => scheduler.loadScheduleConfig(root).interval_seconds * 1000,
     schedule: scheduler.runSchedulerTick,
     fetchBacklog:
       overrides.fetchBacklog ??
       (async (root, repo) => {
-        const data = (await githubWorker("backlog", root, repo)) as {
-          issues: MonitorCandidate[];
-          closedNumbers: number[];
-        };
-        return { ...data, closedNumbers: new Set(data.closedNumbers) };
+        const forge = overrides.forge
+          ? (overrides.forge as IssueForgeAdapter)
+          : new SystemForgeAdapter();
+        return await backlogModule.fetchGithubBacklog(root, repo, forge);
       }),
     readContract: async (root, number, repo) =>
       overrides.githubRead
         ? contracts.readIssueContract(root, number, repo, overrides.githubRead)
-        : ((await githubWorker("contract", root, repo, number)) as MonitorIssue),
+        : contracts.readIssueContract(root, number, repo),
     launch: overrides.launch ?? ((root, issue) => loop.runLocalLoop(root, issue, { push: true })),
     hasCapacityFull:
       overrides.hasCapacityFull ??
       ((root) => {
-        const cfg = scheduler.loadScheduleConfig(root);
+        const ws = resolveProjectWorkspace(root);
+        const cfg = loadCascadedScheduleConfig(ws);
         const parallel = cfg.parallel ?? 1;
-        const candidates = [
-          join(root, ".git", "factory-local-loop", "runs"),
-          join(root, ".factory-local-loop", "runs"),
-        ];
-        for (const dir of candidates) {
-          if (existsSync(dir)) {
-            if (scheduler.countActiveLaps(dir) >= parallel) return true;
-          }
-        }
-        return false;
+        return countActiveLaps(ws.runsDir) >= parallel;
       }),
     triage:
       overrides.triage ??
       (async (options) => {
-        const data = (await githubWorker(
-          "triage",
-          options.root,
-          options.repo,
-          options.issueNumber,
-          options.stateRoot,
-          options.dryRun,
-        )) as MonitorTriageResult;
-        return data;
+        const canonicalStateRoot = resolveTriageStateRoot(options.root, options.stateRoot);
+        const forge = overrides.forge
+          ? (overrides.forge as IssueForgeAdapter)
+          : new SystemForgeAdapter();
+        const transport = (req: {
+          argv: string[];
+          cwd: string;
+          timeoutMs?: number;
+          env?: Record<string, string | undefined>;
+        }) =>
+          processModule.processRun(
+            req.argv,
+            req.cwd,
+            req.timeoutMs,
+            req.env as Record<string, string>,
+            { manageSignals: false },
+          );
+        return await triageModule.runTriagePass({
+          root: options.root,
+          repo: options.repo,
+          stateRoot: canonicalStateRoot,
+          issueNumber: options.issueNumber,
+          dryRun: options.dryRun,
+          forge,
+          transport,
+        });
       }),
     checkWorkWindow: (root) => {
-      const scheduleConfig = scheduler.loadScheduleConfig(root);
-      return scheduler.isWithinWorkWindow(scheduleConfig.work_window);
+      const scheduleConfig = loadCascadedScheduleConfig(root);
+      return isWithinWorkWindow(scheduleConfig.work_window);
     },
     resolveTriageStateRoot: (root, customStateRoot) =>
-      triageState.resolveTriageStateRoot(root, customStateRoot),
+      resolveTriageStateRoot(root, customStateRoot),
+  };
+  return {
+    ...runtime,
+    inspect: (...args) =>
+      processModule.withProcessPolicy({ manageSignals: false }, () => runtime.inspect(...args)),
+    schedule: (...args) =>
+      processModule.withProcessPolicy({ manageSignals: false }, () => runtime.schedule(...args)),
+    fetchBacklog: (...args) =>
+      processModule.withProcessPolicy({ manageSignals: false }, () =>
+        runtime.fetchBacklog(...args),
+      ),
+    readContract: (...args) =>
+      processModule.withProcessPolicy({ manageSignals: false }, () =>
+        runtime.readContract(...args),
+      ),
+    launch: (...args) =>
+      processModule.withProcessPolicy({ manageSignals: false }, () => runtime.launch(...args)),
+    ...(runtime.triage
+      ? {
+          triage: (...args: Parameters<NonNullable<MonitorRuntime["triage"]>>) =>
+            processModule.withProcessPolicy({ manageSignals: false }, () =>
+              runtime.triage!(...args),
+            ),
+        }
+      : {}),
   };
 }

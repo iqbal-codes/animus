@@ -54,6 +54,92 @@ test("scheduler resolves only shared dependencies of ready open candidates", asy
   expect([...result.closedNumbers]).toEqual([1]);
 });
 
+test("fetchGithubBacklog unions native GitHub blocked_by dependencies and filterAdmittedIssues holds them", async () => {
+  const forge: IssueForgeAdapter = new SyntheticForgeAdapter({ "owner/repo": 1 });
+  forge.listIssues = async () => [
+    {
+      number: 300,
+      title: "native blocked candidate",
+      state: "OPEN",
+      labels: ["ready-for-agent"],
+      body: "Depends on: None",
+      comments: [],
+    },
+  ];
+  forge.getIssueDependencies = async (_repo, childNumber) => {
+    if (childNumber === 300) return [400];
+    return [];
+  };
+  forge.getIssueStates = async (_repo, numbers) => {
+    return new Map(numbers.map((n) => [n, "OPEN"]));
+  };
+
+  const result = await fetchGithubBacklog("/unused", "owner/repo", forge);
+  expect(result.issues[0]?.dependencies).toContain(400);
+
+  const { filterAdmittedIssues } = await import("../../scripts/loop/scheduler");
+  const admitted = filterAdmittedIssues(result.issues, result.closedNumbers);
+  expect(admitted).toEqual([]);
+});
+
+test("fetchGithubBacklog propagates error when forge.getIssueDependencies throws", async () => {
+  const forge: IssueForgeAdapter = new SyntheticForgeAdapter({ "owner/repo": 1 });
+  forge.listIssues = async () => [
+    {
+      number: 305,
+      title: "native candidate",
+      state: "OPEN",
+      labels: ["ready-for-agent"],
+      body: "Depends on: None",
+      comments: [],
+    },
+  ];
+  forge.getIssueDependencies = async () => {
+    throw new Error("dependency service unavailable");
+  };
+
+  const result = await fetchGithubBacklog("/unused", "owner/repo", forge).catch(
+    (error: unknown) => error,
+  );
+  expect(result).toBeInstanceOf(Error);
+  expect((result as Error).message).toBe("dependency service unavailable");
+});
+
+test("filterAdmittedIssues holds issues whose runs are in needs_owner or interrupted", async () => {
+  const { filterAdmittedIssues } = await import("../../scripts/loop/scheduler");
+  const candidates: BacklogCandidate[] = [
+    {
+      number: 501,
+      title: "needs owner candidate",
+      state: "OPEN",
+      labels: ["ready-for-agent"],
+      dependencies: [],
+    },
+    {
+      number: 502,
+      title: "interrupted candidate",
+      state: "OPEN",
+      labels: ["ready-for-agent"],
+      dependencies: [],
+    },
+    {
+      number: 503,
+      title: "clean candidate",
+      state: "OPEN",
+      labels: ["ready-for-agent"],
+      dependencies: [],
+    },
+  ];
+
+  const runStates = new Map<number, string>([
+    [501, "needs_owner"],
+    [502, "interrupted"],
+  ]);
+
+  const admitted = filterAdmittedIssues(candidates, new Set(), { runStates });
+  expect(admitted.map((c) => c.number)).toEqual([503]);
+});
+
 test("scheduler dependency outage refuses discovery instead of admitting work", async () => {
   const forge: IssueForgeAdapter = new SyntheticForgeAdapter({ "owner/repo": 1 });
   forge.listIssues = async () => [

@@ -72,6 +72,10 @@ async function intakeGh(response?: string): Promise<string> {
     join(directory, "gh"),
     `#!${process.execPath}
 const args = process.argv.slice(2);
+if (args[0] === "api" && args.some((a) => a.includes("dependencies/blocked_by"))) {
+  console.log("[]");
+  process.exit(0);
+}
 const query = args.find((arg) => arg.startsWith("query="))?.slice(6);
 if (args[0] !== "api" || args[1] !== "graphql" || !query) {
   throw new Error("Unexpected gh operation in offline health test");

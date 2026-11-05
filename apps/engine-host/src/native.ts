@@ -1,12 +1,4 @@
-import {
-  existsSync,
-  readFileSync,
-  readdirSync,
-  statSync,
-  writeFileSync,
-  unlinkSync,
-  mkdirSync,
-} from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type {
@@ -19,7 +11,12 @@ import type {
   ControlState,
   ControlAction,
 } from "@animus/contracts/operator";
-import { getProjectRunsDir } from "@animus/contracts/paths";
+import {
+  resolveProjectWorkspace,
+  evaluateWorkspacePreflight,
+  checkWorkspaceBrakes,
+  mutateWorkspaceBrakes,
+} from "@animus/contracts/paths";
 export function readDiagnostics(repoRoot: string): Diagnostics {
   const packPath = join(repoRoot, "factory/pack.json");
   if (!existsSync(packPath)) {
@@ -120,8 +117,40 @@ export function readLaps(repoRoot: string): LapSummary[] {
     } catch {}
   }
 
+  const workspace = resolveProjectWorkspace(repoRoot);
   const packPath = join(repoRoot, "factory/pack.json");
   if (!existsSync(packPath)) {
+    if (existsSync(workspace.runsDir)) {
+      const summaries: LapSummary[] = [];
+      try {
+        const candidateDirs = [workspace.runsDir, ...(workspace.fallbackRunsDirs ?? [])];
+        for (const dir of candidateDirs) {
+          if (!existsSync(dir)) continue;
+          for (const entry of readdirSync(dir)) {
+            const stateFile = join(dir, entry, "state.json");
+            if (existsSync(stateFile) && !summaries.some((s) => s.id === entry)) {
+              try {
+                const st = JSON.parse(readFileSync(stateFile, "utf-8"));
+                summaries.push({
+                  id: st.runId ?? entry,
+                  workflow_name: "animus-loop",
+                  native_status: st.status,
+                  product_status: st.status,
+                  started_at: st.startedAt ?? new Date().toISOString(),
+                  completed_at: st.completedAt ?? null,
+                  last_activity_at: st.updatedAt ?? new Date().toISOString(),
+                  candidate_head: st.candidate ?? null,
+                  work_item: st.issue,
+                  pull_request: st.pr ?? null,
+                  transitions: [],
+                });
+              } catch {}
+            }
+          }
+        }
+        return summaries;
+      } catch {}
+    }
     throw new Error("native_source_unavailable");
   }
   const pack = JSON.parse(readFileSync(packPath, "utf-8"));
@@ -134,6 +163,37 @@ export function readLaps(repoRoot: string): LapSummary[] {
   );
 
   if (!existsSync(cliPath)) {
+    if (existsSync(workspace.runsDir)) {
+      const summaries: LapSummary[] = [];
+      try {
+        const candidateDirs = [workspace.runsDir, ...(workspace.fallbackRunsDirs ?? [])];
+        for (const dir of candidateDirs) {
+          if (!existsSync(dir)) continue;
+          for (const entry of readdirSync(dir)) {
+            const stateFile = join(dir, entry, "state.json");
+            if (existsSync(stateFile) && !summaries.some((s) => s.id === entry)) {
+              try {
+                const st = JSON.parse(readFileSync(stateFile, "utf-8"));
+                summaries.push({
+                  id: st.runId ?? entry,
+                  workflow_name: "animus-loop",
+                  native_status: st.status,
+                  product_status: st.status,
+                  started_at: st.startedAt ?? new Date().toISOString(),
+                  completed_at: st.completedAt ?? null,
+                  last_activity_at: st.updatedAt ?? new Date().toISOString(),
+                  candidate_head: st.candidate ?? null,
+                  work_item: st.issue,
+                  pull_request: st.pr ?? null,
+                  transitions: [],
+                });
+              } catch {}
+            }
+          }
+        }
+        return summaries;
+      } catch {}
+    }
     return [];
   }
 
@@ -230,10 +290,14 @@ export function readLapEvidence(repoRoot: string, lapId: string): LapEvidence {
 
 export function readLapReport(repoRoot: string, lapId: string): string {
   const detail = readLapDetail(repoRoot, lapId);
-  const projectRuns = getProjectRunsDir(repoRoot);
+  const workspace = resolveProjectWorkspace(repoRoot);
   const candidates = [
-    join(projectRuns, detail.id, "reviewer/report.md"),
-    join(projectRuns, detail.id, "review/report.md"),
+    join(workspace.runsDir, detail.id, "reviewer/report.md"),
+    join(workspace.runsDir, detail.id, "review/report.md"),
+    ...workspace.fallbackRunsDirs.flatMap((f) => [
+      join(f, detail.id, "reviewer/report.md"),
+      join(f, detail.id, "review/report.md"),
+    ]),
     join(repoRoot, ".animus/runs", detail.id, "reviewer/report.md"),
     join(repoRoot, ".animus/runs", detail.id, "review/report.md"),
     join(process.env.HOME || "", ".cache/factory/animus/runs", detail.id, "reviewer/report.md"),
@@ -247,10 +311,8 @@ export function readLapReport(repoRoot: string, lapId: string): string {
 }
 
 export function launchNativeLap(repoRoot: string, specification: string): LaunchAck {
-  const shared = resolveSharedRoot(repoRoot);
-  const stopPaths = [join(repoRoot, ".factory/STOP"), join(shared, ".factory/STOP")];
-  const pausePaths = [join(repoRoot, ".factory/PAUSE"), join(shared, ".factory/PAUSE")];
-  if (stopPaths.some((p) => existsSync(p)) || pausePaths.some((p) => existsSync(p))) {
+  const preflight = evaluateWorkspacePreflight(repoRoot, { mode: "launch" });
+  if (preflight.brakes.halted || preflight.brakes.paused) {
     throw new Error("launch_brake_set");
   }
 
@@ -338,72 +400,20 @@ export function launchNativeLap(repoRoot: string, specification: string): Launch
 }
 
 export function resolveSharedRoot(repoRoot: string): string {
-  try {
-    const res = Bun.spawnSync(["git", "rev-parse", "--git-common-dir"], { cwd: repoRoot });
-    if (res.exitCode === 0) {
-      const common = res.stdout.toString().trim();
-      if (common) {
-        return join(repoRoot, common, "..");
-      }
-    }
-  } catch {}
-  return repoRoot;
+  return resolveProjectWorkspace(repoRoot).primaryRoot;
 }
 
 export function readControlState(repoRoot: string): ControlState {
-  const shared = resolveSharedRoot(repoRoot);
-  const stopPaths = [join(repoRoot, ".factory/STOP"), join(shared, ".factory/STOP")];
-  const pausePaths = [join(repoRoot, ".factory/PAUSE"), join(shared, ".factory/PAUSE")];
-  const halted = stopPaths.some((p) => existsSync(p));
-  const paused = pausePaths.some((p) => existsSync(p));
-  let active_brake: "none" | "stop" | "pause" | "both" = "none";
-  if (halted && paused) active_brake = "both";
-  else if (halted) active_brake = "stop";
-  else if (paused) active_brake = "pause";
-
+  const brakes = checkWorkspaceBrakes(repoRoot);
   return {
-    halted,
-    paused,
-    active_brake,
+    halted: brakes.halted,
+    paused: brakes.paused,
+    active_brake: brakes.active_brake,
     updated_at: new Date().toISOString(),
   };
 }
 
 export function applyControlAction(repoRoot: string, action: ControlAction): ControlState {
-  const shared = resolveSharedRoot(repoRoot);
-  const factoryDir = join(shared, ".factory");
-  if (!existsSync(factoryDir)) {
-    try {
-      mkdirSync(factoryDir, { recursive: true });
-    } catch {}
-  }
-  const stopPath = join(factoryDir, "STOP");
-  const pausePath = join(factoryDir, "PAUSE");
-  const localStopPath = join(repoRoot, ".factory/STOP");
-  const localPausePath = join(repoRoot, ".factory/PAUSE");
-
-  switch (action) {
-    case "halt":
-      if (!existsSync(stopPath)) {
-        writeFileSync(stopPath, `Halted by operator at ${new Date().toISOString()}\n`);
-      }
-      break;
-    case "unhalt":
-      if (existsSync(stopPath)) unlinkSync(stopPath);
-      if (existsSync(localStopPath)) unlinkSync(localStopPath);
-      break;
-    case "pause":
-      if (!existsSync(pausePath)) {
-        writeFileSync(pausePath, `Paused by operator at ${new Date().toISOString()}\n`);
-      }
-      break;
-    case "unpause":
-      if (existsSync(pausePath)) unlinkSync(pausePath);
-      if (existsSync(localPausePath)) unlinkSync(localPausePath);
-      break;
-    default:
-      throw new Error("invalid_payload");
-  }
-
+  mutateWorkspaceBrakes(repoRoot, action);
   return readControlState(repoRoot);
 }

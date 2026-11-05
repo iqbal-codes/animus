@@ -15,6 +15,7 @@ import { evaluateLearningWithHarness, resolveLearningEvidence, validateLearningM
 import { git } from "./worktree";
 import { deliverLearningProposal, type LearningDeliveryTransport } from "./learning-delivery";
 import { interruptionReport, RoleInterrupted } from "./deadlines";
+import { runBoundedRole } from "./role-runner";
 
 export interface CandidateLessonDraft {
   topic: string;
@@ -155,7 +156,26 @@ export async function runPostIssueReflection(options: RunPostIssueReflectionOpti
     try { template = loadPrompt("loop-reflect", root); }
     catch { template = "Return a schema_version:1 learning proposal with attribution and mutations. Never write files. Dossier: $INPUTS.dossier_json"; }
     const prompt = renderPrompt(template, { target: dossier.issueUrl, reason: dossier.issueTitle, dossier_json: JSON.stringify(dossier) }, artifactsDir);
-    const response = await transport({ argv: buildProviderArgv(config.provider, { model: config.model, effort: config.effort, prompt, skills: resolveAllowedSkills(root, "reflector", options.acceptedRef), extensions: resolveLoopExtensions(root, options.acceptedRef) }), cwd: worktree, role: "reflector", provider: config.provider, timeoutMs: options.timeoutMs ?? 300000 });
+    const skills = resolveAllowedSkills(root, "reflector", options.acceptedRef);
+    const extensions = resolveLoopExtensions(root, options.acceptedRef);
+    const response = await transport({
+      argv: buildProviderArgv(config.provider, {
+        model: config.model,
+        effort: config.effort,
+        prompt,
+        skills,
+        extensions,
+      }),
+      cwd: worktree,
+      role: "reflector",
+      provider: config.provider,
+      model: config.model,
+      effort: config.effort,
+      skills,
+      extensions,
+      prompt,
+      timeoutMs: options.timeoutMs ?? 300000,
+    });
     if (response.exitCode !== 0) return { ...empty, triggered: true, status: "error", reasons: ["reflector_transport_failed"] };
     let raw = response.stdout;
     for (const line of response.stdout.split("\n")) {
@@ -202,6 +222,13 @@ export interface BoundedReflectionTransportOptions {
   handoffDir: string;
   runDirectory: string;
   maxContinuations?: number;
+  provider?: string;
+  model?: string;
+  effort?: string;
+  skills?: string[];
+  extensions?: string[];
+  appendSystemPrompts?: string[];
+  prompt?: string;
   onEvidence?: (evidence: LoopEvidence) => Promise<void> | void;
   onSave?: () => Promise<void> | void;
   getStage?: () => string;
@@ -209,101 +236,52 @@ export interface BoundedReflectionTransportOptions {
 }
 
 /**
- * Creates an agent transport wrapped with bounded execution invariants:
- * - Injects soft & hard deadlines into prompt argv and environment.
- * - Handles continuation attempts up to maxContinuations.
- * - Persists attempt records and checkpoints in handoffDir.
- * - Throws RoleInterrupted when the continuation budget is exhausted.
+ * Creates an agent transport wrapped with bounded execution invariants,
+ * delegating directly to runBoundedRole from structured configuration
+ * without positional argv parsing or model default substitution.
  */
 export function createBoundedReflectionTransport(
   options: BoundedReflectionTransportOptions,
 ): AgentTransport {
   const { transport, budget, handoffDir, runDirectory } = options;
   const gitCmd = options.gitFn ?? git;
-  const role = "reflector";
-  const checkpointPath = join(handoffDir, "reflector-checkpoint.md");
 
   return async (request) => {
-    for (let attempt = 0; attempt <= (options.maxContinuations ?? 1); attempt++) {
-      const startedAt = Date.now();
-      const softDeadline = startedAt + budget.softMs;
-      const hardDeadline = startedAt + budget.hardMs;
-      const argv = [...request.argv];
-      // All supported provider argv builders put the user prompt last.
-      argv[argv.length - 1] += [
-        "",
-        "## Bounded role execution (overrides completion instructions above)",
-        `Soft deadline (absolute Unix milliseconds): ${softDeadline}.`,
-        `Hard deadline (absolute Unix milliseconds): ${hardDeadline}; the host terminates the owned process group then.`,
-        `Write a durable checkpoint to ${checkpointPath} before the soft deadline: completed work, HEAD, dirty files, evidence, blockers, and exact next steps. Preserve this worktree.`,
-        "After soft deadline the Pi guard permits only write/edit of that exact checkpoint path and simple read-only git status/diff/rev-parse. No git add/commit, publication, or other work is allowed.",
-        "Bash defaults to 90 seconds; explicitly longer budgets are clipped to remaining hard time.",
-        'If incomplete, return {"verdict":"interrupted"}; never report completed reflection for incomplete work.',
-        ...(attempt
-          ? [
-              `Continuation ${attempt}: resume the SAME role in the SAME worktree. Read ${checkpointPath} and prior attempt artifacts first; retain all existing work.`,
-            ]
-          : []),
-      ].join("\n");
-
-      const result = await transport({
-        ...request,
-        argv,
-        timeoutMs: Math.max(1, hardDeadline - Date.now()),
-        env: {
-          ...request.env,
-          FACTORY_LOOP_SOFT_DEADLINE_MS: String(softDeadline),
-          FACTORY_LOOP_HARD_DEADLINE_MS: String(hardDeadline),
-          FACTORY_LOOP_CHECKPOINT_PATH: checkpointPath,
-        },
-      });
-
-      const finishedAt = Date.now();
-      const artifact = join(runDirectory, `${role}-attempt-${attempt}.json`);
-      await Bun.write(
-        artifact,
-        JSON.stringify({ ...result, attempt, softDeadline, hardDeadline, finishedAt }),
-      );
-
-      const head = await gitCmd(request.cwd, "rev-parse", "HEAD");
-      if (options.onEvidence) {
-        await options.onEvidence({
-          kind: (request.provider as any) ?? "agent",
-          role,
-          round: attempt,
-          candidate: head,
-          artifact,
-          exitCode: result.exitCode,
-          provider: request.provider,
-        });
-      }
-      if (options.onSave) {
-        await options.onSave();
-      }
-
-      const timedOut =
-        result.timedOut === true || result.exitCode === 124 || finishedAt >= hardDeadline;
-      if (!timedOut && !interruptionReport(result.stdout)) return result;
-
-      const reason = timedOut ? "hard deadline exceeded" : "agent checkpoint/interrupted report";
-      const dirty = await gitCmd(request.cwd, "status", "--porcelain", "--untracked-files=all");
-      const previous = existsSync(checkpointPath)
-        ? readFileSync(checkpointPath, "utf8")
-        : "# Interrupted reflector checkpoint";
-      const currentStage = options.getStage ? options.getStage() : "reflecting";
-      const checkpoint =
-        previous +
-        `\n\n## Host checkpoint: reflector attempt ${attempt}\nReason: ${reason}\nHEAD: ${head}\nStage: ${currentStage}\nArtifact: ${artifact}\nWorktree: ${request.cwd}\nDirty status:\n\`\`\`\n${dirty || "(clean)"}\n\`\`\`\n`;
-      await Bun.write(checkpointPath, checkpoint);
-      await Bun.write(join(handoffDir, `${role}-attempt-${attempt}-checkpoint.md`), checkpoint);
-
-      if (attempt === (options.maxContinuations ?? 1)) {
-        throw new RoleInterrupted(
-          `reflector interrupted: ${reason}; continuation budget exhausted; see ${checkpointPath}`,
-        );
-      }
+    const prompt = request.prompt ?? options.prompt;
+    const provider = request.provider ?? options.provider;
+    const model = request.model ?? options.model;
+    if (prompt === undefined || !provider) {
+      throw new Error("Bounded reflection requires a structured prompt and provider");
     }
-    throw new RoleInterrupted("reflector continuation budget exhausted");
+    const effort = request.effort ?? options.effort;
+    const skills = request.skills ?? options.skills;
+    const extensions = request.extensions ?? options.extensions;
+    const appendSystemPrompts = request.appendSystemPrompts ?? options.appendSystemPrompts;
+
+    const boundedRes = await runBoundedRole({
+      role: "reflector",
+      root: request.cwd,
+      cwd: request.cwd,
+      prompt,
+      checkpointPath: join(handoffDir, "reflector-checkpoint.md"),
+      handoffDir,
+      runDirectory,
+      budget,
+      maxContinuations: options.maxContinuations ?? 1,
+      provider,
+      model,
+      effort,
+      skills,
+      extensions,
+      appendSystemPrompts,
+      transport,
+      onEvidence: options.onEvidence,
+      onSave: options.onSave ? async () => { await options.onSave!(); } : undefined,
+      getStage: options.getStage,
+      gitCmd,
+      rawOutput: true,
+    });
+    return boundedRes.result;
   };
 }
 
@@ -413,12 +391,21 @@ export async function executeTerminalReflection(
     const historicalCommands =
       commandRecords ?? dossier.attempts.flatMap((attempt) => attempt.commandRecords ?? []);
 
+    const config = resolveRoleConfig(root, "reflector");
+    const allowedSkills = resolveAllowedSkills(root, "reflector", acceptedRef);
+    const loopExtensions = resolveLoopExtensions(root, acceptedRef);
+
     const reflectionTransport = createBoundedReflectionTransport({
       transport,
       budget,
       handoffDir,
       runDirectory,
       maxContinuations,
+      provider: config.provider,
+      model: config.model,
+      effort: config.effort,
+      skills: allowedSkills,
+      extensions: loopExtensions,
       onEvidence,
       onSave,
       getStage: () => "reflecting",

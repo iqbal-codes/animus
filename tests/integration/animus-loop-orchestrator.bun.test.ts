@@ -87,6 +87,29 @@ describe("Canonical Animus Loop Orchestrator & Facade Shim", () => {
     expect(typeof localLoopMod.executeTerminalReflection).toBe("function");
   });
 
+  test("AC4: internal stage-bag helpers are removed from public exports and barrels", async () => {
+    const loopExports = await import("../../scripts/loop/index");
+    const obsoleteStageHelpers = [
+      "setupLoopLifecycle",
+      "invokeRoleWithDeadlines",
+      "runOrdinaryChecks",
+      "executeBlackBoxQa",
+      "handleQaFastFail",
+      "handleCiFastFail",
+      "verifyPrCiGate",
+      "evaluateReviewReadiness",
+      "finalizeReviewAndPublish",
+      "handleLoopCatch",
+      "recordLapAndReflect",
+    ];
+
+    for (const helper of obsoleteStageHelpers) {
+      expect((animusLoopMod as any)[helper]).toBeUndefined();
+      expect((localLoopMod as any)[helper]).toBeUndefined();
+      expect((loopExports as any)[helper]).toBeUndefined();
+    }
+  });
+
   test("AC1: runAnimusLoop executes a complete autonomous lap through all stages", async () => {
     const root = await createGitRepoFixture();
     try {
@@ -358,6 +381,434 @@ describe("Canonical Animus Loop Orchestrator & Facade Shim", () => {
       await reacquired();
     } finally {
       await rm(root, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  test("AC2: QA fast-fail with lap >= maxLaps escalates to needs_owner through unified terminal disposition", async () => {
+    const root = await createGitRepoFixture();
+    try {
+      await Bun.write(
+        join(root, ".factory/schedule.json"),
+        JSON.stringify({ workflow: "animus-loop", max_laps: 1 }),
+      );
+
+      const issue: LocalIssue = {
+        number: 139,
+        url: "https://github.com/iqbal-codes/animus/issues/139",
+        title: "test qa fast fail max laps",
+        body: "AC1: must escalate on max laps",
+        comments: [],
+        dependencies: [],
+        activeClaim: false,
+      };
+
+      const transport: AgentTransport = async ({ cwd, role }) => {
+        if (role === "builder") {
+          await Bun.write(join(cwd, "code.txt"), "built code");
+          runCmd(cwd, "git", "add", "code.txt");
+          runCmd(cwd, "git", "commit", "-m", "built code");
+          const head = runCmd(cwd, "git", "rev-parse", "HEAD");
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              type: "message_end",
+              message: {
+                role: "assistant",
+                content: [
+                  { type: "text", text: JSON.stringify({ candidate: head, verdict: "pass" }) },
+                ],
+              },
+            }),
+            stderr: "",
+          };
+        }
+        const head = runCmd(cwd, "git", "rev-parse", "HEAD");
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            type: "message_end",
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    head,
+                    verdict: "fail",
+                    overall: "FAIL",
+                    passed: false,
+                    lines: [
+                      { id: "AC1", kind: "criterion", verdict: "FAIL", observed: "failed qa" },
+                    ],
+                  }),
+                },
+              ],
+            },
+          }),
+          stderr: "",
+        };
+      };
+
+      const result = await runAnimusLoop(root, issue, {
+        transport,
+        push: false,
+      });
+
+      expect(result.status).toBe("needs_owner");
+      expect((result.qaReport as any)?.passed).toBe(false);
+
+      // Verify lock is released
+      const { common } = await (await import("../../scripts/loop/worktree")).inspectLocalLoop(root);
+      const stateRoot = join(common, "factory-local-loop");
+      const reacquired = await (
+        await import("../../scripts/loop/worktree")
+      ).acquireIssueLock(stateRoot, 139);
+      expect(typeof reacquired).toBe("function");
+      await reacquired();
+    } finally {
+      await rm(root, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  test("AC2: PR CI check failure fast-fails through unified terminal disposition before reviewer", async () => {
+    const root = await createGitRepoFixture();
+    try {
+      const issue: LocalIssue = {
+        number: 140,
+        url: "https://github.com/iqbal-codes/animus/issues/140",
+        title: "test ci fast fail",
+        body: "AC1: must fast fail on ci failure",
+        comments: [],
+        dependencies: [],
+        activeClaim: false,
+      };
+
+      const capturedRoles: string[] = [];
+      const transport: AgentTransport = async ({ cwd, role }) => {
+        capturedRoles.push(role);
+        if (role === "builder") {
+          await Bun.write(join(cwd, "code.txt"), "built code");
+          runCmd(cwd, "git", "add", "code.txt");
+          runCmd(cwd, "git", "commit", "-m", "built code");
+          const head = runCmd(cwd, "git", "rev-parse", "HEAD");
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              type: "message_end",
+              message: {
+                role: "assistant",
+                content: [
+                  { type: "text", text: JSON.stringify({ candidate: head, verdict: "pass" }) },
+                ],
+              },
+            }),
+            stderr: "",
+          };
+        }
+        const head = runCmd(cwd, "git", "rev-parse", "HEAD");
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            type: "message_end",
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    head,
+                    verdict: "pass",
+                    overall: "PASS",
+                    passed: true,
+                    checks: [{ criterion: "AC1", result: "pass", evidence: "builder-checks.log" }],
+                    lines: [
+                      {
+                        id: "AC1",
+                        kind: "criterion",
+                        verdict: "PASS",
+                        evidence: ["builder-checks.log"],
+                      },
+                    ],
+                  }),
+                },
+              ],
+            },
+          }),
+          stderr: "",
+        };
+      };
+
+      const result = await runAnimusLoop(root, issue, {
+        transport,
+        push: false,
+        checkPrCi: async () => ({
+          status: "fail",
+          checks: [{ name: "gate-verify", state: "failure", bucket: "fail" }],
+          failedChecks: [{ name: "gate-verify", state: "failure", bucket: "fail" }],
+          summary: "CI checks failed: gate-verify",
+        }),
+      });
+
+      expect(capturedRoles).toEqual(["builder", "qa"]);
+      expect(result.status).toBe("sent_back");
+      expect(existsSync(join(result.runDirectory, "artifacts", "pr-ci.json"))).toBe(true);
+
+      // Verify lock is released
+      const { common } = await (await import("../../scripts/loop/worktree")).inspectLocalLoop(root);
+      const stateRoot = join(common, "factory-local-loop");
+      const reacquired = await (
+        await import("../../scripts/loop/worktree")
+      ).acquireIssueLock(stateRoot, 140);
+      expect(typeof reacquired).toBe("function");
+      await reacquired();
+    } finally {
+      await rm(root, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  test("AC2 & AC3: unhandled error in checks and role interruption route through terminal disposition and release lock", async () => {
+    const root = await createGitRepoFixture();
+    try {
+      const issue: LocalIssue = {
+        number: 141,
+        url: "https://github.com/iqbal-codes/animus/issues/141",
+        title: "test interruption handling",
+        body: "AC1: must handle interruption",
+        comments: [],
+        dependencies: [],
+        activeClaim: false,
+      };
+
+      const result = await runAnimusLoop(root, issue, {
+        push: false,
+        maxContinuations: 0,
+        transport: async () => ({
+          exitCode: 124,
+          stdout: "",
+          stderr: "timed out",
+          timedOut: true,
+        }),
+      });
+
+      expect(result.status).toBe("interrupted");
+      expect(result.error).toContain("interrupted");
+
+      // Verify lock is released
+      const { common } = await (await import("../../scripts/loop/worktree")).inspectLocalLoop(root);
+      const stateRoot = join(common, "factory-local-loop");
+      const reacquired = await (
+        await import("../../scripts/loop/worktree")
+      ).acquireIssueLock(stateRoot, 141);
+      expect(typeof reacquired).toBe("function");
+      await reacquired();
+    } finally {
+      await rm(root, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  test("AC2: exact-once terminal disposition and clean lock release even when reflection encounters error", async () => {
+    const root = await createGitRepoFixture();
+    try {
+      const issue: LocalIssue = {
+        number: 142,
+        url: "https://github.com/iqbal-codes/animus/issues/142",
+        title: "test exact-once terminal disposition",
+        body: "AC1: must record exact-once dossier attempt and release lock",
+        comments: [],
+        dependencies: [],
+        activeClaim: false,
+      };
+
+      const transport: AgentTransport = async ({ cwd, role }) => {
+        if (role === "builder") {
+          await Bun.write(join(cwd, "delivered.txt"), "hello");
+          runCmd(cwd, "git", "add", "delivered.txt");
+          runCmd(cwd, "git", "commit", "-m", "deliver");
+          const head = runCmd(cwd, "git", "rev-parse", "HEAD");
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              type: "message_end",
+              message: {
+                role: "assistant",
+                content: [
+                  { type: "text", text: JSON.stringify({ candidate: head, verdict: "pass" }) },
+                ],
+              },
+            }),
+            stderr: "",
+          };
+        }
+        if (role === "qa") {
+          const head = runCmd(cwd, "git", "rev-parse", "HEAD");
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              type: "message_end",
+              message: {
+                role: "assistant",
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      head,
+                      verdict: "fail",
+                      overall: "FAIL",
+                      passed: false,
+                      lines: [
+                        { id: "AC1", kind: "criterion", verdict: "FAIL", observed: "qa fail" },
+                      ],
+                    }),
+                  },
+                ],
+              },
+            }),
+            stderr: "",
+          };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      };
+
+      const result = await runAnimusLoop(root, issue, {
+        transport,
+        push: false,
+      });
+
+      expect(result.status).toBe("sent_back");
+
+      // Verify issue dossier has exactly 1 attempt record (exact-once)
+      const { common } = await (await import("../../scripts/loop/worktree")).inspectLocalLoop(root);
+      const stateRoot = join(common, "factory-local-loop");
+      const { loadIssueDossier } = await import("../../scripts/loop/dossier");
+      const dossier = loadIssueDossier(stateRoot, 142);
+      expect(dossier).toBeDefined();
+      expect(dossier!.attempts.length).toBe(1);
+
+      // Verify lock is completely released
+      const reacquired = await (
+        await import("../../scripts/loop/worktree")
+      ).acquireIssueLock(stateRoot, 142);
+      expect(typeof reacquired).toBe("function");
+      await reacquired();
+    } finally {
+      await rm(root, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  test("LapSession resolves canonical workspace paths when ANIMUS_HOME is set, visible via monitor and engine host", async () => {
+    const root = await createGitRepoFixture();
+    const animusHome = await mkdtemp(join(tmpdir(), "animus-home-canonical-"));
+    const origAnimusHome = process.env.ANIMUS_HOME;
+    process.env.ANIMUS_HOME = animusHome;
+
+    try {
+      const issue: LocalIssue = {
+        number: 143,
+        title: "Canonical Workspace Resolution Test",
+        url: "https://github.com/owner/repo/issues/143",
+        body: "## Source and problem\nNeed canonical workspace path resolution.\n\n## Outcome\nVisible to host and monitor.\n\n## Invariants\nAll paths derive via ProjectWorkspace.\n\n## Acceptance criteria\n- [ ] AC1: Passes canonical check\n\n## Boundary\nLocal loop session only.",
+        labels: ["ready-for-agent"],
+        comments: [],
+        dependencies: [],
+        activeClaim: false,
+      };
+
+      const transport: AgentTransport = async ({ cwd, role }) => {
+        if (role === "builder") {
+          await Bun.write(join(cwd, "canonical.txt"), "canonical content\n");
+          runCmd(cwd, "git", "add", "canonical.txt");
+          runCmd(cwd, "git", "commit", "-m", "feat: canonical paths");
+        }
+        const head = runCmd(cwd, "git", "rev-parse", "HEAD");
+        return {
+          exitCode: 0,
+          stdout:
+            JSON.stringify({ type: "agent_settled", aborted: false }) +
+            "\n" +
+            JSON.stringify({
+              type: "message_end",
+              message: {
+                role: "assistant",
+                stopReason: "stop",
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      candidate: head,
+                      sha: head,
+                      verdict: "pass",
+                      passed: true,
+                      overall: "PASS",
+                      outcome: "approved",
+                      summary: "Review approved",
+                      checks: [
+                        { criterion: "AC1", result: "pass", evidence: "builder-checks.log" },
+                      ],
+                      lines: [
+                        {
+                          id: "AC1",
+                          kind: "criterion",
+                          verdict: "PASS",
+                          evidence: ["builder-checks.log"],
+                        },
+                      ],
+                      findings: [],
+                    }),
+                  },
+                ],
+              },
+            }),
+          stderr: "",
+        };
+      };
+
+      const result = await runAnimusLoop(root, issue, {
+        transport,
+        push: false,
+      });
+
+      expect(result.status).toBe("waiting_approval");
+
+      const { resolveProjectWorkspace } = await import("@animus/contracts/paths");
+      const ws = resolveProjectWorkspace(root);
+
+      // Verify LapSession wrote into canonical workspace.runsDir under ANIMUS_HOME
+      expect(ws.isExternalState).toBe(true);
+      expect(ws.runsDir.startsWith(animusHome)).toBe(true);
+      expect(result.runDirectory.startsWith(ws.runsDir)).toBe(true);
+
+      const statePath = join(ws.runsDir, result.runId, "state.json");
+      expect(existsSync(statePath)).toBe(true);
+
+      // Verify visible via actual engine host
+      const { readLapDetail, readLapEvidence, readLapReport } =
+        await import("../../apps/engine-host/src/native");
+      const hostDetail = readLapDetail(root, result.runId);
+      expect(hostDetail.id).toBe(result.runId);
+      expect(hostDetail.product_status).toBe("waiting_approval");
+
+      const hostEvidence = readLapEvidence(root, result.runId);
+      expect(hostEvidence.peer_review?.outcome).toBe("approved");
+
+      const hostReport = readLapReport(root, result.runId);
+      expect(hostReport).toContain("Review approved");
+
+      // Verify visible via monitor service
+      const { getIssuesWaitingApproval } = await import("@animus/contracts/paths");
+      const waiting = getIssuesWaitingApproval(ws.runsDir);
+      expect(waiting.has(143)).toBe(true);
+
+      const { readRunStates } = await import("../../apps/backend/src/intake/admission");
+      const runStates = readRunStates(ws.runsDir);
+      expect(runStates.get(143)).toBe("waiting_approval");
+    } finally {
+      if (origAnimusHome !== undefined) {
+        process.env.ANIMUS_HOME = origAnimusHome;
+      } else {
+        delete process.env.ANIMUS_HOME;
+      }
+      await rm(root, { recursive: true, force: true }).catch(() => {});
+      await rm(animusHome, { recursive: true, force: true }).catch(() => {});
     }
   });
 });

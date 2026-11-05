@@ -1,4 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import {
   intakeResultSchema,
   evaluatedIssueSchema,
@@ -24,7 +27,7 @@ import {
 import type { ForgeAdapter, IssueForgeAdapter } from "../registry/forge";
 import { SystemForgeAdapter, assertIssueForge } from "../registry/forge";
 import { ProjectRegistryError } from "../registry/service";
-import { evaluateIssueAdmission, type RawIssue } from "./admission";
+import { evaluateBacklogAdmission, type RawIssue } from "./admission";
 import { parseDependencies, isActiveClaim, computeDiff, computeLabelEffects } from "./parser";
 import { verifyTargetBinding, TargetBindingError } from "./binding";
 
@@ -94,20 +97,6 @@ export class IntakeService {
     return row;
   }
 
-  private getBranchIntegrations(projectId: string): Map<number, string> {
-    const map = new Map<number, string>();
-    if (!this.db) return map;
-    try {
-      const rows = this.db
-        .prepare("SELECT issue_number, branch FROM project_issue_integrations WHERE project_id = ?")
-        .all(projectId) as unknown as Array<{ issue_number: number; branch: string }>;
-      for (const r of rows) {
-        map.set(r.issue_number, r.branch);
-      }
-    } catch {}
-    return map;
-  }
-
   async evaluateProjectBacklog(projectId: string, forceRefresh = false): Promise<IntakeResult> {
     const project = this.resolveProject(projectId);
     const now = Date.now() / 1000;
@@ -122,8 +111,12 @@ export class IntakeService {
     const rawIssues = (await forge.listIssues(project.repo_name)).filter(
       (issue) => issue.state.toUpperCase() === "OPEN",
     );
-    const branchIntegrations = this.getBranchIntegrations(projectId);
-    const evaluated = await this.evaluateIssues(project.repo_name, rawIssues, branchIntegrations);
+    const evaluated = await this.evaluateIssues(
+      project.repo_name,
+      rawIssues,
+      project.checkout_path,
+      projectId,
+    );
 
     evaluated.sort((a, b) => a.number - b.number);
 
@@ -150,9 +143,7 @@ export class IntakeService {
     const project = this.resolveProject(projectId);
     const raw = await this.getIssueForge().getIssue(project.repo_name, issueNumber);
     const found = raw
-      ? (
-          await this.evaluateIssues(project.repo_name, [raw], this.getBranchIntegrations(projectId))
-        )[0]
+      ? (await this.evaluateIssues(project.repo_name, [raw], project.checkout_path, projectId))[0]
       : null;
     if (!found) {
       throw new ProjectRegistryError("issue_not_found", `Issue #${issueNumber} not found`);
@@ -181,7 +172,6 @@ export class IntakeService {
 
     const labelEffects = computeLabelEffects(currentLabels, submission.labels || []);
 
-    const branchIntegrations = this.getBranchIntegrations(projectId);
     const simulatedIssue: RawIssue = {
       number: submission.issue_number || 999999,
       title: submission.title,
@@ -194,13 +184,14 @@ export class IntakeService {
     const [simulatedAdmission] = await this.evaluateIssues(
       project.repo_name,
       [simulatedIssue],
-      branchIntegrations,
+      project.checkout_path,
+      projectId,
     );
     if (!simulatedAdmission) throw new Error("Admission preview unavailable");
 
     const proposedLower = (submission.labels || []).map((l) => l.trim().toLowerCase());
     const blockingLabels = proposedLower.filter((l) =>
-      ["needs-info", "ready-for-human", "needs-triage"].includes(l),
+      ["needs-info", "ready-for-human", "needs-triage", "needs-owner"].includes(l),
     );
     const exclusionLabels = proposedLower.filter((l) => l === "wontfix");
     const activeClaim = isActiveClaim([], submission.body);
@@ -311,6 +302,15 @@ export class IntakeService {
     if (!this.db) {
       throw new ProjectRegistryError("project_not_found", "Database not initialized");
     }
+    let resolvedSha = commitSha ?? null;
+    if (!resolvedSha && existsSync(join(project.checkout_path, ".git"))) {
+      try {
+        resolvedSha = execFileSync("git", ["rev-parse", "HEAD"], {
+          cwd: project.checkout_path,
+          encoding: "utf-8",
+        }).trim();
+      } catch {}
+    }
     const now = new Date().toISOString();
     this.db
       .prepare(
@@ -321,7 +321,7 @@ export class IntakeService {
            commit_sha = excluded.commit_sha,
            integrated_at = excluded.integrated_at`,
       )
-      .run(project.id, issueNumber, branch, commitSha ?? null, now);
+      .run(project.id, issueNumber, branch, resolvedSha, now);
 
     // Invalidate cache so dependent issues can re-evaluate with this branch integration
     this.cache.delete(`proj:${projectId}`);
@@ -330,7 +330,7 @@ export class IntakeService {
       project_id: project.id,
       issue_number: issueNumber,
       branch,
-      commit_sha: commitSha ?? null,
+      commit_sha: resolvedSha,
       integrated_at: now,
     };
   }
@@ -364,61 +364,19 @@ export class IntakeService {
   private async evaluateIssues(
     repo: string,
     issues: RawIssue[],
-    integrations = new Map<number, string>(),
+    workspaceOrCheckout?: string,
+    projectId?: string,
   ): Promise<EvaluatedIssue[]> {
-    const byNumber = new Map(issues.map((issue) => [issue.number, issue]));
-    const dependencies = new Set<number>();
-    for (const issue of issues) {
-      for (const text of [
-        issue.body ?? "",
-        ...(issue.comments ?? []).map((comment) => comment.body ?? ""),
-      ]) {
-        for (const number of parseDependencies(text)) {
-          if (!byNumber.has(number) && !integrations.has(number)) dependencies.add(number);
-        }
-      }
-    }
-    const failed = new Set<number>();
-    const forge = this.getIssueForge();
-    const numbers = [...dependencies];
-    if (numbers.length && forge.getIssueStates) {
-      try {
-        const states = await forge.getIssueStates(repo, numbers);
-        for (const number of numbers) {
-          const state = states.get(number);
-          if (state) byNumber.set(number, { number, title: "", state });
-          else failed.add(number);
-        }
-      } catch {
-        for (const number of numbers) failed.add(number);
-      }
-    } else {
-      // Bound concurrency for adapters without batched status reads.
-      for (let offset = 0; offset < numbers.length; offset += 5) {
-        await Promise.all(
-          numbers.slice(offset, offset + 5).map(async (number) => {
-            try {
-              const dependency = await forge.getIssue(repo, number);
-              if (dependency) byNumber.set(number, dependency);
-              else failed.add(number);
-            } catch {
-              failed.add(number);
-            }
-          }),
-        );
-      }
-    }
-    return issues.map((issue) => {
-      const result = evaluateIssueAdmission(issue, byNumber, {
-        integratedBranchIssues: integrations,
-      });
-      const unavailable = result.unsatisfied_dependencies.filter((number) => failed.has(number));
-      if (unavailable.length && result.reason.startsWith("waiting_on_dependency:")) {
-        result.reason =
-          "dependency_lookup_failed:" + unavailable.map((number) => "#" + number).join(",");
-      }
-      return result;
+    const admissionResult = await evaluateBacklogAdmission({
+      repo,
+      issues,
+      forge: this.getIssueForge(),
+      workspace: workspaceOrCheckout,
+      root: workspaceOrCheckout,
+      db: this.db,
+      projectId,
     });
+    return admissionResult.issues;
   }
 
   async evaluateBacklog(forceRefresh = false): Promise<IntakeResult> {

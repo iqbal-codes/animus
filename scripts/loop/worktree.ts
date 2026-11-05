@@ -1,8 +1,11 @@
-import { existsSync, readFileSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { processRun } from "./process";
 import { evaluateCodebaseRulesOnEdit } from "../../.factory/hooks/loop-guard";
+import { CoordinationError } from "../../apps/backend/src/coordination/errors";
 
 export const DEFAULT_PROTECTED_PATHS = [
   ".factory/holdout/**",
@@ -88,9 +91,13 @@ export async function findExistingWorktreeForBranch(
   return null;
 }
 
+import { isPidAlive, withLockMutation } from "../../packages/contracts/src/paths";
+
+export { isPidAlive };
+
 /**
  * Acquire an issue directory lock with stale PID reclamation.
- * Writes owner.json with PID and metadata payload, and returns a release callback.
+ * Writes owner.json with PID, unique ownerToken, and metadata payload, and returns a release callback.
  */
 export async function acquireIssueLock(
   stateRoot: string,
@@ -98,45 +105,44 @@ export async function acquireIssueLock(
   ownerPayload: object = {},
 ): Promise<() => Promise<void>> {
   const lock = join(stateRoot, "locks", `issue-${issueNumber}`);
-  await mkdir(dirname(lock), { recursive: true });
-  try {
-    await mkdir(lock);
-  } catch {
-    const ownerFile = join(lock, "owner.json");
-    let stale = false;
-    if (existsSync(ownerFile)) {
-      try {
-        const owner = JSON.parse(readFileSync(ownerFile, "utf8"));
-        if (typeof owner.pid === "number") {
-          try {
-            process.kill(owner.pid, 0);
-          } catch (err: any) {
-            if (err?.code === "ESRCH" || !err?.code) {
-              stale = true;
-            }
-          }
-        }
-      } catch {}
-    }
-    if (stale) {
-      await rm(lock, { recursive: true, force: true });
-      await mkdir(lock);
-    } else {
-      throw new Error(`Issue ${issueNumber} is locked; inspect ${lock} before manual release`);
-    }
-  }
-
+  const ownerToken = randomUUID();
   const ownerFile = join(lock, "owner.json");
-  const payload = {
-    pid: process.pid,
-    ...ownerPayload,
-  };
-  await Bun.write(ownerFile, JSON.stringify(payload, null, 2));
+  await mkdir(dirname(lock), { recursive: true });
+
+  await withLockMutation(lock, () => {
+    if (existsSync(lock)) {
+      let owner: { pid?: number };
+      try {
+        owner = JSON.parse(readFileSync(ownerFile, "utf8"));
+      } catch {
+        throw new Error(`Issue ${issueNumber} is locked but owner information is missing or unreadable; cannot safely verify ESRCH. Inspect ${lock}`);
+      }
+      if (!Number.isSafeInteger(owner.pid) || owner.pid! <= 0 || isPidAlive(owner.pid!)) {
+        throw new Error(`Issue ${issueNumber} is locked; inspect ${lock} before manual release`);
+      }
+      rmSync(lock, { recursive: true });
+    }
+    mkdirSync(lock);
+    writeFileSync(ownerFile, JSON.stringify({
+      ...ownerPayload,
+      pid: process.pid,
+      ownerToken,
+      createdAt: new Date().toISOString(),
+    }));
+  });
+
+  let released = false;
 
   return async () => {
-    try {
-      await rm(lock, { recursive: true, force: true });
-    } catch {}
+    if (released) return;
+    await withLockMutation(lock, () => {
+      if (!existsSync(ownerFile)) return;
+      const cur = JSON.parse(readFileSync(ownerFile, "utf8"));
+      if (cur?.pid === process.pid && cur?.ownerToken === ownerToken) {
+        rmSync(lock, { recursive: true });
+      }
+    });
+    released = true;
   };
 }
 
@@ -202,6 +208,14 @@ export async function prepareLoopWorktree(
         "--ignore-other-worktrees",
       ).catch(() => {});
     }
+    await git(
+      worktreePath,
+      "sparse-checkout",
+      "set",
+      "--no-cone",
+      "/*",
+      "!/.factory/holdout/",
+    ).catch(() => {});
     await git(worktreePath, "clean", "-fd");
   } else {
     await mkdir(dirname(worktreePath), { recursive: true });
@@ -293,4 +307,239 @@ export async function assertCandidate(options: AssertCandidateOptions): Promise<
   }
 
   return head;
+}
+
+export interface WorktreeLockInfo {
+  runId: string;
+  branch: string;
+  startSha: string;
+  issueNumber: number;
+  lockedAt: string;
+  pid: number;
+}
+
+export interface WorktreeAllocationOptions {
+  repoRoot: string;
+  worktreeDir: string;
+  branch: string;
+  startSha: string;
+  issueNumber: number;
+  runId?: string;
+  gitRunner?: (cmd: string[], options: { cwd: string }) => string;
+}
+
+export interface WorktreeAllocation {
+  worktreeDir: string;
+  branch: string;
+  startSha: string;
+  issueNumber: number;
+  runId: string;
+  releaseLock: () => void;
+  removeWorktree: () => void;
+}
+
+function defaultGitRunner(cmd: string[], options: { cwd: string }): string {
+  try {
+    return execFileSync("git", cmd, {
+      cwd: options.cwd,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  } catch (error: any) {
+    const stderr = error.stderr ? String(error.stderr).trim() : error.message;
+    throw new CoordinationError(
+      "git_command_failed",
+      `Git command failed [git ${cmd.join(" ")}]: ${stderr}`,
+      { cmd, stderr },
+    );
+  }
+}
+
+/**
+ * Allocate an isolated git worktree with:
+ * 1. Sparse-checkout Holdout fencing (!/.factory/holdout/).
+ * 2. .githooks binding (core.hooksPath).
+ * 3. Exclusive PID-verified lock file (.worktree.lock) with ESRCH-only stale reclamation.
+ * 4. Verification of starting SHA and branch cleanliness.
+ */
+export function allocateWorktree(options: WorktreeAllocationOptions): WorktreeAllocation {
+  const { repoRoot, worktreeDir, branch, startSha, issueNumber } = options;
+  const runner = options.gitRunner ?? defaultGitRunner;
+  const runId = options.runId ?? `run-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const lockPath = join(worktreeDir, ".worktree.lock");
+
+  // Check existing lock if worktree dir exists
+  if (existsSync(worktreeDir) && existsSync(lockPath)) {
+    try {
+      const lockContent = readFileSync(lockPath, "utf-8");
+      const lock = JSON.parse(lockContent) as WorktreeLockInfo;
+      if (typeof lock.pid === "number" && Number.isInteger(lock.pid) && lock.pid > 0) {
+        if (isPidAlive(lock.pid)) {
+          throw new CoordinationError(
+            "worktree_lock_conflict",
+            `Worktree ${worktreeDir} is exclusively locked by run ${lock.runId} (pid ${lock.pid})`,
+            { existingLock: lock },
+          );
+        }
+        // Stale lock: owning PID is dead (ESRCH), reclaim it
+        try {
+          unlinkSync(lockPath);
+        } catch {}
+      } else {
+        throw new CoordinationError(
+          "worktree_lock_conflict",
+          `Worktree ${worktreeDir} contains an invalid lock file`,
+        );
+      }
+    } catch (err: any) {
+      if (err instanceof CoordinationError) throw err;
+      throw new CoordinationError(
+        "worktree_lock_conflict",
+        `Worktree ${worktreeDir} contains an existing lock file`,
+      );
+    }
+  }
+
+  // Allocate worktree if it does not exist as a git worktree
+  const isGitWorktree = existsSync(worktreeDir) && existsSync(join(worktreeDir, ".git"));
+  if (!isGitWorktree) {
+    if (existsSync(worktreeDir)) {
+      try {
+        rmSync(worktreeDir, { recursive: true, force: true });
+      } catch {}
+    }
+    mkdirSync(join(worktreeDir, ".."), { recursive: true });
+    try {
+      runner(["worktree", "add", "--no-checkout", "-b", branch, worktreeDir, startSha], {
+        cwd: repoRoot,
+      });
+    } catch (err: any) {
+      // If branch already exists (e.g. from prior checkout or restart), try checking it out
+      try {
+        runner(["worktree", "add", "--no-checkout", worktreeDir, branch], { cwd: repoRoot });
+      } catch {
+        throw err;
+      }
+    }
+    // Enforce sparse-checkout Holdout fencing (!/.factory/holdout/)
+    runner(["sparse-checkout", "set", "--no-cone", "/*", "!/.factory/holdout/"], {
+      cwd: worktreeDir,
+    });
+    // Checkout target branch into fenced worktree
+    runner(["checkout", "--ignore-other-worktrees", branch], { cwd: worktreeDir });
+  } else {
+    // Existing worktree: ensure sparse-checkout holdout fencing is applied
+    try {
+      runner(["sparse-checkout", "set", "--no-cone", "/*", "!/.factory/holdout/"], {
+        cwd: worktreeDir,
+      });
+    } catch {}
+  }
+
+  // Enforce .githooks binding if .githooks exists in repoRoot
+  if (existsSync(join(repoRoot, ".githooks"))) {
+    try {
+      runner(["config", "core.hooksPath", join(repoRoot, ".githooks")], { cwd: worktreeDir });
+    } catch {}
+  }
+
+  // Write exclusive lock file immediately before validation
+  const lockInfo: WorktreeLockInfo = {
+    runId,
+    branch,
+    startSha,
+    issueNumber,
+    lockedAt: new Date().toISOString(),
+    pid: process.pid,
+  };
+  try {
+    writeFileSync(lockPath, JSON.stringify(lockInfo, null, 2), { flag: "wx" });
+  } catch (err: any) {
+    throw new CoordinationError(
+      "worktree_lock_conflict",
+      `Worktree ${worktreeDir} lock could not be exclusively acquired (wx failed): ${err.message}`,
+    );
+  }
+
+  const cleanMyLock = () => {
+    if (existsSync(lockPath)) {
+      try {
+        const cur = JSON.parse(readFileSync(lockPath, "utf-8"));
+        if (cur?.pid === process.pid && cur?.runId === runId) {
+          unlinkSync(lockPath);
+        }
+      } catch {}
+    }
+  };
+
+  // Validate starting SHA before execution starts
+  let currentHead = "";
+  try {
+    currentHead = runner(["rev-parse", "HEAD"], { cwd: worktreeDir });
+  } catch (err: any) {
+    cleanMyLock();
+    throw new CoordinationError(
+      "starting_sha_unresolvable",
+      `Failed to resolve HEAD in worktree ${worktreeDir}: ${err.message}`,
+    );
+  }
+
+  let resolvedExpectedSha = startSha;
+  try {
+    resolvedExpectedSha = runner(["rev-parse", startSha], { cwd: repoRoot });
+  } catch {
+    resolvedExpectedSha = startSha;
+  }
+
+  if (currentHead !== resolvedExpectedSha) {
+    cleanMyLock();
+    throw new CoordinationError(
+      "starting_sha_mismatch",
+      `Starting SHA mismatch: expected ${resolvedExpectedSha} (${startSha}), but worktree HEAD is ${currentHead}`,
+      { expectedSha: resolvedExpectedSha, actualSha: currentHead },
+    );
+  }
+
+  // Validate branch cleanliness
+  let statusOutput = "";
+  try {
+    statusOutput = runner(["status", "--porcelain"], { cwd: worktreeDir });
+  } catch (err: any) {
+    cleanMyLock();
+    throw new CoordinationError(
+      "branch_cleanliness_check_failed",
+      `Failed to check branch cleanliness in worktree ${worktreeDir}: ${err.message}`,
+    );
+  }
+
+  const dirtyLines = statusOutput
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !l.endsWith(".worktree.lock"));
+
+  if (dirtyLines.length > 0) {
+    cleanMyLock();
+    throw new CoordinationError(
+      "worktree_dirty",
+      `Worktree ${worktreeDir} is not clean: uncommitted changes or untracked files detected`,
+      { dirtyFiles: dirtyLines },
+    );
+  }
+
+  return {
+    worktreeDir,
+    branch,
+    startSha: currentHead,
+    issueNumber,
+    runId,
+    releaseLock: () => {
+      cleanMyLock();
+    },
+    removeWorktree: () => {
+      cleanMyLock();
+      try {
+        runner(["worktree", "remove", "--force", worktreeDir], { cwd: repoRoot });
+      } catch {}
+    },
+  };
 }

@@ -1,5 +1,5 @@
 import { expect, test, afterEach } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -195,6 +195,17 @@ test("reconcileWaitingApprovalPrCi converts waiting_approval with failing CI to 
   expect(commentsPosted[0]).toContain(
     "Automatically returning this PR to the loop for builder auto-fix",
   );
+
+  // AC3: Verify publication-records.json records the comment mutation
+  const pubRecordsPath = join(runDir, "artifacts", "publication-records.json");
+  expect(existsSync(pubRecordsPath)).toBe(true);
+  const pubRecords = JSON.parse(await Bun.file(pubRecordsPath).text());
+  expect(pubRecords.length).toBe(1);
+  expect(pubRecords[0].action).toBe("comment");
+  expect(pubRecords[0].commentType).toBe("ci_check");
+  expect(pubRecords[0].target).toBe("https://github.com/org/repo/pull/77");
+  expect(pubRecords[0].candidate).toBe("commit-sha-77");
+  expect(pubRecords[0].success).toBe(true);
 });
 
 test("reconcileWaitingApprovalPrCi escalates to needs_owner when maxLaps reached", async () => {
@@ -252,6 +263,84 @@ test("reconcileWaitingApprovalPrCi escalates to needs_owner when maxLaps reached
   // Verify ready-for-human label applied
   expect(issueEdits.length).toBe(1);
   expect(issueEdits[0]).toContain("ready-for-human");
+
+  // AC3: Verify publication-records.json records both escalation and comment mutations
+  const pubRecordsPathMax = join(runDir, "artifacts", "publication-records.json");
+  expect(existsSync(pubRecordsPathMax)).toBe(true);
+  const pubRecordsMax = JSON.parse(await Bun.file(pubRecordsPathMax).text());
+  expect(pubRecordsMax.length).toBe(2);
+  const escalationRecord = pubRecordsMax.find((r: any) => r.action === "label_escalation");
+  expect(escalationRecord).toBeDefined();
+  expect(escalationRecord.target).toBe("88");
+  expect(escalationRecord.commentType).toBe("escalation");
+  expect(escalationRecord.candidate).toBe("commit-sha-88");
+  expect(escalationRecord.success).toBe(true);
+
+  const commentRecord = pubRecordsMax.find((r: any) => r.action === "comment");
+  expect(commentRecord).toBeDefined();
+  expect(commentRecord.commentType).toBe("ci_check");
+  expect(commentRecord.target).toBe("https://github.com/org/repo/pull/88");
+  expect(commentRecord.candidate).toBe("commit-sha-88");
+  expect(commentRecord.success).toBe(true);
+});
+
+test("reconcileWaitingApprovalPrCi deduplicates forge mutations when called multiple times on same state", async () => {
+  const root = join(tmpdir(), `reconcile-dedup-${randomUUID()}`);
+  const stateRoot = join(root, "factory-local-loop");
+  const runsDir = join(stateRoot, "runs");
+  const runId = "test-run-dedup";
+  const runDir = join(runsDir, runId);
+  mkdirSync(runDir, { recursive: true });
+
+  const initialState = {
+    runId,
+    lap: 1,
+    issue: "https://github.com/org/repo/issues/99",
+    pr: "https://github.com/org/repo/pull/99",
+    branch: "local-loop/issue-99-abc",
+    candidate: "commit-sha-99",
+    status: "waiting_approval",
+    evidence: [],
+  };
+  writeFileSync(join(runDir, "state.json"), JSON.stringify(initialState, null, 2), "utf-8");
+
+  let commentSpawns = 0;
+  const mockGhRunner = async (cmd: string[]) => {
+    if (cmd[1] === "pr" && cmd[2] === "view") {
+      return { exitCode: 0, stdout: JSON.stringify({ state: "OPEN" }), stderr: "" };
+    }
+    if (cmd[1] === "pr" && cmd[2] === "checks") {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify([
+          { bucket: "fail", name: "gate-verify", state: "FAILURE", workflow: "CI" },
+        ]),
+        stderr: "",
+      };
+    }
+    if (cmd[1] === "pr" && cmd[2] === "comment") {
+      commentSpawns++;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  // First reconciliation
+  await reconcileWaitingApprovalPrCi(runsDir, root, {
+    ghRun: mockGhRunner,
+    maxLaps: 3,
+  });
+  expect(commentSpawns).toBe(1);
+
+  // Even if state is reset to waiting_approval, publisher deduplication prevents second comment
+  const resetState = { ...initialState, status: "waiting_approval" };
+  writeFileSync(join(runDir, "state.json"), JSON.stringify(resetState, null, 2), "utf-8");
+
+  await reconcileWaitingApprovalPrCi(runsDir, root, {
+    ghRun: mockGhRunner,
+    maxLaps: 3,
+  });
+  expect(commentSpawns).toBe(1); // Not incremented, deduplicated!
 });
 
 test("runSchedulerTick reconciles CI failure and admits issue for auto-fix in same tick", async () => {

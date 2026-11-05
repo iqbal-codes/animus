@@ -3,14 +3,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  invokeRoleWithDeadlines,
-  type InvokeRoleWithDeadlinesOptions,
-} from "../../scripts/loop/role-runner";
+import { runBoundedRole, RoleInterrupted } from "../../scripts/loop/role-runner";
+import { runAnimusLoop } from "../../scripts/animus-loop";
 import * as loopExports from "../../scripts/loop/index";
+import * as animusExports from "../../scripts/animus-loop";
 import { git } from "../../scripts/loop/worktree";
-import { RoleInterrupted } from "../../scripts/loop/deadlines";
-import type { LocalIssue, LocalLoopResult } from "../../scripts/loop/types";
+import type { LocalIssue } from "../../scripts/loop/types";
 
 const tempDirs: string[] = [];
 
@@ -30,6 +28,16 @@ async function createRepoFixture(): Promise<string> {
   await git(root, "config", "commit.gpgsign", "false");
 
   const { mkdir, writeFile } = await import("node:fs/promises");
+  await mkdir(join(root, "harness"), { recursive: true });
+  await writeFile(
+    join(root, "harness/harness.config.json"),
+    JSON.stringify({
+      static: "echo static-ok",
+      unit: "echo unit-ok",
+      protected_paths: "harness/**,.factory/holdout/**",
+    }),
+  );
+
   await mkdir(join(root, ".animus"), { recursive: true });
   await writeFile(
     join(root, ".animus/config.yaml"),
@@ -57,186 +65,144 @@ function makeValidIssue(): LocalIssue {
   };
 }
 
-describe("scripts/loop/role-runner", () => {
-  describe("AC1: invokeRoleWithDeadlines", () => {
-    test("executes role, extracts structured report, and records evidence", async () => {
-      const root = await createRepoFixture();
-      const issue = makeValidIssue();
-      const runDir = await mkdtemp(join(tmpdir(), "role-run-"));
-      tempDirs.push(runDir);
+describe("scripts/loop/role-runner (unified bounded role runner)", () => {
+  test("AC3: runBoundedRole executes bounded role, extracts structured report, and records evidence", async () => {
+    const root = await createRepoFixture();
+    const runDir = await mkdtemp(join(tmpdir(), "role-run-"));
+    tempDirs.push(runDir);
 
-      const artifactsDir = join(runDir, "artifacts");
-      const handoffDir = join(artifactsDir, "handoff");
-      const { mkdir } = await import("node:fs/promises");
-      await mkdir(handoffDir, { recursive: true });
+    const artifactsDir = join(runDir, "artifacts");
+    const handoffDir = join(artifactsDir, "handoff");
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(handoffDir, { recursive: true });
 
-      const base = await git(root, "rev-parse", "HEAD");
-      const state: LocalLoopResult = {
-        runId: "run-70",
-        pid: process.pid,
-        lap: 1,
-        issue: issue.url,
-        route: "simple",
-        status: "preparing",
-        runDirectory: runDir,
-        worktree: root,
-        branch: "local-loop/issue-70",
-        base,
-        verificationProfile: "docs",
-        evidence: [],
-      };
+    let receivedEnv: Record<string, string | undefined> = {};
+    let receivedArgv: string[] = [];
 
-      const recoveries: any[] = [];
-      const opts: InvokeRoleWithDeadlinesOptions = {
-        role: "builder",
-        root,
-        issue,
-        state,
-        stateRoot: runDir,
-        runDirectory: runDir,
-        artifactsDir,
-        handoffDir,
-        route: "simple",
-        base,
-        template: "# Builder Prompt\n$INPUTS",
-        options: { push: false },
-        roleBudgets: {
-          builder: { softMs: 10_000, hardMs: 15_000 },
-          qa: { softMs: 10_000, hardMs: 15_000 },
-          reviewer: { softMs: 10_000, hardMs: 15_000 },
-          reflector: { softMs: 10_000, hardMs: 15_000 },
-          planner: { softMs: 10_000, hardMs: 15_000 },
-          investigator: { softMs: 10_000, hardMs: 15_000 },
-          manager: { softMs: 10_000, hardMs: 15_000 },
-          auditor: { softMs: 10_000, hardMs: 15_000 },
-          simplifier: { softMs: 10_000, hardMs: 15_000 },
-          triage: { softMs: 10_000, hardMs: 15_000 },
-        },
-        transport: async ({ cwd }) => {
-          const { writeFile } = await import("node:fs/promises");
-          await writeFile(join(cwd, "delivered.txt"), "hello world\n");
-          await git(cwd, "add", "delivered.txt");
-          await git(cwd, "commit", "-m", "feat: deliver 70");
-          const head = await git(cwd, "rev-parse", "HEAD");
-          return {
-            exitCode: 0,
-            stdout: JSON.stringify({
-              type: "message_end",
-              message: {
-                role: "assistant",
-                content: [
-                  {
-                    type: "text",
-                    text: JSON.stringify({
-                      candidate: head,
-                      verdict: "pass",
-                      passed: true,
-                      checks: [{ criterion: "AC1", result: "pass", evidence: "verified" }],
-                    }),
-                  },
-                ],
-              },
-            }),
-            stderr: "",
-          };
-        },
-        acceptedRef: base,
-        holdoutPath: "",
-        protectedPaths: [],
-        maxRejections: 2,
-        initialProfile: "docs",
-        recoveries,
-        save: async () => {},
-      };
-
-      const report = await invokeRoleWithDeadlines(opts);
-      expect(report).toBeDefined();
-      expect(report.verdict).toBe("pass");
-      expect(state.status).toBe("building");
-      expect(state.evidence.length).toBeGreaterThan(0);
-      expect(state.evidence[0]!.role).toBe("builder");
+    const evidenceList: any[] = [];
+    const res = await runBoundedRole({
+      role: "builder",
+      root,
+      cwd: root,
+      prompt: "Deliver feature 70",
+      sessionDir: join(runDir, "0-builder-session"),
+      checkpointPath: join(handoffDir, "checkpoint.md"),
+      handoffDir,
+      runDirectory: runDir,
+      budget: { softMs: 10_000, hardMs: 15_000 },
+      maxContinuations: 1,
+      provider: "pi",
+      model: "small",
+      transport: async (req) => {
+        receivedEnv = req.env ?? {};
+        receivedArgv = req.argv;
+        const { writeFile } = await import("node:fs/promises");
+        await writeFile(join(req.cwd, "delivered.txt"), "hello world\n");
+        await git(req.cwd, "add", "delivered.txt");
+        await git(req.cwd, "commit", "-m", "feat: deliver 70");
+        const head = await git(req.cwd, "rev-parse", "HEAD");
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            type: "message_end",
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    candidate: head,
+                    verdict: "pass",
+                    passed: true,
+                    checks: [{ criterion: "AC1", result: "pass", evidence: "verified" }],
+                  }),
+                },
+              ],
+            },
+          }),
+          stderr: "",
+        };
+      },
+      onEvidence: (ev) => {
+        evidenceList.push(ev);
+      },
     });
 
-    test("enforces checkpointing and throws RoleInterrupted when budget exhausted", async () => {
-      const root = await createRepoFixture();
-      const issue = makeValidIssue();
-      const runDir = await mkdtemp(join(tmpdir(), "role-run-interrupted-"));
-      tempDirs.push(runDir);
+    expect(res.report).toBeDefined();
+    expect(res.report.verdict).toBe("pass");
+    expect(evidenceList.length).toBe(1);
+    expect(evidenceList[0].role).toBe("builder");
+    expect(receivedEnv.FACTORY_LOOP_SOFT_DEADLINE_MS).toBeDefined();
+    expect(receivedEnv.FACTORY_LOOP_HARD_DEADLINE_MS).toBeDefined();
+    expect(receivedEnv.FACTORY_LOOP_CHECKPOINT_PATH).toBe(join(handoffDir, "checkpoint.md"));
+    expect(receivedArgv.length).toBeGreaterThan(0);
+    expect(receivedArgv.at(-1)).toContain("Bounded role execution");
+  });
 
-      const artifactsDir = join(runDir, "artifacts");
-      const handoffDir = join(artifactsDir, "handoff");
-      const { mkdir } = await import("node:fs/promises");
-      await mkdir(handoffDir, { recursive: true });
+  test("AC3: runBoundedRole enforces checkpointing and throws RoleInterrupted when budget exhausted", async () => {
+    const root = await createRepoFixture();
+    const runDir = await mkdtemp(join(tmpdir(), "role-run-interrupted-"));
+    tempDirs.push(runDir);
 
-      const base = await git(root, "rev-parse", "HEAD");
-      const state: LocalLoopResult = {
-        runId: "run-71",
-        pid: process.pid,
-        lap: 1,
-        issue: issue.url,
-        route: "simple",
-        status: "preparing",
-        runDirectory: runDir,
-        worktree: root,
-        branch: "local-loop/issue-71",
-        base,
-        verificationProfile: "docs",
-        evidence: [],
-      };
+    const artifactsDir = join(runDir, "artifacts");
+    const handoffDir = join(artifactsDir, "handoff");
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(handoffDir, { recursive: true });
 
-      const opts: InvokeRoleWithDeadlinesOptions = {
+    const checkpointPath = join(handoffDir, "checkpoint.md");
+
+    expect(
+      runBoundedRole({
         role: "builder",
         root,
-        issue,
-        state,
-        stateRoot: runDir,
-        runDirectory: runDir,
-        artifactsDir,
+        cwd: root,
+        prompt: "Deliver feature 71",
+        checkpointPath,
         handoffDir,
-        route: "simple",
-        base,
-        template: "# Builder Prompt",
-        options: { push: false, maxContinuations: 0 },
-        roleBudgets: {
-          builder: { softMs: 1_000, hardMs: 2_000 },
-          qa: { softMs: 1_000, hardMs: 2_000 },
-          reviewer: { softMs: 1_000, hardMs: 2_000 },
-          reflector: { softMs: 1_000, hardMs: 2_000 },
-          planner: { softMs: 1_000, hardMs: 2_000 },
-          investigator: { softMs: 1_000, hardMs: 2_000 },
-          manager: { softMs: 1_000, hardMs: 2_000 },
-          auditor: { softMs: 1_000, hardMs: 2_000 },
-          simplifier: { softMs: 1_000, hardMs: 2_000 },
-          triage: { softMs: 1_000, hardMs: 2_000 },
-        },
+        runDirectory: runDir,
+        budget: { softMs: 1_000, hardMs: 2_000 },
+        maxContinuations: 0,
+        provider: "pi",
+        model: "small",
         transport: async () => ({
-          exitCode: 124, // Timed out
+          exitCode: 124,
           stdout: "",
           stderr: "timed out",
           timedOut: true,
         }),
-        acceptedRef: base,
-        holdoutPath: "",
-        protectedPaths: [],
-        maxRejections: 2,
-        initialProfile: "docs",
-        recoveries: [],
-        save: async () => {},
-      };
+      }),
+    ).rejects.toThrow(RoleInterrupted);
 
-      expect(invokeRoleWithDeadlines(opts)).rejects.toThrow(RoleInterrupted);
-
-      // Verify checkpoint was written
-      const checkpointPath = join(handoffDir, "checkpoint.md");
-      expect(existsSync(checkpointPath)).toBe(true);
-      const checkpointContent = readFileSync(checkpointPath, "utf8");
-      expect(checkpointContent).toContain("Host checkpoint: builder attempt 0");
-    });
+    // Verify checkpoint was written
+    expect(existsSync(checkpointPath)).toBe(true);
+    const checkpointContent = readFileSync(checkpointPath, "utf8");
+    expect(checkpointContent).toContain("Host checkpoint: builder attempt 0");
   });
 
-  describe("AC2: barrel export", () => {
-    test("scripts/loop/index.ts barrel exports invokeRoleWithDeadlines", () => {
-      expect((loopExports as any).invokeRoleWithDeadlines).toBeFunction();
+  test("AC3: runAnimusLoop handles role interruption and transitions cleanly to interrupted", async () => {
+    const root = await createRepoFixture();
+    const issue = makeValidIssue();
+
+    const result = await runAnimusLoop(root, issue, {
+      push: false,
+      maxContinuations: 0,
+      transport: async () => ({
+        exitCode: 124,
+        stdout: "",
+        stderr: "timed out",
+        timedOut: true,
+      }),
     });
+
+    expect(result.status).toBe("interrupted");
+    expect(result.error).toContain("interrupted");
+    const checkpointPath = join(result.runDirectory, "artifacts", "handoff", "checkpoint.md");
+    expect(existsSync(checkpointPath)).toBe(true);
+  });
+
+  test("AC4: invokeRoleWithDeadlines is NOT exported in barrel or public animus-loop orchestrator", () => {
+    expect((loopExports as any).invokeRoleWithDeadlines).toBeUndefined();
+    expect((animusExports as any).invokeRoleWithDeadlines).toBeUndefined();
+    expect(typeof loopExports.runBoundedRole).toBe("function");
   });
 });

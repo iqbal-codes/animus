@@ -32,6 +32,7 @@ import { processRun } from "./process";
 import { loadPrompt, renderPrompt } from "./prompts";
 import { buildProviderArgv, type EffortRung } from "./providers";
 import type { AgentTransport, LoopRole, RoleBudget } from "./types";
+import { isPidAlive } from "../../packages/contracts/src/paths";
 
 export const TRIAGE_AGENT_MARKER = "<!-- animus-triage-agent -->";
 
@@ -444,15 +445,7 @@ export function validateCanonicalIssueBody(body: string): { valid: boolean; erro
   };
 }
 
-function isPidAlive(pid: number): boolean {
-  if (typeof pid !== "number" || isNaN(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err: any) {
-    return err?.code !== "ESRCH";
-  }
-}
+
 
 async function withIssueLockMutex<T>(
   locksDir: string,
@@ -504,7 +497,7 @@ async function withIssueLockMutex<T>(
   }
 }
 
-export async function acquireIssueLock(
+export async function acquireTriageIssueLock(
   stateRoot: string,
   issueNumber: number,
   timeoutMs = 1800000,
@@ -1229,7 +1222,7 @@ async function triageSingleIssue(
   const { root, repo, stateRoot } = options;
   const forge = assertIssueForge(options.forge ?? new SystemForgeAdapter());
 
-  const lock = await acquireIssueLock(stateRoot, issueNumber);
+  const lock = await acquireTriageIssueLock(stateRoot, issueNumber);
   if (!lock) {
     return {
       issueNumber,

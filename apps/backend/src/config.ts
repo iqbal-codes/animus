@@ -2,9 +2,17 @@ import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 import { validateBindAddress } from "./security";
 
-export function configuration() {
+export interface Configuration {
+  hostname: string;
+  port: number;
+  token: string;
+  buildId: string;
+  remoteAccess: boolean;
+}
+
+export function configuration(options?: { args?: string[] }): Configuration {
   const { values } = parseArgs({
-    args: Bun.argv.slice(2),
+    args: options?.args ?? Bun.argv.slice(2),
     options: { port: { type: "string" }, host: { type: "string", default: "127.0.0.1" } },
     strict: true,
   });

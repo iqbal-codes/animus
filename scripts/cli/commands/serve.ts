@@ -4,6 +4,7 @@ import {
   resolveAnimusStateDir,
   ensureSecureDirectory,
   enforceSecureFilePermissions,
+  isPidAlive,
 } from "../../../packages/contracts/src/paths";
 import { FactoryLauncher, type LauncherOptions } from "../../../apps/launcher/src/launcher";
 
@@ -43,15 +44,7 @@ export function clearRuntimeMetadata(stateDir: string): void {
   } catch {}
 }
 
-export function isPidAlive(pid?: number): boolean {
-  if (!pid || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
+export { isPidAlive };
 
 export async function probeServiceHealth(url: string): Promise<{
   reachable: boolean;

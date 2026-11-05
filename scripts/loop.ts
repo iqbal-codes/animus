@@ -1,9 +1,15 @@
 import { parseArgs } from "node:util";
 import { join, resolve } from "node:path";
 import { inspectLocalLoop, runAnimusLoop, type LocalIssue } from "./animus-loop";
-import { getMergedIssueNumbers } from "./loop/scheduler";
-import { getProjectSlug, resolveAnimusHome } from "../packages/contracts/src/paths";
+import { getMergedIssueNumbers, resolveProjectWorkspace } from "../packages/contracts/src/paths";
 import { isActiveClaim, parseDependencies } from "../apps/backend/src/intake/parser";
+import {
+  bindIssueContract,
+  type BoundIssueContract,
+  type GithubRead,
+} from "../apps/backend/src/intake";
+
+export { bindIssueContract, type BoundIssueContract, type GithubRead };
 
 export function parseIssueArgs(args: string[]): { issue: number; dryRun: boolean; push: boolean } {
   const { values } = parseArgs({
@@ -71,108 +77,15 @@ export function validateIssue(value: unknown, expected: number, repo: string): s
   return expectedUrl;
 }
 
-export type GithubRead = (args: string[], cwd: string) => unknown;
-
 /** All forge access is read-only; ambiguous or missing prerequisite data refuses execution. */
 export function readIssueContract(
   root: string,
   number: number,
   repo: string,
   read: GithubRead = githubJson,
-): LocalIssue {
-  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error("Invalid repository identity");
-  const issue = read(
-    [
-      "issue",
-      "view",
-      String(number),
-      "--repo",
-      repo,
-      "--json",
-      "number,url,state,labels,title,body,comments",
-    ],
-    root,
-  ) as { number: number; url: string; title: string; body: string; comments: { body: string }[] };
-  const url = validateIssue(issue, number, repo);
-  if (
-    typeof issue.title !== "string" ||
-    typeof issue.body !== "string" ||
-    !issue.body.trim() ||
-    !Array.isArray(issue.comments) ||
-    issue.comments.some((c) => typeof c.body !== "string")
-  )
-    throw new Error("Incomplete issue body/comments");
-  // REST pagination avoids GraphQL issue-view comment truncation.
-  const pages = read(
-    ["api", `repos/${repo}/issues/${number}/comments`, "--paginate", "--slurp"],
-    root,
-  ) as { body: string }[][];
-  if (
-    !Array.isArray(pages) ||
-    pages.some((page) => !Array.isArray(page) || page.some((c) => typeof c.body !== "string"))
-  )
-    throw new Error("Unable to verify complete comments");
-  const comments = pages.flat();
-  if (isActiveClaim(comments, issue.body))
-    throw new Error("Requested issue has a loop claim; resolve ownership before running");
-  const dependencyPages = read(
-    ["api", `repos/${repo}/issues/${number}/dependencies/blocked_by`, "--paginate", "--slurp"],
-    root,
-  ) as { number: number; state: string; repository_url: string }[][];
-  if (!Array.isArray(dependencyPages) || dependencyPages.some((p) => !Array.isArray(p)))
-    throw new Error("Unable to verify native dependencies");
-  const dependencies = new Set(
-    parseDependencies([issue.body, ...comments.map((c) => c.body)].join("\n")),
-  );
-  for (const dependency of dependencyPages.flat()) {
-    if (
-      dependency.repository_url !== `https://api.github.com/repos/${repo}` ||
-      !Number.isSafeInteger(dependency.number)
-    )
-      throw new Error(
-        "Cross-repository or malformed native dependency requires human verification",
-      );
-    dependencies.add(dependency.number);
-  }
-  let localMergedIssues = new Set<number>();
-  try {
-    const gitCommonRes = Bun.spawnSync(["git", "rev-parse", "--git-common-dir"], { cwd: root });
-    const commonDir =
-      gitCommonRes.exitCode === 0 ? resolve(root, gitCommonRes.stdout.toString().trim()) : join(root, ".git");
-    const stateRoot =
-      process.env.ANIMUS_HOME || process.env.ANIMUS_STATE_DIR || process.env.ANIMUS_RUNS_DIR
-        ? join(resolveAnimusHome(), "projects", getProjectSlug(root))
-        : join(commonDir, "factory-local-loop");
-    localMergedIssues = getMergedIssueNumbers(join(stateRoot, "runs"));
-  } catch {}
-
-  const resolved = [...dependencies].map((dependency) => {
-    const data = read(
-      ["issue", "view", String(dependency), "--repo", repo, "--json", "number,url,state"],
-      root,
-    ) as { number: number; url: string; state: string };
-    const isClosedOrMerged = data.state === "CLOSED" || localMergedIssues.has(dependency);
-    if (
-      data.number !== dependency ||
-      data.url !== `https://github.com/${repo}/issues/${dependency}` ||
-      !isClosedOrMerged ||
-      dependency === number
-    )
-      throw new Error(`Unresolved dependency #${dependency}`);
-    return { number: dependency, state: "CLOSED" };
-  });
-  return {
-    number,
-    url,
-    title: issue.title,
-    body: issue.body,
-    comments: comments.map((c) => c.body),
-    dependencies: resolved,
-    activeClaim: false,
-    labels: Array.isArray((issue as any).labels)
-      ? (issue as any).labels.map((l: any) => (typeof l === "string" ? l : l.name)).filter(Boolean)
-      : [],
-  };
+  validateSections = false,
+): BoundIssueContract {
+  return bindIssueContract({ root, number, repo, read, validateSections });
 }
 
 if (import.meta.main) {
@@ -184,7 +97,7 @@ if (import.meta.main) {
     };
     if (!repository.nameWithOwner) throw new Error("Unable to identify repository");
     const contract = readIssueContract(root, issue, repository.nameWithOwner);
-    const local = await inspectLocalLoop(root);
+    const workspace = resolveProjectWorkspace(root);
     if (dryRun) {
       console.log(
         JSON.stringify(
@@ -195,7 +108,7 @@ if (import.meta.main) {
             issue: contract,
             merge: "approve",
             model: process.env.FACTORY_LOOP_MODEL || "Pi configured default",
-            stateDirectory: resolve(local.common, "factory-local-loop"),
+            stateDirectory: workspace.stateRoot,
             specification: issueSpecification(contract.url),
           },
           null,

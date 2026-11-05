@@ -176,30 +176,33 @@ describe("Intake admission policy (canonical)", () => {
 
   test("AC4: IntakeService caches and refresh invalidates cache", async () => {
     let callCount = 0;
-    const runner = async () => {
-      callCount++;
-      return JSON.stringify({
-        data: {
-          repository: {
-            issues: {
-              nodes: [
-                {
-                  number: 1,
-                  title: "Issue 1",
-                  body: "",
-                  state: "OPEN",
-                  labels: {
-                    nodes: [{ name: "ready-for-agent" }],
-                    pageInfo: { hasNextPage: false, endCursor: null },
+    const runner = async (args: string[]) => {
+      if (args[1] === "graphql" || args.includes("graphql")) {
+        callCount++;
+        return JSON.stringify({
+          data: {
+            repository: {
+              issues: {
+                nodes: [
+                  {
+                    number: 1,
+                    title: "Issue 1",
+                    body: "",
+                    state: "OPEN",
+                    labels: {
+                      nodes: [{ name: "ready-for-agent" }],
+                      pageInfo: { hasNextPage: false, endCursor: null },
+                    },
+                    comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
                   },
-                  comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
-                },
-              ],
-              pageInfo: { hasNextPage: false, endCursor: null },
+                ],
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
             },
           },
-        },
-      });
+        });
+      }
+      return "[]";
     };
 
     const service = new IntakeService({ runner, ttlSeconds: 60 });

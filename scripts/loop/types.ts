@@ -12,6 +12,17 @@ export interface LocalIssue {
   activeClaim: boolean;
   labels?: string[];
   verificationProfile?: VerificationProfile;
+  contractSha256?: string;
+  sha256?: string;
+  sections?: {
+    partOf: number | null;
+    sourceProblem: string;
+    outcome: string;
+    invariants: string[];
+    acceptanceCriteria: string[];
+    boundary: string;
+    dependsOn: number[];
+  };
 }
 
 export type LoopRole =
@@ -33,11 +44,23 @@ export interface ProcessResult {
   timedOut?: boolean;
 }
 
+export type GhRunner = (
+  args: string[],
+  cwd?: string,
+  timeoutMs?: number,
+) => Promise<{ exitCode: number; stdout: string; stderr: string; timedOut?: boolean }>;
+
 export type AgentTransport = (request: {
   argv: string[];
   cwd: string;
   role: LoopRole;
   provider?: string;
+  model?: string;
+  effort?: string;
+  prompt?: string;
+  skills?: string[];
+  extensions?: string[];
+  appendSystemPrompts?: string[];
   timeoutMs: number;
   env?: Record<string, string>;
 }) => Promise<ProcessResult>;
@@ -67,6 +90,15 @@ export interface LocalLoopOptions {
   ciWaitSeconds?: number;
   /** Optional CI assessment injector for testing */
   checkPrCi?: (pr: string | number, options?: any) => Promise<any>;
+  /** Injectable GitHub CLI runner port for offline testing and forge mocking. */
+  ghRunner?: GhRunner;
+  /** Optional custom state root directory override. */
+  stateRoot?: string;
+  /** Alias for stateRoot */
+  stateDirectory?: string;
+  /** Optional custom runs directory override. */
+  runsDir?: string;
+  customRunsDir?: string;
 }
 
 export interface LoopEvidence {
@@ -147,7 +179,11 @@ export interface AutoMergeEvaluationResult {
 export interface AutoMergeExecutionResult {
   success: boolean;
   evaluation: AutoMergeEvaluationResult;
-  finalStatus: "merged" | "waiting_approval";
+  finalStatus:
+    | "merged"
+    | "waiting_approval"
+    | "remote_reconciliation_pending"
+    | "manual_intervention_required";
   reviewOutcome: "merged" | "approved";
   finalIntegrationPr?: string;
   error?: string;

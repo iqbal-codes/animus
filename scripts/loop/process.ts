@@ -1,17 +1,33 @@
 import { spawn } from "node:child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { ProcessResult } from "./types";
 import { validateTimeout } from "./deadlines";
 
+export interface ProcessRunOptions {
+  manageSignals?: boolean;
+}
+
 const ownedExecutions = new Set<() => Promise<void>>();
+let signalOwners = 0;
 let stopping = false;
+const executionPolicy = new AsyncLocalStorage<ProcessRunOptions>();
+
+export function withProcessPolicy<T>(options: ProcessRunOptions, run: () => T): T {
+  return executionPolicy.run(options, run);
+}
+
 const onInterrupt = () => { void stopHost(130); };
 const onTerminate = () => { void stopHost(143); };
+
+export function stopOwnedExecutions(): Promise<void> {
+  return Promise.all([...ownedExecutions].map((cleanup) => cleanup())).then(() => {});
+}
 
 async function stopHost(exitCode: number) {
   if (stopping) return;
   stopping = true;
   try {
-    await Promise.all([...ownedExecutions].map((cleanup) => cleanup()));
+    await stopOwnedExecutions();
   } finally {
     process.exit(exitCode);
   }
@@ -23,10 +39,12 @@ export function processRun(
   cwd: string,
   timeoutMs: number,
   env?: Record<string, string>,
+  options?: ProcessRunOptions,
 ): Promise<ProcessResult> {
   validateTimeout(timeoutMs);
   if (stopping) throw new Error("Local loop host is shutting down");
   if (process.platform === "win32") throw new Error("Local loop requires POSIX process groups");
+  const shouldManageSignals = options?.manageSignals ?? executionPolicy.getStore()?.manageSignals ?? true;
   return new Promise((resolve) => {
     const resolvedPiCacheRetention =
       env?.PI_CACHE_RETENTION !== undefined
@@ -93,7 +111,7 @@ export function processRun(
           resolve({ exitCode: timedOut ? 124 : exitCode, stdout, stderr, timedOut });
         } finally {
           ownedExecutions.delete(cleanup);
-          if (ownedExecutions.size === 0) {
+          if (shouldManageSignals && --signalOwners === 0) {
             process.off("SIGINT", onInterrupt);
             process.off("SIGTERM", onTerminate);
           }
@@ -102,7 +120,7 @@ export function processRun(
       return finishing;
     };
     const cleanup = () => finish(143);
-    if (ownedExecutions.size === 0) {
+    if (shouldManageSignals && signalOwners++ === 0) {
       process.on("SIGINT", onInterrupt);
       process.on("SIGTERM", onTerminate);
     }

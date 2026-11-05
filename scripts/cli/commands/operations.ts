@@ -6,8 +6,7 @@ import { IntakeService } from "../../../apps/backend/src/intake";
 import { initializeDatabase } from "../../../apps/backend/src/registry";
 import { ProjectRegistryService } from "../../../apps/backend/src/registry/service";
 import { BrakeService } from "../../../apps/backend/src/command/brakes";
-import { resolveAnimusStateDir } from "../../../packages/contracts/src/paths";
-import { resolveTriageStateRoot } from "../../loop/triage-state";
+import { resolveAnimusStateDir, resolveProjectWorkspace, evaluateWorkspacePreflight, resolveTriageStateRoot } from "../../../packages/contracts/src/paths";
 import type { RunTriagePassOptions, TriagePassResult } from "../../loop/triage";
 import {
   createRegistrationClient,
@@ -224,65 +223,24 @@ async function handleIntakeTriage(opts: IntakeCommandOptions): Promise<number> {
       }
     }
 
-    // Check database brakes
-    if (db) {
-      const brakes = new BrakeService(db);
-      const permitted = brakes.isScheduledLaunchPermitted(project ? project.id : null);
-      if (!permitted.permitted) {
-        const reason = permitted.reason ?? "brake_state_unknown";
-        if (opts.json) {
-          console.log(
-            JSON.stringify(
-              { ok: false, action: "skipped", reason, error: `Triage blocked by brake: ${reason}` },
-              null,
-              2,
-            ),
-          );
-        } else {
-          console.error(`Error: Triage blocked by brake: ${reason}`);
-        }
-        return 1;
-      }
-    }
-
-    // Check root and primary filesystem brakes
-    let primaryRoot = root;
+    // Evaluate preflight checks (relational brakes, filesystem brakes, cascaded schedule, work window)
+    let preflight;
     try {
-      const wtRes = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], { cwd: root });
-      if (wtRes.exitCode === 0) {
-        const firstLine = wtRes.stdout.toString().split("\n")[0];
-        if (firstLine && firstLine.startsWith("worktree ")) {
-          primaryRoot = firstLine.replace(/^worktree /, "").trim();
-        }
-      }
-    } catch {}
-
-    for (const dir of new Set([root, primaryRoot])) {
-      for (const brake of ["STOP", "PAUSE"]) {
-        if (existsSync(join(dir, ".factory", brake))) {
-          const reason = `${brake.toLowerCase()}_brake_set`;
-          const error = `${brake} brake is active${dir !== root ? " in primary checkout" : ""}`;
-          if (opts.json) {
-            console.log(JSON.stringify({ ok: false, action: "skipped", reason, error }, null, 2));
-          } else {
-            console.error(`Error: ${error}`);
-          }
-          return 1;
-        }
-      }
-    }
-
-    // Check work window using shared schedule validation resolver
-    const { loadScheduleConfig, isWithinWorkWindow } = await import("../../loop/scheduler");
-    let sched;
-    try {
-      sched = loadScheduleConfig(root);
+      preflight = evaluateWorkspacePreflight(root, {
+        brakes: db ? new BrakeService(db) : null,
+        projectId: project ? project.id : null,
+        mode: "schedule",
+        ignoreCapacity: true,
+      });
     } catch (schedErr: any) {
       const error = schedErr instanceof Error ? schedErr.message : String(schedErr);
+      const reason = error.includes("timezone")
+        ? "invalid_work_window_timezone"
+        : "invalid_schedule_config";
       if (opts.json) {
         console.log(
           JSON.stringify(
-            { ok: false, action: "skipped", reason: "invalid_schedule_config", error },
+            { ok: false, action: "skipped", reason, error },
             null,
             2,
           ),
@@ -293,35 +251,35 @@ async function handleIntakeTriage(opts: IntakeCommandOptions): Promise<number> {
       return 1;
     }
 
-    if (sched.work_window?.enabled) {
-      let within = false;
-      try {
-        within = isWithinWorkWindow(sched.work_window);
-      } catch (tzErr: any) {
-        const error = tzErr instanceof Error ? tzErr.message : String(tzErr);
-        if (opts.json) {
-          console.log(
-            JSON.stringify(
-              { ok: false, action: "skipped", reason: "invalid_work_window_timezone", error },
-              null,
-              2,
-            ),
-          );
-        } else {
-          console.error(`Error: ${error}`);
-        }
-        return 1;
+    if (!preflight.ok) {
+      const reason = preflight.reason ?? "preflight_failed";
+      let error = preflight.detail ?? reason;
+      if (preflight.brakes.filesystem.active) {
+        const brakeType = (preflight.brakes.filesystem.type ?? "brake").toUpperCase();
+        const stopP = preflight.brakes.filesystem.paths.stop;
+        const pauseP = preflight.brakes.filesystem.paths.pause;
+        const activePath = stopP ?? pauseP ?? "";
+        const isPrimary =
+          activePath.startsWith(preflight.workspace.primaryRoot) && !activePath.startsWith(root);
+        error = `${brakeType} brake is active${isPrimary ? " in primary checkout" : ""}`;
+      } else if (preflight.brakes.relational && !preflight.brakes.relational.permitted) {
+        error = `Triage blocked by brake: ${reason}`;
+      } else if (!preflight.workWindow.withinWindow) {
+        error = `Outside work window (${preflight.schedule.work_window?.start_time}-${preflight.schedule.work_window?.end_time} in ${preflight.schedule.work_window?.timezone})`;
       }
-      if (!within) {
-        const reason = "outside_work_window";
-        const error = `Outside work window (${sched.work_window.start_time}-${sched.work_window.end_time} in ${sched.work_window.timezone})`;
-        if (opts.json) {
-          console.log(JSON.stringify({ ok: false, action: "skipped", reason, error }, null, 2));
-        } else {
-          console.error(`Error: ${error}`);
-        }
-        return 1;
+
+      if (opts.json) {
+        console.log(
+          JSON.stringify(
+            { ok: false, action: "skipped", reason, error },
+            null,
+            2,
+          ),
+        );
+      } else {
+        console.error(`Error: ${error}`);
       }
+      return 1;
     }
 
     // Resolve repository identity

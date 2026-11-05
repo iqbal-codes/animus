@@ -17,7 +17,7 @@ import {
   type ForgeIssue,
 } from "../../apps/backend/src/registry/forge";
 import {
-  acquireIssueLock,
+  acquireTriageIssueLock as acquireIssueLock,
   computeIssueFreshnessFingerprint,
   evaluateTriageEligibility,
   isIssueEligibleForTriage,
@@ -510,8 +510,8 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
 
       // Child script to acquire lock
       const script = `
-        import { acquireIssueLock } from "./scripts/loop/triage.ts";
-        const lock = await acquireIssueLock(${JSON.stringify(stateRoot)}, 105);
+        import { acquireTriageIssueLock } from "./scripts/loop/triage.ts";
+        const lock = await acquireTriageIssueLock(${JSON.stringify(stateRoot)}, 105);
         if (lock) {
           process.stdout.write("ACQUIRED\\n");
           await new Promise((r) => setTimeout(r, 100));

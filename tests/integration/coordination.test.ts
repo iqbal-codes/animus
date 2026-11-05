@@ -1,8 +1,17 @@
 import { describe, expect, test, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  unlinkSync,
+  existsSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import {
   initializeDatabase,
@@ -14,11 +23,12 @@ import {
   SpecCoordinatorService,
   CoordinationError,
   buildDependencyDAG,
-  WorktreeManager,
+  allocateWorktree,
   validateTargetedPrimitive,
   SerializedIntegrationManager,
   handleProjectCoordinationRoute,
 } from "../../apps/backend/src/coordination";
+import { acquireCrossProcessIntegrationLock } from "../../apps/backend/src/coordination/integration";
 import { createFactoryClient } from "@animus/client";
 import { specCoordinationPlanSchema } from "@animus/contracts/operator";
 
@@ -247,14 +257,13 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
 
   describe("AC2 (Parent AC10, P2): Isolated Git Worktree Lifecycle & Exclusive Lock", () => {
     test("worker allocates isolated git worktree with verified starting SHA and cleanliness", () => {
-      const worktreeManager = new WorktreeManager();
       const worktreeDir = join(tempDir, "worktree-clean");
       const startSha = execFileSync("git", ["rev-parse", "HEAD"], {
         cwd: repoPath,
         encoding: "utf-8",
       }).trim();
 
-      const allocation = worktreeManager.allocateWorktree({
+      const allocation = allocateWorktree({
         repoRoot: repoPath,
         worktreeDir,
         branch: "test/isolated-branch-clean",
@@ -270,13 +279,185 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
       expect(existsSync(join(worktreeDir, ".worktree.lock"))).toBe(false);
     });
 
+    test("enforces sparse-checkout holdout fencing (!/.factory/holdout/) and .githooks binding in allocated worktree", () => {
+      // Create .factory/holdout/scenario.json and .githooks in repoPath
+      const holdoutDir = join(repoPath, ".factory", "holdout");
+      mkdirSync(holdoutDir, { recursive: true });
+      writeFileSync(join(holdoutDir, "secret-scenario.json"), JSON.stringify({ secret: "hidden" }));
+      const githooksDir = join(repoPath, ".githooks");
+      mkdirSync(githooksDir, { recursive: true });
+      writeFileSync(join(githooksDir, "pre-commit"), "#!/bin/sh\nexit 0\n");
+      execFileSync("chmod", ["+x", join(githooksDir, "pre-commit")]);
+      execFileSync("git", ["add", "-A"], { cwd: repoPath, stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", "chore: add holdout and githooks"], {
+        cwd: repoPath,
+        stdio: "ignore",
+      });
+
+      const worktreeDir = join(tempDir, "worktree-holdout-fenced");
+      const startSha = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: repoPath,
+        encoding: "utf-8",
+      }).trim();
+
+      const allocation = allocateWorktree({
+        repoRoot: repoPath,
+        worktreeDir,
+        branch: "test/isolated-branch-holdout",
+        startSha,
+        issueNumber: 43,
+      });
+
+      // Verify sparse checkout pattern includes !/.factory/holdout/
+      const sparsePatterns = execFileSync("git", ["sparse-checkout", "list"], {
+        cwd: worktreeDir,
+        encoding: "utf-8",
+      });
+      expect(sparsePatterns).toContain("!/.factory/holdout/");
+
+      // Verify holdout files are NOT checked out on disk in the worktree
+      expect(existsSync(join(worktreeDir, ".factory", "holdout", "secret-scenario.json"))).toBe(
+        false,
+      );
+
+      // Verify core.hooksPath was configured to .githooks
+      const hooksPath = execFileSync("git", ["config", "core.hooksPath"], {
+        cwd: worktreeDir,
+        encoding: "utf-8",
+      }).trim();
+      expect(hooksPath).toBe(githooksDir);
+
+      allocation.releaseLock();
+    });
+
+    test("stale worktree lock is reclaimed when holding PID is dead (ESRCH), while live PID or EPERM fails closed", () => {
+      const worktreeDir = join(tempDir, "worktree-stale-lock");
+      const startSha = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: repoPath,
+        encoding: "utf-8",
+      }).trim();
+
+      // Pre-create worktree dir with stale lock (dead PID 99999999)
+      mkdirSync(worktreeDir, { recursive: true });
+      const lockPath = join(worktreeDir, ".worktree.lock");
+      writeFileSync(
+        lockPath,
+        JSON.stringify({
+          runId: "stale-run",
+          branch: "test/stale-branch",
+          startSha,
+          issueNumber: 44,
+          lockedAt: new Date(Date.now() - 3600_000 * 24).toISOString(), // 24 hours ago
+          pid: 99999999, // dead PID on POSIX
+        }),
+      );
+
+      // Allocation reclaims the stale lock and succeeds
+      const alloc = allocateWorktree({
+        repoRoot: repoPath,
+        worktreeDir,
+        branch: "test/stale-branch",
+        startSha,
+        issueNumber: 44,
+      });
+
+      expect(alloc.worktreeDir).toBe(worktreeDir);
+      const newLock = JSON.parse(readFileSync(lockPath, "utf-8"));
+      expect(newLock.pid).toBe(process.pid);
+
+      // Concurrent allocation with live PID fails closed with worktree_lock_conflict
+      expect(() =>
+        allocateWorktree({
+          repoRoot: repoPath,
+          worktreeDir,
+          branch: "test/stale-branch",
+          startSha,
+          issueNumber: 44,
+        }),
+      ).toThrow(CoordinationError);
+
+      // Invariant: "age never proves dead" - lock with ancient timestamp but living PID is NOT reclaimed
+      writeFileSync(
+        lockPath,
+        JSON.stringify({
+          runId: "old-but-alive",
+          branch: "test/stale-branch",
+          startSha,
+          issueNumber: 44,
+          lockedAt: new Date(Date.now() - 3600_000 * 24 * 365).toISOString(), // 1 year ago
+          pid: process.pid, // currently alive process
+        }),
+      );
+
+      expect(() =>
+        allocateWorktree({
+          repoRoot: repoPath,
+          worktreeDir,
+          branch: "test/stale-branch",
+          startSha,
+          issueNumber: 44,
+        }),
+      ).toThrow(CoordinationError);
+
+      // Corrupted / invalid lock file fails closed and is never stolen
+      writeFileSync(lockPath, "CORRUPTED_JSON_NOT_VALID{{{");
+      expect(() =>
+        allocateWorktree({
+          repoRoot: repoPath,
+          worktreeDir,
+          branch: "test/stale-branch",
+          startSha,
+          issueNumber: 44,
+        }),
+      ).toThrow(CoordinationError);
+
+      // Malformed PIDs (negative, zero, string, null) fail closed and are never treated as stale
+      for (const badPid of [-1, 0, "12345", null]) {
+        writeFileSync(
+          lockPath,
+          JSON.stringify({
+            runId: "bad-pid-run",
+            branch: "test/stale-branch",
+            startSha,
+            issueNumber: 44,
+            lockedAt: new Date(Date.now() - 3600_000 * 24).toISOString(),
+            pid: badPid,
+          }),
+        );
+        expect(() =>
+          allocateWorktree({
+            repoRoot: repoPath,
+            worktreeDir,
+            branch: "test/stale-branch",
+            startSha,
+            issueNumber: 44,
+          }),
+        ).toThrow(CoordinationError);
+      }
+
+      // Owner-only release: another PID/run cannot delete the lock
+      writeFileSync(
+        lockPath,
+        JSON.stringify({
+          runId: "other-run",
+          branch: "test/stale-branch",
+          startSha,
+          issueNumber: 44,
+          lockedAt: new Date().toISOString(),
+          pid: process.pid,
+        }),
+      );
+      alloc.releaseLock();
+      expect(existsSync(lockPath)).toBe(true); // preserved because runId did not match
+      unlinkSync(lockPath); // manual cleanup for test
+    });
+
     test("fails closed if starting SHA mismatches expected base", () => {
-      const worktreeManager = new WorktreeManager();
       const worktreeDir = join(tempDir, "worktree-sha-mismatch");
       const bogusSha = "0000000000000000000000000000000000000000";
 
       expect(() =>
-        worktreeManager.allocateWorktree({
+        allocateWorktree({
           repoRoot: repoPath,
           worktreeDir,
           branch: "test/isolated-branch-bad-sha",
@@ -287,7 +468,6 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
     });
 
     test("fails closed if worktree is dirty with uncommitted changes", () => {
-      const worktreeManager = new WorktreeManager();
       const worktreeDir = join(tempDir, "worktree-dirty");
       const startSha = execFileSync("git", ["rev-parse", "HEAD"], {
         cwd: repoPath,
@@ -302,7 +482,7 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
       writeFileSync(join(worktreeDir, "uncommitted.txt"), "dirty untracked file");
 
       expect(() =>
-        worktreeManager.allocateWorktree({
+        allocateWorktree({
           repoRoot: repoPath,
           worktreeDir,
           branch: "test/dirty-branch",
@@ -313,14 +493,13 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
     });
 
     test("enforces exclusive locking: concurrent allocation on locked worktree is rejected", () => {
-      const worktreeManager = new WorktreeManager();
       const worktreeDir = join(tempDir, "worktree-locked");
       const startSha = execFileSync("git", ["rev-parse", "HEAD"], {
         cwd: repoPath,
         encoding: "utf-8",
       }).trim();
 
-      const alloc1 = worktreeManager.allocateWorktree({
+      const alloc1 = allocateWorktree({
         repoRoot: repoPath,
         worktreeDir,
         branch: "test/locked-branch",
@@ -330,7 +509,7 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
 
       // Attempting to allocate second worker while lock is held throws worktree_lock_conflict
       expect(() =>
-        worktreeManager.allocateWorktree({
+        allocateWorktree({
           repoRoot: repoPath,
           worktreeDir,
           branch: "test/locked-branch",
@@ -344,6 +523,41 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
   });
 
   describe("AC3 (Parent AC10, P2): Serialized Integration Branch & unblocking dependent child tickets", () => {
+    test("lock contention does not block event loop, preserving heartbeat responsiveness (ASYNC await timer)", async () => {
+      const lockPath = join(repoPath, ".git", "animus-spec-integration.lock");
+      // Simulate another process holding the cross-process integration lock
+      const token = randomUUID();
+      writeFileSync(
+        lockPath,
+        JSON.stringify({ pid: process.pid, lockedAt: new Date().toISOString(), token }),
+      );
+
+      let heartbeatCount = 0;
+      const interval = setInterval(() => {
+        heartbeatCount++;
+      }, 10);
+
+      // Release lock after 100ms from the timer
+      setTimeout(() => {
+        try {
+          unlinkSync(lockPath);
+        } catch {}
+      }, 100);
+
+      const releaseLock = await acquireCrossProcessIntegrationLock(
+        repoPath,
+        (cmd, opts) => execFileSync("git", cmd, { cwd: opts.cwd, encoding: "utf-8" }),
+        5000,
+      );
+
+      clearInterval(interval);
+      releaseLock();
+
+      // If the lock acquisition had used a synchronous busy-wait spin loop, heartbeatCount would be 0.
+      // With async await timer (setTimeout), heartbeats tick normally during contention.
+      expect(heartbeatCount).toBeGreaterThanOrEqual(2);
+    });
+
     test("successful child run merges into local integration branch, sets integrated_to_branch, and unblocks downstream children", async () => {
       forge.addIssue("owner/repo-spec", {
         number: 58,
@@ -428,6 +642,361 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
         .get(projectId, 102) as any;
       expect(integrationRow2).toBeDefined();
       expect(integrationRow2.issue_number).toBe(102);
+    });
+
+    test("checkout-free CAS integration preserves dirty primary checkout and updates integration branch without checking out branches in root", async () => {
+      forge.addIssue("owner/repo-spec", {
+        number: 58,
+        title: "Spec: Checkout-Free CAS Integration",
+        state: "OPEN",
+        body: "Spec",
+      });
+      forge.addIssue("owner/repo-spec", {
+        number: 111,
+        title: "Subticket 111",
+        state: "OPEN",
+        body: "Part of #58\n\nDepends on: None",
+        labels: ["ready-for-agent"],
+      });
+
+      // Create a tracked file on the integration branch and main
+      writeFileSync(join(repoPath, "shared-conflict.txt"), "base content\n");
+      execFileSync("git", ["add", "shared-conflict.txt"], { cwd: repoPath, stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", "chore: add shared-conflict.txt"], {
+        cwd: repoPath,
+        stdio: "ignore",
+      });
+
+      await coordinator.planSpec(projectId, 58);
+
+      // Verify initial branch in primary checkout is main
+      const primaryInitialBranch = execFileSync("git", ["symbolic-ref", "--short", "HEAD"], {
+        cwd: repoPath,
+        encoding: "utf-8",
+      }).trim();
+      expect(primaryInitialBranch).toBe("main");
+
+      // Dirty the primary checkout on the shared file without committing
+      // (If git checkout was invoked on repoPath, git checkout would immediately abort with error:
+      // "Your local changes to the following files would be overwritten by checkout")
+      writeFileSync(join(repoPath, "dirty-primary-untracked.txt"), "untracked work in primary");
+      writeFileSync(
+        join(repoPath, "shared-conflict.txt"),
+        "dirty uncommitted modification in primary\n",
+      );
+
+      const runner = async (sub: any) => {
+        writeFileSync(join(sub.worktreePath, "feature-111.txt"), "feature 111 content");
+        execFileSync("git", ["add", "feature-111.txt"], {
+          cwd: sub.worktreePath,
+          stdio: "ignore",
+        });
+        execFileSync("git", ["commit", "-m", "feat: feature 111"], {
+          cwd: sub.worktreePath,
+          stdio: "ignore",
+        });
+        const headSha = execFileSync("git", ["rev-parse", "HEAD"], {
+          cwd: sub.worktreePath,
+          encoding: "utf-8",
+        }).trim();
+        return { success: true, childIssueNumber: sub.childIssueNumber, headSha };
+      };
+
+      const res = await coordinator.dispatchChild({
+        projectId,
+        specIssueNumber: 58,
+        childIssueNumber: 111,
+        runner,
+      });
+
+      expect(res.success).toBe(true);
+
+      // Invariant: Primary checkout branch was NEVER changed (never ran git checkout integration branch)
+      const primaryCurrentBranch = execFileSync("git", ["symbolic-ref", "--short", "HEAD"], {
+        cwd: repoPath,
+        encoding: "utf-8",
+      }).trim();
+      expect(primaryCurrentBranch).toBe("main");
+
+      // Invariant: Dirty working tree in primary checkout is 100% preserved
+      expect(existsSync(join(repoPath, "dirty-primary-untracked.txt"))).toBe(true);
+      expect(readFileSync(join(repoPath, "dirty-primary-untracked.txt"), "utf-8")).toBe(
+        "untracked work in primary",
+      );
+      expect(readFileSync(join(repoPath, "shared-conflict.txt"), "utf-8")).toBe(
+        "dirty uncommitted modification in primary\n",
+      );
+
+      // Integration branch was updated in Git refs
+      const integrationHead = execFileSync("git", ["rev-parse", "factory/spec-58-integration"], {
+        cwd: repoPath,
+        encoding: "utf-8",
+      }).trim();
+      expect(integrationHead).toBe(res.headSha);
+
+      // Clean up dirty files in repoPath
+      execFileSync("git", ["checkout", "shared-conflict.txt"], { cwd: repoPath, stdio: "ignore" });
+      unlinkSync(join(repoPath, "dirty-primary-untracked.txt"));
+    });
+
+    test("Two-Layer Critical Impact Gate: child with reviewer judgement moderate risk or scope unaligned halts pipeline", async () => {
+      forge.addIssue("owner/repo-spec", {
+        number: 58,
+        title: "Spec: Reviewer Semantic Gate",
+        state: "OPEN",
+        body: "Spec",
+      });
+      forge.addIssue("owner/repo-spec", {
+        number: 115,
+        title: "Semantic Subticket 115",
+        state: "OPEN",
+        body: "Part of #58\n\nDepends on: None",
+        labels: ["ready-for-agent"],
+      });
+
+      await coordinator.planSpec(projectId, 58);
+
+      const runnerWithModerateRisk = async (sub: any) => {
+        writeFileSync(join(sub.worktreePath, "feature-115.txt"), "feature 115");
+        execFileSync("git", ["add", "-A"], { cwd: sub.worktreePath, stdio: "ignore" });
+        execFileSync("git", ["commit", "-m", "feat: 115"], {
+          cwd: sub.worktreePath,
+          stdio: "ignore",
+        });
+        const headSha = execFileSync("git", ["rev-parse", "HEAD"], {
+          cwd: sub.worktreePath,
+          encoding: "utf-8",
+        }).trim();
+        return {
+          success: true,
+          childIssueNumber: sub.childIssueNumber,
+          headSha,
+          autoMergeJudgement: {
+            eligible: false,
+            risk_level: "moderate",
+            scope_aligned: true,
+            critical_impacts: [],
+            rationale: "Moderate architectural risk requires human eyes.",
+          },
+        };
+      };
+
+      await expect(
+        coordinator.dispatchChild({
+          projectId,
+          specIssueNumber: 58,
+          childIssueNumber: 115,
+          runner: runnerWithModerateRisk,
+        }),
+      ).rejects.toThrow(/Critical impact detected/);
+
+      const plan = coordinator.getPlan(projectId, 58)!;
+      expect(plan.status).toBe("halted");
+      expect(plan.haltAttribution?.stage).toBe("critical_impact_gate");
+    });
+
+    test("attached DB error during loop auto-merge fails closed without claiming success", async () => {
+      forge.addIssue("owner/repo-spec", {
+        number: 58,
+        title: "Spec: DB Error Gate",
+        state: "OPEN",
+        body: "Spec",
+      });
+      forge.addIssue("owner/repo-spec", {
+        number: 116,
+        title: "DB Error Subticket 116",
+        state: "OPEN",
+        body: "Part of #58\n\nDepends on: None",
+        labels: ["ready-for-agent"],
+      });
+
+      const plan = await coordinator.planSpec(projectId, 58);
+      const baseTip = plan.currentIntegrationSha;
+
+      const wtDir = join(tempDir, "loop-wt-116");
+      execFileSync("git", ["worktree", "add", "-b", "factory/spec-58/ticket-116", wtDir, baseTip], {
+        cwd: repoPath,
+        stdio: "ignore",
+      });
+      writeFileSync(join(wtDir, "loop-116.txt"), "content");
+      execFileSync("git", ["add", "-A"], { cwd: wtDir, stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", "feat: 116"], { cwd: wtDir, stdio: "ignore" });
+      const cand116 = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: wtDir,
+        encoding: "utf-8",
+      }).trim();
+
+      const { executeSubticketAutoMerge } = await import("../../scripts/loop/merge-queue");
+
+      // Pass an invalid dbPath to simulate attached DB failure
+      const mergeResult = await executeSubticketAutoMerge({
+        root: repoPath,
+        candidate: cand116,
+        integrationBranch: "factory/spec-58-integration",
+        targetBaseTip: baseTip,
+        worktree: wtDir,
+        issueNumber: 116,
+        partOf: 58,
+        defaultBaseBranch: "main",
+        push: false,
+        dbPath: join(tempDir, "nonexistent-dir-for-db", "console.db"),
+        projectId,
+        autoMergeEval: {
+          authorized: true,
+          decision: "auto_merge",
+          isSubticket: true,
+          targetBranch: "factory/spec-58-integration",
+          baseBranch: "main",
+          riskLevel: "low",
+          scopeAligned: true,
+          criticalImpacts: [],
+          deterministicImpacts: [],
+          reviewerImpacts: [],
+          reasons: [],
+        },
+        assertCandidateFn: async () => {},
+      });
+
+      // Must fail closed and hold for human, never claim success
+      expect(mergeResult.success).toBe(false);
+      expect(mergeResult.finalStatus).toBe("waiting_approval");
+      expect(mergeResult.error).toBeDefined();
+
+      // Invariant: Git ref was rolled back to baseTip when DB write failed, preventing drift
+      const currentBranchSha = execFileSync(
+        "git",
+        ["rev-parse", "refs/heads/factory/spec-58-integration"],
+        { cwd: repoPath, encoding: "utf-8" },
+      ).trim();
+      expect(currentBranchSha).toBe(baseTip);
+
+      execFileSync("git", ["worktree", "remove", "--force", wtDir], {
+        cwd: repoPath,
+        stdio: "ignore",
+      });
+    });
+
+    test("loop subticket auto-merge updates SQLite project_issue_integrations and synchronizes spec coordination truth", async () => {
+      forge.addIssue("owner/repo-spec", {
+        number: 58,
+        title: "Spec: Sync Loop Merge",
+        state: "OPEN",
+        body: "Spec",
+      });
+      forge.addIssue("owner/repo-spec", {
+        number: 113,
+        title: "Loop Subticket 113",
+        state: "OPEN",
+        body: "Part of #58\n\nDepends on: None",
+        labels: ["ready-for-agent"],
+      });
+      forge.addIssue("owner/repo-spec", {
+        number: 114,
+        title: "Downstream Subticket 114",
+        state: "OPEN",
+        body: "Part of #58\n\nDepends on: #113",
+        labels: ["ready-for-agent"],
+      });
+
+      const plan = await coordinator.planSpec(projectId, 58);
+      const baseTip = plan.currentIntegrationSha;
+
+      // Create commit for subticket 113 in a separate worktree
+      const wtDir = join(tempDir, "loop-wt-113");
+      execFileSync("git", ["worktree", "add", "-b", "factory/spec-58/ticket-113", wtDir, baseTip], {
+        cwd: repoPath,
+        stdio: "ignore",
+      });
+      writeFileSync(join(wtDir, "loop-feature-113.txt"), "delivered by loop");
+      execFileSync("git", ["add", "-A"], { cwd: wtDir, stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", "feat: loop delivered 113"], {
+        cwd: wtDir,
+        stdio: "ignore",
+      });
+      const candidate113 = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: wtDir,
+        encoding: "utf-8",
+      }).trim();
+
+      // Dynamically import executeSubticketAutoMerge from scripts/loop/merge-queue
+      const { executeSubticketAutoMerge } = await import("../../scripts/loop/merge-queue");
+
+      const mergeResult = await executeSubticketAutoMerge({
+        root: repoPath,
+        candidate: candidate113,
+        integrationBranch: "factory/spec-58-integration",
+        targetBaseTip: baseTip,
+        worktree: wtDir,
+        issueNumber: 113,
+        partOf: 58,
+        defaultBaseBranch: "main",
+        push: false,
+        db,
+        projectId,
+        autoMergeEval: {
+          authorized: true,
+          decision: "auto_merge",
+          isSubticket: true,
+          targetBranch: "factory/spec-58-integration",
+          baseBranch: "main",
+          riskLevel: "low",
+          scopeAligned: true,
+          criticalImpacts: [],
+          deterministicImpacts: [],
+          reviewerImpacts: [],
+          reasons: [],
+        },
+        assertCandidateFn: async () => {},
+      });
+
+      expect(mergeResult.success).toBe(true);
+
+      // Verify SQLite table project_issue_integrations was written by the loop merge
+      const integrationRow = db
+        .prepare(
+          "SELECT * FROM project_issue_integrations WHERE project_id = ? AND issue_number = ?",
+        )
+        .get(projectId, 113) as any;
+      expect(integrationRow).toBeDefined();
+      expect(integrationRow.issue_number).toBe(113);
+      expect(integrationRow.commit_sha).toBe(candidate113);
+
+      // Verify coordinator plan was synchronized
+      const updatedPlan = coordinator.getPlan(projectId, 58)!;
+      expect(updatedPlan.currentIntegrationSha).toBe(candidate113);
+      const child113 = updatedPlan.children.find((c) => c.number === 113);
+      expect(child113?.status).toBe("integrated_to_branch");
+      expect(child113?.commitSha).toBe(candidate113);
+
+      // Verify downstream child 114 is now unblocked and can be dispatched by coordinator
+      const runner = async (sub: any) => {
+        writeFileSync(join(sub.worktreePath, "child-114.txt"), "done 114");
+        execFileSync("git", ["add", "-A"], { cwd: sub.worktreePath, stdio: "ignore" });
+        execFileSync("git", ["commit", "-m", "feat: child 114"], {
+          cwd: sub.worktreePath,
+          stdio: "ignore",
+        });
+        const headSha = execFileSync("git", ["rev-parse", "HEAD"], {
+          cwd: sub.worktreePath,
+          encoding: "utf-8",
+        }).trim();
+        return { success: true, childIssueNumber: sub.childIssueNumber, headSha };
+      };
+
+      const res114 = await coordinator.dispatchChild({
+        projectId,
+        specIssueNumber: 58,
+        childIssueNumber: 114,
+        runner,
+      });
+
+      expect(res114.success).toBe(true);
+
+      // Clean up temporary worktree
+      execFileSync("git", ["worktree", "remove", "--force", wtDir], {
+        cwd: repoPath,
+        stdio: "ignore",
+      });
     });
   });
 

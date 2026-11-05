@@ -1,11 +1,17 @@
-import { existsSync } from "node:fs";
-import { mkdir, rmdir } from "node:fs/promises";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { BrakeService } from "../command/brakes";
 import { ProjectRegistryService } from "../registry/service";
 import { ProjectOnboardingService, verifyRepositoryIdentity } from "../registry/onboarding";
 import type { Project, ProjectMonitorStatus, MonitoringStatus } from "@animus/contracts/operator";
+import {
+  resolveProjectWorkspace,
+  evaluateWorkspacePreflight,
+  isPidAlive,
+  withLockMutation,
+} from "@animus/contracts/paths";
 import type { MonitorRuntime } from "./runtime";
 
 export class RegisteredProjectMonitor {
@@ -313,21 +319,14 @@ export class RegisteredProjectMonitor {
         return;
       }
 
-      // Honor BrakeService brakes
-      const permitted = this.brakes.isScheduledLaunchPermitted(project.id);
-      if (!permitted.permitted) return;
-
-      // Honor filesystem brakes in project checkout
-      for (const brake of ["STOP", "PAUSE"]) {
-        if (existsSync(join(project.checkout_path, ".factory", brake))) {
-          return;
-        }
-      }
-
-      // Honor work window (sync checkWorkWindow may throw on malformed schedule/timezone - isolated in try/catch)
-      if (runtime.checkWorkWindow && !runtime.checkWorkWindow(project.checkout_path)) {
-        return;
-      }
+      // Preflight: check filesystem brakes, relational brakes, and work window via unified preflight
+      const preflight = evaluateWorkspacePreflight(project.checkout_path, {
+        brakes: this.brakes,
+        projectId: project.id,
+        mode: "schedule",
+        ignoreCapacity: true,
+      });
+      if (!preflight.ok) return;
     } catch (preErr) {
       const errMsg = preErr instanceof Error ? preErr.message : String(preErr);
       let status = this.statuses.get(project.id);
@@ -371,7 +370,7 @@ export class RegisteredProjectMonitor {
         // Verify forge identity before dispatch
         await this.verifyCheckout(project);
 
-        const { common, primary } = await runtime.inspect(project.checkout_path);
+        await runtime.inspect(project.checkout_path);
 
         // RECHECK EVERYTHING immediately before dispatch after awaits!
         if (this.stopped) return;
@@ -383,27 +382,18 @@ export class RegisteredProjectMonitor {
         // Forge identity
         await this.verifyCheckout(project);
 
-        // BrakeService
-        const recheckPermitted = this.brakes.isScheduledLaunchPermitted(project.id);
-        if (!recheckPermitted.permitted) return;
-
-        // Both primary and project checkout STOP/PAUSE
-        for (const dir of new Set([project.checkout_path, primary, common])) {
-          for (const brake of ["STOP", "PAUSE"]) {
-            if (existsSync(join(dir, ".factory", brake))) {
-              return;
-            }
-          }
-        }
-
-        // Work window verified immediately before dispatch
-        if (runtime.checkWorkWindow && !runtime.checkWorkWindow(project.checkout_path)) {
-          return;
-        }
+        // Recheck preflight immediately before dispatch
+        const recheckPreflight = evaluateWorkspacePreflight(project.checkout_path, {
+          brakes: this.brakes,
+          projectId: project.id,
+          mode: "schedule",
+          ignoreCapacity: true,
+        });
+        if (!recheckPreflight.ok) return;
 
         const stateRoot = runtime.resolveTriageStateRoot
           ? runtime.resolveTriageStateRoot(project.checkout_path)
-          : join(common, "factory-local-loop");
+          : resolveProjectWorkspace(project.checkout_path).triageStateRoot;
 
         const result = await runtime.triage!({
           root: project.checkout_path,
@@ -463,6 +453,8 @@ export class RegisteredProjectMonitor {
     };
     this.statuses.set(project.id, status);
     let lock: string | null = null;
+    let lockToken: string | null = null;
+    let ownerPath: string | null = null;
     let interval = this.intervalMs;
     try {
       if (project.status !== "active") {
@@ -498,21 +490,53 @@ export class RegisteredProjectMonitor {
         return;
       }
       interval = runtime.interval(project.checkout_path);
-      const { common, primary } = await runtime.inspect(project.checkout_path);
+      const { primary } = await runtime.inspect(project.checkout_path);
 
       // Trigger triage as a separate background operation
       this.triggerTriage(project);
 
-      const stateRoot = join(common, "factory-local-loop");
+      const workspace = resolveProjectWorkspace(project.checkout_path);
+      const stateRoot = workspace.stateRoot;
       await mkdir(stateRoot, { recursive: true });
       const candidateLock = join(stateRoot, "registered-project-monitor.lock");
+      ownerPath = join(candidateLock, "owner.json");
+      const ownerToken = randomUUID();
+      let acquired = false;
+      let lockError: string | undefined;
       try {
-        await mkdir(candidateLock);
-        lock = candidateLock;
+        await withLockMutation(candidateLock, () => {
+          if (existsSync(candidateLock)) {
+            let owner: { pid?: number };
+            try {
+              owner = JSON.parse(readFileSync(ownerPath!, "utf8"));
+            } catch {
+              lockError =
+                "Lock owner information missing or unreadable; cannot safely verify ESRCH. Manual operator inspection required.";
+              return;
+            }
+            if (!Number.isSafeInteger(owner.pid) || owner.pid! <= 0) {
+              lockError = "Lock owner information invalid; cannot safely verify ESRCH.";
+              return;
+            }
+            if (isPidAlive(owner.pid!)) return;
+            rmSync(candidateLock, { recursive: true });
+          }
+          mkdirSync(candidateLock);
+          writeFileSync(
+            ownerPath!,
+            JSON.stringify({ pid: process.pid, ownerToken, createdAt: new Date().toISOString() }),
+          );
+          lock = candidateLock;
+          lockToken = ownerToken;
+          acquired = true;
+        });
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+      if (!acquired) {
         status.state = "skipped";
         status.reason = "project_locked";
+        if (lockError) status.error = lockError;
         if (fromWake) {
           this.pendingWake.add(project.id);
           status.pending_wake = true;
@@ -524,8 +548,8 @@ export class RegisteredProjectMonitor {
       const result = await runtime.schedule({
         root: project.checkout_path,
         sharedRoot: primary,
-        runsDir: join(stateRoot, "runs"),
-        stateRoot,
+        runsDir: workspace.runsDir,
+        stateRoot: workspace.stateRoot,
         repo: project.repo_name,
         projectId: project.id,
         brakes: this.brakes,
@@ -575,9 +599,15 @@ export class RegisteredProjectMonitor {
       status.reason = "monitor_check_failed";
       status.error = error instanceof Error ? error.message : String(error);
     } finally {
-      if (lock) {
+      if (lock && lockToken && ownerPath) {
         try {
-          await rmdir(lock);
+          await withLockMutation(lock, () => {
+            if (!existsSync(ownerPath!)) return;
+            const cur = JSON.parse(readFileSync(ownerPath!, "utf-8"));
+            if (cur?.pid === process.pid && cur?.ownerToken === lockToken) {
+              rmSync(lock!, { recursive: true });
+            }
+          });
         } catch (error) {
           status.state = "error";
           status.reason = "lock_release_failed";

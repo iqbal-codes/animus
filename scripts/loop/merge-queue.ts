@@ -1,6 +1,8 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { git, assertCandidate, type AssertCandidateOptions } from "./worktree";
+import { resolveAnimusStateDir } from "../../packages/contracts/src/paths";
 import { processRun } from "./process";
 import { parsePartOf } from "../../apps/backend/src/intake/parser";
 import type {
@@ -313,15 +315,21 @@ export function evaluateSubticketAutoMerge(
   const reviewerImpacts: CriticalImpactCategory[] = judgement?.critical_impacts ?? [];
   const criticalImpacts = Array.from(new Set([...diffImpact.categories, ...reviewerImpacts]));
 
-  const reviewerRisk: AutoMergeRiskLevel = judgement?.risk_level ?? "low";
+  const reasons: string[] = [...diffImpact.reasons];
+  if (!judgement) {
+    reasons.push(
+      "Reviewer auto-merge judgement is missing; auto-merge requires explicit reviewer evaluation.",
+    );
+  }
+
+  const reviewerRisk: AutoMergeRiskLevel = judgement?.risk_level ?? "high";
   const deterministicMinRisk: AutoMergeRiskLevel = diffImpact.hasCriticalImpact ? "high" : "trivial";
   const riskLevel: AutoMergeRiskLevel =
     RISK_ORDER[reviewerRisk] >= RISK_ORDER[deterministicMinRisk]
       ? reviewerRisk
       : deterministicMinRisk;
 
-  const scopeAligned = judgement ? judgement.scope_aligned : true;
-  const reasons: string[] = [...diffImpact.reasons];
+  const scopeAligned = judgement ? judgement.scope_aligned : false;
 
   const isIntegrationTarget =
     isSubticket &&
@@ -367,13 +375,14 @@ export function evaluateSubticketAutoMerge(
   }
 
   const authorized =
+    Boolean(judgement) &&
+    judgement?.eligible === true &&
     isIntegrationTarget &&
     readinessReady &&
     criticalImpacts.length === 0 &&
     outcome === "merge" &&
     scopeAligned &&
-    (riskLevel === "trivial" || riskLevel === "low") &&
-    (judgement ? judgement.eligible === true : true);
+    (riskLevel === "trivial" || riskLevel === "low");
 
   return {
     authorized,
@@ -408,6 +417,257 @@ export interface ExecuteSubticketAutoMergeOptions {
   gitFn?: typeof git;
   processRunFn?: typeof processRun;
   parsePartOfFn?: (text: string) => number | null;
+  db?: DatabaseSync;
+  dbPath?: string;
+  projectId?: string;
+}
+
+export interface RecordSubticketIntegrationOptions {
+  root: string;
+  issueNumber: number;
+  branch: string;
+  candidate: string;
+  partOf?: number;
+  finalIntegrationPr?: string;
+  db?: DatabaseSync;
+  dbPath?: string;
+  projectId?: string;
+}
+
+/**
+ * Record verified subticket integration into SQLite project_issue_integrations
+ * and synchronize project_spec_coordinations truth when a project DB is attached.
+ */
+export function recordSubticketIntegration(
+  options: RecordSubticketIntegrationOptions,
+): { integrated: boolean; projectId?: string; error?: string } {
+  const { root, issueNumber, branch, candidate, partOf, finalIntegrationPr } = options;
+
+  let db = options.db;
+  let shouldClose = false;
+  let dbAttached = Boolean(options.db || options.dbPath);
+
+  if (!db) {
+    let resolvedDbPath = options.dbPath;
+    if (!resolvedDbPath) {
+      const candidates = [join(resolveAnimusStateDir(), "console.db")];
+      for (const cand of candidates) {
+        if (existsSync(cand)) {
+          resolvedDbPath = cand;
+          break;
+        }
+      }
+    }
+    if (resolvedDbPath) {
+      if (options.dbPath) {
+        dbAttached = true;
+      }
+      if (existsSync(resolvedDbPath)) {
+        try {
+          db = new DatabaseSync(resolvedDbPath);
+          shouldClose = true;
+        } catch (err: any) {
+          return {
+            integrated: false,
+            error: `Failed to open attached SQLite database at ${resolvedDbPath}: ${err.message}`,
+          };
+        }
+      } else if (options.dbPath) {
+        return {
+          integrated: false,
+          error: `Attached database at ${options.dbPath} does not exist`,
+        };
+      }
+    }
+  }
+
+  if (!db) {
+    if (dbAttached) {
+      return {
+        integrated: false,
+        error: `Attached database does not exist or could not be opened`,
+      };
+    }
+    return { integrated: false };
+  }
+
+  try {
+    const tableExists = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='project_issue_integrations'",
+      )
+      .get() as { name?: string } | undefined;
+
+    if (!tableExists) {
+      if (dbAttached) {
+        return {
+          integrated: false,
+          error: "Database attached but project_issue_integrations table does not exist",
+        };
+      }
+      return { integrated: false };
+    }
+
+    let projectId = options.projectId;
+    if (!projectId) {
+      try {
+        const projectsTable = db
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='projects'")
+          .get();
+        if (projectsTable) {
+          const allProjects = db
+            .prepare("SELECT id, checkout_path FROM projects")
+            .all() as Array<{ id: string; checkout_path: string }>;
+          const match = allProjects.find(
+            (p) => resolve(p.checkout_path) === resolve(root),
+          );
+          if (match) {
+            projectId = match.id;
+          }
+        }
+      } catch (err: any) {
+        if (dbAttached) {
+          return {
+            integrated: false,
+            error: `Failed to query projects table in attached database: ${err.message}`,
+          };
+        }
+      }
+    }
+
+    if (!projectId) {
+      if (dbAttached) {
+        return {
+          integrated: false,
+          error: `Database attached but could not resolve projectId for root ${root}`,
+        };
+      }
+      return { integrated: false };
+    }
+
+    db.exec("SAVEPOINT subticket_integration");
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO project_issue_integrations (project_id, issue_number, branch, commit_sha, integrated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(project_id, issue_number) DO UPDATE SET
+         branch = excluded.branch,
+         commit_sha = excluded.commit_sha,
+         integrated_at = excluded.integrated_at`,
+    ).run(projectId, issueNumber, branch, candidate, now);
+
+    // Synchronize project_spec_coordinations truth if spec coordination row exists
+    if (partOf !== undefined) {
+      try {
+        const coordTable = db
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='project_spec_coordinations'",
+          )
+          .get();
+        if (coordTable) {
+          const coordRow = db
+            .prepare(
+              "SELECT * FROM project_spec_coordinations WHERE project_id = ? AND spec_issue_number = ?",
+            )
+            .get(projectId, partOf) as any;
+
+          if (coordRow && coordRow.plan_snapshot) {
+            const plan = JSON.parse(coordRow.plan_snapshot);
+            plan.currentIntegrationSha = candidate;
+            if (Array.isArray(plan.children)) {
+              for (const child of plan.children) {
+                if (child.number === issueNumber) {
+                  child.status = "integrated_to_branch";
+                  child.commitSha = candidate;
+                }
+              }
+            }
+            let prNum: number | null = null;
+            if (finalIntegrationPr) {
+              const prMatch = finalIntegrationPr.match(/\/pull\/(\d+)/);
+              prNum = prMatch ? parseInt(prMatch[1]!, 10) : (partOf ?? 1);
+              if (prNum <= 0) prNum = partOf ?? 1;
+              plan.status = "completed";
+              plan.finalPullRequest = {
+                number: prNum,
+                url: finalIntegrationPr,
+                title: `Integrated delivery for spec #${partOf}`,
+                head: branch,
+                base: plan.baseBranch ?? "main",
+              };
+            }
+            const columns = db
+              .prepare("PRAGMA table_info(project_spec_coordinations)")
+              .all() as Array<{ name: string }>;
+            const hasPrNumber = columns.some((c) => c.name === "final_pr_number");
+
+            if (hasPrNumber) {
+              db.prepare(
+                `UPDATE project_spec_coordinations
+                 SET current_integration_sha = ?,
+                     plan_snapshot = ?,
+                     final_pr_number = COALESCE(?, final_pr_number),
+                     final_pr_url = COALESCE(?, final_pr_url),
+                     status = CASE WHEN ? IS NOT NULL THEN 'completed' ELSE status END,
+                     updated_at = ?
+                 WHERE project_id = ? AND spec_issue_number = ?`,
+              ).run(
+                candidate,
+                JSON.stringify(plan),
+                prNum,
+                finalIntegrationPr ?? null,
+                finalIntegrationPr ?? null,
+                now,
+                projectId,
+                partOf,
+              );
+            } else {
+              db.prepare(
+                `UPDATE project_spec_coordinations
+                 SET current_integration_sha = ?,
+                     plan_snapshot = ?,
+                     final_pr_url = COALESCE(?, final_pr_url),
+                     status = CASE WHEN ? IS NOT NULL THEN 'completed' ELSE status END,
+                     updated_at = ?
+                 WHERE project_id = ? AND spec_issue_number = ?`,
+              ).run(
+                candidate,
+                JSON.stringify(plan),
+                finalIntegrationPr ?? null,
+                finalIntegrationPr ?? null,
+                now,
+                projectId,
+                partOf,
+              );
+            }
+          }
+        }
+      } catch (err: any) {
+        throw err;
+      }
+    }
+
+    db.exec("RELEASE SAVEPOINT subticket_integration");
+    return { integrated: true, projectId };
+  } catch (err: any) {
+    try {
+      db.exec("ROLLBACK TO SAVEPOINT subticket_integration");
+      db.exec("RELEASE SAVEPOINT subticket_integration");
+    } catch {}
+    if (dbAttached) {
+      return {
+        integrated: false,
+        error: `SQLite integration record write failed: ${err.message}`,
+      };
+    }
+    return { integrated: false };
+  } finally {
+    if (shouldClose && db) {
+      try {
+        db.close();
+      } catch {}
+    }
+  }
 }
 
 /**
@@ -443,6 +703,21 @@ export async function executeSubticketAutoMerge(
   const parsePartOfCmd = options.parsePartOfFn ?? parsePartOf;
 
   let finalIntegrationPr: string | undefined;
+  const journalDir = join(resolveAnimusStateDir(), "integration-recovery");
+  const journalPath = join(journalDir, `${crypto.randomUUID()}.json`);
+  const journal = {
+    root, candidate, integrationBranch, targetBaseTip, issueNumber, partOf, pr,
+    phase: "prepared", updatedAt: new Date().toISOString(), error: undefined as string | undefined,
+  };
+  const persistPhase = (phase: string, error?: string) => {
+    journal.phase = phase;
+    journal.error = error;
+    journal.updatedAt = new Date().toISOString();
+    mkdirSync(journalDir, { recursive: true });
+    const temporary = `${journalPath}.tmp`;
+    writeFileSync(temporary, JSON.stringify(journal, null, 2));
+    renameSync(temporary, journalPath);
+  };
 
   try {
     await assertCandidateCmd({
@@ -460,49 +735,153 @@ export async function executeSubticketAutoMerge(
       );
     }
 
-    const rootHeadBranch = await gitCmd(root, "symbolic-ref", "--short", "HEAD").catch(() => "");
-    if (rootHeadBranch === integrationBranch) {
-      await gitCmd(root, "merge", "--ff-only", candidate);
-    } else {
-      await gitCmd(
+    const cleanRef = integrationBranch.startsWith("refs/heads/")
+      ? integrationBranch
+      : `refs/heads/${integrationBranch}`;
+
+    // 1. Git Compare-and-Swap (CAS) ref update
+    persistPhase("ref_update_pending");
+    await gitCmd(root, "update-ref", cleanRef, candidate, targetBaseTip);
+    persistPhase("database_sync_pending");
+
+    // 2. Database synchronization BEFORE irreversible remote publication
+    // Record verified integration in SQLite project_issue_integrations and synchronize coordination truth
+    const isDbAttached = Boolean(options.db || options.dbPath);
+    let syncError: string | undefined;
+    try {
+      const syncResult = recordSubticketIntegration({
         root,
-        "update-ref",
-        `refs/heads/${integrationBranch}`,
+        issueNumber,
+        branch: integrationBranch,
         candidate,
-        targetBaseTip,
-      );
+        partOf,
+        finalIntegrationPr,
+        db: options.db,
+        dbPath: options.dbPath,
+        projectId: options.projectId,
+      });
+      if (syncResult.error && isDbAttached) {
+        syncError = syncResult.error;
+      }
+    } catch (syncErr: unknown) {
+      if (isDbAttached) {
+        syncError = syncErr instanceof Error ? syncErr.message : String(syncErr);
+      }
     }
 
-    if (push !== false) {
-      if (pr) {
-        await processCmd(
-          ["gh", "pr", "merge", pr, "--squash", "--match-head-commit", candidate],
-          worktree,
-          30_000,
-        ).catch(() => {});
+    // If attached DB synchronization failed, roll back the Git ref update immediately!
+    // Fail closed BEFORE executing any irreversible remote publication (push, PR merge, issue close).
+    if (syncError) {
+      let rollbackErr: Error | undefined;
+      try {
+        await gitCmd(root, "update-ref", cleanRef, targetBaseTip, candidate);
+      } catch (err: any) {
+        rollbackErr = err instanceof Error ? err : new Error(String(err));
       }
-      if (hasOrigin) {
-        await gitCmd(
-          root,
-          "push",
-          "origin",
-          `refs/heads/${integrationBranch}:refs/heads/${integrationBranch}`,
-        ).catch(() => {});
-      }
-      await processCmd(
-        [
-          "gh",
-          "issue",
-          "close",
-          String(issueNumber),
-          "--comment",
-          `Auto-merged into integration branch \`${integrationBranch}\` at commit \`${candidate}\`.`,
-        ],
-        worktree,
-        15_000,
-      ).catch(() => {});
 
-      if (partOf !== undefined) {
+      if (rollbackErr) {
+        // DB sync failed AND Git ref rollback failed: split-brain state detected!
+        // Preserve observed SHA and report distinct explicit manual intervention error state!
+        let observedSha = candidate;
+        try {
+          observedSha = (await gitCmd(root, "rev-parse", cleanRef)).trim();
+        } catch {}
+
+        persistPhase("manual_intervention_required", `${syncError}; rollback: ${rollbackErr.message}`);
+        const errDetail = `Attached database synchronization failed (${syncError}) AND Git ref rollback failed: ${rollbackErr.message}. Observed ref at SHA ${observedSha}; explicit manual intervention required.`;
+        return {
+          success: false,
+          evaluation: {
+            ...autoMergeEval,
+            authorized: false,
+            decision: "hold_for_human",
+            reasons: [...autoMergeEval.reasons, errDetail],
+          },
+          finalStatus: "manual_intervention_required",
+          reviewOutcome: "approved",
+          error: errDetail,
+          finalIntegrationPr,
+        };
+      }
+
+      persistPhase("rolled_back", syncError);
+      return {
+        success: false,
+        evaluation: {
+          ...autoMergeEval,
+          authorized: false,
+          decision: "hold_for_human",
+          reasons: [...autoMergeEval.reasons, syncError],
+        },
+        finalStatus: "waiting_approval",
+        reviewOutcome: "approved",
+        error: syncError,
+        finalIntegrationPr,
+      };
+    }
+
+    persistPhase("publication_pending");
+    // 3. Irreversible Remote Publication (only after CAS and DB sync succeeded)
+    let publicationError: string | undefined;
+    if (push !== false) {
+      // Step A: gh pr merge
+      if (pr) {
+        try {
+          persistPhase("pr_merge_pending");
+          const prRes = await processCmd(
+            ["gh", "pr", "merge", pr, "--squash", "--match-head-commit", candidate],
+            worktree,
+            30_000,
+          );
+          if (prRes.exitCode !== 0) {
+            publicationError = `gh pr merge failed: ${prRes.stderr || prRes.stdout}`;
+          }
+        } catch (err: any) {
+          publicationError = `gh pr merge failed: ${err.message}`;
+        }
+      }
+
+      // Step B: git push origin (STOP if PR merge failed!)
+      if (!publicationError && hasOrigin) {
+        try {
+          persistPhase("push_pending");
+          await gitCmd(
+            root,
+            "push",
+            "origin",
+            `refs/heads/${integrationBranch}:refs/heads/${integrationBranch}`,
+          );
+        } catch (pushErr: any) {
+          publicationError = `git push origin failed: ${pushErr.message}`;
+        }
+      }
+
+      // Step C: gh issue close (STOP if PR merge or push failed!)
+      if (!publicationError) {
+        try {
+          persistPhase("issue_close_pending");
+          const closeRes = await processCmd(
+            [
+              "gh",
+              "issue",
+              "close",
+              String(issueNumber),
+              "--comment",
+              `Auto-merged into integration branch \`${integrationBranch}\` at commit \`${candidate}\`.`,
+            ],
+            worktree,
+            15_000,
+          );
+          if (closeRes.exitCode !== 0) {
+            publicationError = `gh issue close failed: ${closeRes.stderr || closeRes.stdout}`;
+          }
+        } catch (err: any) {
+          publicationError = `gh issue close failed: ${err.message}`;
+        }
+      }
+
+      // Step D: Parent integration PR (STOP if any prior remote step failed!)
+      if (!publicationError && partOf !== undefined) {
         try {
           const openIssuesRes = await processCmd(
             ["gh", "issue", "list", "--state", "open", "--json", "number,body"],
@@ -574,6 +953,26 @@ export async function executeSubticketAutoMerge(
       }
     }
 
+    if (publicationError) {
+      // Remote publication failed: honest durable reconciliation state, NOT false completion or remote success!
+      // Local branch ref was updated and DB record committed, but remote publication failed.
+      persistPhase("remote_reconciliation_pending", publicationError);
+      return {
+        success: false,
+        evaluation: {
+          ...autoMergeEval,
+          authorized: false,
+          decision: "hold_for_human",
+          reasons: [...autoMergeEval.reasons, publicationError],
+        },
+        finalStatus: "remote_reconciliation_pending",
+        reviewOutcome: "approved",
+        error: `Remote publication failed: ${publicationError}. Local git merged at commit \`${candidate}\` and database committed, remote pending durable reconciliation.`,
+        finalIntegrationPr,
+      };
+    }
+
+    persistPhase("completed");
     return {
       success: true,
       evaluation: autoMergeEval,
@@ -582,7 +981,7 @@ export async function executeSubticketAutoMerge(
       finalIntegrationPr,
     };
   } catch (mergeErr: unknown) {
-    const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
+    const msg = `${mergeErr instanceof Error ? mergeErr.message : String(mergeErr)}; inspect recovery journal ${journalPath}`;
     const updatedEval: AutoMergeEvaluationResult = {
       ...autoMergeEval,
       authorized: false,
@@ -592,7 +991,9 @@ export async function executeSubticketAutoMerge(
     return {
       success: false,
       evaluation: updatedEval,
-      finalStatus: "waiting_approval",
+      finalStatus: journal.phase === "prepared" || journal.phase === "ref_update_pending"
+        ? "waiting_approval"
+        : "manual_intervention_required",
       reviewOutcome: "approved",
       error: msg,
     };

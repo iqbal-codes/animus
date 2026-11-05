@@ -1,24 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runOrdinaryChecks, handleCiFastFail } from "../../scripts/loop/ci";
-import { executeBlackBoxQa, handleQaFastFail } from "../../scripts/loop/qa-runner";
-import {
-  evaluateReviewReadiness,
-  finalizeReviewAndPublish,
-  handleLoopCatch,
-} from "../../scripts/loop/review-gate";
-import {
-  publishLoopComment,
-  syncAndPublishPrEvidence,
-  escalateIssueToHuman,
-  recordLapAndReflect,
-} from "../../scripts/loop/pr-publication";
+import { runAnimusLoop } from "../../scripts/animus-loop";
+import * as animusExports from "../../scripts/animus-loop";
 import * as loopExports from "../../scripts/loop/index";
-import { git } from "../../scripts/loop/worktree";
-import type { LocalIssue, LocalLoopResult } from "../../scripts/loop/types";
+import { git, inspectLocalLoop, acquireIssueLock } from "../../scripts/loop/worktree";
+import type { LocalIssue, GhRunner } from "../../scripts/loop/types";
 
 const tempDirs: string[] = [];
 
@@ -37,17 +26,38 @@ async function createRepoFixture(): Promise<string> {
   await git(root, "config", "user.email", "agent@animus.local");
   await git(root, "config", "commit.gpgsign", "false");
 
-  const { writeFile } = await import("node:fs/promises");
-  await writeFile(join(root, "README.md"), "# Test Verification\n");
-  await git(root, "add", "README.md");
+  const { mkdir, writeFile } = await import("node:fs/promises");
+  await mkdir(join(root, "harness"), { recursive: true });
+  await writeFile(
+    join(root, "harness/harness.config.json"),
+    JSON.stringify({
+      static: "echo static-ok",
+      unit: "echo unit-ok",
+      protected_paths: "harness/**,.factory/holdout/**",
+    }),
+  );
+
+  await mkdir(join(root, ".animus"), { recursive: true });
+  await writeFile(
+    join(root, ".animus/config.yaml"),
+    `
+roles:
+  builder:
+    model: "small"
+`,
+  );
+
+  await writeFile(join(root, "README.md"), "# Test Verification Repository\n");
+  await git(root, "add", ".");
   await git(root, "commit", "-m", "initial commit");
   return root;
 }
 
 function makeValidIssue(overrides: Partial<LocalIssue> = {}): LocalIssue {
+  const number = overrides.number ?? 80;
   return {
-    number: 80,
-    url: "https://github.com/example/repo/issues/80",
+    number,
+    url: overrides.url ?? `https://github.com/example/repo/issues/${number}`,
     title: "Implement verification extraction",
     body: "AC1: Validate checks, QA fast-fail, CI fast-fail, and publication",
     comments: [],
@@ -57,513 +67,367 @@ function makeValidIssue(overrides: Partial<LocalIssue> = {}): LocalIssue {
   };
 }
 
-describe("scripts/loop/verification", () => {
-  describe("AC1: runOrdinaryChecks", () => {
-    test("runs checks in worktree, records command records, and writes builder-checks.log", async () => {
-      const root = await createRepoFixture();
-      const runDir = await mkdtemp(join(tmpdir(), "checks-run-"));
-      tempDirs.push(runDir);
+describe("scripts/loop/verification (migrated to public runAnimusLoop seam)", () => {
+  test("AC1: ordinary checks run in worktree, write builder-checks.log and command records", async () => {
+    const root = await createRepoFixture();
+    const issue = makeValidIssue();
 
-      const artifactsDir = join(runDir, "artifacts");
-      const { mkdir } = await import("node:fs/promises");
-      await mkdir(artifactsDir, { recursive: true });
-
-      const commandRecords: any[] = [];
-      const evidence: any[] = [];
-      const candidate = await git(root, "rev-parse", "HEAD");
-
-      await runOrdinaryChecks({
-        root,
-        worktree: root,
-        checks: ["echo check1", "echo check2"],
-        timeoutMs: 10_000,
-        runId: "run-chk",
-        candidate,
-        runDirectory: runDir,
-        artifactsDir,
-        commandRecords,
-        evidence,
-      });
-
-      expect(commandRecords.length).toBe(2);
-      expect(evidence.length).toBe(2);
-      expect(existsSync(join(artifactsDir, "builder-checks.log"))).toBe(true);
-      expect(existsSync(join(artifactsDir, "host-command-records.json"))).toBe(true);
+    const result = await runAnimusLoop(root, issue, {
+      push: false,
+      transport: async ({ cwd, role }) => {
+        if (role === "builder") {
+          const { writeFile } = await import("node:fs/promises");
+          await writeFile(join(cwd, "delivered.txt"), "hello\n");
+          await git(cwd, "add", "delivered.txt");
+          await git(cwd, "commit", "-m", "deliver");
+        }
+        const head = await git(cwd, "rev-parse", "HEAD");
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            type: "message_end",
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    candidate: head,
+                    sha: head,
+                    verdict: "pass",
+                    outcome: "approved",
+                    passed: true,
+                    overall: "PASS",
+                    delivers: "all",
+                    checks: [{ criterion: "AC1", result: "pass", evidence: "verified" }],
+                    lines: [
+                      {
+                        id: "AC1",
+                        kind: "criterion",
+                        verdict: "PASS",
+                        evidence: ["builder-checks.log"],
+                      },
+                    ],
+                    findings: [],
+                    dispositions: [],
+                  }),
+                },
+              ],
+            },
+          }),
+          stderr: "",
+        };
+      },
     });
 
-    test("fails closed when ordinary check fails", async () => {
-      const root = await createRepoFixture();
-      const runDir = await mkdtemp(join(tmpdir(), "checks-fail-"));
-      tempDirs.push(runDir);
+    expect(result.status).toBe("waiting_approval");
+    expect(existsSync(join(result.runDirectory, "artifacts", "builder-checks.log"))).toBe(true);
+    expect(existsSync(join(result.runDirectory, "artifacts", "host-command-records.json"))).toBe(
+      true,
+    );
 
-      const artifactsDir = join(runDir, "artifacts");
-      const { mkdir } = await import("node:fs/promises");
-      await mkdir(artifactsDir, { recursive: true });
-
-      const candidate = await git(root, "rev-parse", "HEAD");
-      expect(
-        runOrdinaryChecks({
-          root,
-          worktree: root,
-          checks: ["exit 1"],
-          timeoutMs: 10_000,
-          runId: "run-chk-fail",
-          candidate,
-          runDirectory: runDir,
-          artifactsDir,
-          commandRecords: [],
-          evidence: [],
-        }),
-      ).rejects.toThrow("Ordinary project check failed: exit 1");
-    });
+    const logContent = readFileSync(
+      join(result.runDirectory, "artifacts", "builder-checks.log"),
+      "utf8",
+    );
+    expect(logContent).toContain("echo static-ok");
+    expect(logContent).toContain("echo unit-ok");
   });
 
-  describe("AC1: executeBlackBoxQa", () => {
-    test("executes QA in isolated worktree and saves app-check.json", async () => {
-      const root = await createRepoFixture();
-      const runDir = await mkdtemp(join(tmpdir(), "qa-exec-"));
-      tempDirs.push(runDir);
+  test("AC1: fails closed and transitions to failed when ordinary checks fail", async () => {
+    const root = await createRepoFixture();
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(
+      join(root, "harness/harness.config.json"),
+      JSON.stringify({ static: "exit 1", unit: "echo ok" }),
+    );
 
-      const artifactsDir = join(runDir, "artifacts");
-      const handoffDir = join(artifactsDir, "handoff");
-      const { mkdir } = await import("node:fs/promises");
-      await mkdir(handoffDir, { recursive: true });
-
-      const candidate = await git(root, "rev-parse", "HEAD");
-      const identities = {
-        targetBaseTip: candidate,
-        mergeBase: candidate,
-        prHead: candidate,
-        testedHead: candidate,
-        environment: "test-env",
-      };
-
-      const qaResult = await executeBlackBoxQa({
-        root,
-        candidate,
-        identities,
-        runDirectory: runDir,
-        artifactsDir,
-        handoffDir,
-        worktree: root,
-        push: false,
-        invokeQa: async () => ({
-          overall: "PASS",
-          passed: true,
-          lines: [{ id: "C1", verdict: "PASS", evidence: [] }],
-        }),
-      });
-
-      expect(qaResult.qaReport.overall).toBe("PASS");
-      expect(existsSync(join(handoffDir, "app-check.json"))).toBe(true);
-      expect(existsSync(join(artifactsDir, "app-check.json"))).toBe(true);
+    const issue = makeValidIssue();
+    const result = await runAnimusLoop(root, issue, {
+      push: false,
+      transport: async ({ cwd, role }) => {
+        if (role === "builder") {
+          const { writeFile: wf } = await import("node:fs/promises");
+          await wf(join(cwd, "delivered.txt"), "hello\n");
+          await git(cwd, "add", "delivered.txt");
+          await git(cwd, "commit", "-m", "deliver");
+        }
+        const head = await git(cwd, "rev-parse", "HEAD");
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            type: "message_end",
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({ candidate: head, verdict: "pass" }),
+                },
+              ],
+            },
+          }),
+          stderr: "",
+        };
+      },
     });
+
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("Ordinary project check failed: exit 1");
+
+    // Lock must be released
+    const { common } = await inspectLocalLoop(root);
+    const stateRoot = join(common, "factory-local-loop");
+    const reacquired = await acquireIssueLock(stateRoot, issue.number);
+    expect(typeof reacquired).toBe("function");
+    await reacquired();
   });
 
-  describe("AC1: handleQaFastFail & handleCiFastFail", () => {
-    test("handleQaFastFail short-circuits with sent_back when lap < maxLaps", async () => {
-      const root = await createRepoFixture();
-      const issue = makeValidIssue();
-      const runDir = await mkdtemp(join(tmpdir(), "qa-fast-fail-"));
-      tempDirs.push(runDir);
+  test("AC2: QA fast-fail transitions to sent_back when lap < maxLaps, short-circuiting reviewer", async () => {
+    const root = await createRepoFixture();
+    const issue = makeValidIssue();
+    const capturedRoles: string[] = [];
 
-      const artifactsDir = join(runDir, "artifacts");
-      const { mkdir } = await import("node:fs/promises");
-      await mkdir(artifactsDir, { recursive: true });
-
-      const candidate = await git(root, "rev-parse", "HEAD");
-      const state: LocalLoopResult = {
-        runId: "run-qaff",
-        pid: process.pid,
-        lap: 1,
-        issue: issue.url,
-        route: "simple",
-        status: "qa",
-        runDirectory: runDir,
-        worktree: root,
-        branch: "local-loop/issue-80",
-        base: candidate,
-        candidate,
-        verificationProfile: "docs",
-        evidence: [],
-      };
-
-      const qaReport = {
-        passed: false,
-        overall: "FAIL",
-        lines: [{ id: "AC1", verdict: "FAIL", observed: "broken" }],
-      };
-
-      let reflectedDossier: any = null;
-      const res = await handleQaFastFail({
-        qaReport,
-        lap: 1,
-        maxLaps: 3,
-        state,
-        issue,
-        branch: "local-loop/issue-80",
-        stateRoot: runDir,
-        runId: "run-qaff",
-        artifactsDir,
-        commandRecords: [],
-        recoveries: [],
-        base: candidate,
-        route: "simple",
-        options: { push: false },
-        reflectTerminal: async (d) => {
-          reflectedDossier = d;
-        },
-        save: async () => {},
-      });
-
-      expect(res.status).toBe("sent_back");
-      expect(reflectedDossier).not.toBeNull();
-      expect(reflectedDossier.attempts[0].failedStage).toBe("qa");
+    const result = await runAnimusLoop(root, issue, {
+      push: false,
+      transport: async ({ cwd, role }) => {
+        capturedRoles.push(role);
+        if (role === "builder") {
+          const { writeFile } = await import("node:fs/promises");
+          await writeFile(join(cwd, "delivered.txt"), "hello\n");
+          await git(cwd, "add", "delivered.txt");
+          await git(cwd, "commit", "-m", "deliver");
+          const head = await git(cwd, "rev-parse", "HEAD");
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              type: "message_end",
+              message: {
+                role: "assistant",
+                content: [
+                  { type: "text", text: JSON.stringify({ candidate: head, verdict: "pass" }) },
+                ],
+              },
+            }),
+            stderr: "",
+          };
+        }
+        if (role === "qa") {
+          const head = await git(cwd, "rev-parse", "HEAD");
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              type: "message_end",
+              message: {
+                role: "assistant",
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      head,
+                      verdict: "fail",
+                      overall: "FAIL",
+                      passed: false,
+                      lines: [
+                        { id: "AC1", kind: "criterion", verdict: "FAIL", observed: "QA failure" },
+                      ],
+                    }),
+                  },
+                ],
+              },
+            }),
+            stderr: "",
+          };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
     });
 
-    test("handleQaFastFail escalates to needs_owner when lap reaches maxLaps", async () => {
-      const root = await createRepoFixture();
-      const issue = makeValidIssue();
-      const runDir = await mkdtemp(join(tmpdir(), "qa-max-laps-"));
-      tempDirs.push(runDir);
-
-      const artifactsDir = join(runDir, "artifacts");
-      const { mkdir } = await import("node:fs/promises");
-      await mkdir(artifactsDir, { recursive: true });
-
-      const candidate = await git(root, "rev-parse", "HEAD");
-      const state: LocalLoopResult = {
-        runId: "run-qaff-max",
-        pid: process.pid,
-        lap: 3,
-        issue: issue.url,
-        route: "simple",
-        status: "qa",
-        runDirectory: runDir,
-        worktree: root,
-        branch: "local-loop/issue-80",
-        base: candidate,
-        candidate,
-        verificationProfile: "docs",
-        evidence: [],
-      };
-
-      const qaReport = {
-        passed: false,
-        overall: "FAIL",
-        lines: [{ id: "AC1", verdict: "FAIL", observed: "maxed out" }],
-      };
-
-      const res = await handleQaFastFail({
-        qaReport,
-        lap: 3,
-        maxLaps: 3,
-        state,
-        issue,
-        branch: "local-loop/issue-80",
-        stateRoot: runDir,
-        runId: "run-qaff-max",
-        artifactsDir,
-        commandRecords: [],
-        recoveries: [],
-        base: candidate,
-        route: "simple",
-        options: { push: false },
-        reflectTerminal: async () => {},
-        save: async () => {},
-      });
-
-      expect(res.status).toBe("needs_owner");
-    });
-
-    test("handleCiFastFail short-circuits on failing checks and formats comments", async () => {
-      const root = await createRepoFixture();
-      const issue = makeValidIssue();
-      const runDir = await mkdtemp(join(tmpdir(), "ci-fast-fail-"));
-      tempDirs.push(runDir);
-
-      const artifactsDir = join(runDir, "artifacts");
-      const { mkdir } = await import("node:fs/promises");
-      await mkdir(artifactsDir, { recursive: true });
-
-      const candidate = await git(root, "rev-parse", "HEAD");
-      const state: LocalLoopResult = {
-        runId: "run-ciff",
-        pid: process.pid,
-        lap: 1,
-        issue: issue.url,
-        route: "simple",
-        status: "checking",
-        runDirectory: runDir,
-        worktree: root,
-        branch: "local-loop/issue-80",
-        base: candidate,
-        candidate,
-        verificationProfile: "docs",
-        evidence: [],
-      };
-
-      let reflected = false;
-      const res = await handleCiFastFail({
-        failedChecks: [{ name: "gate-verify", state: "failure" }],
-        lap: 1,
-        maxLaps: 3,
-        state,
-        issue,
-        branch: "local-loop/issue-80",
-        stateRoot: runDir,
-        runId: "run-ciff",
-        artifactsDir,
-        commandRecords: [],
-        recoveries: [],
-        base: candidate,
-        route: "simple",
-        options: { push: false },
-        reflectTerminal: async () => {
-          reflected = true;
-        },
-        save: async () => {},
-      });
-
-      expect(res.status).toBe("sent_back");
-      expect(reflected).toBe(true);
-    });
+    expect(capturedRoles).toEqual(["builder", "qa"]);
+    expect(result.status).toBe("sent_back");
+    expect((result.qaReport as any)?.passed).toBe(false);
+    expect(result.reviewerReport).toBeUndefined();
   });
 
-  describe("AC1: publication helpers", () => {
-    test("recordLapAndReflect records lap attempt and executes terminal reflection", async () => {
-      const stateRoot = await mkdtemp(join(tmpdir(), "dossier-root-"));
-      tempDirs.push(stateRoot);
+  test("AC2: QA fast-fail escalates to needs_owner when lap reaches maxLaps", async () => {
+    const root = await createRepoFixture();
+    const bareOrigin = await mkdtemp(join(tmpdir(), "bare-origin-"));
+    tempDirs.push(bareOrigin);
+    await git(bareOrigin, "init", "--bare", "-b", "main");
+    await git(root, "remote", "add", "origin", bareOrigin);
+    await git(root, "push", "-u", "origin", "main");
 
-      const artifactsDir = join(stateRoot, "artifacts");
-      const { mkdir } = await import("node:fs/promises");
-      await mkdir(artifactsDir, { recursive: true });
+    const { mkdir: mkdirAsync, writeFile } = await import("node:fs/promises");
+    await mkdirAsync(join(root, ".factory"), { recursive: true });
+    await writeFile(
+      join(root, ".factory/schedule.json"),
+      JSON.stringify({ workflow: "animus-loop", max_laps: 1 }),
+    );
 
-      const issue = makeValidIssue();
-      let reflected = false;
-      const dossier = await recordLapAndReflect({
-        stateRoot,
-        issue,
-        branch: "local-loop/issue-80",
-        runId: "lap-run-1",
-        status: "waiting_approval",
-        candidate: "abc1234",
-        artifactsDir,
-        evidence: [],
-        commandRecords: [],
-        recoveries: [],
-        changedFiles: ["src/index.ts"],
-        reflectTerminal: async () => {
-          reflected = true;
-        },
-      });
+    const issue = makeValidIssue({ number: 81 });
+    let escalatedTarget: any = null;
+    const ghRunner: GhRunner = async (args) => {
+      if (args.includes("edit") && args.includes("ready-for-human")) {
+        escalatedTarget = args;
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      return { exitCode: 0, stdout: "[]", stderr: "" };
+    };
 
-      expect(dossier.attempts.length).toBe(1);
-      expect(dossier.attempts[0]!.candidateHead).toBe("abc1234");
-      expect(reflected).toBe(true);
+    const result = await runAnimusLoop(root, issue, {
+      push: true,
+      ghRunner,
+      transport: async ({ cwd, role }) => {
+        if (role === "builder") {
+          const { writeFile: wf } = await import("node:fs/promises");
+          await wf(join(cwd, "delivered.txt"), "hello\n");
+          await git(cwd, "add", "delivered.txt");
+          await git(cwd, "commit", "-m", "deliver");
+          const head = await git(cwd, "rev-parse", "HEAD");
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              type: "message_end",
+              message: {
+                role: "assistant",
+                content: [
+                  { type: "text", text: JSON.stringify({ candidate: head, verdict: "pass" }) },
+                ],
+              },
+            }),
+            stderr: "",
+          };
+        }
+        const head = await git(cwd, "rev-parse", "HEAD");
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            type: "message_end",
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    head,
+                    verdict: "fail",
+                    overall: "FAIL",
+                    passed: false,
+                    lines: [
+                      {
+                        id: "AC1",
+                        kind: "criterion",
+                        verdict: "FAIL",
+                        observed: "max lap reached",
+                      },
+                    ],
+                  }),
+                },
+              ],
+            },
+          }),
+          stderr: "",
+        };
+      },
     });
 
-    test("publishLoopComment, syncAndPublishPrEvidence, and escalateIssueToHuman isolate errors", async () => {
-      const root = await createRepoFixture();
-      // Test when remote PR is unavailable: should not throw, should handle error gracefully
-      expect(
-        publishLoopComment({
-          worktree: root,
-          pr: "non-existent-pr",
-          issueNumber: 80,
-          push: false,
-          commentType: "builder",
-          commentBody: "test comment",
-          candidate: "abc",
-          runDirectory: root,
-        }),
-      ).resolves.toBeUndefined();
-
-      expect(
-        syncAndPublishPrEvidence({
-          worktree: root,
-          pr: "non-existent-pr",
-          push: false,
-          candidate: "abc",
-          artifactsDir: root,
-          runDirectory: root,
-          stageName: "Test",
-        }),
-      ).resolves.toBeUndefined();
-
-      expect(escalateIssueToHuman(root, 999999)).resolves.toBeUndefined();
-    });
+    expect(result.status).toBe("needs_owner");
+    expect(escalatedTarget).not.toBeNull();
+    expect(escalatedTarget).toContain("ready-for-human");
   });
 
-  describe("AC2: barrel export and review-gate mechanics", () => {
-    test("scripts/loop/index.ts barrel exports decomposed verification utilities", () => {
-      expect((loopExports as any).runOrdinaryChecks).toBeFunction();
-      expect((loopExports as any).executeBlackBoxQa).toBeFunction();
-      expect((loopExports as any).handleQaFastFail).toBeFunction();
-      expect((loopExports as any).handleCiFastFail).toBeFunction();
-      expect((loopExports as any).evaluateReviewReadiness).toBeFunction();
-      expect((loopExports as any).finalizeReviewAndPublish).toBeFunction();
-      expect((loopExports as any).handleLoopCatch).toBeFunction();
-      expect((loopExports as any).escalateIssueToHuman).toBeFunction();
-      expect((loopExports as any).publishLoopComment).toBeFunction();
-      expect((loopExports as any).syncAndPublishPrEvidence).toBeFunction();
-      expect((loopExports as any).recordLapAndReflect).toBeFunction();
+  test("AC2: PR CI check failure short-circuits reviewer and transitions through terminal disposition", async () => {
+    const root = await createRepoFixture();
+    const issue = makeValidIssue({ number: 82 });
+
+    const capturedRoles: string[] = [];
+    const result = await runAnimusLoop(root, issue, {
+      push: false,
+      checkPrCi: async () => ({
+        status: "fail",
+        checks: [{ name: "gate-verify", state: "failure", bucket: "fail" }],
+        failedChecks: [{ name: "gate-verify", state: "failure", bucket: "fail" }],
+        summary: "CI checks failed: gate-verify",
+      }),
+      transport: async ({ cwd, role }) => {
+        capturedRoles.push(role);
+        if (role === "builder") {
+          const { writeFile } = await import("node:fs/promises");
+          await writeFile(join(cwd, "delivered.txt"), "hello\n");
+          await git(cwd, "add", "delivered.txt");
+          await git(cwd, "commit", "-m", "deliver");
+          const head = await git(cwd, "rev-parse", "HEAD");
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              type: "message_end",
+              message: {
+                role: "assistant",
+                content: [
+                  { type: "text", text: JSON.stringify({ candidate: head, verdict: "pass" }) },
+                ],
+              },
+            }),
+            stderr: "",
+          };
+        }
+        const head = await git(cwd, "rev-parse", "HEAD");
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            type: "message_end",
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    head,
+                    verdict: "pass",
+                    overall: "PASS",
+                    passed: true,
+                    checks: [{ criterion: "AC1", result: "pass", evidence: "verified" }],
+                    lines: [
+                      {
+                        id: "AC1",
+                        kind: "criterion",
+                        verdict: "PASS",
+                        evidence: ["builder-checks.log"],
+                      },
+                    ],
+                  }),
+                },
+              ],
+            },
+          }),
+          stderr: "",
+        };
+      },
     });
 
-    test("evaluateReviewReadiness evaluates approval cleanly on passing QA and review", async () => {
-      const root = await createRepoFixture();
-      const candidate = await git(root, "rev-parse", "HEAD");
-      const issue = makeValidIssue({ number: 85 });
-      const artifactsDir = await mkdtemp(join(tmpdir(), "review-artifacts-"));
-      tempDirs.push(artifactsDir);
+    // Reviewer should NOT have been invoked because CI fast-fail short-circuited it
+    expect(capturedRoles).toEqual(["builder", "qa"]);
+    expect(result.status).toBe("sent_back");
+    expect(existsSync(join(result.runDirectory, "artifacts", "pr-ci.json"))).toBe(true);
+  });
 
-      const evalRes = await evaluateReviewReadiness({
-        stateRoot: root,
-        issue,
-        branch: "main",
-        candidate,
-        base: candidate,
-        baseBranch: "main",
-        defaultBaseBranch: "main",
-        worktree: root,
-        lap: 1,
-        maxLaps: 3,
-        qaReport: { passed: true, checks: [] },
-        reviewReport: { passed: true, verdict: "approved", findings: [], dispositions: [] },
-        artifactsDir,
-        protectedPaths: [],
-      });
+  test("AC4: obsolete stage-bag helpers are removed from public exports and barrels", () => {
+    expect((loopExports as any).handleQaFastFail).toBeUndefined();
+    expect((loopExports as any).handleCiFastFail).toBeUndefined();
+    expect((loopExports as any).finalizeReviewAndPublish).toBeUndefined();
+    expect((loopExports as any).handleLoopCatch).toBeUndefined();
+    expect((loopExports as any).runOrdinaryChecks).toBeUndefined();
+    expect((loopExports as any).executeBlackBoxQa).toBeUndefined();
+    expect((loopExports as any).verifyPrCiGate).toBeUndefined();
+    expect((loopExports as any).recordLapAndReflect).toBeUndefined();
 
-      expect(evalRes.isApproved).toBe(true);
-      expect(evalRes.finalStatus).toBe("waiting_approval");
-      expect(evalRes.reviewOutcome).toBe("approved");
-    });
-
-    test("finalizeReviewAndPublish records terminal lap reflection and saves review", async () => {
-      const root = await createRepoFixture();
-      const candidate = await git(root, "rev-parse", "HEAD");
-      const issue = makeValidIssue({ number: 87 });
-      const artifactsDir = await mkdtemp(join(tmpdir(), "finalize-artifacts-"));
-      tempDirs.push(artifactsDir);
-      const runDir = await mkdtemp(join(tmpdir(), "finalize-run-"));
-      tempDirs.push(runDir);
-
-      const reviewEval = await evaluateReviewReadiness({
-        stateRoot: root,
-        issue,
-        branch: "main",
-        candidate,
-        base: candidate,
-        baseBranch: "main",
-        defaultBaseBranch: "main",
-        worktree: root,
-        lap: 1,
-        maxLaps: 3,
-        qaReport: { passed: true, checks: [] },
-        reviewReport: { passed: true, verdict: "approved", findings: [], dispositions: [] },
-        artifactsDir,
-        protectedPaths: [],
-      });
-
-      const state: LocalLoopResult = {
-        runId: "finalize-test",
-        pid: process.pid,
-        lap: 1,
-        issue: issue.url,
-        route: "simple",
-        status: "preparing",
-        runDirectory: runDir,
-        worktree: root,
-        branch: "main",
-        base: "main",
-        evidence: [],
-      };
-
-      let reflected = false;
-      await finalizeReviewAndPublish({
-        worktree: root,
-        issue,
-        branch: "main",
-        runId: "finalize-test",
-        candidate,
-        artifactsDir,
-        runDirectory: runDir,
-        stateRoot: root,
-        evidence: [],
-        commandRecords: [],
-        recoveries: [],
-        qaReport: { passed: true, checks: [] },
-        reviewReport: { passed: true, verdict: "approved", findings: [], dispositions: [] },
-        builderReport: { verdict: "pass" },
-        identities: {
-          targetBaseTip: candidate,
-          mergeBase: candidate,
-          prHead: candidate,
-          testedHead: candidate,
-          environment: "test-env",
-        },
-        lap: 1,
-        maxLaps: 3,
-        route: "simple",
-        push: false,
-        reviewEval,
-        reflectTerminal: async () => {
-          reflected = true;
-        },
-        state,
-      });
-
-      expect(reflected).toBe(true);
-      expect(state.status).toBe("waiting_approval");
-      expect(existsSync(join(artifactsDir, "review.json"))).toBe(true);
-    });
-
-    test("handleLoopCatch handles errors, records terminal state, and escalates on max laps", async () => {
-      const root = await createRepoFixture();
-      const issue = makeValidIssue({ number: 86 });
-      const runDir = await mkdtemp(join(tmpdir(), "catch-run-"));
-      tempDirs.push(runDir);
-      const artifactsDir = join(runDir, "artifacts");
-      const { mkdir } = await import("node:fs/promises");
-      await mkdir(artifactsDir, { recursive: true });
-
-      const state: LocalLoopResult = {
-        runId: "catch-test",
-        pid: process.pid,
-        lap: 3,
-        issue: issue.url,
-        route: "simple",
-        status: "preparing",
-        runDirectory: runDir,
-        worktree: root,
-        branch: "main",
-        base: "main",
-        evidence: [],
-      };
-
-      let reflected = false;
-      const catchResult = await handleLoopCatch({
-        error: new Error("simulated failure"),
-        state,
-        root,
-        issue,
-        branch: "main",
-        lap: 3,
-        maxLaps: 3,
-        stateRoot: root,
-        runId: "catch-test",
-        artifactsDir,
-        commandRecords: [],
-        recoveries: [],
-        reflectTerminal: async () => {
-          reflected = true;
-        },
-        save: async () => {},
-      });
-
-      expect(catchResult.status).toBe("needs_owner");
-      expect(catchResult.error).toBe("simulated failure");
-      expect(reflected).toBe(true);
-    });
+    expect((animusExports as any).handleQaFastFail).toBeUndefined();
+    expect((animusExports as any).handleCiFastFail).toBeUndefined();
+    expect((animusExports as any).finalizeReviewAndPublish).toBeUndefined();
+    expect((animusExports as any).handleLoopCatch).toBeUndefined();
+    expect((animusExports as any).runOrdinaryChecks).toBeUndefined();
+    expect((animusExports as any).executeBlackBoxQa).toBeUndefined();
+    expect((animusExports as any).verifyPrCiGate).toBeUndefined();
+    expect((animusExports as any).recordLapAndReflect).toBeUndefined();
   });
 });

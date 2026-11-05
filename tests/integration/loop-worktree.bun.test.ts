@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -165,6 +165,69 @@ describe("scripts/loop/worktree", () => {
 
       // No owner.json -> stale=false -> fails closed
       expect(acquireIssueLock(stateRoot, 104)).rejects.toThrow("Issue 104 is locked");
+    });
+
+    test("ownerToken protects lock against replacement and same-PID ABA release", async () => {
+      const stateRoot = await mkdtemp(join(tmpdir(), "lock-root-"));
+      tempDirs.push(stateRoot);
+
+      const release1 = await acquireIssueLock(stateRoot, 105);
+      const lockDir = join(stateRoot, "locks", "issue-105");
+      const ownerFile = join(lockDir, "owner.json");
+
+      const owner1 = JSON.parse(readFileSync(ownerFile, "utf-8"));
+      expect(owner1.ownerToken).toBeDefined();
+
+      // Simulate same-PID replacement with a new ownerToken (e.g. renewal or nested run)
+      const replacedPayload = {
+        pid: process.pid,
+        ownerToken: "new-replacement-token",
+        runId: "replacement-run",
+      };
+      await writeFile(ownerFile, JSON.stringify(replacedPayload, null, 2));
+
+      // Attempting to release via the FIRST callback must NOT delete the replaced lock!
+      await release1();
+      expect(existsSync(lockDir)).toBe(true);
+      expect(existsSync(ownerFile)).toBe(true);
+
+      const afterAttempt = JSON.parse(readFileSync(ownerFile, "utf-8"));
+      expect(afterAttempt.ownerToken).toBe("new-replacement-token");
+    });
+
+    test("competing stale lock reclamation atomically reclaims without cross-process corruption", async () => {
+      const stateRoot = await mkdtemp(join(tmpdir(), "lock-root-"));
+      tempDirs.push(stateRoot);
+
+      const lockDir = join(stateRoot, "locks", "issue-106");
+      await mkdir(lockDir, { recursive: true });
+      await writeFile(
+        join(lockDir, "owner.json"),
+        JSON.stringify({ pid: 99999999, runId: "dead-run" }),
+      );
+
+      // Two competing workers try to reclaim the stale lock concurrently
+      const results = await Promise.allSettled([
+        acquireIssueLock(stateRoot, 106, { worker: "A" }),
+        acquireIssueLock(stateRoot, 106, { worker: "B" }),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === "fulfilled");
+
+      // At least one must succeed; lock must be in a clean, consistent state
+      expect(fulfilled.length).toBeGreaterThanOrEqual(1);
+      expect(existsSync(lockDir)).toBe(true);
+
+      const owner = JSON.parse(readFileSync(join(lockDir, "owner.json"), "utf-8"));
+      expect(owner.pid).toBe(process.pid);
+      expect(owner.ownerToken).toBeDefined();
+
+      // Clean up the successful lock
+      for (const res of fulfilled) {
+        if (res.status === "fulfilled") {
+          await res.value();
+        }
+      }
     });
   });
 
@@ -386,15 +449,15 @@ describe("scripts/loop/worktree", () => {
     test("preserves the existing triage lock contract through the barrel", async () => {
       const stateRoot = await mkdtemp(join(tmpdir(), "barrel-triage-lock-"));
       tempDirs.push(stateRoot);
-      const lock = await loopExports.acquireIssueLock(stateRoot, 401);
+      const lock = await loopExports.acquireTriageIssueLock(stateRoot, 401);
       expect(lock).not.toBeNull();
       try {
-        expect(await loopExports.acquireIssueLock(stateRoot, 401)).toBeNull();
+        expect(await loopExports.acquireTriageIssueLock(stateRoot, 401)).toBeNull();
         expect(existsSync(join(stateRoot, "locks", "issue-401"))).toBe(false);
       } finally {
         await lock!.release();
       }
-      const reacquired = await loopExports.acquireIssueLock(stateRoot, 401);
+      const reacquired = await loopExports.acquireTriageIssueLock(stateRoot, 401);
       expect(reacquired).not.toBeNull();
       await reacquired!.release();
     });
@@ -407,6 +470,8 @@ describe("scripts/loop/worktree", () => {
       expect(typeof loopExports.acquireWorktreeIssueLock).toBe("function");
       expect(typeof loopExports.prepareLoopWorktree).toBe("function");
       expect(typeof loopExports.assertCandidate).toBe("function");
+      expect(typeof loopExports.isPidAlive).toBe("function");
+      expect(typeof loopExports.allocateWorktree).toBe("function");
     });
 
     test("scripts/loop/index.ts barrel exports acquireWorktreeIssueLock without collision", async () => {
@@ -431,6 +496,119 @@ describe("scripts/loop/worktree", () => {
       expect(typeof localLoopAcquireLock).toBe("function");
       expect(typeof localLoopPrepareWorktree).toBe("function");
       expect(typeof localLoopAssertCandidate).toBe("function");
+    });
+
+    test("isPidAlive accurately identifies PID liveness without relying on age", () => {
+      // Current process is alive
+      expect(loopExports.isPidAlive(process.pid)).toBe(true);
+      // Dead PID 99999999 on POSIX
+      expect(loopExports.isPidAlive(99999999)).toBe(false);
+      // Invalid inputs return false
+      expect(loopExports.isPidAlive(-1)).toBe(false);
+      expect(loopExports.isPidAlive(0)).toBe(false);
+      expect(loopExports.isPidAlive(NaN)).toBe(false);
+    });
+
+    test("allocateWorktree enforces sparse holdout fence, hooks binding, and PID-verified locking", async () => {
+      const repo = await initGitRepo();
+      const holdoutDir = join(repo, ".factory", "holdout");
+      await mkdir(holdoutDir, { recursive: true });
+      await writeFile(join(holdoutDir, "secret.json"), JSON.stringify({ key: "val" }));
+      const githooksDir = join(repo, ".githooks");
+      await mkdir(githooksDir, { recursive: true });
+      await writeFile(join(githooksDir, "pre-commit"), "#!/bin/sh\nexit 0\n");
+      await git(repo, "add", "-A");
+      await git(repo, "commit", "-m", "chore: setup holdout and hooks");
+
+      const baseSha = await git(repo, "rev-parse", "HEAD");
+      const wtDir = join(repo, "worktrees", "alloc-test-501");
+
+      const alloc = loopExports.allocateWorktree({
+        repoRoot: repo,
+        worktreeDir: wtDir,
+        branch: "factory/alloc-501",
+        startSha: baseSha,
+        issueNumber: 501,
+      });
+
+      expect(alloc.worktreeDir).toBe(wtDir);
+      expect(existsSync(join(wtDir, ".factory", "holdout", "secret.json"))).toBe(false);
+      const sparseList = await git(wtDir, "sparse-checkout", "list");
+      expect(sparseList).toContain("!/.factory/holdout/");
+
+      const configuredHooks = await git(wtDir, "config", "core.hooksPath");
+      expect(configuredHooks).toBe(githooksDir);
+
+      alloc.releaseLock();
+    });
+
+    test("allocateWorktree fails closed on malformed PID in .worktree.lock", async () => {
+      const repo = await initGitRepo();
+      const baseSha = await git(repo, "rev-parse", "HEAD");
+      const wtDir = join(repo, "worktrees", "alloc-bad-pid");
+      await mkdir(wtDir, { recursive: true });
+      const lockPath = join(wtDir, ".worktree.lock");
+
+      for (const badPid of [-1, 0, "not-a-pid", null]) {
+        await writeFile(
+          lockPath,
+          JSON.stringify({
+            runId: "bad-run",
+            branch: "factory/bad-branch",
+            startSha: baseSha,
+            issueNumber: 502,
+            lockedAt: new Date(Date.now() - 3600_000 * 24).toISOString(),
+            pid: badPid,
+          }),
+        );
+
+        expect(() =>
+          loopExports.allocateWorktree({
+            repoRoot: repo,
+            worktreeDir: wtDir,
+            branch: "factory/bad-branch",
+            startSha: baseSha,
+            issueNumber: 502,
+          }),
+        ).toThrow();
+      }
+    });
+
+    test("allocateWorktree releaseLock enforces owner-only release", async () => {
+      const repo = await initGitRepo();
+      const baseSha = await git(repo, "rev-parse", "HEAD");
+      const wtDir = join(repo, "worktrees", "alloc-owner-release");
+
+      const alloc = loopExports.allocateWorktree({
+        repoRoot: repo,
+        worktreeDir: wtDir,
+        branch: "factory/alloc-owner",
+        startSha: baseSha,
+        issueNumber: 503,
+      });
+
+      const lockPath = join(wtDir, ".worktree.lock");
+      expect(existsSync(lockPath)).toBe(true);
+
+      // Overwrite with different runId (simulating another run/process lock)
+      await writeFile(
+        lockPath,
+        JSON.stringify({
+          runId: "different-run",
+          branch: "factory/alloc-owner",
+          startSha: baseSha,
+          issueNumber: 503,
+          lockedAt: new Date().toISOString(),
+          pid: process.pid,
+        }),
+      );
+
+      // alloc.releaseLock() must not delete a lock owned by different-run
+      alloc.releaseLock();
+      expect(existsSync(lockPath)).toBe(true);
+
+      // Clean up for test
+      unlinkSync(lockPath);
     });
   });
 });

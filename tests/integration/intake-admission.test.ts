@@ -1,5 +1,6 @@
 import { describe, expect, test, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -15,7 +16,11 @@ import {
   formatTicketMarkdown,
   computeDiff,
   computeLabelEffects,
+  evaluateBacklogAdmission,
+  bindIssueContract,
+  readVerifiedBranchIntegrations,
 } from "../../apps/backend/src/intake";
+import { resolveProjectWorkspace } from "@animus/contracts/paths";
 import { createFactoryClient } from "@animus/client";
 import {
   intakePreviewResultSchema,
@@ -58,11 +63,15 @@ describe("Structured Intake, Admission Gate & Exact-Target Enforcement (Issue #6
 
   function createMockCheckout(name: string, remoteRepo = "owner/repo-alpha"): string {
     const checkoutPath = join(tempDir, name);
-    mkdirSync(join(checkoutPath, ".git"), { recursive: true });
-    writeFileSync(
-      join(checkoutPath, ".git", "config"),
-      `[remote "origin"]\n  url = https://github.com/${remoteRepo}.git\n`,
-    );
+    mkdirSync(checkoutPath, { recursive: true });
+    execFileSync("git", ["init"], { cwd: checkoutPath });
+    execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: checkoutPath });
+    execFileSync("git", ["config", "user.name", "test"], { cwd: checkoutPath });
+    execFileSync("git", ["checkout", "-b", "main"], { cwd: checkoutPath });
+    execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: checkoutPath });
+    execFileSync("git", ["remote", "add", "origin", `https://github.com/${remoteRepo}.git`], {
+      cwd: checkoutPath,
+    });
     return checkoutPath;
   }
 
@@ -324,11 +333,22 @@ Depends on: #59, #60
       expect(initial.unsatisfied_dependencies).toEqual([10]);
 
       // Record verified branch integration for #10 in project Alpha
+      execFileSync("git", ["checkout", "-b", "feat/spec-integration-branch"], {
+        cwd: checkoutPath,
+      });
+      execFileSync("git", ["commit", "--allow-empty", "-m", "integrated #10"], {
+        cwd: checkoutPath,
+      });
+      const sha10 = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: checkoutPath,
+        encoding: "utf-8",
+      }).trim();
+
       const integration = intake.recordBranchIntegration(
         project.id,
         10,
         "feat/spec-integration-branch",
-        "abc12345def",
+        sha10,
       );
       expect(integration.branch).toBe("feat/spec-integration-branch");
       expect(branchIntegrationResultSchema.parse(integration)).toEqual(integration);
@@ -340,7 +360,265 @@ Depends on: #59, #60
       expect(afterIntegration.unsatisfied_dependencies).toEqual([]);
     });
 
-    test("blocks admission on blocking labels (needs-info, ready-for-human, needs-triage)", async () => {
+    test("evaluates admission and contract binding by detecting merged dependencies in legacy fallback runs directory (ws.fallbackRunsDirs)", async () => {
+      const checkoutPath = createMockCheckout("co-fallback", "owner/repo-fallback");
+      const ws = resolveProjectWorkspace(checkoutPath);
+      expect(ws.fallbackRunsDirs.length).toBeGreaterThan(0);
+      const fallbackRunsDir = ws.fallbackRunsDirs[0]!;
+
+      // Write a legacy run for issue #101 marked "merged"
+      const runDir = join(fallbackRunsDir, "run-legacy-101");
+      mkdirSync(runDir, { recursive: true });
+      writeFileSync(join(runDir, "state.json"), JSON.stringify({ issue: 101, status: "merged" }));
+
+      // Issue #102 depends on #101. Remote state for #101 is OPEN (or missing on forge).
+      const rawIssues = [
+        {
+          number: 102,
+          title: "Downstream Ticket",
+          state: "OPEN",
+          labels: [{ name: "ready-for-agent" }],
+          body: "Depends on: #101",
+        },
+      ];
+
+      const admissionResult = await evaluateBacklogAdmission({
+        root: checkoutPath,
+        workspace: ws,
+        issues: rawIssues,
+      });
+
+      const issue102 = admissionResult.byNumber.get(102);
+      expect(issue102).toBeDefined();
+      expect(issue102!.admission_status).toBe("admitted");
+      expect(issue102!.reason).toBe("admitted_ready");
+      expect(issue102!.unsatisfied_dependencies).toEqual([]);
+
+      // Also verify bindIssueContract succeeds on issue 102 without throwing Unresolved dependency #101
+      const readMock = (args: string[]) => {
+        if (args[0] === "api") return [];
+        if (args.slice(0, 2).join(" ") === "issue view") {
+          const num = Number(args[2]);
+          if (num === 102) {
+            return {
+              number: 102,
+              url: "https://github.com/owner/repo-fallback/issues/102",
+              state: "OPEN",
+              title: "Downstream Ticket",
+              labels: [{ name: "ready-for-agent" }],
+              body: [
+                "## Source and problem",
+                "Prob",
+                "## Outcome",
+                "Out",
+                "## Invariants",
+                "- Inv",
+                "## Acceptance criteria",
+                "- [ ] AC1",
+                "## Boundary",
+                "- Bound",
+                "Depends on: #101",
+              ].join("\n"),
+              comments: [],
+            };
+          }
+          if (num === 101) {
+            return {
+              number: 101,
+              url: "https://github.com/owner/repo-fallback/issues/101",
+              state: "OPEN",
+            };
+          }
+        }
+        return {};
+      };
+
+      const contract = bindIssueContract({
+        root: checkoutPath,
+        number: 102,
+        repo: "owner/repo-fallback",
+        read: readMock as any,
+      });
+      expect(contract.number).toBe(102);
+      expect(contract.dependencies).toEqual([{ number: 101, state: "CLOSED" }]);
+    });
+
+    test("evaluates admission, contract binding, and scheduler by verifying SQLite project_issue_integrations parity", async () => {
+      const checkoutPath = createMockCheckout("co-sqlite-parity", "owner/repo-sqlite-parity");
+      execFileSync("git", ["checkout", "-b", "factory/spec-50-integration"], { cwd: checkoutPath });
+      execFileSync("git", ["commit", "--allow-empty", "-m", "integrated 201"], {
+        cwd: checkoutPath,
+      });
+      const sha201 = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: checkoutPath,
+        encoding: "utf-8",
+      }).trim();
+
+      const project = await registry.registerProject({
+        method: "local_checkout",
+        name: "SQLite Parity Project",
+        checkout_path: checkoutPath,
+      });
+
+      // Record verified branch integration for issue #201 in project database
+      intake.recordBranchIntegration(project.id, 201, "factory/spec-50-integration", sha201);
+
+      // Verify bindIssueContract with db/projectId recognizes #201 as satisfied even though GitHub state is OPEN
+      const readMock = (args: string[]) => {
+        if (args[0] === "api") return [];
+        if (args.slice(0, 2).join(" ") === "issue view") {
+          const num = Number(args[2]);
+          if (num === 202) {
+            return {
+              number: 202,
+              url: "https://github.com/owner/repo-sqlite-parity/issues/202",
+              state: "OPEN",
+              title: "Ticket 202",
+              labels: [{ name: "ready-for-agent" }],
+              body: [
+                "## Source and problem",
+                "Prob",
+                "## Outcome",
+                "Out",
+                "## Invariants",
+                "- Inv",
+                "## Acceptance criteria",
+                "- [ ] AC1",
+                "## Boundary",
+                "- Bound",
+                "Depends on: #201",
+              ].join("\n"),
+              comments: [],
+            };
+          }
+          if (num === 201) {
+            return {
+              number: 201,
+              url: "https://github.com/owner/repo-sqlite-parity/issues/201",
+              state: "OPEN", // Still OPEN on forge awaiting parent PR!
+            };
+          }
+        }
+        return {};
+      };
+
+      const contract = bindIssueContract({
+        root: checkoutPath,
+        number: 202,
+        repo: "owner/repo-sqlite-parity",
+        read: readMock as any,
+        db,
+        projectId: project.id,
+      });
+      expect(contract.number).toBe(202);
+      expect(contract.dependencies).toEqual([{ number: 201, state: "CLOSED" }]);
+
+      // Verify filterAdmittedIssues also admits #202 via SQLite project_issue_integrations
+      const { filterAdmittedIssues } = await import("../../scripts/loop/scheduler");
+      const candidate202 = {
+        number: 202,
+        title: "Ticket 202",
+        state: "OPEN",
+        labels: ["ready-for-agent"],
+        dependencies: [201],
+        activeClaim: false,
+      };
+
+      const admitted = filterAdmittedIssues([candidate202], new Set(), {
+        db,
+        projectId: project.id,
+        root: checkoutPath,
+      });
+      expect(admitted.map((c) => c.number)).toEqual([202]);
+    });
+
+    test("readVerifiedBranchIntegrations scopes by project, rejects unregistered repo, stale/forged rows, and accepts verified commit", () => {
+      // 1. Setup real Git repository with a verified commit on factory/spec-50-integration
+      const repoDir1 = join(tempDir, "repo-proj1");
+      mkdirSync(repoDir1, { recursive: true });
+      execFileSync("git", ["init"], { cwd: repoDir1 });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repoDir1 });
+      execFileSync("git", ["config", "user.name", "test"], { cwd: repoDir1 });
+      execFileSync("git", ["checkout", "-b", "main"], { cwd: repoDir1 });
+      execFileSync("git", ["commit", "--allow-empty", "-m", "initial commit"], { cwd: repoDir1 });
+      execFileSync("git", ["checkout", "-b", "factory/spec-50-integration"], { cwd: repoDir1 });
+      execFileSync("git", ["commit", "--allow-empty", "-m", "integrated #50"], { cwd: repoDir1 });
+      const realSha50 = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: repoDir1,
+        encoding: "utf-8",
+      }).trim();
+
+      // Repo 2 for second project
+      const repoDir2 = join(tempDir, "repo-proj2");
+      mkdirSync(repoDir2, { recursive: true });
+      execFileSync("git", ["init"], { cwd: repoDir2 });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repoDir2 });
+      execFileSync("git", ["config", "user.name", "test"], { cwd: repoDir2 });
+      execFileSync("git", ["checkout", "-b", "main"], { cwd: repoDir2 });
+      execFileSync("git", ["commit", "--allow-empty", "-m", "initial commit"], { cwd: repoDir2 });
+
+      // Register two projects in db
+      db.prepare(`
+        INSERT INTO projects (id, name, repo_id, repo_name, checkout_path, status, created_at, updated_at)
+        VALUES ('proj-1', 'Project 1', 101, 'owner/repo-1', ?, 'active', datetime('now'), datetime('now')),
+               ('proj-2', 'Project 2', 102, 'owner/repo-2', ?, 'active', datetime('now'), datetime('now'))
+      `).run(repoDir1, repoDir2);
+
+      // In proj-1:
+      // Issue 50: real verified commit
+      // Issue 51: forged commit that does not exist in git
+      // Issue 52: commit that exists in git on an unrelated branch, but NOT reachable from factory/spec-50-integration
+      execFileSync("git", ["checkout", "-b", "unrelated-branch", "main"], { cwd: repoDir1 });
+      execFileSync("git", ["commit", "--allow-empty", "-m", "unrelated work"], { cwd: repoDir1 });
+      const unrelatedSha = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: repoDir1,
+        encoding: "utf-8",
+      }).trim();
+
+      db.prepare(`
+        INSERT INTO project_issue_integrations (project_id, issue_number, branch, commit_sha, integrated_at)
+        VALUES ('proj-1', 50, 'factory/spec-50-integration', ?, datetime('now')),
+               ('proj-1', 51, 'factory/spec-50-integration', 'deadbeef00000000000000000000000000000000', datetime('now')),
+               ('proj-1', 52, 'factory/spec-50-integration', ?, datetime('now'))
+      `).run(realSha50, unrelatedSha);
+
+      // (Case 1) Two projects same issue number:
+      // proj-2 does NOT have issue 50 integrated.
+      const proj2Verified = readVerifiedBranchIntegrations({
+        db,
+        projectId: "proj-2",
+        root: repoDir2,
+      });
+      expect(proj2Verified.has(50)).toBe(false);
+      expect(proj2Verified.size).toBe(0);
+
+      // (Case 2) Unregistered repo:
+      // Querying with an unregistered repo root must return empty set (fail closed, never unscoped SQL)
+      const unregVerified = readVerifiedBranchIntegrations({
+        db,
+        root: join(tempDir, "unregistered-repo"),
+      });
+      expect(unregVerified.size).toBe(0);
+
+      // (Case 3) Forged/stale row:
+      // Issue 51 has forged deadbeef SHA; Issue 52 has SHA not reachable from intended integration ref.
+      // Neither should be verified.
+      const proj1Verified = readVerifiedBranchIntegrations({
+        db,
+        projectId: "proj-1",
+        root: repoDir1,
+        integrationRef: "factory/spec-50-integration",
+      });
+      expect(proj1Verified.has(51)).toBe(false);
+      expect(proj1Verified.has(52)).toBe(false);
+
+      // (Case 4) Real verified Git commit:
+      // Issue 50 is reachable from factory/spec-50-integration -> verified!
+      expect(proj1Verified.has(50)).toBe(true);
+      expect(proj1Verified.size).toBe(1);
+    });
+
+    test("blocks admission on blocking labels (needs-info, ready-for-human, needs-triage, needs-owner)", async () => {
       const checkoutPath = createMockCheckout("co-alpha", "owner/repo-alpha");
       const project = await registry.registerProject({
         method: "local_checkout",
@@ -348,7 +626,12 @@ Depends on: #59, #60
         checkout_path: checkoutPath,
       });
 
-      for (const blockingLabel of ["needs-info", "ready-for-human", "needs-triage"]) {
+      for (const blockingLabel of [
+        "needs-info",
+        "ready-for-human",
+        "needs-triage",
+        "needs-owner",
+      ]) {
         forge.addIssue("owner/repo-alpha", {
           number: 21,
           title: `Task with ${blockingLabel}`,
@@ -360,6 +643,150 @@ Depends on: #59, #60
         expect(issue.admission_status).toBe("held");
         expect(issue.reason).toBe("held_by_label");
       }
+    });
+
+    test("strictly blocks target binding when issue has needs-owner label", async () => {
+      const checkoutPath = createMockCheckout("co-alpha", "owner/repo-alpha");
+      const project = await registry.registerProject({
+        method: "local_checkout",
+        name: "Alpha Project",
+        checkout_path: checkoutPath,
+      });
+
+      forge.addIssue("owner/repo-alpha", {
+        number: 22,
+        title: "Escalated Task",
+        state: "OPEN",
+        labels: [{ name: "ready-for-agent" }, { name: "needs-owner" }],
+      });
+
+      await expect(
+        intake.bindProjectTarget(project.id, 22, {
+          expected_state: "OPEN",
+          expected_labels: ["ready-for-agent", "needs-owner"],
+          expected_admission_status: "admitted",
+        }),
+      ).rejects.toThrow(TargetBindingError);
+    });
+
+    test("unions native GitHub blocked_by dependencies with Markdown Depends on", async () => {
+      const checkoutPath = createMockCheckout("co-alpha", "owner/repo-alpha");
+      const project = await registry.registerProject({
+        method: "local_checkout",
+        name: "Alpha Project",
+        checkout_path: checkoutPath,
+      });
+
+      // Dependency #10 is OPEN on forge
+      forge.addIssue("owner/repo-alpha", {
+        number: 10,
+        title: "Blocker Prereq",
+        state: "OPEN",
+        labels: [{ name: "ready-for-agent" }],
+      });
+      // Issue #50 has no textual Depends on: in body, but has a native blocked_by edge to #10
+      forge.addIssue("owner/repo-alpha", {
+        number: 50,
+        title: "Native Blocked Task",
+        state: "OPEN",
+        labels: [{ name: "ready-for-agent" }],
+        body: "## Source and problem\nProblem\n## Outcome\nOutcome\n## Invariants\n- Inv\n## Acceptance criteria\n- [ ] AC1\n## Boundary\n- Boundary\n\nDepends on: None",
+      });
+      await forge.addIssueDependency("owner/repo-alpha", 50, 10);
+
+      const issue = await intake.getProjectIssue(project.id, 50);
+      expect(issue.admission_status).toBe("held");
+      expect(issue.reason).toBe("waiting_on_dependency:#10");
+      expect(issue.dependencies).toContain(10);
+      expect(issue.unsatisfied_dependencies).toContain(10);
+    });
+
+    test("holds issue when issue dossier attempts reach max_laps (dossier_budget_exhausted)", async () => {
+      const checkoutPath = createMockCheckout("co-alpha", "owner/repo-alpha");
+      const project = await registry.registerProject({
+        method: "local_checkout",
+        name: "Alpha Project",
+        checkout_path: checkoutPath,
+      });
+
+      forge.addIssue("owner/repo-alpha", {
+        number: 60,
+        title: "Exhausted Task",
+        state: "OPEN",
+        labels: [{ name: "ready-for-agent" }],
+      });
+
+      // Write dossier under stateRoot
+      const ws = resolveProjectWorkspace(checkoutPath);
+      mkdirSync(ws.dossiersDir, { recursive: true });
+      writeFileSync(
+        join(ws.dossiersDir, "issue-60.json"),
+        JSON.stringify({
+          issueNumber: 60,
+          attempts: [{ lap: 0 }, { lap: 1 }, { lap: 2 }],
+        }),
+      );
+
+      const issue = await intake.getProjectIssue(project.id, 60);
+      expect(issue.admission_status).toBe("held");
+      expect(issue.reason).toBe("dossier_budget_exhausted");
+    });
+
+    test("holds issue when local run state is waiting_approval, needs_owner, or interrupted", async () => {
+      const checkoutPath = createMockCheckout("co-alpha", "owner/repo-alpha");
+      const project = await registry.registerProject({
+        method: "local_checkout",
+        name: "Alpha Project",
+        checkout_path: checkoutPath,
+      });
+
+      forge.addIssue("owner/repo-alpha", {
+        number: 70,
+        title: "Waiting Approval Task",
+        state: "OPEN",
+        labels: [{ name: "ready-for-agent" }],
+      });
+      forge.addIssue("owner/repo-alpha", {
+        number: 71,
+        title: "Escalated Run Task",
+        state: "OPEN",
+        labels: [{ name: "ready-for-agent" }],
+      });
+      forge.addIssue("owner/repo-alpha", {
+        number: 72,
+        title: "Interrupted Run Task",
+        state: "OPEN",
+        labels: [{ name: "ready-for-agent" }],
+      });
+
+      const ws = resolveProjectWorkspace(checkoutPath);
+      mkdirSync(join(ws.runsDir, "run-70"), { recursive: true });
+      writeFileSync(
+        join(ws.runsDir, "run-70", "state.json"),
+        JSON.stringify({ issue: 70, status: "waiting_approval" }),
+      );
+      mkdirSync(join(ws.runsDir, "run-71"), { recursive: true });
+      writeFileSync(
+        join(ws.runsDir, "run-71", "state.json"),
+        JSON.stringify({ issue: 71, status: "needs_owner" }),
+      );
+      mkdirSync(join(ws.runsDir, "run-72"), { recursive: true });
+      writeFileSync(
+        join(ws.runsDir, "run-72", "state.json"),
+        JSON.stringify({ issue: 72, status: "interrupted" }),
+      );
+
+      const issue70 = await intake.getProjectIssue(project.id, 70);
+      expect(issue70.admission_status).toBe("held");
+      expect(issue70.reason).toBe("waiting_approval");
+
+      const issue71 = await intake.getProjectIssue(project.id, 71);
+      expect(issue71.admission_status).toBe("held");
+      expect(issue71.reason).toBe("needs_owner");
+
+      const issue72 = await intake.getProjectIssue(project.id, 72);
+      expect(issue72.admission_status).toBe("held");
+      expect(issue72.reason).toBe("interrupted");
     });
 
     test("strictly excludes issue on wontfix label even if ready-for-agent is present", async () => {
@@ -380,6 +807,79 @@ Depends on: #59, #60
       const issue = await intake.getProjectIssue(project.id, 30);
       expect(issue.admission_status).toBe("excluded");
       expect(issue.reason).toBe("excluded_by_label");
+    });
+
+    test("wontfix label has absolute precedence over CLOSED state and blocking labels", async () => {
+      const checkoutPath = createMockCheckout("co-alpha", "owner/repo-alpha");
+      const project = await registry.registerProject({
+        method: "local_checkout",
+        name: "Alpha Project",
+        checkout_path: checkoutPath,
+      });
+
+      // Issue is CLOSED on GitHub and has wontfix
+      forge.addIssue("owner/repo-alpha", {
+        number: 31,
+        title: "Dead Closed Feature",
+        state: "CLOSED",
+        labels: [{ name: "wontfix" }, { name: "needs-owner" }],
+      });
+
+      const issue = await intake.getProjectIssue(project.id, 31);
+      expect(issue.admission_status).toBe("excluded");
+      expect(issue.reason).toBe("excluded_by_label");
+    });
+
+    test("evaluateBacklogAdmission holds issue when native dependency lookup throws", async () => {
+      const checkoutPath = createMockCheckout("co-alpha", "owner/repo-alpha");
+      const project = await registry.registerProject({
+        method: "local_checkout",
+        name: "Alpha Project",
+        checkout_path: checkoutPath,
+      });
+
+      forge.addIssue("owner/repo-alpha", {
+        number: 55,
+        title: "Native Error Task",
+        state: "OPEN",
+        labels: [{ name: "ready-for-agent" }],
+      });
+
+      forge.getIssueDependencies = async () => {
+        throw new Error("GitHub GraphQL API timeout");
+      };
+
+      const issue = await intake.getProjectIssue(project.id, 55);
+      expect(issue.admission_status).toBe("held");
+      expect(issue.reason).toBe("dependency_lookup_failed:native");
+    });
+
+    test("verifyTargetBinding rejects when getIssueDependencies throws", async () => {
+      const checkoutPath = createMockCheckout("co-alpha", "owner/repo-alpha");
+      const project = await registry.registerProject({
+        method: "local_checkout",
+        name: "Alpha Project",
+        checkout_path: checkoutPath,
+      });
+
+      forge.addIssue("owner/repo-alpha", {
+        number: 56,
+        title: "Native Error Bind Task",
+        state: "OPEN",
+        labels: [{ name: "ready-for-agent" }],
+      });
+
+      forge.getIssueDependencies = async () => {
+        throw new Error("transport disconnect");
+      };
+
+      await expect(
+        intake.bindProjectTarget(project.id, 56, {
+          expected_state: "OPEN",
+          expected_labels: ["ready-for-agent"],
+          expected_admission_status: "admitted",
+        }),
+      ).rejects.toThrow(TargetBindingError);
     });
 
     test("holds issue when active claim exists in comments or body", async () => {
@@ -620,12 +1120,28 @@ Depends on: #59, #60
       expect(betaIssue20.unsatisfied_dependencies).toEqual([]);
 
       // 3. Branch integration in Project Beta does NOT satisfy Project Alpha
-      intake.recordBranchIntegration(projectBeta.id, 10, "feat/beta-branch");
+      execFileSync("git", ["checkout", "-b", "feat/beta-branch"], { cwd: checkoutBeta });
+      execFileSync("git", ["commit", "--allow-empty", "-m", "integrated beta #10"], {
+        cwd: checkoutBeta,
+      });
+      const shaBeta10 = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: checkoutBeta,
+        encoding: "utf-8",
+      }).trim();
+      intake.recordBranchIntegration(projectBeta.id, 10, "feat/beta-branch", shaBeta10);
       const alphaStillHeld = await intake.getProjectIssue(projectAlpha.id, 20);
       expect(alphaStillHeld.admission_status).toBe("held");
 
       // 4. Branch integration in Project Alpha satisfies Alpha, leaves Beta unaffected
-      intake.recordBranchIntegration(projectAlpha.id, 10, "feat/alpha-branch");
+      execFileSync("git", ["checkout", "-b", "feat/alpha-branch"], { cwd: checkoutAlpha });
+      execFileSync("git", ["commit", "--allow-empty", "-m", "integrated alpha #10"], {
+        cwd: checkoutAlpha,
+      });
+      const shaAlpha10 = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: checkoutAlpha,
+        encoding: "utf-8",
+      }).trim();
+      intake.recordBranchIntegration(projectAlpha.id, 10, "feat/alpha-branch", shaAlpha10);
       const alphaNowAdmitted = await intake.getProjectIssue(projectAlpha.id, 20);
       expect(alphaNowAdmitted.admission_status).toBe("admitted");
       expect(alphaNowAdmitted.reason).toBe("admitted_ready");

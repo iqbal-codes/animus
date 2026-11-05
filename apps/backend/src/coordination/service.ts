@@ -14,10 +14,11 @@ import { CommandService } from "../command/service";
 import { evaluateIssueAdmission, type RawIssue } from "../intake/admission";
 import { parseDependencies } from "../intake/parser";
 import { buildDependencyDAG } from "./dag";
-import { WorktreeManager } from "./worktree";
+import { allocateWorktree } from "./worktree";
 import { freezeContract, executeTargetedImplement, type ImplementRunner } from "./primitive";
 import { SerializedIntegrationManager } from "./integration";
 import { CoordinationError } from "./errors";
+import { analyzeCriticalDiffImpact } from "../../../../scripts/loop/merge-queue";
 import { getProjectWorktreesDir } from "@animus/contracts/paths";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -37,7 +38,7 @@ export class SpecCoordinatorService {
   private forge: IssueForgeAdapter;
   private ledger: CommandLedger;
   private commandService: CommandService;
-  private worktreeManager: WorktreeManager;
+  private worktreeAllocator: typeof allocateWorktree;
   private integrationManager: SerializedIntegrationManager;
   private gitRunner?: (cmd: string[], options: { cwd: string }) => string;
   private implementRunner?: ImplementRunner;
@@ -48,7 +49,7 @@ export class SpecCoordinatorService {
     options?: {
       ledger?: CommandLedger;
       commandService?: CommandService;
-      worktreeManager?: WorktreeManager;
+      worktreeAllocator?: typeof allocateWorktree;
       integrationManager?: SerializedIntegrationManager;
       gitRunner?: (cmd: string[], options: { cwd: string }) => string;
       implementRunner?: ImplementRunner;
@@ -60,7 +61,7 @@ export class SpecCoordinatorService {
     this.commandService = options?.commandService ?? new CommandService(db);
     this.gitRunner = options?.gitRunner;
     this.implementRunner = options?.implementRunner;
-    this.worktreeManager = options?.worktreeManager ?? new WorktreeManager(this.gitRunner);
+    this.worktreeAllocator = options?.worktreeAllocator ?? allocateWorktree;
     this.integrationManager =
       options?.integrationManager ?? new SerializedIntegrationManager(this.gitRunner);
   }
@@ -390,7 +391,7 @@ export class SpecCoordinatorService {
     // AC2: Allocate isolated worktree with exclusive lock & validate start SHA and cleanliness
     let allocation;
     try {
-      allocation = this.worktreeManager.allocateWorktree({
+      allocation = this.worktreeAllocator({
         repoRoot: project.checkout_path,
         worktreeDir,
         branch: childBranch,
@@ -517,6 +518,66 @@ export class SpecCoordinatorService {
         result: implementResult,
       });
       return implementResult;
+    }
+
+    // Two-Layer Critical Impact Gate: diff path inspection before integration
+    const childCommitSha =
+      implementResult.headSha ?? this.runGit(["rev-parse", "HEAD"], worktreeDir);
+    let diffFiles: string[] = [];
+    let diffContent = "";
+    try {
+      diffFiles = this.runGit(
+        ["diff", "--name-only", "--no-renames", startSha, childCommitSha],
+        worktreeDir,
+      )
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      diffContent = this.runGit(["diff", startSha, childCommitSha], worktreeDir);
+    } catch {}
+
+    const diffImpact = analyzeCriticalDiffImpact(diffFiles, diffContent);
+    const judgement =
+      (implementResult as any).autoMergeJudgement ??
+      (implementResult as any).reviewerReport?.auto_merge_judgement;
+    const reviewerImpacts = judgement?.critical_impacts ?? [];
+    const criticalImpacts = Array.from(new Set([...diffImpact.categories, ...reviewerImpacts]));
+
+    if (
+      criticalImpacts.length > 0 ||
+      (judgement && !judgement.eligible) ||
+      (judgement && (judgement.risk_level === "high" || judgement.risk_level === "moderate")) ||
+      (judgement && !judgement.scope_aligned)
+    ) {
+      const errorMsg = `Critical impact detected on child #${childIssueNumber} (${criticalImpacts.join(", ")}): requires human review before integration`;
+      plan.status = "halted";
+      plan.haltReason = errorMsg;
+      plan.haltAttribution = {
+        childIssueNumber,
+        stage: "critical_impact_gate",
+        error: errorMsg,
+        worktreePath: worktreeDir,
+        preservedSha: plan.currentIntegrationSha,
+      };
+      child.status = "failed";
+      child.error = errorMsg;
+      this.savePlan(plan);
+
+      this.ledger.updateOutcome(requestId, {
+        state: "failed",
+        provenance: {
+          source: "critical_impact_gate",
+          timestamp: new Date().toISOString(),
+          details: errorMsg,
+        },
+        error: errorMsg,
+      });
+
+      throw new CoordinationError("critical_impact_detected", errorMsg, {
+        criticalImpacts,
+        reasons: diffImpact.reasons,
+        childIssueNumber,
+      });
     }
 
     // AC3: Merge into local integration branch via serialized compare-and-swap

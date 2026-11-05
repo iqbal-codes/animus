@@ -2,14 +2,7 @@ export * from "./types";
 export * from "./config";
 export * from "./prompts";
 export * from "./artifacts";
-export * from "./backlog";
-export * from "./holdouts";
-export * from "./manager";
-export * from "./ship";
 export * from "./merge-queue";
-export * from "./simplify";
-export * from "./deploy";
-export * from "./discoveries";
 export * from "./scheduler";
 export * from "./providers";
 export * from "./harness-memory";
@@ -25,15 +18,25 @@ export {
   DEFAULT_PROTECTED_PATHS,
   type PrepareLoopWorktreeOptions,
   type AssertCandidateOptions,
+  type WorktreeAllocation,
+  type WorktreeAllocationOptions,
+  type WorktreeLockInfo,
   git,
   inspectLocalLoop,
   findExistingWorktreeForBranch,
+  acquireIssueLock,
   acquireWorktreeIssueLock,
   prepareLoopWorktree,
   assertCandidate,
+  isPidAlive,
+  allocateWorktree,
 } from "./worktree";
-export * from "./lifecycle";
-export * from "./role-runner";
+export {
+  runBoundedRole,
+  type BoundedRoleOptions,
+  type BoundedRoleResult,
+  RoleInterrupted,
+} from "./role-runner";
 export {
   defaultGhRunner,
   publishPrEvidenceUpdate,
@@ -41,19 +44,18 @@ export {
   extractValidDiffLines,
   publishPrReview,
   syncExistingEvidenceBindings,
-  escalateIssueToHuman,
-  publishLoopComment,
-  syncAndPublishPrEvidence,
-  recordLapAndReflect,
-  publishBuilderDelivery,
   type PublicationRecord,
   type PublicationErrorRecord,
-  type PublishLoopCommentOptions,
-  type SyncAndPublishPrEvidenceOptions,
-  type RecordLapAndReflectOptions,
-  type PublishBuilderDeliveryOptions,
 } from "./pr-publication";
-export * from "./qa-runner";
-export * from "./review-gate";
-export { acquireIssueLock } from "./triage";
-
+export {
+  verifyDeployment,
+  type DeploymentVerificationResult,
+} from "./qa-runner";
+export { LoopPublisher, type LoopPublisherOptions } from "./publisher";
+export { acquireTriageIssueLock } from "./triage";
+export {
+  LapSession,
+  runAnimusLoop,
+  runLocalLoop,
+  type TerminalDispositionInput,
+} from "./session";
