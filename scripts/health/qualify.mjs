@@ -132,10 +132,15 @@ try {
         'command: "vp test run -t \\\"qualification deliberate failure\\\""',
       )
       .replace(
-        'command: "bun test tests/integration/health.bun.test.ts"',
-        'command: "bun test tests/integration/health.bun.test.ts -t \\\"qualification deliberate failure\\\""',
+        /command:\s*"bun test [^"\n]*"/,
+        'command: "bun test --timeout 30000 tests/integration/health.bun.test.ts -t \\\"qualification deliberate failure\\\""',
       );
-    if (isolated === config) throw new Error("Qualification could not isolate aggregate");
+    if (
+      isolated === config ||
+      !isolated.includes("bun test --timeout 30000 tests/integration/health.bun.test.ts -t")
+    ) {
+      throw new Error("Qualification could not isolate aggregate runners");
+    }
     try {
       mutation(configPath, isolated, () => {
         run(["bun", "run", "test"], diagnostic);
