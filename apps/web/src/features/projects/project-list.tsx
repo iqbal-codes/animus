@@ -133,10 +133,10 @@ export function ProjectList({
                   <Badge
                     variant={
                       proj.status === "active"
-                        ? "active"
+                        ? "success"
                         : proj.status === "held"
-                          ? "held"
-                          : "tombstone"
+                          ? "warning"
+                          : "muted"
                     }
                   >
                     {proj.status}

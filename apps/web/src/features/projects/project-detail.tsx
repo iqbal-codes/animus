@@ -25,7 +25,7 @@ export function ProjectDetail({ project, onClose }: ProjectDetailProps) {
           <div>
             <div className="flex items-center gap-2">
               <h3 className="text-base font-semibold text-[var(--foreground)]">{project.name}</h3>
-              <Badge variant={project.status === "active" ? "active" : "held"}>
+              <Badge variant={project.status === "active" ? "success" : "warning"}>
                 {project.status}
               </Badge>
             </div>
