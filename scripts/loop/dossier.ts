@@ -19,6 +19,8 @@ export interface LapAttemptRecord {
   rechecks?: RemediationRecheckRecord[];
   /** Host-recorded recovery within this lap, not a model's claim of friction. */
   recoveries?: Array<{ role: string; artifact: string; reason: string }>;
+  /** Provider session ids observed per role in this lap, for opt-in resume. */
+  sessions?: Partial<Record<string, { sessionId: string; provider: string }>>;
   artifactsDir?: string;
   commandRecords?: import("./learning-schema").LearningCommandRecord[];
   evidence?: Array<{ candidate: string; artifact: string; exitCode: number }>;

@@ -23,6 +23,7 @@ export interface AnimusConfig {
   aliases?: Record<string, TierBinding>;
   roles?: Partial<Record<LoopRole, RoleBinding | ModelTier>>;
   worktree?: { baseBranch?: string };
+  loop?: { resumeBuilderSession?: boolean | string };
 }
 
 export function parseYamlSimple(text: string): Record<string, any> {
@@ -140,6 +141,12 @@ export function serializeAnimusConfigYaml(config: AnimusConfig): string {
   if (config.worktree?.baseBranch) {
     lines.push("worktree:");
     lines.push(`  baseBranch: ${config.worktree.baseBranch}`);
+    lines.push("");
+  }
+
+  if (config.loop?.resumeBuilderSession !== undefined) {
+    lines.push("loop:");
+    lines.push(`  resumeBuilderSession: ${config.loop.resumeBuilderSession}`);
     lines.push("");
   }
 
@@ -309,4 +316,21 @@ export function resolveRoleConfig(
     model: resolveModelForRole(root, role, env),
     effort: resolveEffortForRole(root, role, env),
   };
+}
+
+/**
+ * Whether a `continue` lap should resume the previous lap's builder session.
+ * Off by default: the loop deliberately re-derives state from the worktree and
+ * PR rather than trusting a prior transcript. Env wins over repository config.
+ */
+export function resolveResumeBuilderSession(
+  root: string,
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  const raw = env.FACTORY_LOOP_RESUME_BUILDER_SESSION;
+  if (raw !== undefined) {
+    return raw === "1" || raw.toLowerCase() === "true";
+  }
+  const configured = readAnimusConfig(root).loop?.resumeBuilderSession;
+  return configured === true || configured === "true";
 }

@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { git, inspectLocalLoop } from "./worktree";
-import { buildProviderArgv } from "./providers";
+import { buildProviderArgv, supportsSessionResume } from "./providers";
 import { interruptionReport, RoleInterrupted } from "./deadlines";
 import { extractReport } from "./artifacts";
 import type {
@@ -41,6 +41,8 @@ export interface BoundedRoleOptions {
   getStage?: () => string;
   gitCmd?: typeof git;
   rawOutput?: boolean;
+  /** Explicit provider session id to resume. Absent means start a fresh session. */
+  resumeSessionId?: string;
 }
 
 export interface BoundedRoleResult {
@@ -49,6 +51,29 @@ export interface BoundedRoleResult {
   rawStdout: string;
   artifact: string;
   head: string;
+  /** Provider-issued session id observed in this attempt's stdout, when reported. */
+  sessionId?: string;
+}
+
+function extractSessionId(stdout: string): string | undefined {
+  for (const line of stdout.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const event = JSON.parse(line);
+      const frame = event.type === "event" && event.event ? event.event : event;
+      const candidates = [event, frame];
+      for (const node of candidates) {
+        if (node.type === "session" && typeof node.id === "string" && node.id) return node.id;
+        if (node.type === "result" && typeof node.sessionId === "string" && node.sessionId) {
+          return node.sessionId;
+        }
+        if (node.type === "result" && typeof node.session_id === "string" && node.session_id) {
+          return node.session_id;
+        }
+      }
+    } catch {}
+  }
+  return undefined;
 }
 
 /**
@@ -93,23 +118,35 @@ export async function runBoundedRole(opts: BoundedRoleOptions): Promise<BoundedR
     rawOutput = false,
   } = opts;
 
+  let resumeSessionId = opts.resumeSessionId;
+  let sessionDirInUse: string | undefined;
+
   for (let attempt = 0; attempt <= maxContinuations; attempt++) {
     await inspectLocalLoop(root);
     const startedAt = Date.now();
     const softDeadline = startedAt + budget.softMs;
     const hardDeadline = startedAt + budget.hardMs;
 
-    const attemptSessionDir =
-      attempt === 0
-        ? (sessionDir ?? join(runDirectory, `${role}-session`))
-        : join(runDirectory, `${role}-attempt-${attempt}-session`);
+    // Continuations stay in one session directory: a resumed id must resolve against
+    // the transcript the previous attempt wrote, or it silently starts a new session.
+    // This applies to every role, because "continuation" means resuming that role's
+    // own prior attempt rather than re-deriving it from scratch.
+    const attemptSessionDir = sessionDirInUse ?? sessionDir ?? join(runDirectory, `${role}-session`);
+    sessionDirInUse = attemptSessionDir;
     await mkdir(attemptSessionDir, { recursive: true });
 
+    const canResume = Boolean(resumeSessionId) && supportsSessionResume(provider);
+    const continuationBase =
+      role === "reflector"
+        ? `Read ${checkpointPath} and prior attempt artifacts first; retain all existing work.`
+        : `Read ${checkpointPath} and prior attempt artifacts first, run the baseline check yourself before editing, skip any failed approaches recorded in the checkpoint, and retain all verified work.`;
     const continuationText =
       attempt > 0
-        ? role === "reflector"
-          ? `Continuation ${attempt}: resume the SAME role in the SAME worktree. Read ${checkpointPath} and prior attempt artifacts first; retain all existing work.`
-          : `Continuation ${attempt}: resume the SAME role in the SAME worktree. Read ${checkpointPath} and prior attempt artifacts first, run the baseline check yourself before editing, skip any failed approaches recorded in the checkpoint, and retain all verified work.`
+        ? `Continuation ${attempt}: resume the SAME role in the SAME worktree. ${
+            canResume
+              ? "Your previous conversation in this role is resumed above; treat its claims as unverified hints and confirm live state."
+              : "No prior conversation was resumed; re-derive state from the checkpoint and the worktree."
+          } ${continuationBase}`
         : "";
 
     const deadlineSection = [
@@ -137,6 +174,7 @@ export async function runBoundedRole(opts: BoundedRoleOptions): Promise<BoundedR
       skills,
       extensions,
       appendSystemPrompts,
+      sessionId: canResume ? resumeSessionId : undefined,
     });
 
     const timeoutMs = Math.max(1, hardDeadline - Date.now());
@@ -175,6 +213,13 @@ export async function runBoundedRole(opts: BoundedRoleOptions): Promise<BoundedR
     }
     if (onSave) {
       await onSave();
+    }
+
+    // Carry the observed session id into the next attempt so a continuation resumes
+    // the transcript this attempt just wrote instead of starting over.
+    const observedSessionId = extractSessionId(result.stdout);
+    if (observedSessionId && supportsSessionResume(provider)) {
+      resumeSessionId = observedSessionId;
     }
 
     const timedOut =
@@ -219,6 +264,7 @@ export async function runBoundedRole(opts: BoundedRoleOptions): Promise<BoundedR
       rawStdout: result.stdout,
       artifact,
       head,
+      sessionId: extractSessionId(result.stdout),
     };
   }
 

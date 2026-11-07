@@ -1,6 +1,8 @@
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import { createServer } from "node:net";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveAnimusStateDir } from "@animus/contracts/paths";
 import { validateBindAddress, ensureSessionSecret } from "./security";
@@ -61,6 +63,51 @@ async function allocateLoopbackPort(): Promise<number> {
   });
 }
 
+export function resolveBunRunner(): string {
+  if (typeof Bun !== "undefined" && typeof Bun.which === "function") {
+    const whichBun = Bun.which("bun");
+    if (whichBun) return whichBun;
+  }
+  if (process.execPath && basename(process.execPath).toLowerCase().startsWith("bun")) {
+    return process.execPath;
+  }
+  return "bun";
+}
+
+function resolveLauncherRepoRoot(provided?: string): string {
+  if (provided && existsSync(join(provided, "apps/engine-host/src/main.ts"))) {
+    return resolve(provided);
+  }
+  const envRoot = process.env.ANIMUS_SOURCE_ROOT || process.env.FACTORY_SOURCE_ROOT;
+  if (envRoot && existsSync(join(envRoot, "apps/engine-host/src/main.ts"))) {
+    return resolve(envRoot);
+  }
+  for (const rel of ["../../../", "../../", "../"]) {
+    try {
+      const candidate = fileURLToPath(new URL(rel, import.meta.url));
+      if (
+        !candidate.includes("/$bunfs/") &&
+        existsSync(join(candidate, "apps/engine-host/src/main.ts"))
+      ) {
+        return resolve(candidate);
+      }
+    } catch {}
+  }
+  try {
+    const home = homedir();
+    const candidates = [
+      join(home, ".animus/source"),
+      join(home, "Documents/workspace/projects/animus"),
+    ];
+    for (const c of candidates) {
+      if (existsSync(join(c, "apps/engine-host/src/main.ts"))) {
+        return resolve(c);
+      }
+    }
+  } catch {}
+  return provided ? resolve(provided) : fileURLToPath(new URL("../../../", import.meta.url));
+}
+
 export class FactoryLauncher {
   private readonly options: Required<
     Omit<LauncherOptions, "sessionSecretPath" | "operatorToken" | "webDir">
@@ -75,15 +122,15 @@ export class FactoryLauncher {
   private isSimulated = false;
 
   constructor(opts: LauncherOptions = {}) {
-    const defaultRoot = fileURLToPath(new URL("../../../", import.meta.url));
+    const resolvedRepoRoot = resolveLauncherRepoRoot(opts.repoRoot);
     this.options = {
       host: opts.host ?? "127.0.0.1",
       port: opts.port ?? 3000,
       enginePort: opts.enginePort ?? 0,
       stateDir: opts.stateDir ?? resolveAnimusStateDir(),
-      webDir: opts.webDir ?? join(defaultRoot, "apps/web/dist"),
+      webDir: opts.webDir ?? join(resolvedRepoRoot, "apps/web/dist"),
       remoteAccess: opts.remoteAccess ?? false,
-      repoRoot: opts.repoRoot ?? defaultRoot,
+      repoRoot: resolvedRepoRoot,
       sessionSecretPath: opts.sessionSecretPath,
       operatorToken: opts.operatorToken,
     };
@@ -93,6 +140,13 @@ export class FactoryLauncher {
 
   getStatus(): LauncherStatus {
     return { ...this.status };
+  }
+
+  getProcesses(): { backend: any; engineHost: any } {
+    return {
+      backend: this.backendProcess,
+      engineHost: this.engineHostProcess,
+    };
   }
 
   async startSimulated(sim: { backendOk: boolean; engineHostOk: boolean }): Promise<StartupResult> {
@@ -183,6 +237,7 @@ export class FactoryLauncher {
 
     const succeeded: string[] = [];
     const failed: string[] = [];
+    const bunRunner = resolveBunRunner();
 
     const effectiveEnginePort =
       this.options.enginePort > 0
@@ -196,7 +251,7 @@ export class FactoryLauncher {
     try {
       this.engineHostProcess = Bun.spawn(
         [
-          process.execPath,
+          bunRunner,
           engineScript,
           "--port",
           String(effectiveEnginePort),
@@ -227,7 +282,7 @@ export class FactoryLauncher {
         const engineUrl = `http://127.0.0.1:${effectiveEnginePort}`;
         this.backendProcess = Bun.spawn(
           [
-            process.execPath,
+            bunRunner,
             backendScript,
             "--port",
             String(effectiveBackendPort),
@@ -264,6 +319,37 @@ export class FactoryLauncher {
         succeeded,
         failed,
         error: `Startup failed for ${failed.join(", ")}`,
+      };
+    }
+
+    const backendUrl = `http://${this.options.host}:${effectiveBackendPort}`;
+    let backendReady = false;
+    for (let i = 0; i < 40; i++) {
+      if (this.engineHostProcess?.exitCode !== null) {
+        failed.push("engine-host");
+        break;
+      }
+      if (this.backendProcess?.exitCode !== null) {
+        failed.push("backend");
+        break;
+      }
+      try {
+        const res = await fetch(`${backendUrl}/health`, { signal: AbortSignal.timeout(200) });
+        if (res.ok) {
+          backendReady = true;
+          break;
+        }
+      } catch {}
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
+    if (!backendReady || failed.length > 0) {
+      await this.stop();
+      return {
+        status: "partial_startup_failure",
+        succeeded: succeeded.filter((s) => !failed.includes(s)),
+        failed,
+        error: `Startup failed for ${failed.join(", ") || "backend readiness probe"}`,
       };
     }
 

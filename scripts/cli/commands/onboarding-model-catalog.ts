@@ -31,6 +31,37 @@ export function createModelCatalogLoader(
   },
 ): ModelCatalogLoader {
   return async (provider) => {
+    if (provider === "commandcode") {
+      try {
+        const output = await command("commandcode", ["--list-models"]);
+        const lines = stripVTControlCharacters(output).split(/\r?\n/);
+        const models: CatalogModel[] = [];
+        let inDecisionModels = false;
+        for (const line of lines) {
+          const trimmed = line.trimEnd();
+          if (/^Decision models/i.test(trimmed)) inDecisionModels = true;
+          if (inDecisionModels) continue;
+          const match = /^([A-Za-z0-9][\w.\-/]*(?::[\w-]+)?)\s{2,}(\S.*)$/.exec(trimmed);
+          if (!match) continue;
+          models.push({ id: match[1]!, name: match[2]!.trim() });
+        }
+        return {
+          models,
+          source: "commandcode --list-models",
+          ...(!models.length
+            ? {
+                unavailableReason:
+                  "Command Code returned no recognized model catalog. Enter a model ID manually.",
+              }
+            : {}),
+        };
+      } catch (error) {
+        return {
+          models: [],
+          unavailableReason: `Model catalog unavailable: ${error instanceof Error ? error.message : String(error)}. Enter a model ID manually.`,
+        };
+      }
+    }
     if (provider !== "pi" && provider !== "opencode")
       return {
         models: [],

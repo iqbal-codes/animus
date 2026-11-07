@@ -12,7 +12,8 @@ import { renderPrompt, loadPrompt } from "./prompts";
 import { extractReport, validateEvidenceCitations, setupArtifactDirectories, evaluateHostReadiness } from "./artifacts";
 import { formatBuilderComment, formatQaFailureComment, formatCiCheckComment, formatReviewComment } from "./pr-reporting";
 import { executeSubticketAutoMerge, evaluateSubticketAutoMerge } from "./merge-queue";
-import { readAnimusConfig, resolveProviderForRole, resolveModelForRole, resolveEffortForRole } from "./config";
+import { readAnimusConfig, resolveProviderForRole, resolveModelForRole, resolveEffortForRole, resolveResumeBuilderSession } from "./config";
+import { providerSessionExists } from "./providers";
 import { resolveVerificationProfile, getProfileInstructions } from "./profiles";
 import { resolveAllowedSkills, resolveLoopExtensions, buildCuratedAppendPrompts } from "./harness-memory";
 import { loadScheduleConfig } from "./scheduler";
@@ -157,9 +158,11 @@ export class LapSession {
   readonly reviewerTemplate: string;
   readonly commandRecords: LearningCommandRecord[] = [];
   readonly recoveries: NonNullable<LapAttemptRecord["recoveries"]> = [];
+  readonly sessions: NonNullable<LapAttemptRecord["sessions"]> = {};
   readonly releaseLock: () => Promise<void>;
   readonly save: () => Promise<void>;
   readonly existingWorktree?: string;
+  readonly resumeBuilderSessionId?: string;
   private terminalDisposed = false;
 
   constructor(init: {
@@ -202,6 +205,7 @@ export class LapSession {
     qaTemplate: string;
     reviewerTemplate: string;
     existingWorktree?: string;
+    resumeBuilderSessionId?: string;
   }) {
     this.root = init.root;
     this.issue = init.issue;
@@ -237,6 +241,7 @@ export class LapSession {
     this.qaTemplate = init.qaTemplate;
     this.reviewerTemplate = init.reviewerTemplate;
     this.existingWorktree = init.existingWorktree;
+    this.resumeBuilderSessionId = init.resumeBuilderSessionId;
   }
 
   static async init(
@@ -375,6 +380,15 @@ export class LapSession {
       const scheduleConfig = loadScheduleConfig(root);
       const maxLaps = scheduleConfig.max_laps ?? 3;
 
+      const resumeBuilderSessionId = resolveResumeBuilderSessionIdForLap({
+        root,
+        stateRoot,
+        issueNumber: issue.number,
+        route,
+        runDirectory,
+        providerOverride: options.provider,
+      });
+
       const harnessChecks = readHarnessChecks(root);
       const checks = harnessChecks.checks;
       const protectedPaths = harnessChecks.protectedPaths;
@@ -463,6 +477,7 @@ export class LapSession {
         qaTemplate,
         reviewerTemplate,
         existingWorktree: existingWorktree ?? undefined,
+        resumeBuilderSessionId,
       });
     } catch (err) {
       // Release lock on post-acquisition failure
@@ -580,7 +595,21 @@ export class LapSession {
       ledger,
     });
 
-    const prompt = [renderPrompt(template, promptVars, this.artifactsDir), lifecycleContext]
+    const resumeNotice =
+      this.resumeBuilderSessionId && role === "builder"
+        ? [
+            "## Resumed session (host-verified)",
+            "This conversation continues your previous builder session for this issue.",
+            "The worktree was reset to origin state: re-verify live files and HEAD before acting.",
+            "Treat your own earlier claims as unverified hints, not facts.",
+          ].join("\n")
+        : "";
+
+    const prompt = [
+      renderPrompt(template, promptVars, this.artifactsDir),
+      lifecycleContext,
+      resumeNotice,
+    ]
       .filter(Boolean)
       .join("\n\n");
 
@@ -631,7 +660,12 @@ export class LapSession {
       },
       recoveries: this.recoveries,
       getStage: () => this.state.status,
+      resumeSessionId: role === "builder" ? this.resumeBuilderSessionId : undefined,
     });
+
+    if (role === "builder" && result.sessionId) {
+      this.sessions.builder = { sessionId: result.sessionId, provider: roleProvider };
+    }
 
     return result.report;
   }
@@ -1044,6 +1078,7 @@ export class LapSession {
         evidence: [...this.state.evidence],
         commandRecords: [...this.commandRecords],
         recoveries: [...this.recoveries],
+        sessions: { ...this.sessions },
         changedFiles,
         failedStage:
           input.stage === "reviewer" && input.isApproved ? undefined : input.stage,
@@ -1455,6 +1490,43 @@ export class LapSession {
       } catch {}
     }
   }
+}
+
+/**
+ * Resolves an explicit builder session id to resume for a `continue` lap.
+ *
+ * Fails closed to a fresh session unless every precondition holds: the toggle is
+ * enabled, this is a `continue` lap, the previous attempt was `sent_back` with a
+ * recorded candidate, that attempt captured a builder session id, the provider is
+ * unchanged, and the provider transcript still exists on disk. Never falls back to
+ * `--continue`, which would pick up whichever session last ran in this directory.
+ */
+export function resolveResumeBuilderSessionIdForLap(input: {
+  root: string;
+  stateRoot: string;
+  issueNumber: number;
+  route: LocalLoopRoute;
+  runDirectory: string;
+  providerOverride?: string;
+}): string | undefined {
+  const { root, stateRoot, issueNumber, route, runDirectory } = input;
+  if (route !== "continue") return undefined;
+  if (!resolveResumeBuilderSession(root)) return undefined;
+
+  const dossier = loadIssueDossier(stateRoot, issueNumber);
+  const previous = dossier?.attempts.at(-1);
+  if (!previous || previous.status !== "sent_back" || !previous.candidateHead) return undefined;
+
+  const recorded = previous.sessions?.builder;
+  if (!recorded?.sessionId) return undefined;
+
+  const provider = input.providerOverride ?? resolveProviderForRole(root, "builder");
+  if (recorded.provider !== provider) return undefined;
+
+  const sessionDir = join(runDirectory, "0-builder-session");
+  if (!providerSessionExists(provider, sessionDir, recorded.sessionId)) return undefined;
+
+  return recorded.sessionId;
 }
 
 /**

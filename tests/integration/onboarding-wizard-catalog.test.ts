@@ -30,6 +30,39 @@ describe("onboarding model catalog", () => {
     ]);
   });
 
+  test("Command Code uses its documented list-models output and drops section noise", async () => {
+    const catalog = createModelCatalogLoader(async (binary, args) => {
+      expect(binary).toBe("commandcode");
+      expect(args).toEqual(["--list-models"]);
+      return [
+        "",
+        "Available models  ·  3 models",
+        "",
+        "Open Source",
+        "",
+        "deepseek/deepseek-v4-pro                hybrid-attention long-context reasoning",
+        "z-ai/glm-5.3-flash                      fast, affordable GLM coding with 1M context",
+        "",
+        'Pass the full id, or just the short name after the last "/":',
+        "cmd --model kimi-k2.5",
+        "",
+        "Decision models (headless only)",
+        "typesafe/jev  typed questions in, probabilities out",
+        "",
+      ].join("\n");
+    });
+    expect((await catalog("commandcode")).models).toEqual([
+      {
+        id: "deepseek/deepseek-v4-pro",
+        name: "hybrid-attention long-context reasoning",
+      },
+      {
+        id: "z-ai/glm-5.3-flash",
+        name: "fast, affordable GLM coding with 1M context",
+      },
+    ]);
+  });
+
   test.each(["claude", "codex", "omp"] as const)(
     "unsupported catalog for %s never launches a provider command",
     async (provider) => {

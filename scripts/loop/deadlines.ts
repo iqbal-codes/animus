@@ -62,9 +62,15 @@ export function interruptionReport(stdout: string): boolean {
   for (const line of stdout.split("\n")) {
     try {
       const event = JSON.parse(line);
+      const frame = event.type === "event" && event.event ? event.event : event;
+      if (frame.type === "message_end" && Array.isArray(frame.content)) {
+        const text = frame.content.filter((c: any) => c.type === "text").map((c: any) => c.text ?? "").join("");
+        if (text) finalText = text;
+      }
       if (event.type === "message_end" && event.message?.role === "assistant") {
         finalText = (Array.isArray(event.message.content) ? event.message.content : []).filter((c: any) => c.type === "text").map((c: any) => c.text ?? "").join("");
       }
+      if (event.type === "result" && typeof event.finalText === "string" && event.finalText) finalText = event.finalText;
       if (typeof event.result === "string") finalText = event.result;
       if (typeof event.content === "string") finalText = event.content;
     } catch { /* Non-JSON provider output is handled above. */ }

@@ -102,7 +102,7 @@ export interface LocalLoopOptions {
 }
 
 export interface LoopEvidence {
-  kind: "pi" | "claude" | "omp" | "codex" | "opencode" | "agent" | "check";
+  kind: "pi" | "claude" | "omp" | "commandcode" | "codex" | "opencode" | "agent" | "check";
   role?: LoopRole;
   round?: number;
   candidate: string;

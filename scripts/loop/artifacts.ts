@@ -49,6 +49,14 @@ export function extractReportObject(stdout: string): any {
     if (!line.trim()) continue;
     try {
       const event = JSON.parse(line);
+      const frame = event.type === "event" && event.event ? event.event : event;
+      if (frame.type === "message_end" && Array.isArray(frame.content)) {
+        const text = frame.content
+          .filter((c: any) => c.type === "text")
+          .map((c: any) => c.text ?? "")
+          .join("");
+        if (text) textDirect = text;
+      }
       if (event.type === "message_end" && event.message?.role === "assistant") {
         message = event.message;
         if (Array.isArray(event.message?.content)) {
@@ -57,6 +65,9 @@ export function extractReportObject(stdout: string): any {
             .map((c: any) => c.text ?? "")
             .join("");
         }
+      }
+      if (event.type === "result" && typeof event.finalText === "string" && event.finalText) {
+        textDirect = event.finalText;
       }
       if (event.type === "agent_start") settled = false;
       if (event.type === "agent_settled") settled = event.aborted === false;

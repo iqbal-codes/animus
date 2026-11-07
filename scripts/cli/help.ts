@@ -150,7 +150,7 @@ export const orderedFlags: readonly FlagHelp[] = [
   },
   {
     spec: "--provider <id>",
-    description: "Default agent harness provider (pi, claude, omp; codex, opencode coming soon)",
+    description: "Default agent harness provider (pi, claude, omp, commandcode; codex, opencode coming soon)",
     commands: ["setup", "config"],
   },
   {
