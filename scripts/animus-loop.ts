@@ -30,11 +30,18 @@ import {
   LapSession,
   runAnimusLoop,
   runLocalLoop,
+  resolveResumeBuilderSessionIdForLap,
   type TerminalDispositionInput,
 } from "./loop/session";
 
 // Re-export canonical orchestrator seam and domain types
-export { runAnimusLoop, runLocalLoop, LapSession, type TerminalDispositionInput };
+export {
+  runAnimusLoop,
+  runLocalLoop,
+  LapSession,
+  resolveResumeBuilderSessionIdForLap,
+  type TerminalDispositionInput,
+};
 export { LoopPublisher } from "./loop/publisher";
 export type * from "./loop/types";
 export type * from "./loop/prompt-context";

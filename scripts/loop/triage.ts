@@ -1422,6 +1422,9 @@ async function triageSingleIssue(
       }
     } else if (provider === "claude") {
       // Claude Code enforces safety natively via tool inventory restrictions and disabled settings
+    } else if (provider === "commandcode") {
+      // Command Code print mode blocks every write and shell tool unless --yolo is passed,
+      // and buildProviderArgv omits --yolo for readOnly triage runs.
     } else {
       return {
         issueNumber,
@@ -1462,6 +1465,7 @@ async function triageSingleIssue(
       disallowedTools: provider === "claude" ? ["Write", "Edit"] : undefined,
       strictMcp: provider === "claude" ? true : undefined,
       settingSources: provider === "claude" ? "" : undefined,
+      readOnly: provider === "commandcode" ? true : undefined,
     });
 
     // Force FACTORY_LOOP_ROLE: "triage" last so options.env cannot override it

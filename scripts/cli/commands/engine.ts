@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { resolveBunRunner } from "../../../apps/launcher/src/launcher";
 import {
   readCatalog,
   readDiagnostics,
@@ -23,7 +24,7 @@ export async function runEngineCommand(opts: {
     const port = opts.port ?? 4001;
     const script = resolve(opts.repoRoot, "apps/engine-host/src/main.ts");
     const child = Bun.spawn(
-      [process.execPath, script, "--port", String(port), "--host", host, "--root", opts.repoRoot],
+      [resolveBunRunner(), script, "--port", String(port), "--host", host, "--root", opts.repoRoot],
       {
         cwd: opts.repoRoot,
         env: {

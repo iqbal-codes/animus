@@ -1,9 +1,16 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-export const SUPPORTED_PROVIDERS = ["pi", "claude", "omp", "codex", "opencode"] as const;
+export const SUPPORTED_PROVIDERS = [
+  "pi",
+  "claude",
+  "omp",
+  "commandcode",
+  "codex",
+  "opencode",
+] as const;
 
-export const ACTIVE_PROVIDERS = ["pi", "claude", "omp"] as const;
+export const ACTIVE_PROVIDERS = ["pi", "claude", "omp", "commandcode"] as const;
 export const COMING_SOON_PROVIDERS = ["codex", "opencode"] as const;
 
 export type SupportedProvider = (typeof SUPPORTED_PROVIDERS)[number];
@@ -30,6 +37,7 @@ export const PROVIDER_EFFORT_VOCABULARIES: Record<SupportedProvider, readonly Ef
   pi: ["minimal", "low", "medium", "high", "xhigh", "max"],
   claude: ["low", "medium", "high", "xhigh", "max"],
   omp: ["minimal", "low", "medium", "high", "xhigh", "max"],
+  commandcode: ["low", "medium", "high", "xhigh", "max"],
   codex: ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
   opencode: ["low", "medium", "high"],
 };
@@ -123,6 +131,20 @@ export const PROVIDER_DESCRIPTORS: Record<SupportedProvider, ProviderDescriptor>
     },
     supportedEfforts: PROVIDER_EFFORT_VOCABULARIES.omp,
   },
+  commandcode: {
+    id: "commandcode",
+    displayName: "Command Code",
+    builtIn: false,
+    binaryName: "commandcode",
+    status: "active",
+    capabilities: {
+      sessionResume: true,
+      sessionFork: true,
+      nativeTools: true,
+      effortControl: true,
+    },
+    supportedEfforts: PROVIDER_EFFORT_VOCABULARIES.commandcode,
+  },
   codex: {
     id: "codex",
     displayName: "Codex (Coming Soon)",
@@ -179,6 +201,52 @@ export interface BuildProviderArgvOptions {
   tools?: string;
   strictMcp?: boolean;
   settingSources?: string;
+  readOnly?: boolean;
+  /** Resume an existing provider session by explicit id. Never inferred from cwd. */
+  sessionId?: string;
+}
+
+/**
+ * Whether this provider has a verified on-disk session layout, so a recorded id
+ * can be trusted to reopen an existing transcript instead of silently creating one.
+ */
+export function supportsSessionResume(provider: string): boolean {
+  return provider === "pi" || provider === "omp";
+}
+
+/**
+ * Checks that a recorded session actually exists on disk.
+ *
+ * Pi and OMP store transcripts as `<sessionDir>/--<cwd>--/<timestamp>_<session-id>.jsonl`,
+ * so the id is a filename suffix rather than a known path. Providers whose layout
+ * is unverified are refused: resuming an id that silently creates a new session
+ * would report continuity that does not exist.
+ */
+export function providerSessionExists(
+  provider: string,
+  sessionDir: string,
+  sessionId: string,
+): boolean {
+  if (!supportsSessionResume(provider)) return false;
+  if (!existsSync(sessionDir)) return false;
+  const suffix = `${sessionId}.jsonl`;
+  const visit = (directory: string): boolean => {
+    let entries;
+    try {
+      entries = readdirSync(directory, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (visit(join(directory, entry.name))) return true;
+      } else if (entry.isFile() && entry.name.endsWith(suffix)) {
+        return true;
+      }
+    }
+    return false;
+  };
+  return visit(sessionDir);
 }
 
 export function materializeSkillContent(skillPath: string): string | null {
@@ -298,6 +366,7 @@ export function buildProviderArgv(provider: string, options: BuildProviderArgvOp
         ...(model ? ["--model", model] : []),
         ...(clamped ? ["--effort", clamped] : []),
         ...materializedSystemPrompts.flatMap((p) => ["--append-system-prompt", p]),
+        ...(options.sessionId ? ["--resume", options.sessionId] : []),
         "-p",
         options.prompt,
       ];
@@ -310,6 +379,7 @@ export function buildProviderArgv(provider: string, options: BuildProviderArgvOp
         "--mode",
         "json",
         ...(options.sessionDir ? ["--session-dir", options.sessionDir] : ["--no-session"]),
+        ...(options.sessionId ? [`--resume=${options.sessionId}`] : []),
         "--no-extensions",
         ...(options.extensions?.flatMap((e) => ["-e", e]) ?? []),
         "--no-skills",
@@ -321,6 +391,26 @@ export function buildProviderArgv(provider: string, options: BuildProviderArgvOp
         ...(clamped ? ["--thinking", clamped] : []),
         options.prompt,
       ];
+
+    case "commandcode": {
+      const finalPrompt = materializedSystemPrompts.length
+        ? `${materializedSystemPrompts.join("\n\n")}\n\n---\n\n${options.prompt}`
+        : options.prompt;
+      return [
+        "commandcode",
+        "--print",
+        "--output-format",
+        "json",
+        ...(options.readOnly ? [] : ["--yolo"]),
+        ...(options.sessionId ? ["--resume", options.sessionId] : []),
+        "--skip-onboarding",
+        "--safe-mode",
+        "--no-skills",
+        ...(model ? ["--model", model] : []),
+        ...(clamped ? ["--effort", clamped] : []),
+        finalPrompt,
+      ];
+    }
 
     case "codex": {
       const finalPrompt = materializedSystemPrompts.length
@@ -362,6 +452,7 @@ export function buildProviderArgv(provider: string, options: BuildProviderArgvOp
         "--mode",
         "json",
         ...(options.sessionDir ? ["--session-dir", options.sessionDir] : ["--no-session"]),
+        ...(options.sessionId ? ["--session-id", options.sessionId] : []),
         "--no-extensions",
         ...(options.extensions?.flatMap((e) => ["-e", e]) ?? []),
         "--no-mcp",

@@ -6,7 +6,11 @@ import {
   enforceSecureFilePermissions,
   isPidAlive,
 } from "../../../packages/contracts/src/paths";
-import { FactoryLauncher, type LauncherOptions } from "../../../apps/launcher/src/launcher";
+import {
+  FactoryLauncher,
+  resolveBunRunner,
+  type LauncherOptions,
+} from "../../../apps/launcher/src/launcher";
 
 export interface RuntimeMetadata {
   pid: number;
@@ -46,18 +50,26 @@ export function clearRuntimeMetadata(stateDir: string): void {
 
 export { isPidAlive };
 
-export async function probeServiceHealth(url: string): Promise<{
+export async function probeServiceHealth(
+  url: string,
+  token?: string,
+): Promise<{
   reachable: boolean;
   healthy: boolean;
   buildId: string | null;
 }> {
   try {
-    const healthRes = await fetch(`${url}/health`, { signal: AbortSignal.timeout(1500) });
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const healthRes = await fetch(`${url}/health`, { headers, signal: AbortSignal.timeout(1500) });
+    if (healthRes.status === 401) {
+      return { reachable: true, healthy: true, buildId: null };
+    }
     if (!healthRes.ok) {
       return { reachable: true, healthy: false, buildId: null };
     }
     const healthJson = (await healthRes.json()) as { status?: string };
-    const buildRes = await fetch(`${url}/build-id`, { signal: AbortSignal.timeout(1500) });
+    const buildRes = await fetch(`${url}/build-id`, { headers, signal: AbortSignal.timeout(1500) });
     const buildId = buildRes.ok ? (await buildRes.text()).trim() : null;
     return {
       reachable: true,
@@ -197,7 +209,10 @@ export async function runServeCommand(
   }
 
   return await new Promise<number>((resolveExit) => {
-    const shutdown = async () => {
+    let resolved = false;
+    const shutdown = async (exitCode = 0) => {
+      if (resolved) return;
+      resolved = true;
       if (!opts.json) console.log("\nStopping Animus Services...");
       clearRuntimeMetadata(stateDir);
       const stopResult = await launcher.stop();
@@ -206,11 +221,29 @@ export async function runServeCommand(
         resolveExit(1);
         return;
       }
-      resolveExit(0);
+      resolveExit(exitCode);
     };
 
-    process.once("SIGINT", () => void shutdown());
-    process.once("SIGTERM", () => void shutdown());
+    process.once("SIGINT", () => void shutdown(0));
+    process.once("SIGTERM", () => void shutdown(0));
+
+    const { backend, engineHost } = launcher.getProcesses();
+    if (backend && typeof backend.exited?.then === "function") {
+      backend.exited.then((code: number) => {
+        if (code !== 0 && !opts.json) {
+          console.error(`Backend process terminated unexpectedly (exit code ${code}).`);
+        }
+        void shutdown(code === 0 ? 0 : 1);
+      });
+    }
+    if (engineHost && typeof engineHost.exited?.then === "function") {
+      engineHost.exited.then((code: number) => {
+        if (code !== 0 && !opts.json) {
+          console.error(`Engine-Host process terminated unexpectedly (exit code ${code}).`);
+        }
+        void shutdown(code === 0 ? 0 : 1);
+      });
+    }
   });
 }
 
@@ -283,7 +316,7 @@ export async function runStandaloneBackend(opts: {
   const host = opts.host ?? "127.0.0.1";
   const port = opts.port ?? 3000;
   const script = resolve(opts.repoRoot, "apps/backend/src/main.ts");
-  const child = Bun.spawn([process.execPath, script, "--port", String(port), "--host", host], {
+  const child = Bun.spawn([resolveBunRunner(), script, "--port", String(port), "--host", host], {
     cwd: opts.repoRoot,
     env: {
       ...process.env,

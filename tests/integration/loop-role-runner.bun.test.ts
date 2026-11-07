@@ -200,9 +200,257 @@ describe("scripts/loop/role-runner (unified bounded role runner)", () => {
     expect(existsSync(checkpointPath)).toBe(true);
   });
 
+  test("continuation resumes the observed session in the same session directory", async () => {
+    const root = await createRepoFixture();
+    const runDir = await mkdtemp(join(tmpdir(), "role-run-continuation-"));
+    tempDirs.push(runDir);
+    const handoffDir = join(runDir, "artifacts", "handoff");
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(handoffDir, { recursive: true });
+
+    const seen: Array<{ argv: string[]; sessionDir?: string }> = [];
+
+    const res = await runBoundedRole({
+      role: "builder",
+      root,
+      cwd: root,
+      prompt: "Deliver feature 70 across attempts",
+      sessionDir: join(runDir, "0-builder-session"),
+      checkpointPath: join(handoffDir, "checkpoint.md"),
+      handoffDir,
+      runDirectory: runDir,
+      budget: { softMs: 10_000, hardMs: 15_000 },
+      maxContinuations: 1,
+      provider: "pi",
+      model: "small",
+      transport: async (req) => {
+        const sessionDirFlag = req.argv[req.argv.indexOf("--session-dir") + 1];
+        seen.push({ argv: [...req.argv], sessionDir: sessionDirFlag });
+
+        if (seen.length === 1) {
+          // First attempt writes a real transcript so attempt 2 can resume it.
+          const sessionDir = sessionDirFlag!;
+          await mkdir(join(sessionDir, "--/cwd--"), { recursive: true });
+          await (
+            await import("node:fs/promises")
+          ).writeFile(
+            join(sessionDir, "--/cwd--", "2026-01-01T00-00-00-000Z_first-attempt.jsonl"),
+            "",
+          );
+          return {
+            exitCode: 0,
+            stdout: [
+              JSON.stringify({ type: "session", version: 3, id: "first-attempt", cwd: req.cwd }),
+              JSON.stringify({ type: "message_end", content: [{ type: "text", text: "" }] }),
+            ].join("\n"),
+            stderr: "",
+            timedOut: true,
+          };
+        }
+
+        const head = await git(req.cwd, "rev-parse", "HEAD");
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            type: "message_end",
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    candidate: head,
+                    verdict: "pass",
+                    checks: [{ criterion: "AC1", result: "pass", evidence: "verified" }],
+                  }),
+                },
+              ],
+            },
+          }),
+          stderr: "",
+        };
+      },
+    });
+
+    expect(seen.length).toBe(2);
+    // Same session directory for both attempts; no separate per-attempt directory.
+    expect(seen[0]!.sessionDir).toBe(join(runDir, "0-builder-session"));
+    expect(seen[1]!.sessionDir).toBe(seen[0]!.sessionDir);
+    // The continuation resumes the id observed in attempt 0.
+    expect(seen[1]!.argv).toContain("--session-id");
+    expect(seen[1]!.argv).toContain("first-attempt");
+    expect(seen[1]!.argv).not.toContain("--continue");
+    expect(res.report.verdict).toBe("pass");
+  });
+
+  test("continuation prompt never claims resume when provider layout is unverified", async () => {
+    const root = await createRepoFixture();
+    const runDir = await mkdtemp(join(tmpdir(), "role-run-continuation-unverified-"));
+    tempDirs.push(runDir);
+    const handoffDir = join(runDir, "artifacts", "handoff");
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(handoffDir, { recursive: true });
+
+    const prompts: string[] = [];
+
+    await runBoundedRole({
+      role: "builder",
+      root,
+      cwd: root,
+      prompt: "Deliver feature 70",
+      checkpointPath: join(handoffDir, "checkpoint.md"),
+      handoffDir,
+      runDirectory: runDir,
+      budget: { softMs: 10_000, hardMs: 15_000 },
+      maxContinuations: 1,
+      provider: "commandcode",
+      model: "small",
+      transport: async (req) => {
+        prompts.push(req.argv.at(-1)!);
+        if (prompts.length === 1) {
+          return {
+            exitCode: 0,
+            stdout: [
+              JSON.stringify({ type: "result", sessionId: "cc-session", finalText: "" }),
+            ].join("\n"),
+            stderr: "",
+            timedOut: true,
+          };
+        }
+        const head = await git(req.cwd, "rev-parse", "HEAD");
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            type: "result",
+            sessionId: "cc-session",
+            finalText: JSON.stringify({
+              candidate: head,
+              verdict: "pass",
+              checks: [{ criterion: "AC1", result: "pass", evidence: "verified" }],
+            }),
+          }),
+          stderr: "",
+        };
+      },
+    });
+
+    expect(prompts[1]).toContain("No prior conversation was resumed");
+    expect(prompts[1]).not.toContain("Your previous conversation in this role is resumed");
+  });
+
   test("AC4: invokeRoleWithDeadlines is NOT exported in barrel or public animus-loop orchestrator", () => {
     expect((loopExports as any).invokeRoleWithDeadlines).toBeUndefined();
     expect((animusExports as any).invokeRoleWithDeadlines).toBeUndefined();
     expect(typeof loopExports.runBoundedRole).toBe("function");
+  });
+
+  test("resumes an explicit session id on the first attempt and reports the observed id", async () => {
+    const root = await createRepoFixture();
+    const runDir = await mkdtemp(join(tmpdir(), "role-run-resume-"));
+    tempDirs.push(runDir);
+    const handoffDir = join(runDir, "artifacts", "handoff");
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(handoffDir, { recursive: true });
+
+    const seenArgv: string[][] = [];
+    const res = await runBoundedRole({
+      role: "builder",
+      root,
+      cwd: root,
+      prompt: "Deliver feature 70 again",
+      checkpointPath: join(handoffDir, "checkpoint.md"),
+      handoffDir,
+      runDirectory: runDir,
+      budget: { softMs: 10_000, hardMs: 15_000 },
+      maxContinuations: 0,
+      provider: "pi",
+      model: "small",
+      resumeSessionId: "resume-me-123",
+      transport: async (req) => {
+        seenArgv.push(req.argv);
+        const head = await git(req.cwd, "rev-parse", "HEAD");
+        return {
+          exitCode: 0,
+          stdout: [
+            JSON.stringify({ type: "session", version: 3, id: "resume-me-123", cwd: req.cwd }),
+            JSON.stringify({
+              type: "message_end",
+              message: {
+                role: "assistant",
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      candidate: head,
+                      verdict: "pass",
+                      checks: [{ criterion: "AC1", result: "pass", evidence: "verified" }],
+                    }),
+                  },
+                ],
+              },
+            }),
+          ].join("\n"),
+          stderr: "",
+        };
+      },
+    });
+
+    // Pi resumes by an explicit id via --session-id; never --continue.
+    expect(seenArgv[0]).toContain("--session-id");
+    expect(seenArgv[0]).toContain("resume-me-123");
+    expect(seenArgv[0]).not.toContain("--continue");
+    expect(res.sessionId).toBe("resume-me-123");
+  });
+
+  test("omits resume flags when no session id is given", async () => {
+    const root = await createRepoFixture();
+    const runDir = await mkdtemp(join(tmpdir(), "role-run-fresh-"));
+    tempDirs.push(runDir);
+    const handoffDir = join(runDir, "artifacts", "handoff");
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(handoffDir, { recursive: true });
+
+    let argv: string[] = [];
+    const res = await runBoundedRole({
+      role: "builder",
+      root,
+      cwd: root,
+      prompt: "Deliver feature 70 fresh",
+      checkpointPath: join(handoffDir, "checkpoint.md"),
+      handoffDir,
+      runDirectory: runDir,
+      budget: { softMs: 10_000, hardMs: 15_000 },
+      maxContinuations: 0,
+      provider: "pi",
+      model: "small",
+      transport: async (req) => {
+        argv = req.argv;
+        const head = await git(req.cwd, "rev-parse", "HEAD");
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            type: "message_end",
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    candidate: head,
+                    verdict: "pass",
+                    checks: [{ criterion: "AC1", result: "pass", evidence: "verified" }],
+                  }),
+                },
+              ],
+            },
+          }),
+          stderr: "",
+        };
+      },
+    });
+
+    expect(argv).not.toContain("--session-id");
+    expect(argv).not.toContain("--continue");
+    expect(res.sessionId).toBeUndefined();
   });
 });

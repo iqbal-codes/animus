@@ -5,10 +5,12 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DetectedRepoCommands } from "./setup";
@@ -425,12 +427,44 @@ function ensureSymlinkOrCopy(targetRel: string, linkPath: string, fallbackCopyPa
 
 function resolveFactorySourceRoot(explicit?: string): string | null {
   if (explicit && existsSync(join(explicit, ".agents/skills"))) return resolve(explicit);
+
+  const envSource = process.env.ANIMUS_SOURCE_ROOT || process.env.FACTORY_SOURCE_ROOT;
+  if (envSource && existsSync(join(envSource, ".agents/skills"))) return resolve(envSource);
+
+  for (const rel of ["../../../", "../../", "../", "../../../../"]) {
+    try {
+      const candidate = fileURLToPath(new URL(rel, import.meta.url));
+      if (!candidate.includes("/$bunfs/") && existsSync(join(candidate, ".agents/skills"))) {
+        return resolve(candidate);
+      }
+    } catch {}
+  }
+
   try {
-    const candidate = fileURLToPath(new URL("../../../", import.meta.url));
-    if (!candidate.includes("/$bunfs/") && existsSync(join(candidate, ".agents/skills"))) {
-      return resolve(candidate);
+    if (process.argv[1]) {
+      const realScript = realpathSync(process.argv[1]);
+      for (const rel of [".", "..", "../..", "../../.."]) {
+        const candidate = resolve(dirname(realScript), rel);
+        if (existsSync(join(candidate, ".agents/skills"))) {
+          return candidate;
+        }
+      }
     }
   } catch {}
+
+  try {
+    const home = homedir();
+    const wellKnown = [
+      join(home, ".animus/source"),
+      join(home, "Documents/workspace/projects/animus"),
+    ];
+    for (const p of wellKnown) {
+      if (existsSync(join(p, ".agents/skills"))) {
+        return resolve(p);
+      }
+    }
+  } catch {}
+
   if (existsSync(join(process.cwd(), ".agents/skills"))) {
     return resolve(process.cwd());
   }

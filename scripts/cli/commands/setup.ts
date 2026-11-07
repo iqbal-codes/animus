@@ -101,6 +101,11 @@ export const DEFAULT_PROVIDER_MODELS: Record<
     medium: "default",
     large: "default",
   },
+  commandcode: {
+    small: "default",
+    medium: "default",
+    large: "default",
+  },
   codex: {
     small: "default",
     medium: "default",

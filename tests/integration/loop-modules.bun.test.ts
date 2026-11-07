@@ -289,11 +289,12 @@ test("11. Multiple Provider Harness Support: resolves and formats argv for Pi, C
   expect(SUPPORTED_PROVIDERS).toContain("pi");
   expect(SUPPORTED_PROVIDERS).toContain("claude");
   expect(SUPPORTED_PROVIDERS).toContain("omp");
+  expect(SUPPORTED_PROVIDERS).toContain("commandcode");
   expect(SUPPORTED_PROVIDERS).toContain("codex");
   expect(SUPPORTED_PROVIDERS).toContain("opencode");
   expect(SUPPORTED_PROVIDERS).not.toContain("copilot");
 
-  expect(ACTIVE_PROVIDERS).toEqual(["pi", "claude", "omp"]);
+  expect(ACTIVE_PROVIDERS).toEqual(["pi", "claude", "omp", "commandcode"]);
   expect(COMING_SOON_PROVIDERS).toEqual(["codex", "opencode"]);
 
   expect(isSupportedProvider("claude")).toBe(true);
@@ -319,6 +320,13 @@ test("11. Multiple Provider Harness Support: resolves and formats argv for Pi, C
 
   const codexDesc = getProviderDescriptor("codex");
   expect(codexDesc.status).toBe("coming_soon");
+
+  const commandCodeDesc = getProviderDescriptor("commandcode");
+  expect(commandCodeDesc.displayName).toBe("Command Code");
+  expect(commandCodeDesc.binaryName).toBe("commandcode");
+  expect(commandCodeDesc.status).toBe("active");
+  expect(commandCodeDesc.capabilities.sessionResume).toBe(true);
+  expect(commandCodeDesc.supportedEfforts).toEqual(["low", "medium", "high", "xhigh", "max"]);
 
   const opencodeDesc = getProviderDescriptor("opencode");
   expect(opencodeDesc.status).toBe("coming_soon");
@@ -358,6 +366,27 @@ test("11. Multiple Provider Harness Support: resolves and formats argv for Pi, C
   expect(ompArgv).toContain("gpt-5");
   expect(ompArgv).toContain("--auto-approve");
   expect(ompArgv[ompArgv.length - 1]).toBe(prompt);
+
+  // Command Code argv
+  const commandCodeArgv = buildProviderArgv("commandcode", { prompt, model });
+  expect(commandCodeArgv[0]).toBe("commandcode");
+  expect(commandCodeArgv).toContain("--print");
+  expect(commandCodeArgv).toContain("--output-format");
+  expect(commandCodeArgv).toContain("json");
+  expect(commandCodeArgv).toContain("--yolo");
+  expect(commandCodeArgv).toContain("--skip-onboarding");
+  expect(commandCodeArgv).toContain("--safe-mode");
+  expect(commandCodeArgv).toContain("--no-skills");
+  expect(commandCodeArgv).not.toContain("--trust");
+  expect(commandCodeArgv[commandCodeArgv.length - 1]).toBe(prompt);
+
+  // Command Code triage runs must stay read-only by omitting --yolo
+  const commandCodeReadOnlyArgv = buildProviderArgv("commandcode", {
+    prompt,
+    model,
+    readOnly: true,
+  });
+  expect(commandCodeReadOnlyArgv).not.toContain("--yolo");
 
   // Codex argv
   const codexArgv = buildProviderArgv("codex", { prompt, model });
