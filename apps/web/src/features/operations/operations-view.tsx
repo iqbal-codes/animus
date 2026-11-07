@@ -77,7 +77,7 @@ export function OperationsView() {
             <div className="space-y-2 text-xs">
               <div className="flex items-center justify-between py-1 border-b border-[var(--border)]">
                 <span className="text-[var(--muted-foreground)]">Status</span>
-                <Badge variant={health.status === "healthy" ? "active" : "destructive"}>
+                <Badge variant={health.status === "healthy" ? "success" : "error"}>
                   {health.status}
                 </Badge>
               </div>
@@ -111,13 +111,13 @@ export function OperationsView() {
             <div className="space-y-2 text-xs">
               <div className="flex items-center justify-between py-1 border-b border-[var(--border)]">
                 <span className="text-[var(--muted-foreground)]">Emergency STOP Brake</span>
-                <Badge variant={brakes.global_launch_brake ? "destructive" : "active"}>
+                <Badge variant={brakes.global_launch_brake ? "error" : "success"}>
                   {brakes.global_launch_brake ? "STOPPED" : "Clear"}
                 </Badge>
               </div>
               <div className="flex items-center justify-between py-1">
                 <span className="text-[var(--muted-foreground)]">Scheduler PAUSE Marker</span>
-                <Badge variant={brakes.schedule_pause ? "held" : "active"}>
+                <Badge variant={brakes.schedule_pause ? "warning" : "success"}>
                   {brakes.schedule_pause ? "PAUSED" : "Running"}
                 </Badge>
               </div>
@@ -166,7 +166,7 @@ export function OperationsView() {
                         lap.product_status === "waiting_approval"
                           ? "accent"
                           : lap.product_status === "completed"
-                            ? "active"
+                            ? "success"
                             : "default"
                       }
                     >
