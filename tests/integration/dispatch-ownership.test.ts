@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,8 @@ import { BrakeService } from "../../apps/backend/src/command/brakes";
 import {
   DispatchService,
   runLocalDispatchTick,
+  writeExecutionAuthority,
+  writeWorkerOwner,
   type DispatchRunner,
 } from "../../apps/backend/src/dispatch";
 
@@ -112,6 +114,7 @@ describe("local dispatch ownership and frozen execution", () => {
   beforeEach(async () => {
     root = mkdtempSync(join(tmpdir(), "animus-dispatch-"));
     process.env.ANIMUS_HOME = join(root, "animus-home");
+    writeExecutionAuthority("local");
     dbPath = join(root, "state", "console.db");
     db = initializeDatabase(dbPath);
     forge = new SyntheticForgeAdapter({ [REPO]: 991 });
@@ -533,7 +536,12 @@ describe("local dispatch ownership and frozen execution", () => {
   test("AC1: a held plan and an unsatisfied dependency cannot dispatch", async () => {
     addIssue(370, specBody(["only"]), ["ready-for-agent", "spec"]);
     const held = await plans.importPlan(projectId, { issue_number: 370, kind: "spec" });
-    const service = makeService({ runner: async () => ({ success: true }) });
+    const service = makeService({
+      runner: async (context) => ({
+        success: true,
+        headSha: commitInWorktree(context.worktree_path, "dependency.txt"),
+      }),
+    });
     await expect(
       service.dispatch(projectId, { plan_id: held.id, actor: "test" }),
     ).rejects.toMatchObject({ code: "plan_not_dispatchable" });
@@ -661,5 +669,358 @@ describe("local dispatch ownership and frozen execution", () => {
     expect(ran).toBe(false);
     const [run] = service.listRuns(projectId);
     expect(run.state).toBe("failed");
+  });
+
+  test("AC4/B2: reconciliation retains a live detached builder writer and releases only after it dies", async () => {
+    addIssue(400, ticketBody({}));
+    const plan = await plans.importPlan(projectId, { issue_number: 400, kind: "standalone" });
+    const first = makeService({
+      runner: async () => ({ success: false, error: "coordinator crashed" }),
+    });
+    await expect(
+      first.dispatch(projectId, { plan_id: plan.id, actor: "first" }),
+    ).rejects.toMatchObject({ code: "dispatch_failed" });
+    const failedRun = first.listRuns(projectId)[0]!;
+
+    const delivery = db
+      .prepare("SELECT * FROM deliveries WHERE project_id = ? AND plan_id = ?")
+      .get(projectId, plan.id) as any;
+    const interruptedId = "run_live_detached_writer";
+    db.prepare(
+      `INSERT INTO dispatch_runs (
+        id, project_id, delivery_id, plan_id, work_id, revision_id, content_hash, issue_number,
+        role, gate_profile, merge_policy, target_branch, ownership_generation, state, actor,
+        command_request_id, branch, worktree_path, base_sha, owner_pid, owner_token,
+        lease_expires_at, head_sha, error, launched_at, finished_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, ?, ?)`,
+    ).run(
+      interruptedId,
+      projectId,
+      delivery.id,
+      plan.id,
+      failedRun.work_id,
+      failedRun.revision_id,
+      failedRun.content_hash,
+      failedRun.issue_number,
+      failedRun.role,
+      failedRun.gate_profile,
+      failedRun.merge_policy,
+      failedRun.target_branch,
+      2,
+      "crashed-host",
+      "cmd_live_writer",
+      failedRun.branch,
+      failedRun.worktree_path,
+      failedRun.base_sha,
+      99999998,
+      "dead-token",
+      Date.now() + 60_000,
+      Date.now(),
+      Date.now(),
+      Date.now(),
+    );
+
+    // A real detached process group that would keep writing the worktree.
+    const writer = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    writer.unref();
+    const writerPid = writer.pid!;
+    const writerExited = new Promise<void>((resolve) => writer.once("exit", () => resolve()));
+    try {
+      writeWorkerOwner({
+        run_id: interruptedId,
+        owner_token: "dead-token",
+        pid: writerPid,
+        pgid: writerPid,
+      });
+      writeFileSync(
+        join(failedRun.worktree_path, ".worktree.lock"),
+        JSON.stringify({ runId: interruptedId, branch: failedRun.branch, pid: writerPid }),
+      );
+
+      const restarted = new DispatchService(db, {
+        plans,
+        ledger,
+        brakes,
+        processAlive: () => false,
+        ownerPid: () => 5556,
+        runner: async () => ({ success: true }),
+      });
+
+      expect(() => restarted.reconcileRun(projectId, interruptedId)).toThrowError(
+        /live builder process group/,
+      );
+      expect(restarted.getRun(projectId, interruptedId).state).toBe("running");
+
+      process.kill(-writerPid, "SIGKILL");
+      await Promise.race([writerExited, new Promise<void>((resolve) => setTimeout(resolve, 2000))]);
+
+      const released = restarted.reconcileRun(projectId, interruptedId);
+      expect(released.state).toBe("reconciled");
+    } finally {
+      try {
+        process.kill(-writerPid, "SIGKILL");
+      } catch {}
+    }
+  });
+
+  test("AC3/AC1: capacity is re-evaluated inside the claim transaction across plans and processes", async () => {
+    writeSchedule({ parallel: 1 });
+    addIssue(410, ticketBody({}));
+    addIssue(411, ticketBody({}));
+    const planA = await plans.importPlan(projectId, { issue_number: 410, kind: "standalone" });
+    const planB = await plans.importPlan(projectId, { issue_number: 411, kind: "standalone" });
+
+    const secondDb = initializeDatabase(dbPath);
+    const release = deferred<void>();
+    const competitor = new DispatchService(secondDb, {
+      plans: new PlanService(secondDb, forge),
+      ledger: new CommandLedger(secondDb),
+      brakes: new BrakeService(secondDb),
+      processAlive: () => true,
+      ownerPid: () => 4244,
+      runner: async (context) => {
+        await release.promise;
+        return {
+          success: true,
+          headSha: commitInWorktree(context.worktree_path, "competitor.txt"),
+        };
+      },
+    });
+
+    let competitorStarted = false;
+    const racingLedger = {
+      recordBeforeDispatch: (input: Parameters<CommandLedger["recordBeforeDispatch"]>[0]) => {
+        ledger.recordBeforeDispatch(input);
+        if (!competitorStarted) {
+          competitorStarted = true;
+          // Another process claims a different plan after this validation point.
+          void competitor.dispatch(projectId, { plan_id: planB.id, actor: "competitor" });
+        }
+      },
+      recordRejection: ledger.recordRejection.bind(ledger),
+      updateOutcome: ledger.updateOutcome.bind(ledger),
+      markReconciled: ledger.markReconciled.bind(ledger),
+    } as unknown as CommandLedger;
+
+    const first = new DispatchService(db, {
+      plans,
+      ledger: racingLedger,
+      brakes,
+      processAlive: () => true,
+      ownerPid: () => 4242,
+      runner: async () => ({ success: true }),
+    });
+
+    await expect(
+      first.dispatch(projectId, { plan_id: planA.id, actor: "first" }),
+    ).rejects.toMatchObject({ code: "capacity_full" });
+    expect(competitorStarted).toBe(true);
+
+    release.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const active = db
+      .prepare(
+        "SELECT COUNT(*) AS count FROM dispatch_runs WHERE state IN ('claimed','dispatched','running','interrupted')",
+      )
+      .get() as { count: number };
+    expect(active.count).toBe(0);
+    const runs = db.prepare("SELECT COUNT(*) AS count FROM dispatch_runs").get() as {
+      count: number;
+    };
+    expect(runs.count).toBe(1);
+    secondDb.close();
+  });
+
+  test("AC3/AC1: a brake applied after validation aborts the claim", async () => {
+    addIssue(420, ticketBody({}));
+    const plan = await plans.importPlan(projectId, { issue_number: 420, kind: "standalone" });
+    const secondDb = initializeDatabase(dbPath);
+    const secondBrakes = new BrakeService(secondDb);
+
+    let ran = false;
+    const brakingLedger = {
+      recordBeforeDispatch: (input: Parameters<CommandLedger["recordBeforeDispatch"]>[0]) => {
+        ledger.recordBeforeDispatch(input);
+        secondBrakes.setProjectLaunchBrake(projectId, true, "operator", "maintenance");
+      },
+      recordRejection: ledger.recordRejection.bind(ledger),
+      updateOutcome: ledger.updateOutcome.bind(ledger),
+      markReconciled: ledger.markReconciled.bind(ledger),
+    } as unknown as CommandLedger;
+
+    const service = new DispatchService(db, {
+      plans,
+      ledger: brakingLedger,
+      brakes,
+      processAlive: () => true,
+      ownerPid: () => 4242,
+      runner: async (context) => {
+        ran = true;
+        return { success: true, headSha: commitInWorktree(context.worktree_path, "brake.txt") };
+      },
+    });
+
+    await expect(
+      service.dispatch(projectId, { plan_id: plan.id, actor: "operator" }),
+    ).rejects.toMatchObject({ code: "launch_brake_set" });
+    expect(ran).toBe(false);
+    expect(service.listRuns(projectId)).toHaveLength(0);
+    secondDb.close();
+  });
+
+  test("AC1/AC4: revocation after validation aborts the claim", async () => {
+    addIssue(430, ticketBody({}));
+    const plan = await plans.importPlan(projectId, { issue_number: 430, kind: "standalone" });
+    const secondDb = initializeDatabase(dbPath);
+    const secondPlans = new PlanService(secondDb, forge);
+    let ran = false;
+
+    const revokingLedger = {
+      recordBeforeDispatch: (input: Parameters<CommandLedger["recordBeforeDispatch"]>[0]) => {
+        ledger.recordBeforeDispatch(input);
+        secondPlans.revokePlan(projectId, plan.id, { actor: "operator", reason: "scope retired" });
+      },
+      recordRejection: ledger.recordRejection.bind(ledger),
+      updateOutcome: ledger.updateOutcome.bind(ledger),
+      markReconciled: ledger.markReconciled.bind(ledger),
+    } as unknown as CommandLedger;
+
+    const service = new DispatchService(db, {
+      plans,
+      ledger: revokingLedger,
+      brakes,
+      processAlive: () => true,
+      ownerPid: () => 4242,
+      runner: async (context) => {
+        ran = true;
+        return { success: true, headSha: commitInWorktree(context.worktree_path, "revoked.txt") };
+      },
+    });
+
+    await expect(
+      service.dispatch(projectId, { plan_id: plan.id, actor: "operator" }),
+    ).rejects.toMatchObject({ code: "plan_not_dispatchable" });
+    expect(ran).toBe(false);
+    expect(service.listRuns(projectId)).toHaveLength(0);
+    secondDb.close();
+  });
+
+  test("AC3: independent plans may genuinely overlap up to capacity", async () => {
+    writeSchedule({ parallel: 2 });
+    addIssue(440, ticketBody({}));
+    addIssue(441, ticketBody({}));
+    const planA = await plans.importPlan(projectId, { issue_number: 440, kind: "standalone" });
+    const planB = await plans.importPlan(projectId, { issue_number: 441, kind: "standalone" });
+
+    const startedA = deferred<void>();
+    const startedB = deferred<void>();
+    const release = deferred<void>();
+    let running = 0;
+    let maxRunning = 0;
+    const runner: DispatchRunner = async (context) => {
+      running += 1;
+      maxRunning = Math.max(maxRunning, running);
+      if (context.issue_number === 440) startedA.resolve();
+      if (context.issue_number === 441) startedB.resolve();
+      await release.promise;
+      running -= 1;
+      return {
+        success: true,
+        headSha: commitInWorktree(context.worktree_path, `overlap-${context.issue_number}.txt`),
+      };
+    };
+
+    const service = makeService({ runner });
+    const first = service.dispatch(projectId, { plan_id: planA.id, actor: "a" });
+    const second = service.dispatch(projectId, { plan_id: planB.id, actor: "b" });
+
+    await Promise.all([startedA.promise, startedB.promise]);
+    expect(maxRunning).toBe(2);
+    release.resolve();
+    const [runA, runB] = await Promise.all([first, second]);
+    expect(runA.state).toBe("succeeded");
+    expect(runB.state).toBe("succeeded");
+  });
+
+  test("AC4/B2: reconciliation refuses a remote branch effect not present locally", async () => {
+    addIssue(450, ticketBody({}));
+    const plan = await plans.importPlan(projectId, { issue_number: 450, kind: "standalone" });
+    const first = makeService({
+      runner: async () => ({ success: false, error: "coordinator crashed" }),
+    });
+    await expect(
+      first.dispatch(projectId, { plan_id: plan.id, actor: "first" }),
+    ).rejects.toMatchObject({ code: "dispatch_failed" });
+    const failedRun = first.listRuns(projectId)[0]!;
+    const delivery = db
+      .prepare("SELECT * FROM deliveries WHERE project_id = ? AND plan_id = ?")
+      .get(projectId, plan.id) as any;
+
+    const interruptedId = "run_remote_effect";
+    db.prepare(
+      `INSERT INTO dispatch_runs (
+        id, project_id, delivery_id, plan_id, work_id, revision_id, content_hash, issue_number,
+        role, gate_profile, merge_policy, target_branch, ownership_generation, state, actor,
+        command_request_id, branch, worktree_path, base_sha, owner_pid, owner_token,
+        lease_expires_at, head_sha, error, launched_at, finished_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, ?, ?)`,
+    ).run(
+      interruptedId,
+      projectId,
+      delivery.id,
+      plan.id,
+      failedRun.work_id,
+      failedRun.revision_id,
+      failedRun.content_hash,
+      failedRun.issue_number,
+      failedRun.role,
+      failedRun.gate_profile,
+      failedRun.merge_policy,
+      failedRun.target_branch,
+      2,
+      "crashed-host",
+      "cmd_remote_effect",
+      failedRun.branch,
+      failedRun.worktree_path,
+      failedRun.base_sha,
+      99999997,
+      "dead-token",
+      Date.now() + 60_000,
+      Date.now(),
+      Date.now(),
+      Date.now(),
+    );
+
+    const tree = git(checkoutPath, "rev-parse", "HEAD^{tree}");
+    const aheadCommit = git(
+      checkoutPath,
+      "commit-tree",
+      tree,
+      "-p",
+      "HEAD",
+      "-m",
+      "remote writer advanced",
+    );
+    git(checkoutPath, "update-ref", `refs/remotes/origin/${failedRun.branch}`, aheadCommit);
+
+    const restarted = new DispatchService(db, {
+      plans,
+      ledger,
+      brakes,
+      processAlive: () => false,
+      ownerPid: () => 5557,
+      runner: async () => ({ success: true }),
+    });
+
+    expect(() => restarted.reconcileRun(projectId, interruptedId)).toThrowError(
+      /remote branch|effects not present locally/,
+    );
+    expect(restarted.getRun(projectId, interruptedId).state).toBe("running");
+
+    git(checkoutPath, "update-ref", "-d", `refs/remotes/origin/${failedRun.branch}`);
+    expect(restarted.reconcileRun(projectId, interruptedId).state).toBe("reconciled");
   });
 });

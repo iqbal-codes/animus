@@ -1,5 +1,6 @@
 import { JobsBoard } from "./jobs-board";
 import { JobsHeader } from "./jobs-header";
+import { DispatchControl } from "@/features/dispatch/dispatch-control";
 import type { JobsBoardModel } from "./jobs-model";
 import type { BackendState } from "./factory-status";
 import type { CardDensity } from "@/lib/preferences";
@@ -17,6 +18,7 @@ export function JobsScreen({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <JobsHeader board={board} />
+      <DispatchControl />
       <JobsBoard board={board} backendState={backendState} density={density} />
     </div>
   );

@@ -5,6 +5,8 @@ import { validateTimeout } from "./deadlines";
 
 export interface ProcessRunOptions {
   manageSignals?: boolean;
+  /** Observer for the detached child pid (equal to its process group id). */
+  onSpawn?: (pid: number) => void;
 }
 
 const ownedExecutions = new Set<() => Promise<void>>();
@@ -62,6 +64,7 @@ export function processRun(
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    if (child.pid) options?.onSpawn?.(child.pid);
     let stdout = "";
     let stderr = "";
     let timedOut = false;

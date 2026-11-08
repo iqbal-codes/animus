@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
@@ -19,6 +19,7 @@ import {
   getProjectWorktreesDir,
   isPidAlive,
   loadScheduleConfig,
+  resolveAnimusStateDir,
   resolveProjectWorkspace,
 } from "@animus/contracts/paths";
 import { BrakeService } from "../command/brakes";
@@ -26,7 +27,11 @@ import { CommandLedger } from "../command/ledger";
 import { readVerifiedBranchIntegrations } from "../intake/admission";
 import { PlanError, PlanService } from "../plans";
 import { graphFromManifest, computeGraphHash } from "../plans/parser";
-import { executeTargetedImplement, freezeContract } from "../coordination/primitive";
+import { freezeContract } from "../coordination/primitive";
+import { runFrozenBuilder } from "../coordination/frozen-builder";
+import type { AgentTransport, RoleBudget } from "../coordination/frozen-builder";
+import { clearWorkerOwner, pidOrGroupAlive, readWorkerOwner, writeWorkerOwner } from "./ownership";
+import { readExecutionAuthority, type ExecutionAuthority } from "./authority";
 import {
   allocateWorktree,
   type WorktreeAllocation,
@@ -57,6 +62,7 @@ export type DispatchErrorCode =
   | "run_not_active"
   | "owner_still_alive"
   | "external_effect_unverified"
+  | "authority_not_activated"
   | "invalid_submission";
 
 export class DispatchError extends Error {
@@ -76,6 +82,7 @@ export interface DispatchRunnerContext {
   ownership_generation: number;
   owner_token: string;
   project_id: string;
+  project_root: string;
   plan_id: string;
   work_id: string;
   revision_id: string;
@@ -100,6 +107,16 @@ export interface DispatchRunResult {
 
 export type DispatchRunner = (context: DispatchRunnerContext) => Promise<DispatchRunResult>;
 
+export interface DispatchEngineOptions {
+  /** External model/process transport. Internal dispatch callbacks are not injectable here. */
+  transport?: AgentTransport;
+  provider?: string;
+  model?: string;
+  effort?: string;
+  budget?: RoleBudget;
+  maxContinuations?: number;
+}
+
 type DispatchLedger = Pick<
   CommandLedger,
   "recordBeforeDispatch" | "recordRejection" | "updateOutcome" | "markReconciled"
@@ -119,6 +136,8 @@ export interface DispatchServiceOptions {
   schedule?: (checkoutPath: string) => { parallel: number; max_laps: number };
   legacyActiveLaps?: (checkoutPath: string) => number;
   gitRunner?: (cmd: string[], options: { cwd: string }) => string;
+  authority?: () => ExecutionAuthority;
+  engine?: DispatchEngineOptions;
 }
 
 interface ProjectRow {
@@ -171,6 +190,7 @@ type DispatchSubmission = PlanDispatchSubmission & { scheduled?: boolean };
 const ACTIVE_STATES = ["claimed", "dispatched", "running", "interrupted"] as const;
 const ACTIVE_SQL = "('claimed', 'dispatched', 'running', 'interrupted')";
 const DEFAULT_LEASE_MS = 5 * 60 * 1000;
+const COMMIT_SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 
 function activeStateCondition(): string {
   return `state IN ${ACTIVE_SQL}`;
@@ -184,21 +204,39 @@ function defaultGitRunner(cmd: string[], options: { cwd: string }): string {
   }).trim();
 }
 
-async function defaultRunner(context: DispatchRunnerContext): Promise<DispatchRunResult> {
-  const result = await executeTargetedImplement({
-    specIssueNumber: context.spec_issue_number,
-    childIssueNumber: context.issue_number,
-    worktreePath: context.worktree_path,
-    branch: context.branch,
-    startSha: context.base_sha,
-    contract: context.contract,
-    primitive: "animus-implement",
-  });
-  return {
-    success: result.success,
-    headSha: result.headSha,
-    error: result.error,
-    exitCode: result.exitCode,
+function createDefaultRunner(engine: DispatchEngineOptions = {}): DispatchRunner {
+  return async (context: DispatchRunnerContext): Promise<DispatchRunResult> => {
+    const result = await runFrozenBuilder({
+      projectRoot: context.project_root,
+      worktreePath: context.worktree_path,
+      branch: context.branch,
+      baseSha: context.base_sha,
+      issueNumber: context.issue_number,
+      specIssueNumber: context.spec_issue_number,
+      contractBody: context.contract_body,
+      runId: context.run_id,
+      runDirectory: join(resolveAnimusStateDir(), "dispatch", context.run_id),
+      transport: engine.transport,
+      provider: engine.provider,
+      model: engine.model,
+      effort: engine.effort,
+      budget: engine.budget,
+      maxContinuations: engine.maxContinuations,
+      onWorkerSpawn: (pid) => {
+        writeWorkerOwner({
+          run_id: context.run_id,
+          owner_token: context.owner_token,
+          pid,
+          pgid: pid,
+        });
+      },
+    });
+    return {
+      success: result.success,
+      headSha: result.headSha,
+      error: result.error,
+      exitCode: result.exitCode,
+    };
   };
 }
 
@@ -215,6 +253,7 @@ export class DispatchService {
   private readonly schedule: (checkoutPath: string) => { parallel: number; max_laps: number };
   private readonly legacyActiveLaps: (checkoutPath: string) => number;
   private readonly gitRunner: (cmd: string[], options: { cwd: string }) => string;
+  private readonly authority: () => ExecutionAuthority;
 
   constructor(
     private readonly db: DatabaseSync,
@@ -224,7 +263,7 @@ export class DispatchService {
     this.ledger = options.ledger ?? new CommandLedger(db);
     this.brakes = options.brakes ?? new BrakeService(db);
     this.worktreeAllocator = options.worktreeAllocator ?? allocateWorktree;
-    this.runner = options.runner ?? defaultRunner;
+    this.runner = options.runner ?? createDefaultRunner(options.engine);
     this.processAlive = options.processAlive ?? ((pid) => isPidAlive(pid));
     this.ownerPid = options.ownerPid ?? (() => process.pid);
     this.clock = options.clock ?? (() => Date.now());
@@ -234,12 +273,14 @@ export class DispatchService {
       options.legacyActiveLaps ??
       ((checkoutPath) => countActiveLaps(resolveProjectWorkspace(checkoutPath).runsDir));
     this.gitRunner = options.gitRunner ?? defaultGitRunner;
+    this.authority = options.authority ?? (() => readExecutionAuthority().authority);
   }
 
   async dispatch(projectId: string, submission: DispatchSubmission): Promise<PlanDispatchRun> {
     if (!submission || typeof submission.plan_id !== "string" || submission.plan_id.trim() === "") {
       throw new DispatchError("invalid_submission", "plan_id is required");
     }
+    this.assertAuthority();
     const project = this.getProject(projectId);
     const plan = this.loadPlan(projectId, submission.plan_id);
     const manifest = this.verifiedManifest(plan);
@@ -334,6 +375,7 @@ export class DispatchService {
         mergePolicy,
         requestId,
         actor: submission.actor ?? "operator",
+        scheduled: Boolean(submission.scheduled),
         runId: `run_${randomUUID()}`,
       });
     } catch (error) {
@@ -463,7 +505,7 @@ export class DispatchService {
       );
     }
 
-    const observedHead = this.checkExternalEffects(run);
+    const observedHead = this.inspectRunEffects(run);
     const now = this.clock();
     const changed = this.db
       .prepare(
@@ -479,6 +521,8 @@ export class DispatchService {
     if (changed.changes === 0) {
       throw new DispatchError("run_not_active", `Run ${runId} is no longer active`);
     }
+
+    clearWorkerOwner(runId);
 
     try {
       this.ledger.markReconciled(run.command_request_id, {
@@ -502,6 +546,7 @@ export class DispatchService {
   }
 
   private finalize(run: PlanDispatchRun, result: DispatchRunResult): PlanDispatchRun {
+    const verified = this.verifyCandidate(run, result);
     const current = this.db
       .prepare("SELECT * FROM dispatch_runs WHERE id = ?")
       .get(run.id) as unknown as DispatchRunRow | undefined;
@@ -523,8 +568,8 @@ export class DispatchService {
     }
 
     const now = this.clock();
-    const nextState = result.success ? "succeeded" : "failed";
-    const error = result.success ? null : (result.error ?? "dispatch_failed");
+    const nextState = verified.success ? "succeeded" : "failed";
+    const error = verified.success ? null : (verified.error ?? "dispatch_failed");
     const changed = this.db
       .prepare(
         `UPDATE dispatch_runs
@@ -534,7 +579,7 @@ export class DispatchService {
       )
       .run(
         nextState,
-        result.success ? (result.headSha ?? null) : null,
+        verified.success ? (verified.headSha ?? null) : null,
         error,
         now,
         now,
@@ -555,13 +600,50 @@ export class DispatchService {
       );
     }
 
-    if (result.success) {
-      this.updateCommand(run.command_request_id, "succeeded", result.headSha);
+    clearWorkerOwner(run.id);
+
+    if (verified.success) {
+      this.updateCommand(run.command_request_id, "succeeded", verified.headSha);
       return this.getRun(run.project_id, run.id);
     }
 
     this.failCommand(run.command_request_id, "dispatch_failed", error ?? "dispatch_failed");
     throw new DispatchError("dispatch_failed", error ?? "dispatch_failed", { run_id: run.id });
+  }
+
+  /**
+   * A runner's `success: true` is not evidence by itself: the candidate must be a
+   * real commit in the dispatched worktree, and it is the SHA recorded for the run.
+   */
+  private verifyCandidate(run: PlanDispatchRun, result: DispatchRunResult): DispatchRunResult {
+    if (!result.success) return result;
+    const head = result.headSha;
+    if (!head || !COMMIT_SHA.test(head)) {
+      return {
+        success: false,
+        error: "dispatch runner reported success without a valid candidate head",
+        ...(result.exitCode !== undefined ? { exitCode: result.exitCode } : {}),
+      };
+    }
+    try {
+      this.gitRunner(["cat-file", "-e", `${head}^{commit}`], { cwd: run.worktree_path });
+    } catch {
+      return {
+        success: false,
+        error: `dispatch runner candidate ${head} is not a committed object`,
+        ...(result.exitCode !== undefined ? { exitCode: result.exitCode } : {}),
+      };
+    }
+    return result;
+  }
+
+  private assertAuthority(): void {
+    if (this.authority() !== "local") {
+      throw new DispatchError(
+        "authority_not_activated",
+        "Local execution authority is not activated; complete the validated #165 cutover before dispatching",
+      );
+    }
   }
 
   private claim(input: {
@@ -575,6 +657,7 @@ export class DispatchService {
     mergePolicy: "auto_after_gates" | "manual";
     requestId: string;
     actor: string;
+    scheduled?: boolean;
     runId: string;
   }): ClaimedRun {
     const {
@@ -588,6 +671,7 @@ export class DispatchService {
       mergePolicy,
       requestId,
       actor,
+      scheduled,
       runId,
     } = input;
     const manifestRow = this.db
@@ -600,6 +684,18 @@ export class DispatchService {
     const now = this.clock();
     this.db.exec("BEGIN IMMEDIATE;");
     try {
+      // Revalidate the latest durable authority inside the same serialized write that
+      // allocates the claim. Pre-claim checks race with revocation, brakes and other
+      // processes; only this check can fail closed before tools start.
+      this.revalidateClaim({
+        project,
+        plan,
+        manifest,
+        member,
+        targetBranch,
+        scheduled: Boolean(scheduled),
+      });
+
       let delivery = this.db
         .prepare("SELECT * FROM deliveries WHERE project_id = ? AND plan_id = ?")
         .get(project.id, plan.id) as
@@ -721,6 +817,7 @@ export class DispatchService {
           ownership_generation: run.ownership_generation,
           owner_token: run.owner_token,
           project_id: project.id,
+          project_root: project.checkout_path,
           plan_id: plan.id,
           work_id: member.work_id,
           revision_id: member.revision_id,
@@ -932,27 +1029,106 @@ export class DispatchService {
     return row.count;
   }
 
+  private revalidateClaim(input: {
+    project: ProjectRow;
+    plan: PlanRecord;
+    manifest: PlanManifest;
+    member: PlanMember;
+    targetBranch: string;
+    scheduled: boolean;
+  }): void {
+    const { project, plan, manifest, member, targetBranch, scheduled } = input;
+
+    let currentPlan: PlanRecord;
+    try {
+      currentPlan = this.plans.getPlan(project.id, plan.id);
+    } catch (error) {
+      if (error instanceof PlanError) {
+        throw new DispatchError("plan_not_dispatchable", `Plan ${plan.id} is no longer admitted`);
+      }
+      throw error;
+    }
+    const currentManifest = this.verifiedManifest(currentPlan);
+    if (
+      currentManifest.graph_hash !== manifest.graph_hash ||
+      currentPlan.graph_hash !== plan.graph_hash
+    ) {
+      throw new DispatchError("manifest_mismatch", "Frozen plan manifest changed after validation");
+    }
+    const currentMember = currentPlan.members.find((item) => item.work_id === member.work_id);
+    if (
+      !currentMember ||
+      currentMember.revision_id !== member.revision_id ||
+      currentMember.content_hash !== member.content_hash
+    ) {
+      throw new DispatchError(
+        "manifest_mismatch",
+        "Frozen member revision changed after validation",
+      );
+    }
+    this.assertProfile(currentPlan, currentMember);
+
+    const brakeCode = this.brakeFailure(project.id, scheduled);
+    if (brakeCode) {
+      throw new DispatchError(brakeCode, `Dispatch blocked by ${brakeCode}`);
+    }
+
+    const blocked = this.dependencyBlock(
+      project,
+      currentPlan,
+      currentManifest,
+      currentMember,
+      targetBranch,
+    );
+    if (blocked !== null) {
+      throw new DispatchError(
+        "dependency_pending_integration",
+        `Prerequisite #${blocked} is no longer verified on the frozen target ${targetBranch}`,
+        { target_issue_number: blocked, target_branch: targetBranch },
+      );
+    }
+
+    if (this.hasActiveRun(project.id, currentMember.work_id)) {
+      throw new DispatchError("claim_conflict", "Work already has an active run");
+    }
+    if (this.hasSucceededRun(project.id, currentMember.work_id)) {
+      throw new DispatchError("already_succeeded", "Work already succeeded");
+    }
+
+    const activeRuns = this.countActiveRuns(project.id);
+    const legacy = this.legacyActiveLaps(project.checkout_path);
+    const capacity = this.schedule(project.checkout_path).parallel;
+    if (activeRuns + legacy >= capacity) {
+      throw new DispatchError(
+        "capacity_full",
+        `Project capacity is full (${activeRuns + legacy}/${capacity})`,
+      );
+    }
+  }
+
+  private brakeFailure(projectId: string, scheduled: boolean): DispatchErrorCode | null {
+    const result = scheduled
+      ? this.brakes.isScheduledLaunchPermitted(projectId)
+      : this.brakes.isLaunchPermitted(projectId);
+    if (result.permitted) return null;
+    if (result.reason === "schedule_paused") return "schedule_paused";
+    if (result.reason === "brake_state_unknown") return "brake_state_unknown";
+    return "launch_brake_set";
+  }
+
   private assertBrakes(
     project: ProjectRow,
     submission: DispatchSubmission,
     targetBranch: string,
   ): void {
-    const result = submission.scheduled
-      ? this.brakes.isScheduledLaunchPermitted(project.id)
-      : this.brakes.isLaunchPermitted(project.id);
-    if (result.permitted) return;
+    const code = this.brakeFailure(project.id, Boolean(submission.scheduled));
+    if (!code) return;
 
-    const code: DispatchErrorCode =
-      result.reason === "schedule_paused"
-        ? "schedule_paused"
-        : result.reason === "brake_state_unknown"
-          ? "brake_state_unknown"
-          : "launch_brake_set";
     this.recordRejection(project, submission, code, {
       plan_id: submission.plan_id,
       target_branch: targetBranch,
     });
-    throw new DispatchError(code, `Dispatch blocked by ${result.reason ?? code}`);
+    throw new DispatchError(code, `Dispatch blocked by ${code}`);
   }
 
   private recordRejection(
@@ -1089,16 +1265,103 @@ export class DispatchService {
     }
   }
 
-  private checkExternalEffects(run: PlanDispatchRun): string | null {
-    if (!existsSync(run.worktree_path)) return null;
-    try {
-      return this.gitRunner(["rev-parse", "HEAD"], { cwd: run.worktree_path }) || null;
-    } catch (error) {
+  /**
+   * Inspect real external ownership and effects before releasing a claim.
+   *
+   * A dead coordinator pid (and even a static worktree HEAD) proves nothing while
+   * the bounded builder process group or the worktree lock owner is alive, or
+   * while branch/remote state is unreadable. Those cases fail closed.
+   */
+  private inspectRunEffects(run: PlanDispatchRun): string | null {
+    const owner = readWorkerOwner(run.id);
+    if (owner && pidOrGroupAlive(owner.pid, owner.pgid)) {
       throw new DispatchError(
         "external_effect_unverified",
-        `Cannot verify worktree state for ${run.id}: ${error instanceof Error ? error.message : String(error)}`,
+        `Run ${run.id} still has a live builder process group (pid ${owner.pid}, pgid ${owner.pgid})`,
       );
     }
+
+    const lockPath = join(run.worktree_path, ".worktree.lock");
+    if (existsSync(lockPath)) {
+      try {
+        const lock = JSON.parse(readFileSync(lockPath, "utf-8")) as { pid?: unknown };
+        if (typeof lock.pid === "number" && this.processAlive(lock.pid)) {
+          throw new DispatchError(
+            "external_effect_unverified",
+            `Run ${run.id} worktree is still owned by live pid ${lock.pid}`,
+          );
+        }
+      } catch (error) {
+        if (error instanceof DispatchError) throw error;
+        throw new DispatchError(
+          "external_effect_unverified",
+          `Run ${run.id} has an unreadable worktree lock; manual inspection required`,
+        );
+      }
+    }
+
+    let observedHead: string | null = null;
+    if (existsSync(run.worktree_path)) {
+      try {
+        observedHead = this.gitRunner(["rev-parse", "HEAD"], { cwd: run.worktree_path }) || null;
+        // Reading the worktree status proves git still owns a usable checkout; a
+        // failure here means effects cannot be verified.
+        this.gitRunner(["status", "--porcelain", "--untracked-files=all"], {
+          cwd: run.worktree_path,
+        });
+      } catch (error) {
+        throw new DispatchError(
+          "external_effect_unverified",
+          `Cannot verify worktree state for ${run.id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
+    let branchHead: string | null = null;
+    const projectRoot = this.projectCheckoutPath(run.project_id);
+    try {
+      branchHead = this.gitRunner(["rev-parse", "--verify", `refs/heads/${run.branch}`], {
+        cwd: run.worktree_path,
+      });
+    } catch {}
+    if (branchHead === null) {
+      try {
+        branchHead = this.gitRunner(["rev-parse", "--verify", `refs/heads/${run.branch}`], {
+          cwd: projectRoot,
+        });
+      } catch {}
+    }
+
+    let remoteHead: string | null = null;
+    try {
+      remoteHead = this.gitRunner(["rev-parse", "--verify", `refs/remotes/origin/${run.branch}`], {
+        cwd: projectRoot,
+      });
+    } catch {}
+
+    if (remoteHead) {
+      const candidate = observedHead ?? branchHead;
+      if (!candidate) {
+        throw new DispatchError(
+          "external_effect_unverified",
+          `Run ${run.id} branch ${run.branch} exists on origin but no local candidate can be verified`,
+        );
+      }
+      if (candidate !== remoteHead) {
+        try {
+          this.gitRunner(["merge-base", "--is-ancestor", remoteHead, candidate], {
+            cwd: projectRoot,
+          });
+        } catch {
+          throw new DispatchError(
+            "external_effect_unverified",
+            `Run ${run.id} remote branch ${run.branch} has effects not present locally`,
+          );
+        }
+      }
+    }
+
+    return observedHead ?? branchHead;
   }
 
   private markRunRunning(runId: string): void {
@@ -1163,6 +1426,14 @@ export class DispatchService {
       throw new DispatchError("project_not_active", `Project ${projectId} is ${row.status}`);
     }
     return row;
+  }
+
+  private projectCheckoutPath(projectId: string): string {
+    const row = this.db
+      .prepare("SELECT checkout_path FROM projects WHERE id = ?")
+      .get(projectId) as { checkout_path: string } | undefined;
+    if (!row) throw new DispatchError("project_not_found", `Project ${projectId} not found`);
+    return row.checkout_path;
   }
 
   private mapRun(row: DispatchRunRow): PlanDispatchRun {

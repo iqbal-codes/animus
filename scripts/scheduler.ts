@@ -19,6 +19,7 @@ import { CommandLedger } from "../apps/backend/src/command/ledger";
 import { BrakeService } from "../apps/backend/src/command/brakes";
 import {
   DispatchService,
+  readExecutionAuthority,
   runLocalDispatchTick,
   type LocalDispatchTickResult,
 } from "../apps/backend/src/dispatch";
@@ -146,6 +147,7 @@ function toSchedulerTick(local: LocalDispatchTickResult): SchedulerTickResult {
     no_admitted_plans: "no_admitted_issues",
     no_eligible_work: "no_admitted_issues",
     dry_run: "no_admitted_issues",
+    authority_not_activated: "no_admitted_issues",
     stop_brake_set: "stop_brake_set",
     pause_brake_set: "pause_brake_set",
     capacity_full: "capacity_full",
@@ -155,12 +157,25 @@ function toSchedulerTick(local: LocalDispatchTickResult): SchedulerTickResult {
     action: "skipped",
     reason: reasons[local.reason] ?? "launch_failed",
     activeLapsCount: 0,
-    detail: local.detail,
+    detail: local.detail ?? local.reason,
     error: local.error,
   };
 }
 
+export { toSchedulerTick };
+
 if (import.meta.main) {
+  const authority = readExecutionAuthority();
+  if (authority.authority !== "local") {
+    console.log(
+      JSON.stringify({
+        action: "skipped",
+        reason: "authority_not_activated",
+        detail:
+          "Local execution authority is not activated. Complete the validated #165 cutover before running the local scheduler.",
+      }),
+    );
+  } else {
   let db: ReturnType<typeof initializeDatabase> | null = null;
   try {
     const { once, dryRun, interval } = parseSchedulerCliArgs(process.argv.slice(2));
@@ -255,5 +270,6 @@ if (import.meta.main) {
     try {
       db?.close();
     } catch {}
+  }
   }
 }

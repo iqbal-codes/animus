@@ -3,7 +3,21 @@ import { resolveProjectWorkspace } from "../../../packages/contracts/src/paths";
 import { githubJson, issueSpecification, readIssueContract } from "../../loop";
 import { inspectLocalLoop, runAnimusLoop } from "../../animus-loop";
 import { findRun, watchRun } from "../../loop-watch";
-import { fetchGithubBacklog, logTickResult } from "../../scheduler";
+import { fetchGithubBacklog, logTickResult, toSchedulerTick } from "../../scheduler";
+import {
+  DispatchService,
+  readExecutionAuthority,
+  runLocalDispatchTick,
+  type DispatchEngineOptions,
+} from "../../../apps/backend/src/dispatch";
+import {
+  initializeDatabase,
+  ProjectRegistryService,
+  SystemForgeAdapter,
+} from "../../../apps/backend/src/registry";
+import { PlanService } from "../../../apps/backend/src/plans";
+import { CommandLedger } from "../../../apps/backend/src/command/ledger";
+import { BrakeService } from "../../../apps/backend/src/command/brakes";
 import {
   loadScheduleConfig,
   runSchedulerTick,
@@ -174,17 +188,116 @@ export async function runLoopCliCommand(opts: {
   }
 }
 
+export async function runLocalSchedulerCommand(
+  opts: {
+    repoRoot: string;
+    once?: boolean;
+    dryRun?: boolean;
+    interval?: string;
+    json?: boolean;
+    engine?: DispatchEngineOptions;
+  },
+  interval: number | undefined,
+): Promise<number> {
+  const db = initializeDatabase();
+  try {
+    const registry = new ProjectRegistryService(db, new SystemForgeAdapter());
+    const plans = new PlanService(db, registry.getForge());
+    const brakes = new BrakeService(db);
+    const dispatch = new DispatchService(db, {
+      plans,
+      ledger: new CommandLedger(db),
+      brakes,
+      engine: opts.engine,
+    });
+    try {
+      dispatch.reconcile();
+    } catch {}
+
+    const workspace = resolveProjectWorkspace(opts.repoRoot);
+    const dispatchLocal = async () =>
+      toSchedulerTick(
+        await runLocalDispatchTick({
+          db,
+          registry,
+          plans,
+          dispatch,
+          actor: "scheduler",
+          dryRun: opts.dryRun,
+        }),
+      );
+    const emptyBacklog = async (): Promise<{
+      issues: BacklogCandidate[];
+      closedNumbers: Set<number>;
+    }> => ({ issues: [], closedNumbers: new Set<number>() });
+    const legacyLaunchDisabled = async (): Promise<{ runId: string }> => {
+      throw new Error("Legacy GitHub launch path is disabled for local dispatch");
+    };
+
+    if (opts.once) {
+      const result = await runSchedulerTick({
+        root: opts.repoRoot,
+        sharedRoot: workspace.primaryRoot,
+        runsDir: workspace.runsDir,
+        repo: "",
+        config: interval ? { interval_seconds: interval } : undefined,
+        brakes,
+        fetchBacklog: emptyBacklog,
+        launchLap: legacyLaunchDisabled,
+        dispatchLocal,
+      });
+      if (opts.json) console.log(JSON.stringify(result, null, 2));
+      else logTickResult(result);
+      return 0;
+    }
+
+    console.log(
+      `Starting local plan scheduler (interval: ${interval ?? loadScheduleConfig(opts.repoRoot).interval_seconds}s)...`,
+    );
+    const controller = new AbortController();
+    process.once("SIGINT", () => controller.abort());
+    process.once("SIGTERM", () => controller.abort());
+    const loop = startSchedulerLoop({
+      root: opts.repoRoot,
+      sharedRoot: workspace.primaryRoot,
+      runsDir: workspace.runsDir,
+      repo: "",
+      config: interval ? { interval_seconds: interval } : undefined,
+      intervalMs: interval ? interval * 1000 : undefined,
+      brakes,
+      fetchBacklog: emptyBacklog,
+      launchLap: legacyLaunchDisabled,
+      dispatchLocal,
+      onTick: logTickResult,
+      signal: controller.signal,
+    });
+    await loop.done;
+    return 0;
+  } finally {
+    try {
+      db.close();
+    } catch {}
+  }
+}
+
 export async function runSchedulerCliCommand(opts: {
   repoRoot: string;
   once?: boolean;
   dryRun?: boolean;
   interval?: string;
   json?: boolean;
+  engine?: DispatchEngineOptions;
 }): Promise<number> {
   try {
     const interval = opts.interval ? Number(opts.interval) : undefined;
     if (interval !== undefined && (!Number.isSafeInteger(interval) || interval <= 0)) {
       throw new Error("Interval must be a positive integer in seconds");
+    }
+
+    // A single mutually exclusive authority: once the validated local authority is
+    // active this command never resolves a GitHub repository or fetches backlog.
+    if (readExecutionAuthority().authority === "local") {
+      return await runLocalSchedulerCommand(opts, interval);
     }
 
     const repoRes = Bun.spawnSync(["gh", "repo", "view", "--json", "nameWithOwner"], {

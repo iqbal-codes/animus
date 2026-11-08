@@ -26,6 +26,8 @@ import { PlanService, handleProjectPlanRoute } from "./plans";
 import {
   DispatchService,
   handleProjectDispatchRoute,
+  readExecutionAuthority,
+  runLocalDispatchTick,
   type DispatchServiceOptions,
 } from "./dispatch";
 import {
@@ -294,6 +296,15 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
   const monitor = new RegisteredProjectMonitor(registryService, {
     runtime: monitorRuntime,
     intervalMs: monitorInterval,
+    authority: () => readExecutionAuthority().authority,
+    localDispatch: () =>
+      runLocalDispatchTick({
+        db: registryService.getDb(),
+        registry: registryService,
+        plans: planService,
+        dispatch: dispatchService,
+        actor: "monitor",
+      }),
   });
 
   const githubWebhookService = new GitHubWebhookService(registryService, {
@@ -756,6 +767,16 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
       }
 
       if (scopedAction === "coordination") {
+        if (readExecutionAuthority().authority === "local" && request.method !== "GET") {
+          return Response.json(
+            {
+              error: "execution_authority_moved",
+              message:
+                "Legacy live-forge coordination dispatch is disabled after local authority activation; use the frozen plan dispatch routes",
+            },
+            { status: 409 },
+          );
+        }
         const coordRes = await handleProjectCoordinationRoute(
           request,
           projectId,

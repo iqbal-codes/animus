@@ -13,6 +13,8 @@ import {
   withLockMutation,
 } from "@animus/contracts/paths";
 import type { MonitorRuntime } from "./runtime";
+import type { LocalDispatchTickResult } from "../dispatch/scheduler";
+import type { ExecutionAuthority } from "../dispatch/authority";
 
 export class RegisteredProjectMonitor {
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -29,7 +31,14 @@ export class RegisteredProjectMonitor {
 
   constructor(
     private registry: ProjectRegistryService,
-    private options: { runtime: MonitorRuntime; intervalMs?: number },
+    private options: {
+      runtime: MonitorRuntime;
+      intervalMs?: number;
+      /** Present only when the validated local execution authority is active. */
+      localDispatch?: () => Promise<LocalDispatchTickResult>;
+      /** Read the durable authority for each tick so activation is exact. */
+      authority?: () => ExecutionAuthority;
+    },
   ) {
     this.intervalMs = options.intervalMs ?? 1000;
     if (!Number.isSafeInteger(this.intervalMs) || this.intervalMs < 1)
@@ -479,6 +488,32 @@ export class RegisteredProjectMonitor {
         status.reason = permitted.reason ?? "brake_state_unknown";
         return;
       }
+
+      // Under the validated local authority the monitor dispatches from the frozen
+      // plan manifest and never fetches or rebinds GitHub backlog content.
+      if (this.options.localDispatch && this.options.authority?.() === "local") {
+        this.assertDispatch(project);
+        const result = await this.options.localDispatch();
+        status.tick = {
+          action: result.action,
+          reason: result.reason,
+          activeLapsCount: 0,
+          ...(result.issueNumber !== undefined ? { targetIssueNumber: result.issueNumber } : {}),
+          ...(result.runId ? { runId: result.runId } : {}),
+          ...(result.detail ? { detail: result.detail } : {}),
+          ...(result.error ? { error: result.error } : {}),
+        };
+        status.reason = result.reason;
+        status.state =
+          result.action === "launched" ? "completed" : result.error ? "error" : "skipped";
+        if (result.error) status.error = result.error;
+        if (result.reason === "capacity_full") {
+          this.pendingWake.add(project.id);
+          status.pending_wake = true;
+        }
+        return;
+      }
+
       await this.verifyCheckout(project);
       const runtime = this.options.runtime;
       try {

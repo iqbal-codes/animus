@@ -7,6 +7,7 @@ export type LocalDispatchSkipReason =
   | "no_active_projects"
   | "no_admitted_plans"
   | "no_eligible_work"
+  | "authority_not_activated"
   | "stop_brake_set"
   | "pause_brake_set"
   | "capacity_full"
@@ -31,6 +32,8 @@ export interface LocalDispatchTickOptions {
   dispatch: DispatchService;
   actor?: string;
   dryRun?: boolean;
+  /** Restrict the tick to one project (the monitor ticks per project). */
+  projectId?: string;
 }
 
 function planSkipReason(error: DispatchError): LocalDispatchSkipReason | "continue" {
@@ -44,6 +47,8 @@ function planSkipReason(error: DispatchError): LocalDispatchSkipReason | "contin
       return "continue";
     case "capacity_full":
       return "capacity_full";
+    case "authority_not_activated":
+      return "authority_not_activated";
     case "launch_brake_set":
       return "stop_brake_set";
     case "schedule_paused":
@@ -63,6 +68,7 @@ export async function runLocalDispatchTick(
   const projects = options.registry
     .listProjects()
     .filter((project) => project.status === "active")
+    .filter((project) => !options.projectId || project.id === options.projectId)
     .sort((left, right) => {
       const byCreated = String(left.created_at ?? "").localeCompare(String(right.created_at ?? ""));
       return byCreated !== 0 ? byCreated : left.id.localeCompare(right.id);
