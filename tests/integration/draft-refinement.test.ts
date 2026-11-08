@@ -556,6 +556,9 @@ describe("local draft refinement and operator review", () => {
     if (record.latest_revision.plan.kind !== "standalone") throw new Error("expected standalone");
     expect(record.latest_revision.plan.prepared).toBe(true);
     expect(record.latest_revision.plan.title).toBe("Add a small button");
+    // Verification text comes from the prepared body itself, never an invented sentence.
+    expect(record.latest_revision.plan.verification_requirements).toEqual(["bun run test"]);
+    expect(record.latest_revision.plan.acceptance_criteria[0]?.verification).toBe("bun run test");
   });
 
   test("AC3: a prepared parent spec is routed to plan admission rather than re-decomposed as standalone", async () => {
@@ -833,6 +836,8 @@ describe("draft visibility through backend HTTP, client and CLI", () => {
           },
         ],
       },
+      standalonePlan(),
+      specPlan({ title: "Ship the revised operator revision flow" }),
     ]);
     app = await createBackendApp({
       stateDir: join(root, "state"),
@@ -922,5 +927,60 @@ describe("draft visibility through backend HTTP, client and CLI", () => {
     const fresh = await scoped.draft(record.id);
     expect(fresh.authorization.can_publish).toBe(false);
     expect(fresh.authorization).not.toHaveProperty("can_dispatch");
+  });
+
+  test("AC4: the public app API regenerates a revised standalone/spec scope from a revision-bound change request", async () => {
+    const client = createFactoryClient({
+      baseUrl: "http://127.0.0.1",
+      fetch: backendFetch(app),
+    });
+    const scoped = client.forProject(projectId);
+
+    const clarification = await scoped.refineDraft({ work_id: workId, answers: [] });
+    const standalone = await scoped.reviseDraft(clarification.id, {
+      answers: [{ question_id: "q1", answer: "Clarity first" }],
+    });
+    expect(standalone.latest_revision.kind).toBe("standalone");
+    expect(standalone.authorization).toEqual({
+      approved: false,
+      approved_revision_id: null,
+      can_publish: false,
+    });
+
+    const instructions = "Tighten the scope and keep the existing API stable.";
+    const changes = await scoped.decideDraft(standalone.id, {
+      revision_id: standalone.latest_revision.id,
+      decision: "revise",
+      reason: "The boundary needs tightening",
+      instructions,
+    });
+    expect(changes.status).toBe("changes_requested");
+    expect(changes.latest_decision?.instructions).toBe(instructions);
+    expect(changes.authorization.can_publish).toBe(false);
+
+    // Exactly what the operator app now does after a revise decision.
+    const revised = await scoped.reviseDraft(standalone.id, { answers: [], instructions });
+    expect(revised.latest_revision.id).not.toBe(standalone.latest_revision.id);
+    expect(revised.latest_revision.revision_number).toBe(3);
+    expect(revised.latest_revision.kind).toBe("spec");
+    expect(revised.latest_revision.instructions).toBe(instructions);
+    expect(revised.latest_revision.plan.kind).toBe("spec");
+    if (revised.latest_revision.plan.kind !== "spec") throw new Error("expected spec");
+    expect(revised.latest_revision.plan.title).toBe("Ship the revised operator revision flow");
+    expect(revised.status).toBe("needs_review");
+    expect(revised.authorization).toEqual({
+      approved: false,
+      approved_revision_id: null,
+      can_publish: false,
+    });
+
+    // The prior revision-bound decision is now stale and cannot be replayed.
+    await expect(
+      scoped.decideDraft(standalone.id, {
+        revision_id: standalone.latest_revision.id,
+        decision: "approve",
+        reason: "approve the superseded revision",
+      }),
+    ).rejects.toMatchObject({ code: "draft_stale_revision" });
   });
 });

@@ -20,11 +20,7 @@ import {
 import { processRun } from "./process";
 import { loadPrompt, renderPrompt } from "./prompts";
 import { buildProviderArgv } from "./providers";
-import {
-  getWorkspaceSnapshot,
-  validateCanonicalIssueBody,
-  REQUIRED_TRIAGE_SKILL,
-} from "./triage";
+import { getWorkspaceSnapshot, validateCanonicalIssueBody, REQUIRED_TRIAGE_SKILL } from "./triage";
 import type { AgentTransport, LoopRole, RoleBudget } from "./types";
 
 export interface PlanDraftOptions {
@@ -96,7 +92,7 @@ function boundaryOf(markdown: string): DraftBoundary {
   };
 }
 
-function acceptanceCriteriaOf(markdown: string): DraftAcceptanceCriterion[] {
+function acceptanceCriteriaOf(markdown: string, verification: string): DraftAcceptanceCriterion[] {
   const items = sectionListItems(extractSection(markdown, "Acceptance criteria"));
   if (items.length === 0) return [];
   return items.map((item, index) => {
@@ -104,7 +100,7 @@ function acceptanceCriteriaOf(markdown: string): DraftAcceptanceCriterion[] {
     return {
       id: match?.[1] ?? `AC${index + 1}`,
       description: (match?.[2] ?? item).trim(),
-      verification: "Verify through the prepared ticket's stated test seam.",
+      verification,
     };
   });
 }
@@ -132,10 +128,10 @@ function preparedWorkPlan(source: PlanDraftInput["source"]): DraftPlan | null {
   if (!validateCanonicalIssueBody(source.body).valid) return null;
 
   const sections = parseTicketSections(source.body);
-  const acceptance = acceptanceCriteriaOf(source.body);
-  if (acceptance.length === 0) return null;
   const boundary = boundaryOf(source.body);
   const verification = verificationOf(source.body, boundary);
+  const acceptance = acceptanceCriteriaOf(source.body, verification.join("; "));
+  if (acceptance.length === 0) return null;
   // A complete standalone ticket proves its own verification. A parent-spec body
   // does not carry a `## Verification` section, so requiring one here prevents a
   // canonical spec from being silently accepted as standalone execution.
@@ -344,7 +340,8 @@ export async function planDraft(
   const timeoutMs = budgets.triage.hardMs;
   const beforeSnapshot = getWorkspaceSnapshot(input.root);
   const transport: AgentTransport =
-    options.transport ?? ((request) => processRun(request.argv, request.cwd, request.timeoutMs, request.env));
+    options.transport ??
+    ((request) => processRun(request.argv, request.cwd, request.timeoutMs, request.env));
 
   const response = await transport({
     argv,
@@ -387,7 +384,10 @@ export async function planDraft(
   }
   const plan = validated.data;
   if (plan.kind !== "clarification") {
-    const bodies = plan.kind === "standalone" ? [plan.body] : [plan.body, ...plan.children.map((child) => child.body)];
+    const bodies =
+      plan.kind === "standalone"
+        ? [plan.body]
+        : [plan.body, ...plan.children.map((child) => child.body)];
     for (const body of bodies) {
       const canonical = validateCanonicalIssueBody(body);
       if (!canonical.valid) {

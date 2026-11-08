@@ -2,10 +2,17 @@
 import React from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { DraftBoundary, DraftPlan, DraftRecord, Project } from "@animus/contracts/operator";
+import type {
+  DraftBoundary,
+  DraftRecord,
+  DraftSpecPlan,
+  DraftStandalonePlan,
+  Project,
+} from "@animus/contracts/operator";
 import {
   buildAnswerSubmission,
   draftActionsOf,
+  pendingChangeInstructions,
   planContentOf,
   summarizeDraft,
 } from "../../apps/web/src/features/drafts/drafts-model";
@@ -82,7 +89,7 @@ const testBoundary: DraftBoundary = {
   exclusions: "unrelated work",
 };
 
-const standalonePlan: DraftPlan = {
+const standalonePlan: DraftStandalonePlan = {
   kind: "standalone",
   title: "Add the small button",
   scope: "Add one button to the toolbar.",
@@ -183,6 +190,108 @@ function reviewRecord(): DraftRecord {
   };
 }
 
+function specPlan(): DraftSpecPlan {
+  return {
+    kind: "spec",
+    title: "Ship the operator revision flow",
+    scope: "Implement revision generation for specs.",
+    outcome: "Operators can request and generate a revised spec.",
+    invariants: ["Approval stays revision-bound."],
+    acceptance_criteria: [
+      { id: "AC1", description: "Spec request changes works.", verification: "Integration test" },
+      { id: "AC2", description: "Children stay covered.", verification: "Integration test" },
+    ],
+    verification_requirements: ["bun run test"],
+    boundary: testBoundary,
+    depends_on: [],
+    body: "",
+    children: [
+      {
+        id: "C1",
+        title: "First slice",
+        scope: "s",
+        outcome: "o",
+        invariants: ["i"],
+        acceptance_criteria: [{ id: "AC1", description: "d", verification: "v" }],
+        verification_requirements: ["v"],
+        boundary: testBoundary,
+        depends_on: [],
+        body: "",
+        depends_on_indices: [],
+        covers_parent_ac_ids: ["AC1"],
+      },
+      {
+        id: "C2",
+        title: "Second slice",
+        scope: "s",
+        outcome: "o",
+        invariants: ["i"],
+        acceptance_criteria: [{ id: "AC1", description: "d", verification: "v" }],
+        verification_requirements: ["v"],
+        boundary: testBoundary,
+        depends_on: [],
+        body: "",
+        depends_on_indices: [0],
+        covers_parent_ac_ids: ["AC2"],
+      },
+    ],
+  };
+}
+
+function issueRecord(id: string, issueNumber: number, title: string): DraftRecord {
+  const base = reviewRecord();
+  return {
+    ...base,
+    id,
+    work_id: `work_${issueNumber}`,
+    source: { ...base.source, title },
+    source_provenance: { ...base.source_provenance, issue_number: issueNumber },
+    latest_revision: {
+      ...base.latest_revision,
+      id: `${id}_rev`,
+      draft_id: id,
+      work_id: `work_${issueNumber}`,
+      plan: { ...standalonePlan, title },
+    },
+  };
+}
+
+function changesRequested(record: DraftRecord, instructions: string): DraftRecord {
+  return {
+    ...record,
+    status: "changes_requested",
+    latest_decision: {
+      id: "ddecision_1",
+      draft_id: record.id,
+      project_id: record.project_id,
+      revision_id: record.latest_revision.id,
+      revision_number: record.latest_revision.revision_number,
+      decision: "revise",
+      reason: "Tighten the scope",
+      instructions,
+      actor: null,
+      decided_at: 2,
+    },
+  };
+}
+
+function nextRevision(record: DraftRecord, revisionNumber: number): DraftRecord {
+  return {
+    ...record,
+    status: "needs_review",
+    latest_revision: {
+      ...record.latest_revision,
+      id: `drev_${revisionNumber}`,
+      revision_number: revisionNumber,
+      plan:
+        record.latest_revision.plan.kind === "spec"
+          ? { ...specPlan(), title: "Revised operator revision flow" }
+          : { ...standalonePlan, title: "Add the revised small button" },
+    },
+    authorization: { approved: false, approved_revision_id: null, can_publish: false },
+  };
+}
+
 describe("draft view model", () => {
   test("clarification plans expose only questions, never fabricated scope", () => {
     const content = planContentOf(clarificationRecord());
@@ -266,6 +375,22 @@ describe("draft view model", () => {
     expect(summary.statusLabel).toBe("Needs review");
     expect(summary.revisionNumber).toBe(2);
     expect(summary.issueNumber).toBe(21);
+  });
+
+  test("pending change instructions stay bound to the current revision", () => {
+    const record = changesRequested(reviewRecord(), "Keep the API stable.");
+    expect(pendingChangeInstructions(record)).toBe("Keep the API stable.");
+    const actions = draftActionsOf(record);
+    expect(actions.canRegenerate).toBe(true);
+    expect(actions.canRequestChanges).toBe(false);
+
+    const superseded = {
+      ...record,
+      latest_revision: { ...record.latest_revision, id: "drev_3", revision_number: 3 },
+    };
+    // The decision still targets revision 2, so it must not replay as pending text.
+    expect(pendingChangeInstructions(superseded)).toBe("");
+    expect(draftActionsOf(superseded).canRegenerate).toBe(false);
   });
 });
 
@@ -379,5 +504,258 @@ describe("drafts screen", () => {
       "draft_2",
       expect.objectContaining({ decision: "approve", reason: "Scope is correct" }),
     );
+  });
+
+  test("standalone request changes records the revise decision then generates a new revision", async () => {
+    const record = reviewRecord();
+    const changed = changesRequested(record, "Keep the API stable.");
+    const revised = nextRevision(changed, 3);
+    draftRecordMock.projects = [project];
+    draftRecordMock.drafts = [record];
+    draftRecordMock.draft = record;
+    draftRecordMock.decideDraft = vi.fn(async () => {
+      draftRecordMock.drafts = [changed];
+      draftRecordMock.draft = changed;
+      return changed;
+    });
+    draftRecordMock.reviseDraft = vi.fn(async () => {
+      draftRecordMock.drafts = [revised];
+      draftRecordMock.draft = revised;
+      return revised;
+    });
+    render(<DraftsScreen />);
+
+    await waitFor(() => expect(screen.getByText("Needs review")).toBeTruthy());
+    fireEvent.click(screen.getByRole("option", { name: /Improve onboarding/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Request changes/ })).toBeTruthy(),
+    );
+    fireEvent.change(screen.getByLabelText("Decision reason"), {
+      target: { value: "Tighten the scope" },
+    });
+    fireEvent.change(screen.getByLabelText("Change instructions"), {
+      target: { value: "Keep the API stable." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Request changes/ }));
+
+    await waitFor(() =>
+      expect(screen.getByText("Generated revision 3 from the change request.")).toBeTruthy(),
+    );
+    expect(draftRecordMock.decideDraft).toHaveBeenCalledWith("draft_2", {
+      revision_id: "drev_2",
+      decision: "revise",
+      reason: "Tighten the scope",
+      instructions: "Keep the API stable.",
+    });
+    expect(draftRecordMock.reviseDraft).toHaveBeenCalledWith("draft_2", {
+      answers: [],
+      instructions: "Keep the API stable.",
+    });
+    expect(screen.getByText("Add the revised small button")).toBeTruthy();
+    expect(screen.getByText(/revision 3 · standalone/)).toBeTruthy();
+    // A new revision invalidates the prior authorization.
+    expect(revised.authorization).toEqual({
+      approved: false,
+      approved_revision_id: null,
+      can_publish: false,
+    });
+  });
+
+  test("spec request changes generates a new spec revision with preserved children", async () => {
+    const record = reviewRecord();
+    record.latest_revision = {
+      ...record.latest_revision,
+      kind: "spec",
+      plan: specPlan(),
+    };
+    const changed = changesRequested(record, "Cover the second child.");
+    const revised = nextRevision(changed, 3);
+    draftRecordMock.projects = [project];
+    draftRecordMock.drafts = [record];
+    draftRecordMock.draft = record;
+    draftRecordMock.decideDraft = vi.fn(async () => {
+      draftRecordMock.drafts = [changed];
+      draftRecordMock.draft = changed;
+      return changed;
+    });
+    draftRecordMock.reviseDraft = vi.fn(async () => {
+      draftRecordMock.drafts = [revised];
+      draftRecordMock.draft = revised;
+      return revised;
+    });
+    render(<DraftsScreen />);
+
+    await waitFor(() => expect(screen.getByText("Needs review")).toBeTruthy());
+    fireEvent.click(screen.getByRole("option", { name: /Improve onboarding/ }));
+    await waitFor(() => expect(screen.getByText("Child tickets (2)")).toBeTruthy());
+    fireEvent.change(screen.getByLabelText("Decision reason"), {
+      target: { value: "Tighten the spec" },
+    });
+    fireEvent.change(screen.getByLabelText("Change instructions"), {
+      target: { value: "Cover the second child." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Request changes/ }));
+
+    await waitFor(() =>
+      expect(screen.getByText("Generated revision 3 from the change request.")).toBeTruthy(),
+    );
+    expect(draftRecordMock.reviseDraft).toHaveBeenCalledWith("draft_2", {
+      answers: [],
+      instructions: "Cover the second child.",
+    });
+    expect(screen.getByText("Revised operator revision flow")).toBeTruthy();
+    expect(screen.getByText(/revision 3 · spec/)).toBeTruthy();
+    expect(screen.getByText("Child tickets (2)")).toBeTruthy();
+  });
+
+  test("a generation failure is reported honestly and the preserved instructions can be retried", async () => {
+    const record = reviewRecord();
+    const changed = changesRequested(record, "Keep the API stable.");
+    const revised = nextRevision(changed, 3);
+    let attempts = 0;
+    draftRecordMock.projects = [project];
+    draftRecordMock.drafts = [record];
+    draftRecordMock.draft = record;
+    draftRecordMock.decideDraft = vi.fn(async () => {
+      draftRecordMock.drafts = [changed];
+      draftRecordMock.draft = changed;
+      return changed;
+    });
+    draftRecordMock.reviseDraft = vi.fn(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("planner transport unavailable");
+      draftRecordMock.drafts = [revised];
+      draftRecordMock.draft = revised;
+      return revised;
+    });
+    render(<DraftsScreen />);
+
+    await waitFor(() => expect(screen.getByText("Needs review")).toBeTruthy());
+    fireEvent.click(screen.getByRole("option", { name: /Improve onboarding/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Request changes/ })).toBeTruthy(),
+    );
+    fireEvent.change(screen.getByLabelText("Decision reason"), {
+      target: { value: "Tighten the scope" },
+    });
+    fireEvent.change(screen.getByLabelText("Change instructions"), {
+      target: { value: "Keep the API stable." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Request changes/ }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/could not be generated: planner transport unavailable/),
+      ).toBeTruthy(),
+    );
+    // No fake success: the revision was never generated.
+    expect(screen.queryByText(/Generated revision/)).toBeNull();
+    expect((screen.getByLabelText("Change instructions") as HTMLTextAreaElement).value).toBe(
+      "Keep the API stable.",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Generate revised scope/ }));
+    await waitFor(() =>
+      expect(screen.getByText("Generated revision 3 from the change request.")).toBeTruthy(),
+    );
+    expect(draftRecordMock.reviseDraft).toHaveBeenNthCalledWith(1, "draft_2", {
+      answers: [],
+      instructions: "Keep the API stable.",
+    });
+    expect(draftRecordMock.reviseDraft).toHaveBeenNthCalledWith(2, "draft_2", {
+      answers: [],
+      instructions: "Keep the API stable.",
+    });
+  });
+
+  test("a stale revise decision fails closed without attempting generation", async () => {
+    const record = reviewRecord();
+    draftRecordMock.projects = [project];
+    draftRecordMock.drafts = [record];
+    draftRecordMock.draft = record;
+    draftRecordMock.decideDraft = vi.fn(async () => {
+      throw new Error("The decision targets a superseded draft revision");
+    });
+    draftRecordMock.reviseDraft = vi.fn(async () => record);
+    render(<DraftsScreen />);
+
+    await waitFor(() => expect(screen.getByText("Needs review")).toBeTruthy());
+    fireEvent.click(screen.getByRole("option", { name: /Improve onboarding/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Request changes/ })).toBeTruthy(),
+    );
+    fireEvent.change(screen.getByLabelText("Decision reason"), {
+      target: { value: "Tighten the scope" },
+    });
+    fireEvent.change(screen.getByLabelText("Change instructions"), {
+      target: { value: "Keep the API stable." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Request changes/ }));
+
+    await waitFor(() => expect(screen.getByText(/superseded draft revision/)).toBeTruthy());
+    expect(draftRecordMock.reviseDraft).not.toHaveBeenCalled();
+  });
+
+  test("the draft queue supports arrows, Home, End and aria-activedescendant", async () => {
+    const alpha = issueRecord("draft_a", 31, "Alpha draft");
+    const beta = issueRecord("draft_b", 32, "Beta draft");
+    const gamma = issueRecord("draft_c", 33, "Gamma draft");
+    draftRecordMock.projects = [project];
+    draftRecordMock.drafts = [alpha, beta, gamma];
+    draftRecordMock.draft = alpha;
+    render(<DraftsScreen />);
+
+    await waitFor(() => expect(screen.getByText("Alpha draft")).toBeTruthy());
+    const listbox = screen.getByRole("listbox", { name: "Drafts" });
+    expect(listbox.getAttribute("aria-activedescendant")).toBeNull();
+
+    fireEvent.keyDown(listbox, { key: "ArrowDown" });
+    await waitFor(() =>
+      expect(listbox.getAttribute("aria-activedescendant")).toBe("draft-option-draft_a"),
+    );
+    expect(screen.getByRole("option", { name: /Alpha draft/ }).getAttribute("aria-selected")).toBe(
+      "true",
+    );
+
+    fireEvent.keyDown(listbox, { key: "ArrowDown" });
+    await waitFor(() =>
+      expect(listbox.getAttribute("aria-activedescendant")).toBe("draft-option-draft_b"),
+    );
+
+    fireEvent.keyDown(listbox, { key: "End" });
+    await waitFor(() =>
+      expect(listbox.getAttribute("aria-activedescendant")).toBe("draft-option-draft_c"),
+    );
+
+    fireEvent.keyDown(listbox, { key: "Home" });
+    await waitFor(() =>
+      expect(listbox.getAttribute("aria-activedescendant")).toBe("draft-option-draft_a"),
+    );
+
+    fireEvent.keyDown(listbox, { key: "ArrowUp" });
+    await waitFor(() =>
+      expect(listbox.getAttribute("aria-activedescendant")).toBe("draft-option-draft_a"),
+    );
+  });
+
+  test("draft mobile controls expose at least a 44px touch target", async () => {
+    const record = reviewRecord();
+    draftRecordMock.projects = [project];
+    draftRecordMock.drafts = [record];
+    draftRecordMock.draft = record;
+    render(<DraftsScreen />);
+
+    await waitFor(() => expect(screen.getByText("Needs review")).toBeTruthy());
+    expect(screen.getByLabelText("Project").className).toContain("h-11");
+    expect(screen.getByLabelText("Project").className).toContain("sm:h-9");
+    expect(screen.getByRole("button", { name: /Refresh drafts/ }).className).toContain("min-h-11");
+
+    fireEvent.click(screen.getByRole("option", { name: /Improve onboarding/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Request changes/ })).toBeTruthy(),
+    );
+    for (const name of [/Approve for publication/, /Request changes/, /Reject/]) {
+      expect(screen.getByRole("button", { name }).className).toContain("min-h-11");
+    }
   });
 });

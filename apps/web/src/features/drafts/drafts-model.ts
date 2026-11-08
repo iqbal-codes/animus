@@ -55,7 +55,24 @@ export interface DraftActions {
   canApprove: boolean;
   canReject: boolean;
   canRequestChanges: boolean;
+  canRegenerate: boolean;
   reason: string;
+}
+
+/**
+ * Instructions from a revise decision that still targets the current revision.
+ * They are the operator's pending change request: if revision generation failed,
+ * retrying must reuse them rather than silently dropping the request.
+ */
+export function pendingChangeInstructions(record: DraftRecord): string {
+  const decision = record.latest_decision;
+  if (decision?.decision !== "revise") return "";
+  if (decision.revision_id !== record.latest_revision.id) return "";
+  return decision.instructions ?? "";
+}
+
+export function hasPendingChangeRequest(record: DraftRecord): boolean {
+  return record.status === "changes_requested" && pendingChangeInstructions(record).length > 0;
 }
 
 export function draftActionsOf(record: DraftRecord): DraftActions {
@@ -66,6 +83,7 @@ export function draftActionsOf(record: DraftRecord): DraftActions {
       canApprove: false,
       canReject: false,
       canRequestChanges: false,
+      canRegenerate: false,
       reason: "Answer every question to produce a reviewable revision.",
     };
   }
@@ -75,16 +93,21 @@ export function draftActionsOf(record: DraftRecord): DraftActions {
       canApprove: false,
       canReject: false,
       canRequestChanges: false,
+      canRegenerate: false,
       reason:
         "This revision is approved. Revise it to change scope; approval binds to this revision.",
     };
   }
+  const canRegenerate = hasPendingChangeRequest(record);
   return {
     canAnswer: false,
     canApprove: true,
     canReject: true,
-    canRequestChanges: true,
-    reason: "Decisions bind to the revision shown. A new revision invalidates this decision.",
+    canRequestChanges: !canRegenerate,
+    canRegenerate,
+    reason: canRegenerate
+      ? "The change request is recorded but no revised scope exists yet. Generate the next revision from the preserved instructions."
+      : "Decisions bind to the revision shown. A new revision invalidates this decision.",
   };
 }
 

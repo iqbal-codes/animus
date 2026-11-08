@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   Check,
@@ -25,6 +25,7 @@ import {
   DRAFT_STATUS_LABEL,
   draftActionsOf,
   emptyAnswers,
+  pendingChangeInstructions,
   planContentOf,
   selectActiveProjects,
   summarizeDraft,
@@ -58,6 +59,7 @@ export function DraftsScreen() {
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
     setState({ phase: "loading" });
@@ -206,15 +208,29 @@ export function DraftsScreen() {
       setActionError(null);
       setNotice(null);
       try {
-        const next = await client.forProject(projectId).decideDraft(selected.id, {
+        const decided = await client.forProject(projectId).decideDraft(selected.id, {
           revision_id: selected.latest_revision.id,
           decision: "revise",
           reason,
           instructions,
         });
-        setRecord(next);
-        await refresh();
-        setNotice(`Requested changes on revision ${next.latest_revision.revision_number}.`);
+        setRecord(decided);
+        try {
+          const next = await client.forProject(projectId).reviseDraft(selected.id, {
+            answers: [],
+            instructions,
+          });
+          setRecord(next);
+          await refresh();
+          setNotice(
+            `Generated revision ${next.latest_revision.revision_number} from the change request.`,
+          );
+        } catch (generationError) {
+          await refresh();
+          setActionError(
+            `Change request saved on revision ${decided.latest_revision.revision_number}, but the revised scope could not be generated: ${messageOf(generationError)}. Your instructions are preserved; use Generate revised scope to retry.`,
+          );
+        }
       } catch (error) {
         setActionError(messageOf(error));
       } finally {
@@ -222,6 +238,44 @@ export function DraftsScreen() {
       }
     },
     [projectId, selected, refresh],
+  );
+
+  const regenerate = useCallback(
+    async (instructions: string) => {
+      if (!projectId || !selected) return;
+      setBusy("revise");
+      setActionError(null);
+      setNotice(null);
+      try {
+        const next = await client.forProject(projectId).reviseDraft(selected.id, {
+          answers: [],
+          instructions,
+        });
+        setRecord(next);
+        await refresh();
+        setNotice(
+          `Generated revision ${next.latest_revision.revision_number} from the change request.`,
+        );
+      } catch (error) {
+        setActionError(
+          `The revised scope could not be generated: ${messageOf(error)}. The recorded change request and your instructions are preserved; retry when the planner is available.`,
+        );
+      } finally {
+        setBusy(null);
+      }
+    },
+    [projectId, selected, refresh],
+  );
+
+  const moveSelection = useCallback(
+    (target: number) => {
+      if (drafts.length === 0) return;
+      const index = drafts.findIndex((draft) => draft.id === selectedDraftId);
+      const bounded = Math.min(Math.max(target, 0), drafts.length - 1);
+      const next = drafts[index === -1 ? 0 : bounded];
+      if (next && next.id !== selectedDraftId) selectDraft(next.id);
+    },
+    [drafts, selectedDraftId, selectDraft],
   );
 
   return (
@@ -235,7 +289,7 @@ export function DraftsScreen() {
               aria-label="Project"
               value={projectId ?? ""}
               onChange={(event) => void switchProject(event.target.value)}
-              className="h-9 max-w-[16rem] rounded-[var(--radius-news)] border border-[var(--input)] bg-[var(--surface)] px-3 text-xs text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+              className="h-11 max-w-[16rem] rounded-[var(--radius-news)] border border-[var(--input)] bg-[var(--surface)] px-3 text-xs text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring sm:h-9"
             >
               {activeProjects.map((project) => (
                 <option key={project.id} value={project.id}>
@@ -249,6 +303,7 @@ export function DraftsScreen() {
         <Button
           variant="outline"
           size="sm"
+          className="min-h-11 sm:min-h-8"
           onClick={() => void refresh()}
           disabled={busy !== null}
           aria-label="Refresh drafts"
@@ -278,9 +333,37 @@ export function DraftsScreen() {
           )}
           {state.phase === "ready" && drafts.length > 0 && (
             <div
+              ref={listRef}
               role="listbox"
               aria-label="Drafts"
+              aria-activedescendant={
+                selectedDraftId ? `draft-option-${selectedDraftId}` : undefined
+              }
               tabIndex={0}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowDown") {
+                  event.preventDefault();
+                  const index = drafts.findIndex((draft) => draft.id === selectedDraftId);
+                  moveSelection(index + 1);
+                } else if (event.key === "ArrowUp") {
+                  event.preventDefault();
+                  const index = drafts.findIndex((draft) => draft.id === selectedDraftId);
+                  moveSelection(index === -1 ? 0 : index - 1);
+                } else if (event.key === "Home") {
+                  event.preventDefault();
+                  moveSelection(0);
+                } else if (event.key === "End") {
+                  event.preventDefault();
+                  moveSelection(drafts.length - 1);
+                } else if (event.key === "Enter" && selectedDraftId) {
+                  event.preventDefault();
+                  document.getElementById("draft-detail-pane")?.focus();
+                } else if (event.key === "Escape") {
+                  event.preventDefault();
+                  setSelectedDraftId(null);
+                  setRecord(null);
+                }
+              }}
               className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto rounded-[var(--radius-code)] outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
             >
               {drafts.map((draft) => {
@@ -289,10 +372,15 @@ export function DraftsScreen() {
                 return (
                   <button
                     key={draft.id}
+                    id={`draft-option-${draft.id}`}
                     type="button"
                     role="option"
                     aria-selected={active}
-                    onClick={() => selectDraft(draft.id)}
+                    tabIndex={-1}
+                    onClick={() => {
+                      selectDraft(draft.id);
+                      listRef.current?.focus();
+                    }}
                     className={cn(
                       "flex w-full flex-col gap-1.5 rounded-[var(--radius-code)] border p-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]",
                       active
@@ -331,9 +419,11 @@ export function DraftsScreen() {
         </section>
 
         <section
+          id="draft-detail-pane"
           aria-label="Draft detail"
           aria-live="polite"
-          className="flex min-h-0 min-w-0 flex-1 flex-col gap-4"
+          tabIndex={-1}
+          className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 outline-none"
         >
           {notice && (
             <p className="rounded-[var(--radius-news)] border border-[var(--border-subtle)] bg-[var(--success-bg)] px-3 py-2 text-xs text-success">
@@ -370,6 +460,7 @@ export function DraftsScreen() {
               onSubmitAnswers={submitAnswers}
               onDecision={submitDecision}
               onRequestChanges={requestChanges}
+              onRegenerate={regenerate}
             />
           )}
         </section>
@@ -384,19 +475,21 @@ function DraftDetail({
   onSubmitAnswers,
   onDecision,
   onRequestChanges,
+  onRegenerate,
 }: {
   record: DraftRecord;
   busy: string | null;
   onSubmitAnswers: (answers: Record<string, string>) => Promise<void>;
   onDecision: (decision: Decision, reason: string, instructions?: string) => Promise<void>;
   onRequestChanges: (reason: string, instructions: string) => Promise<void>;
+  onRegenerate: (instructions: string) => Promise<void>;
 }) {
   const content = planContentOf(record);
   const plan = record.latest_revision.plan;
   const actions = draftActionsOf(record);
   const [answers, setAnswers] = useState<Record<string, string>>(() => emptyAnswers(record));
   const [decisionReason, setDecisionReason] = useState("");
-  const [instructions, setInstructions] = useState("");
+  const [instructions, setInstructions] = useState(() => pendingChangeInstructions(record));
 
   const answerSubmission = buildAnswerSubmission(record, answers);
   const reasonReady = decisionReason.trim().length > 0;
@@ -454,6 +547,7 @@ function DraftDetail({
           <div>
             <Button
               size="sm"
+              className="min-h-11 sm:min-h-8"
               onClick={() => void onSubmitAnswers(answers)}
               disabled={busy !== null || answerSubmission === null}
             >
@@ -575,6 +669,7 @@ function DraftDetail({
             <div className="flex flex-wrap gap-2">
               <Button
                 size="sm"
+                className="min-h-11 sm:min-h-8"
                 onClick={() => void onDecision("approve", decisionReason.trim())}
                 disabled={busy !== null || !actions.canApprove || !reasonReady}
               >
@@ -585,27 +680,45 @@ function DraftDetail({
                 )}
                 <span>{DECISION_LABEL.approve}</span>
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => void onRequestChanges(decisionReason.trim(), instructions.trim())}
-                disabled={
-                  busy !== null ||
-                  !actions.canRequestChanges ||
-                  !reasonReady ||
-                  instructions.trim().length === 0
-                }
-              >
-                {busy === "revise" ? (
-                  <Loader2 className="size-3.5 animate-spin" />
-                ) : (
-                  <Undo2 className="size-3.5" />
-                )}
-                <span>Request changes</span>
-              </Button>
+              {actions.canRegenerate ? (
+                <Button
+                  size="sm"
+                  className="min-h-11 sm:min-h-8"
+                  onClick={() => void onRegenerate(instructions.trim())}
+                  disabled={busy !== null || instructions.trim().length === 0}
+                >
+                  {busy === "revise" ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <RefreshCw className="size-3.5" />
+                  )}
+                  <span>Generate revised scope</span>
+                </Button>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="min-h-11 sm:min-h-8"
+                  onClick={() => void onRequestChanges(decisionReason.trim(), instructions.trim())}
+                  disabled={
+                    busy !== null ||
+                    !actions.canRequestChanges ||
+                    !reasonReady ||
+                    instructions.trim().length === 0
+                  }
+                >
+                  {busy === "revise" ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Undo2 className="size-3.5" />
+                  )}
+                  <span>Request changes</span>
+                </Button>
+              )}
               <Button
                 variant="destructive"
                 size="sm"
+                className="min-h-11 sm:min-h-8"
                 onClick={() => void onDecision("reject", decisionReason.trim())}
                 disabled={busy !== null || !actions.canReject || !reasonReady}
               >
@@ -688,7 +801,7 @@ function QueueError({ message, onRetry }: { message: string; onRetry: () => void
         <AlertCircle aria-hidden="true" className="size-4" />
         {message}
       </span>
-      <Button variant="outline" size="sm" onClick={onRetry}>
+      <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" onClick={onRetry}>
         <RefreshCw className="size-3.5" />
         <span>Retry</span>
       </Button>
