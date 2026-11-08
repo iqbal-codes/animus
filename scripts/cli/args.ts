@@ -60,6 +60,9 @@ export interface ParsedCliArgs {
     mapping?: string;
     publish?: boolean;
     candidate?: string;
+    answers?: string;
+    instructions?: string;
+    revision?: string;
     kind?: string;
   };
 }
@@ -125,6 +128,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       mapping: { type: "string" },
       publish: { type: "boolean", default: false },
       candidate: { type: "string" },
+      answers: { type: "string" },
+      instructions: { type: "string" },
+      revision: { type: "string" },
       kind: { type: "string" },
     },
   });
