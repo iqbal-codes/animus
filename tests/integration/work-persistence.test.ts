@@ -368,6 +368,7 @@ describe("project work identity and immutable revisions", () => {
     ).toEqual([
       { version: 1, name: "project_work_identity_and_revisions" },
       { version: 2, name: "prepared_plan_admission" },
+      { version: 3, name: "project_work_drafts_and_decisions" },
       { version: 4, name: "delivery_dispatch_ownership" },
       { version: 5, name: "execution_observations_findings_artifacts" },
       { version: 7, name: "publication_audit_outgoing_intents" },
@@ -375,7 +376,7 @@ describe("project work identity and immutable revisions", () => {
     db.close();
     db = initializeDatabase(dbPath);
     expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({
-      count: 5,
+      count: 6,
     });
   });
 

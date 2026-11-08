@@ -31,9 +31,16 @@ import {
   type DispatchServiceOptions,
 } from "./dispatch";
 import {
+  DraftService,
+  handleProjectDraftRoute,
+  defaultDraftPlannerAdapter,
+  type DraftPlanner,
+} from "./draft";
+import {
   initializeDatabase,
   ProjectRegistryService,
   ProjectRegistryError,
+  resolveStateDir,
   type ForgeAdapter,
 } from "./registry";
 import { CommandService } from "./command";
@@ -79,6 +86,7 @@ export interface BackendAppOptions {
   monitorRuntime?: MonitorRuntime;
   forge?: ForgeAdapter;
   dispatch?: Omit<DispatchServiceOptions, "plans" | "ledger" | "brakes">;
+  draftPlanner?: DraftPlanner;
 }
 
 export interface BackendApp {
@@ -143,6 +151,10 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     registryService.getForge(),
   );
   const workService = new WorkService(registryService.getDb());
+  const draftService = new DraftService(registryService.getDb(), {
+    planner: options?.draftPlanner ?? defaultDraftPlannerAdapter,
+    stateRoot: options?.stateDir ?? resolveStateDir(),
+  });
   const planService = new PlanService(registryService.getDb(), registryService.getForge());
   const onboardingService = new ProjectOnboardingService(registryService);
   const harnessService = new HarnessService();
@@ -753,6 +765,12 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
       if (scopedAction === "work") {
         const workRes = await handleProjectWorkRoute(request, projectId, parts, workService);
         if (workRes) return workRes;
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
+      if (scopedAction === "drafts") {
+        const draftRes = await handleProjectDraftRoute(request, projectId, parts, draftService);
+        if (draftRes) return draftRes;
         return Response.json({ error: "not_found" }, { status: 404 });
       }
 

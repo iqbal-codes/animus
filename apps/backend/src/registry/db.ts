@@ -8,7 +8,31 @@ import {
 import { applyCommandMigrations } from "../command/db";
 import { applyCoordinationMigrations } from "../coordination/db";
 import { applyEvidenceMigrations } from "../evidence/db";
-import { applyWorkMigrations } from "../work/db";
+import { EVIDENCE_MIGRATIONS } from "../evidence/schema";
+import { PUBLICATION_MIGRATIONS } from "../publication/schema";
+import { WORK_MIGRATIONS } from "../work/db";
+import { DRAFT_MIGRATIONS } from "../draft/db";
+import { DISPATCH_MIGRATIONS } from "../dispatch/db";
+import { applyMigrations, type Migration } from "./migrations";
+
+/**
+ * Single ordered migration registry for the schema-migrated subsystem.
+ *
+ * Versions are owned here, not by the feature modules that contribute them.
+ * Work identity (#152) owns version 1, prepared plan admission (#153) owns
+ * version 2, local draft authoring (#161) owns version 3, delivery dispatch
+ * ownership (#154) owns version 4, execution evidence (#155) owns version 5,
+ * and PR publication audit (#157) owns version 7. Version 6 stays reserved for
+ * lap budgets (#156); a future lane appends the next version instead of
+ * claiming an existing one.
+ */
+export const SCHEMA_MIGRATIONS: Migration[] = [
+  ...WORK_MIGRATIONS,
+  ...DRAFT_MIGRATIONS,
+  ...DISPATCH_MIGRATIONS,
+  ...EVIDENCE_MIGRATIONS,
+  ...PUBLICATION_MIGRATIONS,
+];
 
 export function resolveStateDir(): string {
   const custom = process.env.ANIMUS_STATE_DIR || process.env.FACTORY_STATE_DIR;
@@ -85,7 +109,7 @@ export function initializeDatabase(dbPath?: string): DatabaseSync {
   applyCommandMigrations(db);
   applyCoordinationMigrations(db);
   applyEvidenceMigrations(db);
-  applyWorkMigrations(db);
+  applyMigrations(db, SCHEMA_MIGRATIONS);
 
   return db;
 }
