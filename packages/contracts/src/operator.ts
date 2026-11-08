@@ -94,6 +94,18 @@ export const operatorErrorSchema = z.object({
     "verification_not_found",
     "invalid_signature",
     "work_not_found",
+    "draft_work_not_found",
+    "draft_not_found",
+    "draft_invalid_plan",
+    "draft_answers_required",
+    "draft_answer_mismatch",
+    "draft_stale_revision",
+    "draft_concurrent_update",
+    "draft_not_approvable",
+    "draft_prepared_work",
+    "draft_planning_unavailable",
+    "draft_planning_failed",
+    "draft_storage_failed",
     "plan_import_failed",
     "observation_not_found",
     "finding_not_found",
@@ -183,6 +195,293 @@ export type WorkRecord = z.infer<typeof workRecordSchema>;
 
 export const workListSchema = z.array(workRecordSchema);
 export type WorkList = z.infer<typeof workListSchema>;
+
+export const draftKindSchema = z.enum(["clarification", "standalone", "spec"]);
+export type DraftKind = z.infer<typeof draftKindSchema>;
+
+export const draftStatusSchema = z.enum([
+  "needs_clarification",
+  "needs_review",
+  "approved",
+  "rejected",
+  "changes_requested",
+]);
+export type DraftStatus = z.infer<typeof draftStatusSchema>;
+
+export const draftDecisionKindSchema = z.enum(["approve", "reject", "revise"]);
+export type DraftDecisionKind = z.infer<typeof draftDecisionKindSchema>;
+
+export const draftQuestionSchema = z.strictObject({
+  id: z.string().min(1),
+  question: z.string().min(1),
+  reason: z.string().min(1),
+});
+export type DraftQuestion = z.infer<typeof draftQuestionSchema>;
+
+export const draftAnswerInputSchema = z.strictObject({
+  question_id: z.string().min(1),
+  answer: z.string().min(1),
+});
+export type DraftAnswerInput = z.infer<typeof draftAnswerInputSchema>;
+
+export const draftAnswerSchema = z.strictObject({
+  question_id: z.string().min(1),
+  question: z.string().min(1),
+  answer: z.string().min(1),
+});
+export type DraftAnswer = z.infer<typeof draftAnswerSchema>;
+
+export const draftAcceptanceCriterionSchema = z.strictObject({
+  id: z.string().regex(/^AC[1-9][0-9]*$/),
+  description: z.string().min(1),
+  verification: z.string().min(1),
+});
+export type DraftAcceptanceCriterion = z.infer<typeof draftAcceptanceCriterionSchema>;
+
+export const draftBoundarySchema = z.strictObject({
+  touchpoints: z.string().min(1),
+  known_callers: z.string().min(1),
+  test_seam: z.string().min(1),
+  exclusions: z.string().min(1),
+});
+export type DraftBoundary = z.infer<typeof draftBoundarySchema>;
+
+const draftPlanFields = {
+  scope: z.string().min(1),
+  outcome: z.string().min(1),
+  invariants: z.array(z.string().min(1)).min(1),
+  acceptance_criteria: z.array(draftAcceptanceCriterionSchema).min(1),
+  verification_requirements: z.array(z.string().min(1)).min(1),
+  boundary: draftBoundarySchema,
+  depends_on: z.array(z.number().int().positive()).default([]),
+  body: z.string().min(1),
+};
+
+export const draftChildPlanSchema = z.strictObject({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  ...draftPlanFields,
+  depends_on_indices: z.array(z.number().int().nonnegative()).default([]),
+  covers_parent_ac_ids: z.array(z.string().min(1)).min(1),
+});
+export type DraftChildPlan = z.infer<typeof draftChildPlanSchema>;
+
+export const draftClarificationPlanSchema = z.strictObject({
+  kind: z.literal("clarification"),
+  questions: z.array(draftQuestionSchema).min(1),
+  reason: z.string().min(1),
+});
+export type DraftClarificationPlan = z.infer<typeof draftClarificationPlanSchema>;
+
+export const draftStandalonePlanSchema = z.strictObject({
+  kind: z.literal("standalone"),
+  title: z.string().min(1),
+  ...draftPlanFields,
+  prepared: z.boolean().default(false),
+});
+export type DraftStandalonePlan = z.infer<typeof draftStandalonePlanSchema>;
+
+export const draftSpecPlanSchema = z.strictObject({
+  kind: z.literal("spec"),
+  title: z.string().min(1),
+  ...draftPlanFields,
+  children: z.array(draftChildPlanSchema).min(2),
+});
+export type DraftSpecPlan = z.infer<typeof draftSpecPlanSchema>;
+
+export const draftPlanSchema = z
+  .discriminatedUnion("kind", [
+    draftClarificationPlanSchema,
+    draftStandalonePlanSchema,
+    draftSpecPlanSchema,
+  ])
+  .superRefine((plan, ctx) => {
+    if (plan.kind !== "spec") return;
+
+    const parentAcIds = new Set<string>();
+    for (const [index, ac] of plan.acceptance_criteria.entries()) {
+      if (parentAcIds.has(ac.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate parent acceptance criterion id '${ac.id}'`,
+          path: ["acceptance_criteria", index, "id"],
+        });
+      }
+      parentAcIds.add(ac.id);
+    }
+
+    const childIds = new Set<string>();
+    for (const [index, child] of plan.children.entries()) {
+      if (childIds.has(child.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate child draft id '${child.id}'`,
+          path: ["children", index, "id"],
+        });
+      }
+      childIds.add(child.id);
+
+      const seenDependencies = new Set<number>();
+      for (const dependency of child.depends_on_indices) {
+        if (seenDependencies.has(dependency)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Child '${child.id}' repeats dependency index ${dependency}`,
+            path: ["children", index, "depends_on_indices"],
+          });
+        }
+        seenDependencies.add(dependency);
+        if (dependency >= index) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Child '${child.id}' dependency index ${dependency} must precede the child in topological order`,
+            path: ["children", index, "depends_on_indices"],
+          });
+        }
+      }
+
+      const covered = new Set<string>();
+      for (const acId of child.covers_parent_ac_ids) {
+        if (covered.has(acId)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Child '${child.id}' repeats parent acceptance criterion '${acId}'`,
+            path: ["children", index, "covers_parent_ac_ids"],
+          });
+        }
+        covered.add(acId);
+        if (!parentAcIds.has(acId)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Child '${child.id}' covers unknown parent acceptance criterion '${acId}'`,
+            path: ["children", index, "covers_parent_ac_ids"],
+          });
+        }
+      }
+    }
+
+    for (const [index, ac] of plan.acceptance_criteria.entries()) {
+      const covered = plan.children.some((child) => child.covers_parent_ac_ids.includes(ac.id));
+      if (!covered) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Parent acceptance criterion '${ac.id}' is not covered by any child draft`,
+          path: ["acceptance_criteria", index, "id"],
+        });
+      }
+    }
+  });
+export type DraftPlan = z.infer<typeof draftPlanSchema>;
+
+export const draftPlannerMetadataSchema = z.strictObject({
+  transport: z.enum(["agent", "prepared"]),
+  prompt: z.string().min(1),
+  provider: z.string().min(1).nullable(),
+  model: z.string().min(1).nullable(),
+  effort: z.string().min(1).nullable(),
+  accepted_ref: z.string().min(1).nullable(),
+});
+export type DraftPlannerMetadata = z.infer<typeof draftPlannerMetadataSchema>;
+
+export const draftRevisionSchema = z.object({
+  id: z.string().min(1),
+  draft_id: z.string().min(1),
+  project_id: z.string().min(1),
+  work_id: z.string().min(1),
+  revision_number: z.number().int().positive(),
+  source_work_revision_id: z.string().min(1),
+  source_content_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  kind: draftKindSchema,
+  plan: draftPlanSchema,
+  plan_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  questions: z.array(draftQuestionSchema),
+  answers: z.array(draftAnswerSchema),
+  instructions: z.string().nullable(),
+  planner_metadata: draftPlannerMetadataSchema,
+  created_at: z.number().int().nonnegative(),
+});
+export type DraftRevision = z.infer<typeof draftRevisionSchema>;
+
+export const draftDecisionSchema = z.object({
+  id: z.string().min(1),
+  draft_id: z.string().min(1),
+  project_id: z.string().min(1),
+  revision_id: z.string().min(1),
+  revision_number: z.number().int().positive(),
+  decision: draftDecisionKindSchema,
+  reason: z.string().min(1),
+  instructions: z.string().nullable(),
+  actor: z.string().nullable(),
+  decided_at: z.number().int().nonnegative(),
+});
+export type DraftDecision = z.infer<typeof draftDecisionSchema>;
+
+/**
+ * Publication authorization for an operator-approved draft revision.
+ *
+ * This deliberately carries no dispatch or execution authority. Approval here
+ * only permits publication; execution is admitted later by the publication and
+ * read-back flow (#162) and by the execution authority cutover (#165).
+ */
+export const draftAuthorizationSchema = z.object({
+  approved: z.boolean(),
+  approved_revision_id: z.string().nullable(),
+  can_publish: z.boolean(),
+});
+export type DraftAuthorization = z.infer<typeof draftAuthorizationSchema>;
+
+export const draftRecordSchema = z.object({
+  id: z.string().min(1),
+  project_id: z.string().min(1),
+  work_id: z.string().min(1),
+  status: draftStatusSchema,
+  created_at: z.number().int().nonnegative(),
+  updated_at: z.number().int().nonnegative(),
+  source: workSourceSnapshotSchema,
+  source_provenance: workProvenanceSchema,
+  source_work_revision_id: z.string().min(1),
+  source_content_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  latest_revision: draftRevisionSchema,
+  latest_decision: draftDecisionSchema.nullable(),
+  authorization: draftAuthorizationSchema,
+});
+export type DraftRecord = z.infer<typeof draftRecordSchema>;
+
+export const draftListSchema = z.array(draftRecordSchema);
+export type DraftList = z.infer<typeof draftListSchema>;
+
+export const draftRefineSubmissionSchema = z.strictObject({
+  work_id: z.string().min(1),
+  answers: z.array(draftAnswerInputSchema).default([]),
+  instructions: z.string().min(1).optional(),
+});
+export type DraftRefineSubmission = z.infer<typeof draftRefineSubmissionSchema>;
+
+export const draftRevisionSubmissionSchema = z.strictObject({
+  answers: z.array(draftAnswerInputSchema).default([]),
+  instructions: z.string().min(1).optional(),
+});
+export type DraftRevisionSubmission = z.infer<typeof draftRevisionSubmissionSchema>;
+
+export const draftDecisionSubmissionSchema = z
+  .strictObject({
+    revision_id: z.string().min(1).optional(),
+    revision_number: z.number().int().positive().optional(),
+    decision: draftDecisionKindSchema,
+    reason: z.string().min(1),
+    instructions: z.string().min(1).optional(),
+    actor: z.string().min(1).optional(),
+  })
+  .superRefine((submission, ctx) => {
+    if (submission.revision_id === undefined && submission.revision_number === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "A revision_id or revision_number is required",
+        path: ["revision_id"],
+      });
+    }
+  });
+export type DraftDecisionSubmission = z.infer<typeof draftDecisionSubmissionSchema>;
 
 export const planKindSchema = z.enum(["standalone", "spec"]);
 export type PlanKind = z.infer<typeof planKindSchema>;

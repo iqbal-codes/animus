@@ -60,6 +60,9 @@ export interface ParsedCliArgs {
     mapping?: string;
     publish?: boolean;
     candidate?: string;
+    answers?: string;
+    instructions?: string;
+    revision?: string;
     kind?: string;
     amount?: string;
     "idempotency-key"?: string;
@@ -128,6 +131,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       mapping: { type: "string" },
       publish: { type: "boolean", default: false },
       candidate: { type: "string" },
+      answers: { type: "string" },
+      instructions: { type: "string" },
+      revision: { type: "string" },
       kind: { type: "string" },
       amount: { type: "string" },
       "idempotency-key": { type: "string" },
