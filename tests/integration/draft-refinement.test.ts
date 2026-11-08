@@ -492,6 +492,25 @@ describe("local draft refinement and operator review", () => {
     ).rejects.toMatchObject({ code: "draft_answer_mismatch" });
   });
 
+  test("AC5: technical repository questions are investigated rather than asked as product clarification", async () => {
+    const work = await importWork(
+      16,
+      "Where is the button component implemented? Add it to the existing toolbar.",
+    );
+    const fixture = plannerFixture([standalonePlan()]);
+    const service = new DraftService(db, {
+      planner: fixture.planner,
+      stateRoot: join(root, "state"),
+    });
+
+    const record = await service.refine(projectId, { work_id: work.id, answers: [] });
+    expect(record.latest_revision.kind).toBe("standalone");
+    expect(record.latest_revision.questions).toEqual([]);
+    const prompt = ((fixture.transportRequests()[0] as { argv?: string[] }).argv ?? []).join(" ");
+    expect(prompt).toContain("Never ask where code lives");
+    expect(prompt).toContain("Discover repository facts first");
+  });
+
   test("AC5: legacy triage planning output is adapted without bypassing review", async () => {
     const work = await importWork(15);
     const fixture = plannerFixture([
