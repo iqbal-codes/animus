@@ -21,6 +21,7 @@ const INTEGRATION_V8 = "child_gate_integration";
 const DELIVERY_V9 = "standalone_delivery_gate_and_merge_verification";
 const DRAFT_PUBLICATION_V10 = "approved_draft_issue_publication";
 const RESTORE_V11 = "workspace_backup_restore";
+const FINAL_V12 = "final_spec_delivery_coordination";
 const RESTORE_V13 = "restore_terminal_intent_disposition";
 
 const ALL_MIGRATIONS = [
@@ -35,6 +36,7 @@ const ALL_MIGRATIONS = [
   { version: 9, name: DELIVERY_V9 },
   { version: 10, name: DRAFT_PUBLICATION_V10 },
   { version: 11, name: RESTORE_V11 },
+  { version: 12, name: FINAL_V12 },
   { version: 13, name: RESTORE_V13 },
 ];
 
@@ -157,6 +159,8 @@ describe("coherent schema migration registry", () => {
         "draft_publication_members",
         "draft_publication_relationships",
         "delivery_merge_verifications",
+        "final_deliveries",
+        "final_delivery_events",
       ]) {
         expect(tableExists(db, table)).toBe(true);
       }

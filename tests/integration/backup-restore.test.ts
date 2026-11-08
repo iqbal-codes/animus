@@ -1523,7 +1523,7 @@ describe("workspace backup and isolated restore", () => {
     await seeded.finishActive();
   }, 30000);
 
-  test("AC3: a v11-only snapshot restores into the combined v8+v10+v11 registry", async () => {
+  test("AC3: a genuine pre-v13 snapshot with populated intents restores into the combined registry", async () => {
     const seeded = await seed("lineage");
     const bundle = await backup("lineage");
     const snapshotPath = join(bundle, BACKUP_DATABASE_FILE);
@@ -1535,6 +1535,76 @@ describe("workspace backup and isolated restore", () => {
       snapshot.exec("DROP TABLE delivery_merge_verifications;");
       snapshot.exec("ALTER TABLE execution_checks DROP COLUMN kind;");
       snapshot.exec("ALTER TABLE execution_checks DROP COLUMN criterion_key;");
+      // Rebuild the intent ledger with the genuine pre-v13 CHECK (no `abandoned`)
+      // and real rows, so v13 must copy data rather than rename an already-new table.
+      snapshot.exec(`
+        CREATE TABLE publication_intents_pre13 (
+          id TEXT PRIMARY KEY,
+          target_id TEXT REFERENCES publication_targets(id),
+          project_id TEXT NOT NULL REFERENCES projects(id),
+          draft_publication_id TEXT REFERENCES draft_publications(id),
+          operation_key TEXT NOT NULL CHECK(length(operation_key) > 0),
+          kind TEXT NOT NULL CHECK(kind IN (
+            'create_pr', 'publish_event', 'update_summary', 'create_review',
+            'create_issue', 'create_issue_relationship', 'link_source_issue'
+          )),
+          resource_kind TEXT NOT NULL CHECK(resource_kind IN (
+            'pull_request', 'issue', 'relationship'
+          )),
+          state TEXT NOT NULL CHECK(state IN ('queued', 'attempting', 'accepted', 'failed', 'unknown')),
+          request_json TEXT NOT NULL,
+          attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+          remote_object_id TEXT,
+          remote_url TEXT,
+          last_error TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+      `);
+      snapshot.exec(`
+        INSERT INTO publication_intents_pre13
+          (id, target_id, project_id, draft_publication_id, operation_key, kind,
+           resource_kind, state, request_json, attempts, remote_object_id, remote_url,
+           last_error, created_at, updated_at)
+        SELECT id, target_id, project_id, draft_publication_id, operation_key, kind,
+               resource_kind, state, request_json, attempts, remote_object_id, remote_url,
+               last_error, created_at, updated_at
+          FROM publication_intents;
+      `);
+      snapshot.exec("DROP TABLE publication_intents;");
+      snapshot.exec("ALTER TABLE publication_intents_pre13 RENAME TO publication_intents;");
+      snapshot.exec(`
+        CREATE UNIQUE INDEX uq_publication_intents_target
+        ON publication_intents(target_id, operation_key)
+        WHERE target_id IS NOT NULL;
+      `);
+      snapshot.exec(`
+        CREATE UNIQUE INDEX uq_publication_intents_draft_publication
+        ON publication_intents(draft_publication_id, operation_key)
+        WHERE draft_publication_id IS NOT NULL;
+      `);
+      snapshot.exec(`
+        CREATE INDEX idx_publication_intents_target
+        ON publication_intents(target_id, created_at ASC);
+      `);
+      snapshot.exec(`
+        CREATE INDEX idx_publication_intents_draft_publication
+        ON publication_intents(draft_publication_id, created_at ASC);
+      `);
+      for (const [id, state, operationKey] of [
+        ["pre13_intent_queued", "queued", "pre13:queued"],
+        ["pre13_intent_unknown", "unknown", "pre13:unknown"],
+      ] as const) {
+        snapshot
+          .prepare(
+            `INSERT INTO publication_intents
+               (id, target_id, project_id, draft_publication_id, operation_key, kind,
+                resource_kind, state, request_json, attempts, remote_object_id, remote_url,
+                last_error, created_at, updated_at)
+             VALUES (?, NULL, ?, NULL, ?, 'publish_event', 'pull_request', ?, '{}', 0, NULL, NULL, NULL, ?, ?)`,
+          )
+          .run(id, seeded.projectId, operationKey, state, 1700000000000, 1700000000000);
+      }
       snapshot.prepare("DELETE FROM schema_migrations WHERE version IN (8, 9, 13)").run();
       expect(
         (
@@ -1566,6 +1636,7 @@ describe("workspace backup and isolated restore", () => {
         tables: {
           ...manifest.completeness.tables,
           dispatch_runs: manifest.completeness.tables.dispatch_runs,
+          publication_intents: manifest.completeness.tables.publication_intents + 2,
         },
       },
     };
@@ -1587,7 +1658,7 @@ describe("workspace backup and isolated restore", () => {
           version: number;
         }>
       ).map((row) => row.version);
-      expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13]);
+      expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
       expect(
         restoredDb
           .prepare(
@@ -1595,6 +1666,16 @@ describe("workspace backup and isolated restore", () => {
           )
           .get(),
       ).toBeTruthy();
+      expect(
+        restoredDb
+          .prepare(
+            "SELECT id, state, operation_key FROM publication_intents WHERE id LIKE 'pre13_intent_%' ORDER BY id",
+          )
+          .all(),
+      ).toEqual([
+        { id: "pre13_intent_queued", state: "queued", operation_key: "pre13:queued" },
+        { id: "pre13_intent_unknown", state: "unknown", operation_key: "pre13:unknown" },
+      ]);
     } finally {
       restoredDb.close();
     }

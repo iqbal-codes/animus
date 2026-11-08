@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   DeliveryGateStatus,
   DispatchRunDetail,
+  FinalDeliveryStatus,
   IntegrationStatus,
   PlanDispatchRun,
   PlanDispatchRunList,
@@ -87,6 +88,11 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
   const [integrationLoading, setIntegrationLoading] = useState<string | null>(null);
   const [integrationError, setIntegrationError] = useState<Record<string, string>>({});
   const [landing, setLanding] = useState<string | null>(null);
+  const [finalExpanded, setFinalExpanded] = useState<Record<string, boolean>>({});
+  const [finalStatus, setFinalStatus] = useState<Record<string, FinalDeliveryStatus>>({});
+  const [finalLoading, setFinalLoading] = useState<string | null>(null);
+  const [finalError, setFinalError] = useState<Record<string, string>>({});
+  const [finalBusy, setFinalBusy] = useState<string | null>(null);
   const [controlBusy, setControlBusy] = useState<string | null>(null);
   const [controlNotice, setControlNotice] = useState<Record<string, string>>({});
   const [grantAmount, setGrantAmount] = useState<Record<string, string>>({});
@@ -475,6 +481,51 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
     }
   };
 
+  const toggleFinal = async (planId: string) => {
+    const next = !finalExpanded[planId];
+    setFinalExpanded((current) => ({ ...current, [planId]: next }));
+    if (!next || finalStatus[planId] || finalLoading === planId) return;
+    setFinalLoading(planId);
+    setFinalError((current) => {
+      const copy = { ...current };
+      delete copy[planId];
+      return copy;
+    });
+    try {
+      const status = await factory.forProject(projectId).finalDelivery(planId);
+      setFinalStatus((current) => ({ ...current, [planId]: status }));
+    } catch (err) {
+      setFinalError((current) => ({
+        ...current,
+        [planId]: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      setFinalLoading(null);
+    }
+  };
+
+  const advanceFinal = async (planId: string) => {
+    setFinalBusy(planId);
+    setFinalError((current) => {
+      const copy = { ...current };
+      delete copy[planId];
+      return copy;
+    });
+    try {
+      const status = await factory
+        .forProject(projectId)
+        .advanceFinalDelivery(planId, { actor: "operator" });
+      setFinalStatus((current) => ({ ...current, [planId]: status }));
+    } catch (err) {
+      setFinalError((current) => ({
+        ...current,
+        [planId]: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      setFinalBusy(null);
+    }
+  };
+
   const admitted = plans.filter((plan) => plan.authority === "admitted");
   const grouped = runsByPlan(runs);
 
@@ -678,6 +729,18 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
                 >
                   {busy ? "Dispatching…" : "Dispatch"}
                 </Button>
+                {plan.kind === "spec" && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="min-h-11 sm:min-h-8"
+                    aria-expanded={Boolean(finalExpanded[plan.id])}
+                    aria-controls={`plan-final-${plan.id}`}
+                    onClick={() => void toggleFinal(plan.id)}
+                  >
+                    {finalExpanded[plan.id] ? "Hide final" : "Final delivery"}
+                  </Button>
+                )}
                 {run && expanded[run.id] && (
                   <div
                     id={`run-evidence-${run.id}`}
@@ -798,6 +861,29 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
                         landing={landing === run.id}
                         notice={controlNotice[run.id] ?? null}
                         onLand={() => void landChild(run.id)}
+                      />
+                    ) : null}
+                  </div>
+                )}
+                {plan.kind === "spec" && finalExpanded[plan.id] && (
+                  <div
+                    id={`plan-final-${plan.id}`}
+                    data-testid={`plan-final-${plan.id}`}
+                    className="w-full"
+                  >
+                    {finalLoading === plan.id ? (
+                      <p role="status" className="text-xs text-text-secondary">
+                        Loading final delivery progress…
+                      </p>
+                    ) : finalError[plan.id] ? (
+                      <p role="alert" className="text-xs text-[var(--destructive)]">
+                        Final delivery unavailable: {finalError[plan.id]}
+                      </p>
+                    ) : finalStatus[plan.id] ? (
+                      <FinalDeliveryPanel
+                        status={finalStatus[plan.id]!}
+                        busy={finalBusy === plan.id}
+                        onAdvance={() => void advanceFinal(plan.id)}
                       />
                     ) : null}
                   </div>
@@ -1540,6 +1626,144 @@ function ChildIntegrationPanel({
           </ul>
         </div>
       )}
+    </section>
+  );
+}
+
+const FINAL_DELIVERY_TONE: Record<
+  FinalDeliveryStatus["state"],
+  "default" | "success" | "warning" | "error" | "accent"
+> = {
+  waiting_children: "warning",
+  blocked: "error",
+  verifying: "accent",
+  needs_owner: "error",
+  awaiting_manual_merge: "warning",
+  awaiting_merge_verification: "accent",
+  remote_unavailable: "warning",
+  delivered: "success",
+};
+
+/** Manifest-bound final-spec progress, combined candidate, gates and manual merge. */
+function FinalDeliveryPanel({
+  status,
+  busy,
+  onAdvance,
+}: {
+  status: FinalDeliveryStatus;
+  busy: boolean;
+  onAdvance: () => void;
+}) {
+  const manualReady =
+    status.state === "awaiting_manual_merge" || status.state === "awaiting_merge_verification";
+  return (
+    <section
+      aria-label="Final delivery"
+      data-testid="final-delivery"
+      className="mt-2 min-w-0 space-y-2 overflow-hidden rounded-[10px] border border-[var(--border-subtle)] bg-background/40 p-3"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="text-xs font-medium text-foreground">Final delivery</h3>
+        <Badge variant={FINAL_DELIVERY_TONE[status.state]}>{status.state}</Badge>
+        <Badge variant={status.delivered ? "success" : "default"}>
+          {status.delivered ? "delivered" : "not delivered"}
+        </Badge>
+        <span className="text-[10px] text-text-secondary">
+          {status.integratedCount}/{status.requiredCount} children integrated
+        </span>
+        <span className="flex-1" />
+        <Button
+          variant="secondary"
+          size="sm"
+          className="min-h-11 sm:min-h-8"
+          onClick={onAdvance}
+          disabled={busy || status.delivered}
+          title={
+            status.delivered
+              ? "The verified final merge is already recorded"
+              : "Run final validation, bounded repair and publication for the combined candidate"
+          }
+        >
+          {busy ? "Advancing…" : "Advance final"}
+        </Button>
+      </div>
+
+      <p className="break-all font-mono text-[10px] text-text-secondary">
+        {status.integrationBranch} → {status.deliveryBranch} · candidate{" "}
+        {status.candidateHeadSha ?? "none"} · tested target {status.targetTipSha ?? "unresolved"}
+      </p>
+
+      {status.pullRequest && (
+        <p className="break-all font-mono text-[10px] text-text-secondary">
+          PR #{status.pullRequest.number} {status.pullRequest.url ? status.pullRequest.url : ""} ·{" "}
+          {status.pullRequest.state}
+          {status.pullRequest.draft ? " draft" : ""} · {status.pullRequest.headBranch} →{" "}
+          {status.pullRequest.baseBranch}
+        </p>
+      )}
+
+      {status.merge && (
+        <p className="break-all font-mono text-[10px] text-text-secondary">
+          merge {status.merge.state}
+          {status.merge.verified ? " · verified" : ""}
+          {status.merge.remoteTargetTipSha
+            ? ` · target-tip ${status.merge.remoteTargetTipSha}`
+            : ""}
+        </p>
+      )}
+
+      {status.budget && (
+        <p className="text-[10px] text-text-secondary">
+          Final budget {status.budget.consumedAttempts}/{status.budget.allowedAttempts} attempts ·{" "}
+          {status.budget.status}
+          {status.grants.length > 0 ? ` · ${status.grants.length} grant(s)` : ""}
+        </p>
+      )}
+
+      {status.reasons.length > 0 && (
+        <ul
+          aria-label="Final delivery reasons"
+          className="list-disc pl-5 text-[11px] text-[var(--error)]"
+        >
+          {status.reasons.map((reason) => (
+            <li key={reason} className="break-all">
+              {reason}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {status.haltReason && (
+        <p className="break-all text-[11px] text-[var(--destructive)]">
+          Needs owner: {status.haltReason}
+        </p>
+      )}
+
+      {manualReady && (
+        <p className="text-[11px] text-text-secondary">
+          Operator merge required: merge the final PR manually in GitHub. Final delivery remains
+          unverified until the configured delivery branch is read back.
+        </p>
+      )}
+
+      <div>
+        <h4 className="text-[11px] font-medium text-foreground">Required children</h4>
+        <ul aria-label="Final delivery children" className="mt-1 space-y-0.5">
+          {status.children.map((child) => (
+            <li
+              key={child.workId}
+              data-testid={`final-child-${child.issueNumber}`}
+              className="break-all text-[10px] text-text-secondary"
+            >
+              #{child.issueNumber} · {child.integrated ? "integrated" : "pending"}
+              {child.candidateHeadSha ? ` · ${child.candidateHeadSha.slice(0, 8)}` : ""}
+              {child.mergeSha ? ` → ${child.mergeSha.slice(0, 8)}` : ""}
+              {child.pullRequestNumber ? ` · PR #${child.pullRequestNumber}` : ""}
+              {child.reasons.length > 0 ? ` · ${child.reasons.join(", ")}` : ""}
+            </li>
+          ))}
+        </ul>
+      </div>
     </section>
   );
 }

@@ -30,6 +30,10 @@ export interface LocalDispatchDeliveryRuntime {
   process(projectId: string, runId: string): Promise<unknown>;
 }
 
+export interface LocalDispatchFinalRuntime {
+  advance(projectId: string, planId: string): Promise<unknown>;
+}
+
 export interface LocalDispatchTickOptions {
   db: DatabaseSync;
   registry: ProjectRegistryService;
@@ -41,6 +45,8 @@ export interface LocalDispatchTickOptions {
   projectId?: string;
   /** Normal delivery runtime: independent QA/review and bounded correction after a standalone/final build. */
   deliveryRuntime?: LocalDispatchDeliveryRuntime;
+  /** Final-spec coordination: runs once every required child is integrated. */
+  finalDeliveryRuntime?: LocalDispatchFinalRuntime;
 }
 
 function planSkipReason(error: DispatchError): LocalDispatchSkipReason | "continue" {
@@ -155,7 +161,33 @@ export async function runLocalDispatchTick(
           };
         }
         const reason = planSkipReason(error);
-        if (reason === "continue") continue;
+        if (reason === "continue") {
+          if (
+            options.finalDeliveryRuntime &&
+            plan.kind === "spec" &&
+            (error.code === "no_dispatchable_member" || error.code === "already_succeeded")
+          ) {
+            try {
+              const final = await options.finalDeliveryRuntime.advance(project.id, plan.id);
+              return {
+                action: "launched",
+                reason: "launch_successful",
+                projectId: project.id,
+                planId: plan.id,
+                delivery: final,
+              };
+            } catch (finalError) {
+              return {
+                action: "skipped",
+                reason: "launch_failed",
+                projectId: project.id,
+                planId: plan.id,
+                error: finalError instanceof Error ? finalError.message : String(finalError),
+              };
+            }
+          }
+          continue;
+        }
         return {
           action: "skipped",
           reason,

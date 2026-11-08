@@ -1364,4 +1364,154 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
     expect(screen.getByTestId("run-gate-run-gate").textContent).toContain("verified");
     expect(screen.getByLabelText("Delivery gate stages")).toBeTruthy();
   });
+
+  test("DispatchControl exposes manifest-bound final delivery progress and advancement", async () => {
+    const plan = {
+      id: "plan-final",
+      project_id: "proj-1",
+      kind: "spec" as const,
+      root_work_id: "work-spec",
+      root_issue_number: 1600,
+      root_title: "Complete spec delivery",
+      graph_hash: "a".repeat(64),
+      authority: "admitted" as const,
+      member_count: 3,
+      ticket_count: 2,
+      hold_count: 0,
+      accepted_revision_id: "rev-spec",
+      created_at: 1,
+      updated_at: 1,
+    };
+    let advances = 0;
+    const waiting = {
+      projectId: "proj-1",
+      planId: "plan-final",
+      deliveryId: "del-1",
+      kind: "spec" as const,
+      graphHash: "a".repeat(64),
+      manifestId: "manifest-1",
+      integrationBranch: "factory/spec-1600-integration",
+      deliveryBranch: "main",
+      state: "waiting_children" as const,
+      requiredCount: 2,
+      integratedCount: 1,
+      delivered: false,
+      candidateHeadSha: null,
+      targetTipSha: null,
+      runId: null,
+      reasons: ["children_pending"],
+      children: [
+        {
+          workId: "work-1",
+          issueNumber: 1601,
+          title: "Child one",
+          gateProfile: "child" as const,
+          integrated: true,
+          candidateHeadSha: "b".repeat(40),
+          mergeSha: "c".repeat(40),
+          targetBranch: "factory/spec-1600-integration",
+          pullRequestNumber: 21,
+          pullRequestUrl: "https://github.com/org/repo/pull/21",
+          reasons: [],
+        },
+        {
+          workId: "work-2",
+          issueNumber: 1602,
+          title: "Child two",
+          gateProfile: "child" as const,
+          integrated: false,
+          candidateHeadSha: null,
+          mergeSha: null,
+          targetBranch: null,
+          pullRequestNumber: null,
+          pullRequestUrl: null,
+          reasons: ["child_not_integrated:#1602"],
+        },
+      ],
+      gate: null,
+      budget: {
+        scopeId: "scope-final",
+        projectId: "proj-1",
+        deliveryId: "del-1",
+        planId: "plan-final",
+        workId: "work-spec",
+        gateProfile: "final" as const,
+        baseLimit: 3,
+        grantedAttempts: 0,
+        consumedAttempts: 1,
+        allowedAttempts: 3,
+        remainingAttempts: 2,
+        status: "active" as const,
+        exhaustedAt: null,
+        lastRejection: null,
+        retainedWorktreePath: null,
+        retainedBranch: null,
+        retainedRunId: null,
+        retainedHeadSha: null,
+      },
+      grants: [],
+      pullRequest: null,
+      merge: null,
+      haltReason: null,
+      updatedAt: 1,
+    };
+    const ready = {
+      ...waiting,
+      state: "awaiting_manual_merge" as const,
+      integratedCount: 2,
+      candidateHeadSha: "d".repeat(40),
+      runId: "run-final",
+      reasons: [],
+      children: waiting.children.map((child) => ({ ...child, integrated: true, reasons: [] })),
+      pullRequest: {
+        number: 30,
+        url: "https://github.com/org/repo/pull/30",
+        headBranch: "factory/spec-1600-integration",
+        baseBranch: "main",
+        headRefOid: "d".repeat(40),
+        state: "open" as const,
+        draft: true,
+        mergeCommitOid: null,
+      },
+      merge: {
+        state: "not_merged" as const,
+        verified: false,
+        verification: null,
+        remoteTargetTipSha: null,
+        detail: "remote pull request is not merged",
+      },
+    };
+    const factory = {
+      projects: async () => [mockProjects[0]!],
+      forProject: () => ({
+        plans: async () => [plan],
+        dispatchRuns: async () => [],
+        dispatchPlan: async () => {
+          throw new Error("must not dispatch");
+        },
+        finalDelivery: async () => waiting,
+        advanceFinalDelivery: async () => {
+          advances += 1;
+          return ready;
+        },
+      }),
+    } as any;
+
+    render(<DispatchControl factory={factory} />);
+    await screen.findByTestId("dispatch-plan-plan-final");
+    fireEvent.click(screen.getByRole("button", { name: "Final delivery" }));
+    const panel = await screen.findByTestId("final-delivery");
+    expect(panel.textContent).toContain("waiting_children");
+    expect(panel.textContent).toContain("1/2 children integrated");
+    expect(panel.textContent).toContain("#1602 · pending");
+    expect(panel.textContent).toContain("children_pending");
+    expect(panel.textContent).toContain("Final budget 1/3 attempts");
+
+    fireEvent.click(screen.getByRole("button", { name: "Advance final" }));
+    await waitFor(() => expect(advances).toBe(1));
+    await waitFor(() => expect(panel.textContent).toContain("awaiting_manual_merge"));
+    expect(panel.textContent).toContain("2/2 children integrated");
+    expect(panel.textContent).toContain("Operator merge required");
+    expect(panel.textContent).toContain("PR #30");
+  });
 });

@@ -515,6 +515,305 @@ export class DispatchService {
     }
   }
 
+  /**
+   * Bounded final-spec repair. It reuses the exact builder runner, worktree
+   * ownership, brakes, Stop control and the final gate profile budget. The repair
+   * branch targets the frozen integration branch and does not consume a new
+   * verification lap: the follow-up combined candidate does.
+   */
+  async dispatchFinalRepair(
+    projectId: string,
+    submission: { plan_id: string; actor?: string; findings?: DispatchFinding[] },
+  ): Promise<PlanDispatchRun> {
+    this.assertAuthority();
+    if (!submission || typeof submission.plan_id !== "string" || submission.plan_id.trim() === "") {
+      throw new DispatchError("invalid_submission", "plan_id is required");
+    }
+    const project = this.getProject(projectId);
+    const plan = this.loadPlan(projectId, submission.plan_id);
+    if (plan.kind !== "spec") {
+      throw new DispatchError("invalid_submission", "Final repairs require a spec plan");
+    }
+    const manifest = this.verifiedManifest(plan);
+    const root = plan.members.find((member) => member.role === "spec");
+    if (!root) {
+      throw new DispatchError("manifest_mismatch", "Spec plan has no root member");
+    }
+    const targetBranch = this.targetBranch(plan, manifest);
+    const delivery = this.db
+      .prepare("SELECT id FROM deliveries WHERE project_id = ? AND plan_id = ?")
+      .get(projectId, plan.id) as { id: string } | undefined;
+    if (!delivery) {
+      throw new DispatchError(
+        "dispatch_failed",
+        "Final delivery has not been established by any verified child integration",
+      );
+    }
+    this.assertControlAvailability(project.id, plan.id, root);
+    this.assertBrakes(project, { plan_id: plan.id, actor: submission.actor }, targetBranch);
+
+    const scopeKey: BudgetScopeKey = {
+      projectId,
+      deliveryId: delivery.id,
+      planId: plan.id,
+      workId: root.work_id,
+      gateProfile: "final",
+    };
+    const scope = this.budget.getScope(scopeKey);
+    if (!scope) {
+      throw new DispatchError(
+        "budget_scope_missing",
+        "Final delivery has no attempt scope; start final verification first",
+      );
+    }
+    if (scope.status === "exhausted" || scope.consumedAttempts >= scope.allowedAttempts) {
+      const latest = this.db
+        .prepare(
+          `SELECT id, worktree_path, branch, head_sha FROM dispatch_runs
+           WHERE delivery_id = ? AND work_id = ? AND gate_profile = 'final'
+           ORDER BY created_at DESC, id DESC LIMIT 1`,
+        )
+        .get(delivery.id, root.work_id) as
+        | { id: string; worktree_path: string; branch: string; head_sha: string | null }
+        | undefined;
+      if (latest) {
+        this.budget.markExhausted(
+          projectId,
+          scope.scopeId,
+          {
+            runId: latest.id,
+            worktreePath: latest.worktree_path,
+            branch: latest.branch,
+            headSha: latest.head_sha,
+            reason: "final_budget_exhausted",
+          },
+          this.clock(),
+        );
+      }
+      throw new DispatchError(
+        "budget_exhausted",
+        `Final delivery exhausted its ${scope.allowedAttempts}-attempt budget; grant an explicit additional attempt`,
+        {
+          work_id: root.work_id,
+          gate_profile: "final",
+          allowed_attempts: scope.allowedAttempts,
+          consumed_attempts: scope.consumedAttempts,
+          retained_worktree_path: scope.retainedWorktreePath,
+          retained_branch: scope.retainedBranch,
+        },
+      );
+    }
+
+    const revision = this.readFrozenRevision(project.id, root);
+    const contract = freezeContract(revision);
+    let baseSha: string;
+    let branch: string;
+    try {
+      baseSha = this.resolveBaseSha(project.checkout_path, targetBranch);
+      branch = this.uniqueBranch(
+        project.id,
+        project.checkout_path,
+        `factory/spec-${manifest.root.issue_number}-final-repair`,
+        root.work_id,
+      );
+    } catch (error) {
+      throw new DispatchError(
+        "worktree_allocation_failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+
+    const now = this.clock();
+    const requestId = `cmd_final_repair_${randomUUID()}`;
+    const runId = `run_${randomUUID()}`;
+    const ownerToken = randomUUID();
+    const ownerPid = this.ownerPid();
+    const lapRow = this.db
+      .prepare(
+        `SELECT COALESCE(MAX(lap), 0) AS lap FROM dispatch_runs
+         WHERE delivery_id = ? AND work_id = ? AND gate_profile = 'final'`,
+      )
+      .get(delivery.id, root.work_id) as { lap: number };
+    const lap = lapRow.lap + 1;
+    if (lap > scope.allowedAttempts) {
+      const latest = this.db
+        .prepare(
+          `SELECT id, worktree_path, branch, head_sha FROM dispatch_runs
+           WHERE delivery_id = ? AND work_id = ? AND gate_profile = 'final'
+           ORDER BY created_at DESC, id DESC LIMIT 1`,
+        )
+        .get(delivery.id, root.work_id) as
+        | { id: string; worktree_path: string; branch: string; head_sha: string | null }
+        | undefined;
+      if (latest) {
+        this.budget.markExhausted(
+          projectId,
+          scope.scopeId,
+          {
+            runId: latest.id,
+            worktreePath: latest.worktree_path,
+            branch: latest.branch,
+            headSha: latest.head_sha,
+            reason: "final_budget_exhausted",
+          },
+          this.clock(),
+        );
+      }
+      throw new DispatchError(
+        "budget_exhausted",
+        `Final delivery exhausted its ${scope.allowedAttempts}-attempt budget; grant an explicit additional attempt`,
+        {
+          work_id: root.work_id,
+          gate_profile: "final",
+          allowed_attempts: scope.allowedAttempts,
+          consumed_attempts: scope.consumedAttempts,
+        },
+      );
+    }
+
+    try {
+      this.ledger.recordBeforeDispatch({
+        requestId,
+        actor: submission.actor ?? "final-coordinator",
+        projectId,
+        action: "final_repair",
+        target: {
+          plan_id: plan.id,
+          work_id: root.work_id,
+          graph_hash: plan.graph_hash,
+          gate_profile: "final",
+          target_branch: targetBranch,
+        },
+      });
+    } catch (error) {
+      throw new DispatchError(
+        "storage_failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+
+    const generationRow = this.db
+      .prepare(
+        "SELECT COALESCE(MAX(ownership_generation), 0) AS generation FROM dispatch_runs WHERE delivery_id = ?",
+      )
+      .get(delivery.id) as { generation: number };
+    const generation = generationRow.generation + 1;
+    const worktreePath = join(
+      getProjectWorktreesDir(project.checkout_path),
+      "dispatch",
+      delivery.id,
+      `final-repair-gen-${generation}`,
+    );
+    this.db.exec("BEGIN IMMEDIATE;");
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO dispatch_runs
+             (id, project_id, delivery_id, plan_id, work_id, revision_id, content_hash,
+              issue_number, role, gate_profile, merge_policy, target_branch,
+              ownership_generation, lap, state, actor, command_request_id, branch, worktree_path,
+              base_sha, owner_pid, owner_token, lease_expires_at, head_sha, error,
+              launched_at, finished_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'spec', 'final', 'manual', ?, ?, ?, 'claimed', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)`,
+        )
+        .run(
+          runId,
+          projectId,
+          delivery.id,
+          plan.id,
+          root.work_id,
+          root.revision_id,
+          root.content_hash,
+          root.issue_number,
+          targetBranch,
+          generation,
+          lap,
+          submission.actor ?? "final-coordinator",
+          requestId,
+          branch,
+          worktreePath,
+          baseSha,
+          ownerPid,
+          ownerToken,
+          now + this.leaseMs,
+          now,
+          now,
+        );
+      this.budget.recordConsumed(projectId, scope.scopeId, lap, now);
+      this.db.exec("COMMIT;");
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK;");
+      } catch {}
+      const message = error instanceof Error ? error.message : String(error);
+      this.failCommand(requestId, "storage_failed", message);
+      if (/UNIQUE constraint failed/i.test(message)) {
+        throw new DispatchError(
+          "claim_conflict",
+          "Another final repair or verification already owns this attempt lap",
+        );
+      }
+      throw new DispatchError("storage_failed", message);
+    }
+
+    let allocation: WorktreeAllocation;
+    try {
+      allocation = this.worktreeAllocator({
+        repoRoot: project.checkout_path,
+        worktreeDir: worktreePath,
+        branch,
+        startSha: baseSha,
+        issueNumber: root.issue_number,
+        runId,
+        gitRunner: this.gitRunner,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.markRunFailed(runId, message);
+      this.failCommand(requestId, "worktree_allocation_failed", message);
+      throw new DispatchError("worktree_allocation_failed", message);
+    }
+
+    this.markRunRunning(runId);
+    this.updateCommand(requestId, "running", undefined);
+
+    let result: DispatchRunResult;
+    try {
+      result = await this.runner({
+        run_id: runId,
+        command_request_id: requestId,
+        ownership_generation: this.getRun(projectId, runId).ownership_generation,
+        owner_token: ownerToken,
+        project_id: projectId,
+        project_root: project.checkout_path,
+        plan_id: plan.id,
+        work_id: root.work_id,
+        revision_id: root.revision_id,
+        issue_number: root.issue_number,
+        spec_issue_number: manifest.root.issue_number,
+        gate_profile: "final",
+        merge_policy: "manual",
+        branch,
+        worktree_path: worktreePath,
+        base_sha: baseSha,
+        target_branch: targetBranch,
+        contract,
+        contract_body: revision,
+        findings: submission.findings ?? [],
+      });
+    } catch (error) {
+      result = { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+
+    try {
+      return this.finalize(this.getRun(projectId, runId), result, {
+        publishVerificationEvent: false,
+      });
+    } finally {
+      allocation.releaseLock();
+    }
+  }
+
   listRuns(projectId: string, options?: { plan_id?: string }): PlanDispatchRun[] {
     const rows = options?.plan_id
       ? (this.db
@@ -1247,7 +1546,11 @@ export class DispatchService {
     }
   }
 
-  private finalize(run: PlanDispatchRun, result: DispatchRunResult): PlanDispatchRun {
+  private finalize(
+    run: PlanDispatchRun,
+    result: DispatchRunResult,
+    options: { publishVerificationEvent?: boolean } = {},
+  ): PlanDispatchRun {
     const verified = this.verifyCandidate(run, result);
     const nextState = verified.success ? "succeeded" : "failed";
     const error = verified.success ? null : (verified.error ?? "dispatch_failed");
@@ -1297,23 +1600,28 @@ export class DispatchService {
         );
       }
 
-      this.observations.recordRunObservation(run.project_id, run.id, {
-        stage: "builder_execution",
-        status: verified.success ? "passed" : "failed",
-        producer: { id: run.actor, role: "builder", name: "dispatch-builder" },
-        checks: [
-          {
-            name: "builder_commit",
-            command: "git rev-parse HEAD",
-            result: verified.success ? "PASS" : "FAIL",
-            detail: verified.success
-              ? `candidate ${verified.headSha ?? ""}`
-              : (verified.error ?? "dispatch_failed"),
-          },
-        ],
-        findings: [],
-        artifacts: [],
-      });
+      this.observations.recordRunObservation(
+        run.project_id,
+        run.id,
+        {
+          stage: "builder_execution",
+          status: verified.success ? "passed" : "failed",
+          producer: { id: run.actor, role: "builder", name: "dispatch-builder" },
+          checks: [
+            {
+              name: "builder_commit",
+              command: "git rev-parse HEAD",
+              result: verified.success ? "PASS" : "FAIL",
+              detail: verified.success
+                ? `candidate ${verified.headSha ?? ""}`
+                : (verified.error ?? "dispatch_failed"),
+            },
+          ],
+          findings: [],
+          artifacts: [],
+        },
+        { publishVerificationEvent: options.publishVerificationEvent !== false },
+      );
 
       this.db.exec("COMMIT;");
     } catch (caught) {

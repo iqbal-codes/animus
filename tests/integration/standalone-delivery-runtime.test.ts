@@ -22,6 +22,7 @@ import { ExecutionObservationService } from "../../apps/backend/src/evidence";
 import { ExecutionBudgetService } from "../../apps/backend/src/work/budget";
 import { PublicationService } from "../../apps/backend/src/publication";
 import { DeliveryGateService, DeliveryRuntimeCoordinator } from "../../apps/backend/src/delivery";
+import { FinalDeliveryService } from "../../apps/backend/src/final";
 import type { AgentTransport } from "../../scripts/loop/types";
 import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
 
@@ -166,7 +167,17 @@ describe("standalone delivery runtime producer", () => {
   }
 
   function makeCoordinator(): DeliveryRuntimeCoordinator {
-    return new DeliveryRuntimeCoordinator(db, {
+    const runtimeRef: { current: DeliveryRuntimeCoordinator | null } = { current: null };
+    const finalService = new FinalDeliveryService(db, {
+      plans,
+      dispatch,
+      observations,
+      publication,
+      gate: delivery,
+      budget,
+      runtime: () => runtimeRef.current!,
+    });
+    const coordinator = new DeliveryRuntimeCoordinator(db, {
       gate: delivery,
       observations,
       dispatch,
@@ -184,7 +195,12 @@ describe("standalone delivery runtime producer", () => {
       },
       regressionChecks: ["true"],
       maxCorrections: 2,
+      correction: {
+        dispatch: (request) => finalService.dispatchCorrection(request),
+      },
     });
+    runtimeRef.current = coordinator;
+    return coordinator;
   }
 
   beforeEach(async () => {
@@ -251,7 +267,7 @@ describe("standalone delivery runtime producer", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  test("the normal scheduler tick produces QA/review, corrects failures and publishes honestly", async () => {
+  test("the normal scheduler tick preserves standalone corrections with the shared final-spec hook installed", async () => {
     const plan = await plans.importPlan(projectId, { issue_number: 1590, kind: "standalone" });
     const coordinator = makeCoordinator();
 
