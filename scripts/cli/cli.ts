@@ -12,6 +12,7 @@ import {
   runControlCommand,
   runIntakeCommand,
   runProjectCommand,
+  runDraftCommand,
   runPromotionCommand,
   runWorkCommand,
 } from "./commands/operations";
@@ -280,6 +281,21 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         subcommand,
         positionals,
         projectId: values.project,
+        factoryUrl: values["factory-url"],
+        factoryToken: values["factory-token"],
+        json: values.json,
+      });
+
+    case "draft":
+    case "drafts":
+      return await runDraftCommand({
+        subcommand,
+        positionals,
+        projectId: values.project,
+        answers: values.answers,
+        instructions: values.instructions,
+        revision: values.revision,
+        reason: values.reason,
         factoryUrl: values["factory-url"],
         factoryToken: values["factory-token"],
         json: values.json,

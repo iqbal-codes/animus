@@ -82,6 +82,11 @@ export const helpEntries: readonly HelpEntry[] = [
     description: "Evaluate GitHub issue backlog and run on-demand triage passes",
   },
   {
+    command: "draft",
+    spec: "draft <list|get|refine|revise|approve|reject|request-changes> --project <project-id>",
+    description: "Refine imported work into local drafts, answer questions, and record operator decisions",
+  },
+  {
     command: "promotion",
     spec: "promotion <status|prepare>",
     description: "Inspect unpromoted commits or prepare batch promotion PR",
@@ -150,8 +155,28 @@ export const orderedFlags: readonly FlagHelp[] = [
   },
   {
     spec: "--project <project-id>",
-    description: "Registered project ID for work reads",
-    commands: ["work"],
+    description: "Registered project ID for work or draft reads",
+    commands: ["work", "draft"],
+  },
+  {
+    spec: "--reason <text>",
+    description: "Reason for a draft approve, reject, or request-changes decision",
+    commands: ["draft"],
+  },
+  {
+    spec: "--answers <json>",
+    description: "Answers to draft clarification questions as a JSON array or @file",
+    commands: ["draft"],
+  },
+  {
+    spec: "--instructions <text>",
+    description: "Operator revision instructions for the next draft revision",
+    commands: ["draft"],
+  },
+  {
+    spec: "--revision <number>",
+    description: "Exact draft revision number a decision targets",
+    commands: ["draft"],
   },
   {
     spec: "--provider <id>",

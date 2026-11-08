@@ -9,6 +9,7 @@ import { applyCommandMigrations } from "../command/db";
 import { applyCoordinationMigrations } from "../coordination/db";
 import { applyEvidenceMigrations } from "../evidence/db";
 import { applyWorkMigrations } from "../work/db";
+import { applyDraftMigrations } from "../draft/db";
 
 export function resolveStateDir(): string {
   const custom = process.env.ANIMUS_STATE_DIR || process.env.FACTORY_STATE_DIR;
@@ -86,6 +87,7 @@ export function initializeDatabase(dbPath?: string): DatabaseSync {
   applyCoordinationMigrations(db);
   applyEvidenceMigrations(db);
   applyWorkMigrations(db);
+  applyDraftMigrations(db);
 
   return db;
 }
