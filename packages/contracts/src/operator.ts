@@ -1616,7 +1616,7 @@ export type CandidateVerificationSubmission = z.infer<typeof candidateVerificati
 // ---------------------------------------------------------------------------
 
 /** Bumped whenever the gate-profile definition changes; older observations stop authorizing acceptance. */
-export const GATE_PROFILE_VERSION = 1;
+export const GATE_PROFILE_VERSION = 2;
 
 export const executionStageSchema = z.enum([
   "builder_execution",
@@ -1635,10 +1635,21 @@ export const executionObservationStatusSchema = z.enum([
 ]);
 export type ExecutionObservationStatus = z.infer<typeof executionObservationStatusSchema>;
 
+export const executionCheckKindSchema = z.enum([
+  "contract",
+  "acceptance",
+  "review",
+  "regression",
+  "remote_ci",
+]);
+export type ExecutionCheckKind = z.infer<typeof executionCheckKindSchema>;
+
 export const executionCheckSubmissionSchema = z.object({
   name: z.string().min(1).max(200),
   command: z.string().max(4000),
   result: checkResultSchema,
+  kind: executionCheckKindSchema.default("contract"),
+  criterionKey: z.string().min(1).max(200).optional(),
   durationMs: z.number().int().nonnegative().optional(),
   detail: z.string().max(8000).optional(),
   artifactPath: z.string().min(1).max(1000).optional(),
@@ -1714,6 +1725,8 @@ export const executionCheckRecordSchema = z.object({
   name: z.string().min(1),
   command: z.string(),
   result: checkResultSchema,
+  kind: executionCheckKindSchema,
+  criterionKey: z.string().min(1).max(200).nullable(),
   durationMs: z.number().int().nonnegative().nullable(),
   detail: z.string().nullable(),
   artifactPath: z.string().nullable(),
@@ -1816,6 +1829,128 @@ export const runEvidenceReportSchema = z.object({
   acceptance: acceptanceDecisionSchema,
 });
 export type RunEvidenceReport = z.infer<typeof runEvidenceReportSchema>;
+
+// ---------------------------------------------------------------------------
+// Full-delivery gate and verified remote merge (standalone/final profiles)
+// ---------------------------------------------------------------------------
+
+export const deliveryGateStateSchema = z.enum([
+  "blocked",
+  "correction_required",
+  "awaiting_publication",
+  "ready_for_operator_review",
+  "awaiting_manual_merge",
+  "awaiting_merge_verification",
+  "closed_unmerged",
+  "invalidated",
+  "remote_unavailable",
+  "delivered",
+]);
+export type DeliveryGateState = z.infer<typeof deliveryGateStateSchema>;
+
+export const deliveryGateStageStatusSchema = z.enum([
+  "passed",
+  "failed",
+  "inconclusive",
+  "running",
+  "missing",
+  "stale",
+  "not_applicable",
+]);
+export type DeliveryGateStageStatus = z.infer<typeof deliveryGateStageStatusSchema>;
+
+export const deliveryGateStageSchema = z.object({
+  name: z.string().min(1),
+  status: deliveryGateStageStatusSchema,
+  detail: z.string(),
+  observationId: z.string().min(1).nullable(),
+});
+export type DeliveryGateStage = z.infer<typeof deliveryGateStageSchema>;
+
+export const deliveryMergeStateSchema = z.enum([
+  "not_merged",
+  "closed_unmerged",
+  "unverified",
+  "verified",
+  "remote_unavailable",
+]);
+export type DeliveryMergeState = z.infer<typeof deliveryMergeStateSchema>;
+
+export const deliveryMergeVerificationSchema = z.object({
+  id: z.string().min(1),
+  projectId: z.string().min(1),
+  deliveryId: z.string().min(1),
+  planId: z.string().min(1),
+  workId: z.string().min(1),
+  runId: z.string().min(1),
+  gateProfile: z.enum(["standalone", "final"]),
+  targetId: z.string().min(1),
+  pullRequestId: z.string().min(1),
+  repository: z.string().min(1),
+  prNumber: z.number().int().positive(),
+  sourceBranch: z.string().min(1),
+  targetBranch: z.string().min(1),
+  candidateHeadSha: z.string().min(1),
+  remoteHeadRefOid: z.string().min(1),
+  remoteTargetTipSha: z.string().min(1),
+  mergeCommitSha: z.string().min(1).nullable(),
+  verifiedAt: z.number().int().nonnegative(),
+  verifiedBy: z.string().min(1),
+});
+export type DeliveryMergeVerification = z.infer<typeof deliveryMergeVerificationSchema>;
+
+export const deliveryGatePublicationSchema = z.object({
+  targetId: z.string().min(1).nullable(),
+  state: z
+    .enum(["no_candidate", "ready", "publishing", "published", "failed", "unknown"])
+    .nullable(),
+  auditComplete: z.boolean(),
+  pullRequestId: z.string().min(1).nullable(),
+  prNumber: z.number().int().positive().nullable(),
+  url: z.string().min(1).nullable(),
+  headBranch: z.string().min(1).nullable(),
+  baseBranch: z.string().min(1).nullable(),
+  remoteState: z.enum(["open", "closed", "merged", "unknown"]).nullable(),
+  draft: z.boolean().nullable(),
+  headRefOid: z.string().min(1).nullable(),
+  mergeCommitOid: z.string().min(1).nullable(),
+});
+export type DeliveryGatePublication = z.infer<typeof deliveryGatePublicationSchema>;
+
+export const deliveryGateMergeSchema = z.object({
+  state: deliveryMergeStateSchema,
+  verified: z.boolean(),
+  verification: deliveryMergeVerificationSchema.nullable(),
+  remoteTargetTipSha: z.string().min(1).nullable(),
+  detail: z.string().nullable(),
+});
+export type DeliveryGateMerge = z.infer<typeof deliveryGateMergeSchema>;
+
+export const deliveryGateStatusSchema = z.object({
+  runId: z.string().min(1),
+  projectId: z.string().min(1),
+  deliveryId: z.string().min(1),
+  planId: z.string().min(1),
+  workId: z.string().min(1),
+  issueNumber: z.number().int().positive(),
+  gateProfile: planGateProfileSchema,
+  mergePolicy: dispatchMergePolicySchema,
+  sourceBranch: z.string().min(1),
+  targetBranch: z.string().min(1),
+  candidateHeadSha: z.string().min(1).nullable(),
+  targetTipSha: z.string().min(1).nullable(),
+  mergeBaseSha: z.string().min(1).nullable(),
+  integrationLineage: z.string().min(1),
+  gateProfileVersion: z.number().int().positive(),
+  state: deliveryGateStateSchema,
+  reasons: z.array(z.string()),
+  stages: z.array(deliveryGateStageSchema),
+  acceptance: acceptanceDecisionSchema,
+  publication: deliveryGatePublicationSchema,
+  merge: deliveryGateMergeSchema,
+  manualMergeRequired: z.boolean(),
+});
+export type DeliveryGateStatus = z.infer<typeof deliveryGateStatusSchema>;
 
 // ---------------------------------------------------------------------------
 // Durable PR publication, per-lap audit and outgoing publication intents

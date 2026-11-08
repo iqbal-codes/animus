@@ -313,7 +313,7 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
           integrationLineage: `${"a".repeat(64)}@main`,
           producer: { id: "reviewer-2", role: "peer_reviewer" },
           gateProfile: "standalone",
-          gateProfileVersion: 1,
+          gateProfileVersion: 2,
           error: null,
           createdAt: 1,
           checks: [
@@ -323,6 +323,8 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
               name: "unit",
               command: "bun test",
               result: "PASS",
+              kind: "review",
+              criterionKey: null,
               durationMs: 12,
               detail: null,
               artifactPath: "checks/report.log",
@@ -951,5 +953,274 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
 
     fireEvent.click(screen.getByRole("button", { name: "Hold" }));
     await waitFor(() => expect(controls).toEqual(["hold"]));
+  });
+
+  test("DispatchControl exposes the full-delivery gate, manual merge wait and verified merge", async () => {
+    const plan = {
+      id: "plan-gate",
+      project_id: "proj-1",
+      kind: "standalone" as const,
+      root_work_id: "work-gate",
+      root_issue_number: 1800,
+      root_title: "Standalone delivery gate",
+      graph_hash: "a".repeat(64),
+      authority: "admitted" as const,
+      member_count: 1,
+      ticket_count: 1,
+      hold_count: 0,
+      accepted_revision_id: "rev-gate",
+      created_at: 1,
+      updated_at: 1,
+    };
+    const run = {
+      id: "run-gate",
+      project_id: "proj-1",
+      delivery_id: "del-gate",
+      plan_id: "plan-gate",
+      work_id: "work-gate",
+      revision_id: "rev-gate",
+      content_hash: "b".repeat(64),
+      issue_number: 1800,
+      role: "ticket" as const,
+      gate_profile: "standalone" as const,
+      merge_policy: "manual" as const,
+      target_branch: "main",
+      ownership_generation: 1,
+      lap: 1,
+      state: "succeeded" as const,
+      actor: "operator",
+      command_request_id: "cmd-gate",
+      branch: "factory/standalone-1800",
+      worktree_path: "/tmp/gate-worktree",
+      base_sha: "c".repeat(40),
+      owner_pid: 1,
+      owner_token: "token",
+      lease_expires_at: null,
+      head_sha: "d".repeat(40),
+      error: null,
+      launched_at: 1,
+      finished_at: 1,
+      created_at: 1,
+      updated_at: 1,
+    };
+    const acceptance = {
+      runId: run.id,
+      projectId: "proj-1",
+      deliveryId: "del-gate",
+      gateProfile: "standalone" as const,
+      candidateHeadSha: run.head_sha,
+      targetTipSha: run.base_sha,
+      mergeBaseSha: run.base_sha,
+      integrationLineage: `${"a".repeat(64)}@main`,
+      authorized: true,
+      reasons: [],
+      builderObservationId: "obs-builder",
+      independentObservationId: "obs-review",
+      openBlockingFindingIds: [],
+      verifiedArtifactIds: [],
+    };
+    const stages = [
+      {
+        name: "builder_execution",
+        status: "passed" as const,
+        detail: "committed candidate",
+        observationId: "obs-builder",
+      },
+      {
+        name: "independent_review",
+        status: "passed" as const,
+        detail: "review passed",
+        observationId: "obs-review",
+      },
+      {
+        name: "final_acceptance",
+        status: "passed" as const,
+        detail: "acceptance passed",
+        observationId: "obs-final",
+      },
+      {
+        name: "acceptance_criteria",
+        status: "passed" as const,
+        detail: "1 acceptance criterion independently verified",
+        observationId: "obs-final",
+      },
+      {
+        name: "regression",
+        status: "passed" as const,
+        detail: "regression passed",
+        observationId: "obs-final",
+      },
+      {
+        name: "remote_ci",
+        status: "passed" as const,
+        detail: "remote ci passed",
+        observationId: "obs-final",
+      },
+      {
+        name: "review",
+        status: "passed" as const,
+        detail: "standards review passed",
+        observationId: "obs-review",
+      },
+      {
+        name: "publication_audit",
+        status: "passed" as const,
+        detail: "audit complete",
+        observationId: null,
+      },
+      {
+        name: "remote_pull_request",
+        status: "passed" as const,
+        detail: "PR #1 OPEN",
+        observationId: null,
+      },
+      {
+        name: "target_lineage",
+        status: "not_applicable" as const,
+        detail: "not merged yet",
+        observationId: null,
+      },
+    ];
+    const readyGate = {
+      runId: run.id,
+      projectId: "proj-1",
+      deliveryId: "del-gate",
+      planId: plan.id,
+      workId: run.work_id,
+      issueNumber: 1800,
+      gateProfile: "standalone" as const,
+      mergePolicy: "manual" as const,
+      sourceBranch: run.branch,
+      targetBranch: "main",
+      candidateHeadSha: run.head_sha,
+      targetTipSha: run.base_sha,
+      mergeBaseSha: run.base_sha,
+      integrationLineage: acceptance.integrationLineage,
+      gateProfileVersion: 2,
+      state: "ready_for_operator_review" as const,
+      reasons: [],
+      stages,
+      acceptance,
+      publication: {
+        targetId: "pub-gate",
+        state: "published" as const,
+        auditComplete: true,
+        pullRequestId: "pr-gate",
+        prNumber: 1,
+        url: "https://github.com/org/repo/pull/1",
+        headBranch: run.branch,
+        baseBranch: "main",
+        remoteState: "open" as const,
+        draft: true,
+        headRefOid: run.head_sha,
+      },
+      merge: {
+        state: "not_merged" as const,
+        verified: false,
+        verification: null,
+        remoteTargetTipSha: null,
+        detail: "remote pull request is not merged",
+      },
+      manualMergeRequired: true,
+    };
+    const deliveredGate = {
+      ...readyGate,
+      state: "delivered" as const,
+      merge: {
+        state: "verified" as const,
+        verified: true,
+        verification: {
+          id: "dmv-1",
+          projectId: "proj-1",
+          deliveryId: "del-gate",
+          planId: plan.id,
+          workId: run.work_id,
+          runId: run.id,
+          gateProfile: "standalone" as const,
+          targetId: "pub-gate",
+          pullRequestId: "pr-gate",
+          repository: "org/repo",
+          prNumber: 1,
+          sourceBranch: run.branch,
+          targetBranch: "main",
+          candidateHeadSha: run.head_sha,
+          remoteHeadRefOid: run.head_sha,
+          remoteTargetTipSha: run.head_sha,
+          mergeCommitSha: null,
+          verifiedAt: 9,
+          verifiedBy: "operator",
+        },
+        remoteTargetTipSha: run.head_sha,
+        detail: "verified merge of PR #1 into main",
+      },
+    };
+    const awaitingGate = {
+      ...readyGate,
+      state: "awaiting_merge_verification" as const,
+      reasons: ["merge_verification_required"],
+      publication: { ...readyGate.publication, remoteState: "merged" as const, draft: false },
+      merge: {
+        state: "unverified" as const,
+        verified: false,
+        verification: null,
+        remoteTargetTipSha: run.head_sha,
+        detail: `candidate ${run.head_sha} is in remote main ${run.head_sha}`,
+      },
+    };
+    let currentGate: typeof readyGate | typeof awaitingGate = readyGate;
+    const gateReads: string[] = [];
+    const mergeVerifications: string[] = [];
+    const factory = {
+      projects: async () => [mockProjects[0]!],
+      forProject: () => ({
+        plans: async () => [plan],
+        dispatchRuns: async () => [run],
+        deliveryGate: async (runId: string) => {
+          gateReads.push(runId);
+          return currentGate;
+        },
+        verifyDeliveryMerge: async (runId: string, actor: string) => {
+          mergeVerifications.push(`${runId}:${actor}`);
+          return deliveredGate;
+        },
+      }),
+    } as any;
+
+    render(<DispatchControl factory={factory} />);
+    const gateButton = await screen.findByRole("button", { name: "Delivery gate" });
+    expect(gateButton.getAttribute("aria-expanded")).toBe("false");
+    expect(gateButton.getAttribute("aria-controls")).toBe("run-gate-run-gate");
+    fireEvent.click(gateButton);
+
+    const panel = await screen.findByTestId("run-gate-run-gate");
+    expect(gateReads).toEqual([run.id]);
+    expect(panel.textContent).toContain("ready_for_operator_review");
+    expect(panel.textContent).toContain("merge manual");
+    expect(panel.textContent).toContain("Operator review required");
+    expect(panel.textContent).toContain("final_acceptance");
+    expect(panel.textContent).toContain("remote_ci");
+    expect(panel.textContent).not.toContain("delivered");
+    expect(screen.queryByRole("button", { name: "Verify merge" })).toBeNull();
+
+    // GitHub changes outside this process. Reopening the panel re-reads the gate
+    // instead of trusting the earlier cached projection.
+    currentGate = awaitingGate;
+    fireEvent.click(screen.getByRole("button", { name: "Hide gate" }));
+    await waitFor(() => expect(screen.queryByTestId("run-gate-run-gate")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Delivery gate" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("run-gate-run-gate").textContent).toContain(
+        "awaiting_merge_verification",
+      ),
+    );
+    expect(gateReads).toEqual([run.id, run.id]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Verify merge" }));
+    await waitFor(() => expect(mergeVerifications).toEqual([`${run.id}:operator`]));
+    await waitFor(() =>
+      expect(screen.getByTestId("run-gate-run-gate").textContent).toContain("delivered"),
+    );
+    expect(screen.getByTestId("run-gate-run-gate").textContent).toContain("verified");
+    expect(screen.getByLabelText("Delivery gate stages")).toBeTruthy();
   });
 });

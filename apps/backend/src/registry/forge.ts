@@ -67,6 +67,8 @@ export interface ForgePullRequest {
   html_url?: string;
   draft?: boolean;
   headRefOid?: string;
+  /** Commit created by a verified remote merge, when the transport reports it. */
+  mergeCommitOid?: string;
   /** Transport-confirmed repository identity; validated against the recorded repo. */
   repository?: string;
 }
@@ -949,7 +951,7 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
       "--limit",
       "100",
       "--json",
-      "number,title,body,headRefName,baseRefName,state,url,isDraft,headRefOid",
+      "number,title,body,headRefName,baseRefName,state,url,isDraft,headRefOid,mergeCommit",
     ]);
     const items = JSON.parse(output);
     if (!Array.isArray(items)) {
@@ -965,6 +967,7 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
       html_url: i.url,
       draft: Boolean(i.isDraft),
       ...(typeof i.headRefOid === "string" ? { headRefOid: i.headRefOid } : {}),
+      ...(typeof i.mergeCommit?.oid === "string" ? { mergeCommitOid: i.mergeCommit.oid } : {}),
       repository: cleanRepo,
     }));
   }
@@ -980,7 +983,7 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
         "--repo",
         cleanRepo,
         "--json",
-        "number,title,body,headRefName,baseRefName,state,url,isDraft,headRefOid",
+        "number,title,body,headRefName,baseRefName,state,url,isDraft,headRefOid,mergeCommit",
       ]);
       const i = JSON.parse(output);
       if (
@@ -1004,6 +1007,7 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
         html_url: i.url,
         draft: Boolean(i.isDraft),
         ...(typeof i.headRefOid === "string" ? { headRefOid: i.headRefOid } : {}),
+        ...(typeof i.mergeCommit?.oid === "string" ? { mergeCommitOid: i.mergeCommit.oid } : {}),
         repository: cleanRepo,
       };
     } catch (error) {
@@ -1574,6 +1578,7 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
     }
     const pr = prMap.get(prNumber)!;
     pr.state = "MERGED";
-    return { merged: true, sha: `merged_sha_${prNumber}` };
+    pr.mergeCommitOid = `merged_sha_${prNumber}`;
+    return { merged: true, sha: pr.mergeCommitOid };
   }
 }

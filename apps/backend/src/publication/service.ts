@@ -174,7 +174,7 @@ export interface PublicationServiceOptions {
  * Production remote git transport. Reuses the bounded process owner used by the
  * local loop so a push cannot hang unbounded or outlive the publication attempt.
  */
-const defaultGitRemote: PublicationRemoteRunner = async (args, cwd) => {
+export const defaultGitRemote: PublicationRemoteRunner = async (args, cwd) => {
   return processRun(["git", ...args], cwd, 30_000, undefined, { manageSignals: false });
 };
 
@@ -295,8 +295,19 @@ export class PublicationService {
         activePr.headBranch !== target.source_branch),
     );
     const evidenceState = this.evidenceCompleteness(target, evidence);
+    // A merged PR is no longer "active", but its already-published audit remains
+    // complete history. Only count a merged PR when it is explicitly bound to the
+    // exact candidate/source/target; an unbound or superseded PR never qualifies.
+    const auditPr =
+      activePr ?? (pullRequests.length > 0 ? pullRequests[pullRequests.length - 1]! : null);
+    const auditPrBound =
+      auditPr !== null &&
+      (auditPr.state === "open" || auditPr.state === "merged") &&
+      auditPr.candidateHeadSha === target.candidate_head_sha &&
+      auditPr.headBranch === target.source_branch &&
+      auditPr.baseBranch === target.target_branch;
     const auditComplete =
-      Boolean(activePr) &&
+      auditPrBound &&
       !remoteStale &&
       this.remoteSourceVerified(target) &&
       !this.isBlockingRemoteError(target.last_error) &&
@@ -1492,6 +1503,14 @@ export class PublicationService {
         activePr.baseBranch !== target.target_branch ||
         activePr.headBranch !== target.source_branch),
     );
+    const latestPr = pullRequests.length > 0 ? pullRequests[pullRequests.length - 1]! : null;
+    const mergedBoundPr =
+      !activePr &&
+      latestPr !== null &&
+      latestPr.state === "merged" &&
+      latestPr.candidateHeadSha === target.candidate_head_sha &&
+      latestPr.headBranch === target.source_branch &&
+      latestPr.baseBranch === target.target_branch;
     let state: TargetRow["state"];
     if (target.state === "no_candidate") {
       state = "no_candidate";
@@ -1511,6 +1530,10 @@ export class PublicationService {
       evidenceState.pending === 0 &&
       evidenceState.unsafe === 0
     ) {
+      state = "published";
+    } else if (mergedBoundPr && target.state === "published") {
+      // The published audit remains a real historical fact after the operator
+      // merges the PR; a post-merge summary refresh must not demote the target.
       state = "published";
     } else if (activePr) {
       state = "publishing";

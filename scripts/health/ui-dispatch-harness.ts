@@ -135,6 +135,10 @@ const reviewerCredential = producers.registerTrustedProducer(project.id, {
   id: "reviewer-2",
   role: "peer_reviewer",
 });
+const finalCredential = producers.registerTrustedProducer(project.id, {
+  id: "final-1",
+  role: "independent_evaluator",
+});
 
 async function postJson(path: string, body: unknown): Promise<Record<string, unknown>> {
   const response = await app.fetch(
@@ -186,7 +190,13 @@ await postJson(`/evidence/findings/${encodeURIComponent(seedFinding.id)}/recheck
   producer_credential: reviewerCredential.credential,
   status: "passed",
   checks: [
-    { name: "unit", command: "bun test", result: "PASS", artifactPath: "checks/report.log" },
+    {
+      name: "unit",
+      command: "bun test",
+      result: "PASS",
+      kind: "review",
+      artifactPath: "checks/report.log",
+    },
   ],
   artifacts: [
     {
@@ -195,6 +205,37 @@ await postJson(`/evidence/findings/${encodeURIComponent(seedFinding.id)}/recheck
       relativePath: "checks/report.log",
       mediaType: "text/plain",
     },
+  ],
+});
+await postJson("/evidence/observations", {
+  run_id: seedRun.id,
+  producer_credential: reviewerCredential.credential,
+  stage: "independent_review",
+  status: "passed",
+  checks: [
+    {
+      name: "standards and spec review",
+      command: "review candidate diff",
+      result: "PASS",
+      kind: "review",
+    },
+  ],
+});
+await postJson("/evidence/observations", {
+  run_id: seedRun.id,
+  producer_credential: finalCredential.credential,
+  stage: "final_acceptance",
+  status: "passed",
+  checks: [
+    {
+      name: "AC1 black-box",
+      command: "acceptance AC1",
+      result: "PASS",
+      kind: "acceptance",
+      criterionKey: "AC1",
+    },
+    { name: "regression", command: "bun test targeted", result: "PASS", kind: "regression" },
+    { name: "remote ci", command: "gh pr checks", result: "PASS", kind: "remote_ci" },
   ],
 });
 
@@ -242,6 +283,29 @@ const seededPublication = (await publishResponse.json()) as {
 };
 if (!seededPublication.auditComplete || seededPublication.pullRequests.length !== 1) {
   throw new Error(`Seed publication is not complete: ${JSON.stringify(seededPublication)}`);
+}
+const seededGateResponse = await app.fetch(
+  new Request(
+    `http://127.0.0.1/api/v1/projects/${project.id}/delivery/runs/${encodeURIComponent(seedRun.id)}`,
+  ),
+);
+if (!seededGateResponse.ok) {
+  throw new Error(`Seed delivery gate read failed: ${await seededGateResponse.text()}`);
+}
+const seededGate = (await seededGateResponse.json()) as {
+  state: string;
+  merge: { state: string; verified: boolean };
+  manualMergeRequired: boolean;
+  stages: Array<{ name: string; status: string }>;
+};
+if (
+  seededGate.state !== "ready_for_operator_review" ||
+  !seededGate.manualMergeRequired ||
+  seededGate.merge.state !== "not_merged"
+) {
+  throw new Error(
+    `Seed delivery gate is not ready for operator review: ${JSON.stringify(seededGate)}`,
+  );
 }
 // Exhaust a second ticket, grant one explicit attempt, reject it, then hold the work.
 // This is real backend state so the operator surface renders Needs owner, retained
@@ -295,6 +359,7 @@ console.log(
     project_id: project.id,
     run_id: seedRun.id,
     publication: seededPublication,
+    delivery_gate: seededGate,
     plan_ids: Object.fromEntries(plans),
     exhausted_run_id: exhaustedRunId,
     root,
