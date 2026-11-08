@@ -269,7 +269,7 @@ export function generateCanonicalAgentsMd(
     "## Domain & Workflow Documentation",
     "",
     "- **PR & Evidence Contract**: Read \`docs/agents/pr-evidence-contract.md\` for canonical PR bodies, evidence matrices, Before/After captures, and finding rechecks.",
-    "- **Issue Tracker, Dependencies & Triage Labels**: Read \`docs/agents/issue-tracker.md\` for \`gh\` conventions, \`Depends on:\` rules, and canonical triage labels.",
+    "- **Issue Tracker, Dependencies & Triage Labels**: Read \`docs/agents/issue-tracker.md\` for \`gh\` conventions, \`Depends on:\` rules, and canonical triage labels. Labels are visibility hints; admission is frozen at import and dependency release requires verified lineage, never issue closure.",
     "- **Domain Models & ADRs**: Read \`docs/agents/domain.md\`, \`GLOSSARY.md\`, and \`docs/adr/\` before modifying domain models or architectural boundaries.",
     "",
     "## Execution Rules",

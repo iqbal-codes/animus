@@ -370,4 +370,40 @@ describe("standalone delivery runtime producer", () => {
     expect(qaCalls).toBe(0);
     expect(dispatch.listRuns(projectId, { plan_id: plan.id })).toHaveLength(1);
   });
+
+  test("a builder-only succeeded standalone run is recovered by a later scheduler tick", async () => {
+    const plan = await plans.importPlan(projectId, { issue_number: 1590, kind: "standalone" });
+    const firstRun = await dispatch.dispatch(projectId, { plan_id: plan.id, actor: "operator" });
+    expect(firstRun.state).toBe("succeeded");
+    expect(
+      observations
+        .listObservations(projectId, { runId: firstRun.id })
+        .map((observation) => observation.stage),
+    ).toEqual(["builder_execution"]);
+    const pullRequestsBefore = (
+      db.prepare("SELECT COUNT(*) AS c FROM publication_pull_requests").get() as { c: number }
+    ).c;
+    expect(pullRequestsBefore).toBe(0);
+
+    // The first QA attempt passes so recovery does not need a correction lap.
+    qaCalls = 1;
+    const coordinator = makeCoordinator();
+    const tick = await runLocalDispatchTick({
+      db,
+      registry,
+      plans,
+      dispatch,
+      actor: "scheduler",
+      deliveryRuntime: coordinator,
+    });
+    expect(tick.action).toBe("launched");
+    expect(tick.runId).toBe(firstRun.id);
+    expect(tick.delivery).toMatchObject({ action: "published", state: "awaiting_publication" });
+    const pullRequestsAfter = (
+      db.prepare("SELECT COUNT(*) AS c FROM publication_pull_requests").get() as { c: number }
+    ).c;
+    expect(pullRequestsAfter).toBeGreaterThan(0);
+    // Recovery resumes the same run; it never allocates a fresh builder lap.
+    expect(dispatch.listRuns(projectId, { plan_id: plan.id })).toHaveLength(1);
+  }, 60_000);
 });

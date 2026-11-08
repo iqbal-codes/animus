@@ -1,7 +1,15 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { createHmac } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -817,5 +825,20 @@ describe("authority cutover (#165)", () => {
     expect(readFileSync(join(stateDir, "artifacts", projectId, artifactRelative), "utf-8")).toBe(
       "retained proof\n",
     );
+  });
+
+  test("a marker lock that never links fails closed instead of returning unheld (F4)", () => {
+    mkdirSync(stateDir, { recursive: true });
+    const lockPath = join(stateDir, ".execution-authority.lock");
+    // A dangling symlink makes link(2) fail EEXIST while the owner read sees ENOENT:
+    // exactly the pathological interleaving that used to fall through as a held lock.
+    symlinkSync(join(root, "missing-lock-owner.json"), lockPath);
+    expect(() => writeExecutionAuthority("local", { stateDir })).toThrow(
+      /could not be acquired after bounded retries/,
+    );
+    expect(existsSync(join(stateDir, "execution-authority.json"))).toBe(false);
+
+    rmSync(lockPath, { force: true });
+    expect(writeExecutionAuthority("local", { stateDir }).authority).toBe("local");
   });
 });

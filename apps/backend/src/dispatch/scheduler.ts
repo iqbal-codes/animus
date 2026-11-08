@@ -75,6 +75,66 @@ function planSkipReason(error: DispatchError): LocalDispatchSkipReason | "contin
   }
 }
 
+const ACTIVE_RUN_STATES = new Set(["claimed", "dispatched", "running", "interrupted"]);
+const RESUMABLE_DELIVERY_ACTIONS = new Set([
+  "published",
+  "verification_recorded",
+  "findings_resolved",
+  "correction_dispatched",
+]);
+
+/**
+ * Resume gate processing for a run that already succeeded (for example after a
+ * CLI-only build or a process restart). Without this, `dispatch()` reports
+ * `already_succeeded` forever and the candidate never gets its child PR, review,
+ * required CI read-back or verified integration.
+ */
+async function resumeDelivery(
+  options: LocalDispatchTickOptions,
+  projectId: string,
+  planId: string,
+): Promise<LocalDispatchTickResult | null> {
+  if (!options.deliveryRuntime) return null;
+  const runs = options.dispatch.listRuns(projectId, { plan_id: planId });
+  const activeWorks = new Set(
+    runs.filter((run) => ACTIVE_RUN_STATES.has(run.state)).map((run) => run.work_id),
+  );
+  const seenWorks = new Set<string>();
+  for (const run of runs) {
+    // listRuns is newest-first: only the latest attempt for each work item counts.
+    if (seenWorks.has(run.work_id)) continue;
+    seenWorks.add(run.work_id);
+    if (activeWorks.has(run.work_id)) continue;
+    if (run.state !== "succeeded") continue;
+    // The final coordinator materializes and drives its own combined-candidate run.
+    if (run.gate_profile === "final") continue;
+    try {
+      const delivery = await options.deliveryRuntime.process(projectId, run.id);
+      if (
+        delivery &&
+        typeof delivery === "object" &&
+        "action" in delivery &&
+        RESUMABLE_DELIVERY_ACTIONS.has(String((delivery as { action: unknown }).action))
+      ) {
+        return {
+          action: "launched",
+          reason: "launch_successful",
+          projectId,
+          planId,
+          runId: run.id,
+          issueNumber: run.issue_number,
+          delivery,
+        };
+      }
+    } catch {
+      // A held installation, Stop control or transient transport failure leaves the
+      // run durable and readable; later ticks can resume it without a new lap.
+      continue;
+    }
+  }
+  return null;
+}
+
 /**
  * Scheduler tick over locally admitted plans. It never fetches GitHub backlog:
  * eligibility comes from the frozen plan manifest and durable dispatch state.
@@ -121,6 +181,9 @@ export async function runLocalDispatchTick(
         };
       }
 
+      const resumed = await resumeDelivery(options, project.id, plan.id);
+      if (resumed) return resumed;
+
       try {
         const run = await options.dispatch.dispatch(project.id, {
           plan_id: plan.id,
@@ -128,10 +191,7 @@ export async function runLocalDispatchTick(
           scheduled: true,
         });
         let delivery: unknown;
-        if (
-          options.deliveryRuntime &&
-          (run.gate_profile === "standalone" || run.gate_profile === "final")
-        ) {
+        if (options.deliveryRuntime) {
           try {
             delivery = await options.deliveryRuntime.process(project.id, run.id);
           } catch (error) {

@@ -274,10 +274,12 @@ function acquireMarkerLock(lockPath: string): () => void {
   };
   const tempPath = `${lockPath}.${process.pid}.${ownerToken}.tmp`;
   writeOwnerRecordAtomically(tempPath, owner);
+  let acquired = false;
   try {
     for (let attempt = 0; attempt < 1000; attempt += 1) {
       try {
         linkSync(tempPath, lockPath);
+        acquired = true;
         break;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
@@ -313,6 +315,14 @@ function acquireMarkerLock(lockPath: string): () => void {
     try {
       unlinkSync(tempPath);
     } catch {}
+  }
+  // Never fall through as if the lock were held: a bounded retry loop that never
+  // linked the owner record cannot authorize a write. Returning a release here
+  // would let two writers believe they serialized the same compare-and-swap.
+  if (!acquired) {
+    throw new ExecutionAuthorityConflictError(
+      `Execution authority marker lock ${lockPath} could not be acquired after bounded retries; re-read the marker and retry`,
+    );
   }
   PROCESS_LOCKS.add(lockPath);
   return () => {

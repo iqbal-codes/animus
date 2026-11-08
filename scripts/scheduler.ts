@@ -18,6 +18,9 @@ import { initializeDatabase, ProjectRegistryService } from "../apps/backend/src/
 import { PlanService } from "../apps/backend/src/plans";
 import { CommandLedger } from "../apps/backend/src/command/ledger";
 import { BrakeService } from "../apps/backend/src/command/brakes";
+import { ExecutionObservationService } from "../apps/backend/src/evidence";
+import { ExecutionBudgetService } from "../apps/backend/src/work/budget";
+import { createLocalExecutionRuntime } from "../apps/backend/src/local-runtime";
 import { assertInstallationNotHeldAtStateDir } from "@animus/contracts/installation-hold";
 import {
   DispatchService,
@@ -188,10 +191,22 @@ if (import.meta.main) {
     const registry = new ProjectRegistryService(db, new SystemForgeAdapter());
     const plans = new PlanService(db, registry.getForge());
     const brakes = new BrakeService(db);
+    const observations = new ExecutionObservationService(db);
+    const budget = new ExecutionBudgetService(db);
     const dispatch = new DispatchService(db, {
       plans,
       ledger: new CommandLedger(db),
       brakes,
+      observations,
+      budget,
+    });
+    const runtime = createLocalExecutionRuntime({
+      db,
+      plans,
+      dispatch,
+      forge: registry.getForge(),
+      observations,
+      budget,
     });
 
     // Preserve interrupted/unknown ownership before a new scheduling tick.
@@ -208,6 +223,8 @@ if (import.meta.main) {
           dispatch,
           actor: "scheduler",
           dryRun,
+          deliveryRuntime: runtime.delivery,
+          finalDeliveryRuntime: runtime.final,
         }),
       );
 

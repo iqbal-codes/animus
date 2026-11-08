@@ -9,6 +9,7 @@ import {
   type ExecutionObservationSubmissionInput,
   type ExecutionStage,
   type PlanDispatchRun,
+  type PlanGateProfile,
   type ProducerRole,
 } from "@animus/contracts/operator";
 import { resolveAnimusStateDir } from "@animus/contracts/paths";
@@ -27,13 +28,14 @@ import { assertInstallationNotHeld } from "@animus/contracts/installation-hold";
 import type { ExecutionObservationService } from "../evidence";
 import type { ExecutionBudgetService } from "../work/budget";
 import type { PublicationService } from "../publication";
+import type { ChildIntegrationService } from "../integration";
 import { DeliveryGateService } from "./service";
 
 export interface DeliveryRuntimeRoleRequest {
   projectId: string;
   runId: string;
   lap: number;
-  gateProfile: "standalone" | "final";
+  gateProfile: PlanGateProfile;
   stage: "independent_review" | "final_acceptance";
   projectRoot: string;
   worktreePath: string;
@@ -118,6 +120,8 @@ export interface DeliveryRuntimeOptions {
   dispatch: DispatchService;
   budget: ExecutionBudgetService;
   publication: PublicationService;
+  /** Child-profile integration (publish child PR, read remote CI, safe auto-merge). */
+  integration?: ChildIntegrationService;
   /** Root holding project-scoped finalized artifacts; must match the observation service. */
   artifactRoot?: string;
   /** Production role execution engine (real provider/process transport by default). */
@@ -126,6 +130,8 @@ export interface DeliveryRuntimeOptions {
   executor?: DeliveryRuntimeRoleExecutor;
   /** Declared ordinary regression commands. Production reads harness/harness.config.json. */
   regressionChecks?: string[];
+  /** Declared child technical/contract commands. Production reads harness/harness.config.json. */
+  technicalChecks?: string[];
   /** Replacement for the child-profile correction dispatch (final-spec repair). */
   correction?: DeliveryRuntimeCorrection;
   maxCorrections?: number;
@@ -156,7 +162,7 @@ interface RuntimeRunRow {
   work_id: string;
   revision_id: string;
   issue_number: number;
-  gate_profile: "standalone" | "final";
+  gate_profile: PlanGateProfile;
   target_branch: string;
   branch: string;
   head_sha: string | null;
@@ -171,6 +177,7 @@ interface RuntimeRunRow {
 
 const REVIEW_ROLE: ProducerRole = "peer_reviewer";
 const ACCEPTANCE_ROLE: ProducerRole = "independent_evaluator";
+const GATE_ROLE: ProducerRole = "automated_gate";
 
 /**
  * Normal production producer for standalone/final delivery. It drives the real
@@ -211,6 +218,10 @@ export class DeliveryRuntimeCoordinator {
     // Reviewer/QA transports, evidence writes, correction dispatch and
     // publication all happen below; a held installation must reach none of them.
     this.assertInstallationReady();
+    const initial = this.loadRun(projectId, runId);
+    if (initial.gate_profile === "child") {
+      return this.processChild(projectId, runId);
+    }
     let currentRunId = runId;
     let corrections = 0;
     let iterations = 0;
@@ -343,6 +354,190 @@ export class DeliveryRuntimeCoordinator {
       state: gate.state,
       reasons: [...reasons, "correction_budget_exhausted"],
     };
+  }
+
+  /**
+   * Child profile: the builder already produced a candidate. This runs the
+   * applicable technical/contract checks and an independent standards/contract
+   * review, then publishes the child PR, reads required remote CI and merges only
+   * through the existing serialized lineage-verified integration service. Full
+   * parent black-box QA is deliberately not part of this profile.
+   */
+  private async processChild(projectId: string, runId: string): Promise<DeliveryRuntimeResult> {
+    this.assertInstallationReady();
+    if (!this.options.integration) {
+      return {
+        projectId,
+        runId,
+        action: "skipped",
+        state: null,
+        reasons: ["child_integration_runtime_unavailable"],
+      };
+    }
+    let currentRunId = runId;
+    let corrections = 0;
+    const reasons: string[] = [];
+    for (let iterations = 0; iterations < 20; iterations += 1) {
+      const run = this.loadRun(projectId, currentRunId);
+      if (run.state !== "succeeded" || !run.head_sha) {
+        return {
+          projectId,
+          runId: run.id,
+          action: "skipped",
+          state: null,
+          reasons: [...reasons, `run_not_succeeded:${run.state}`],
+        };
+      }
+      if (this.isStopped(run)) {
+        return { projectId, runId: run.id, action: "stopped", state: null, reasons };
+      }
+      const integrationStatus = this.options.integration.getStatus(projectId, run.id);
+      if (integrationStatus.state === "integrated") {
+        return {
+          projectId,
+          runId: run.id,
+          action: "skipped",
+          state: null,
+          reasons: [...reasons, "child_integrated"],
+        };
+      }
+
+      const technical = this.options.observations.latestObservation(
+        projectId,
+        run.id,
+        "technical_checks",
+      );
+      const review = this.options.observations.latestObservation(
+        projectId,
+        run.id,
+        "independent_review",
+      );
+      const technicalPassed = technical?.status === "passed";
+      const reviewPassed = review?.status === "passed";
+      const openFindings = this.openBlockingFindings(run);
+
+      // A fresh independent pass for the corrected candidate resolves the earlier
+      // blocking findings; the builder's own fix claim cannot.
+      if (openFindings.length > 0 && technicalPassed && reviewPassed) {
+        this.resolveFindings(run, openFindings);
+        reasons.push("findings_resolved");
+        continue;
+      }
+
+      const failedStage =
+        (technical !== null && technical.status !== "passed") ||
+        (review !== null && review.status !== "passed");
+      if (failedStage) {
+        if (corrections >= this.maxCorrections) {
+          return {
+            projectId,
+            runId: run.id,
+            action: "failed",
+            state: null,
+            reasons: [...reasons, "correction_budget_exhausted"],
+          };
+        }
+        corrections += 1;
+        const correctionRun = await this.dispatchCorrection(
+          run,
+          openFindings.length > 0 ? openFindings : this.failingStageFindings(run),
+        );
+        if (!correctionRun) {
+          return {
+            projectId,
+            runId: run.id,
+            action: "failed",
+            state: null,
+            reasons: [...reasons, "correction_unavailable"],
+          };
+        }
+        reasons.push(`correction_dispatched:${correctionRun.id}`);
+        currentRunId = correctionRun.id;
+        continue;
+      }
+
+      if (!technicalPassed) {
+        const result = await this.runTechnicalChecks(run);
+        if (result === null) {
+          // No declared technical/contract configuration: hold truthfully instead of
+          // inventing a pass or signing the builder's own claim.
+          return {
+            projectId,
+            runId: run.id,
+            action: "failed",
+            state: null,
+            reasons: [...reasons, "technical_checks_unavailable"],
+          };
+        }
+        await this.recordRoleResult(run, "technical_checks", result, { finalizedArtifact: false });
+        reasons.push(`technical_checks:${result.status}`);
+        continue;
+      }
+      if (!reviewPassed) {
+        const result = await this.runRole(run, "independent_review");
+        await this.recordRoleResult(run, "independent_review", result, {
+          finalizedArtifact: false,
+        });
+        reasons.push(`independent_review:${result.status}`);
+        continue;
+      }
+
+      // Both child-profile stages passed for this candidate. Publish the child PR,
+      // read required remote CI and merge only when the fresh target/lineage proof
+      // succeeds. Conflicts, drift, missing/failed CI and unverified merges hold.
+      const landed = await this.options.integration.land(projectId, run.id, {
+        actor: "delivery-runtime",
+      });
+      if (landed.state === "integrated") {
+        return {
+          projectId,
+          runId: run.id,
+          action: "published",
+          state: null,
+          reasons: [...reasons, "child_integrated"],
+        };
+      }
+      return {
+        projectId,
+        runId: run.id,
+        action: "failed",
+        state: null,
+        reasons: [
+          ...reasons,
+          ...(landed.blockers.length > 0
+            ? landed.blockers.map((blocker) => blocker.code)
+            : landed.acceptance.reasons),
+        ],
+      };
+    }
+    return {
+      projectId,
+      runId: currentRunId,
+      action: "failed",
+      state: null,
+      reasons: [...reasons, "correction_budget_exhausted"],
+    };
+  }
+
+  private failingStageFindings(run: RuntimeRunRow): DeliveryRuntimeFinding[] {
+    const findings: DeliveryRuntimeFinding[] = [];
+    for (const stage of ["technical_checks", "independent_review"] as const) {
+      const observation = this.options.observations.latestObservation(
+        run.project_id,
+        run.id,
+        stage,
+      );
+      if (!observation || observation.status === "passed") continue;
+      findings.push({
+        id: `stage-${stage}`,
+        severity: "blocking",
+        acKey: null,
+        fileContext: stage,
+        summary: `${stage} did not pass (${observation.status})`,
+        actor: run.actor,
+      });
+    }
+    return findings;
   }
 
   private isStopped(run: RuntimeRunRow): boolean {
@@ -525,34 +720,103 @@ export class DeliveryRuntimeCoordinator {
     };
   }
 
+  /**
+   * Execute the repository's declared technical/contract checks against the real
+   * candidate worktree. Exit status is the only pass signal; a missing declaration
+   * returns null so the caller holds instead of inventing a pass.
+   */
+  private async runTechnicalChecks(run: RuntimeRunRow): Promise<DeliveryRuntimeRoleResult | null> {
+    this.assertInstallationReady();
+    let commands = this.options.technicalChecks;
+    if (!commands) {
+      try {
+        commands = readHarnessChecks(run.checkout_path).checks;
+      } catch {
+        return null;
+      }
+    }
+    if (commands.length === 0) return null;
+
+    const worktreePath = this.worktreePath(run);
+    const checks: DeliveryRuntimeCheck[] = [];
+    const failures: string[] = [];
+    for (const command of commands) {
+      const result = await processRun(["sh", "-c", command], worktreePath, 30_000, undefined, {
+        manageSignals: false,
+      });
+      const passed = result.exitCode === 0 && !result.timedOut;
+      const detail = passed
+        ? undefined
+        : `exit ${result.exitCode}${result.timedOut ? ", timed out" : ""}`;
+      checks.push({
+        name: "declared technical/contract check",
+        command,
+        result: passed ? "PASS" : "FAIL",
+        kind: "contract",
+        ...(detail ? { detail } : {}),
+      });
+      if (!passed) {
+        failures.push(`${command} (${detail})`);
+      }
+    }
+    const status = failures.length === 0 ? "passed" : "failed";
+    return {
+      status,
+      summary:
+        status === "passed" ? "Declared technical/contract checks passed" : failures.join("; "),
+      checks,
+      findings:
+        status === "passed"
+          ? []
+          : [
+              {
+                severity: "blocking",
+                fileContext: "technical_checks",
+                summary: `Declared technical/contract checks failed: ${failures.join("; ")}`,
+              },
+            ],
+      rawReport: { commands, checks },
+    };
+  }
+
   private async recordRoleResult(
     run: RuntimeRunRow,
-    stage: "independent_review" | "final_acceptance",
+    stage: "technical_checks" | "independent_review" | "final_acceptance",
     result: DeliveryRuntimeRoleResult,
+    options: { finalizedArtifact?: boolean } = {},
   ): Promise<DeliveryRuntimeFinding[]> {
     this.assertInstallationReady();
     const producer = this.ensureProducer(
       run,
-      stage === "independent_review" ? REVIEW_ROLE : ACCEPTANCE_ROLE,
+      stage === "independent_review"
+        ? REVIEW_ROLE
+        : stage === "technical_checks"
+          ? GATE_ROLE
+          : ACCEPTANCE_ROLE,
     );
-    const relativePath = ["runtime", run.id, `${stage}-${run.lap}-${randomUUID()}.json`].join("/");
-    const absolute = join(this.artifactRoot, run.project_id, relativePath);
-    await mkdir(dirname(absolute), { recursive: true });
-    await writeFile(
-      absolute,
-      JSON.stringify(
-        {
-          stage,
-          runId: run.id,
-          lap: run.lap,
-          candidateHeadSha: run.head_sha,
-          gateProfileVersion: GATE_PROFILE_VERSION,
-          report: result.rawReport,
-        },
-        null,
-        2,
-      ),
-    );
+    const withArtifact = options.finalizedArtifact !== false;
+    const relativePath = withArtifact
+      ? ["runtime", run.id, `${stage}-${run.lap}-${randomUUID()}.json`].join("/")
+      : null;
+    if (relativePath) {
+      const absolute = join(this.artifactRoot, run.project_id, relativePath);
+      await mkdir(dirname(absolute), { recursive: true });
+      await writeFile(
+        absolute,
+        JSON.stringify(
+          {
+            stage,
+            runId: run.id,
+            lap: run.lap,
+            candidateHeadSha: run.head_sha,
+            gateProfileVersion: GATE_PROFILE_VERSION,
+            report: result.rawReport,
+          },
+          null,
+          2,
+        ),
+      );
+    }
 
     const submission: ExecutionObservationSubmissionInput = {
       stage: stage as ExecutionStage,
@@ -565,7 +829,7 @@ export class DeliveryRuntimeCoordinator {
         kind: check.kind,
         ...(check.criterionKey ? { criterionKey: check.criterionKey } : {}),
         ...(check.detail ? { detail: check.detail } : {}),
-        artifactPath: relativePath,
+        ...(relativePath ? { artifactPath: relativePath } : {}),
       })),
       findings:
         result.status === "passed"
@@ -586,14 +850,16 @@ export class DeliveryRuntimeCoordinator {
                   workId: run.work_id,
                 },
               ],
-      artifacts: [
-        {
-          ownerType: "observation",
-          name: `${stage} report`,
-          relativePath,
-          mediaType: "application/json",
-        },
-      ],
+      artifacts: relativePath
+        ? [
+            {
+              ownerType: "observation",
+              name: `${stage} report`,
+              relativePath,
+              mediaType: "application/json",
+            },
+          ]
+        : [],
     };
     this.options.observations.recordRunObservation(run.project_id, run.id, submission);
     return (submission.findings ?? []).map((finding, index) => ({
@@ -610,7 +876,7 @@ export class DeliveryRuntimeCoordinator {
     run: RuntimeRunRow,
     role: ProducerRole,
   ): { id: string; role: ProducerRole } {
-    const suffix = role === REVIEW_ROLE ? "reviewer" : "evaluator";
+    const suffix = role === REVIEW_ROLE ? "reviewer" : role === GATE_ROLE ? "gate" : "evaluator";
     return this.options.observations.ensureTrustedProducer(run.project_id, {
       id: `runtime-${suffix}-${run.id}`,
       role,

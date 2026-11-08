@@ -24,7 +24,6 @@ import { readExecutionAuthority } from "@animus/contracts/execution-authority";
 import { evaluateExecutionAuthority } from "./authority/guard";
 import { IntakeService, handleProjectIntakeRoute } from "./intake";
 import { WorkService, handleProjectWorkRoute } from "./work";
-import { ExecutionBudgetService } from "./work/budget";
 import { PlanService, handleProjectPlanRoute } from "./plans";
 import {
   DispatchService,
@@ -56,7 +55,7 @@ import {
   handleProjectEvidenceRoute,
 } from "./evidence";
 import { PublicationService, handleProjectPublicationRoute } from "./publication";
-import { ChildIntegrationService, handleProjectIntegrationRoute } from "./integration";
+import { handleProjectIntegrationRoute } from "./integration";
 import { BackupRestoreService, handleBackupRoute, handleRestoreRoute } from "./restore";
 import { AuthorityCutoverService, handleAuthorityRoute } from "./cutover";
 import { DraftPublicationService, handleProjectDraftPublicationRoute } from "./publication";
@@ -66,6 +65,7 @@ import {
   handleProjectDeliveryRoute,
 } from "./delivery";
 import { FinalDeliveryService, handleProjectFinalRoute } from "./final";
+import { createLocalExecutionRuntime } from "./local-runtime";
 import { OperatorBoardService, handleProjectBoardRoute } from "./board";
 import { HarnessService, handleHarnessRoute } from "./harness";
 import {
@@ -324,6 +324,7 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     registryService.getDb(),
     registryService.getForge(),
     commandService.ledger,
+    observationService,
   );
 
   const publicationService = new PublicationService(
@@ -337,43 +338,20 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     planService,
   );
 
-  const integrationService = new ChildIntegrationService(registryService.getDb(), {
-    observations: observationService,
-    publication: publicationService,
-    forge: registryService.getForge(),
-    gitRunner: options?.dispatch?.gitRunner,
-  });
-
-  const deliveryService = new DeliveryGateService(registryService.getDb(), {
-    observations: evidenceService.observations,
-    publication: publicationService,
-    forge: registryService.getForge(),
-  });
-
-  const finalRuntimeRef: { current: DeliveryRuntimeCoordinator | null } = { current: null };
-  const finalService = new FinalDeliveryService(registryService.getDb(), {
+  const localRuntime = createLocalExecutionRuntime({
+    db: registryService.getDb(),
     plans: planService,
     dispatch: dispatchService,
-    observations: evidenceService.observations,
+    forge: registryService.getForge(),
+    observations: observationService,
     publication: publicationService,
-    gate: deliveryService,
-    budget: new ExecutionBudgetService(registryService.getDb()),
-    runtime: () => finalRuntimeRef.current!,
+    ...(options?.dispatch?.gitRunner ? { gitRunner: options.dispatch.gitRunner } : {}),
+    ...(options?.deliveryRuntime ? { deliveryRuntime: options.deliveryRuntime } : {}),
   });
-
-  const deliveryRuntime =
-    options?.deliveryRuntime ??
-    new DeliveryRuntimeCoordinator(registryService.getDb(), {
-      gate: deliveryService,
-      observations: evidenceService.observations,
-      dispatch: dispatchService,
-      budget: new ExecutionBudgetService(registryService.getDb()),
-      publication: publicationService,
-      correction: {
-        dispatch: (request) => finalService.dispatchCorrection(request),
-      },
-    });
-  finalRuntimeRef.current = deliveryRuntime;
+  const integrationService = localRuntime.integration;
+  const deliveryService = localRuntime.gate;
+  const finalService = localRuntime.final;
+  const deliveryRuntime = localRuntime.delivery;
 
   const backupService = new BackupRestoreService(db, {
     stateDir: options?.stateDir ?? resolveStateDir(),

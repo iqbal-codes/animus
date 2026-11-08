@@ -69,6 +69,14 @@ A stale succeeded candidate re-enters a new bounded builder lap when the target 
 advanced since it was built. Dependents release only after the verified inclusion is
 recorded, not from issue closure or a `MERGED` flag alone.
 
+The normal monitor tick and both local CLI entry points (`scripts/scheduler.ts` and
+the `animus loop` scheduler command) build the same execution composition. Each tick
+first resumes a succeeded run whose gate is not terminal — so a builder-only run, a
+pending required-CI read or an interrupted audit continues without a new lap — and
+then dispatches the next eligible plan member. Child, standalone and final runs all
+receive the shared delivery runtime; there is no CLI-only path that skips gate
+processing.
+
 - HTTP: `GET /projects/:id/integration`, `GET /projects/:id/integration/runs/:runId`,
   `POST /projects/:id/integration/runs/:runId/land`.
 - CLI: `factory plan integrations`, `factory plan integration <run-id>`,
@@ -158,14 +166,17 @@ schedules.
 
 `GET /api/intake` evaluates the backlog of target repository issues (default `pabriq-app` or
 `FACTORY_TARGET_REPO`):
-- **Admission rules**:
+- **Admission rules** (pre-cutover triage projection; execution admission and dependency release come from the frozen local plan and verified lineage):
   - `admitted`: issue is `OPEN`, carries canonical `ready-for-agent`, carries no blocking
-    or exclusion labels, all referenced `Depends on: #...` prerequisites are closed, and has no active loop claim.
+    or exclusion labels, has no active loop claim, and its `Depends on: #...` prerequisites are closed, merged or verified integrated for triage selection.
     Legacy `factory:*` labels convey zero authority.
   - `held`: unlabeled issues (`unlabeled_awaiting_triage`), missing `ready-for-agent`, has blocking labels
     (`needs-info`, `ready-for-human`, `needs-triage`), issue is `CLOSED`,
-    waiting on open dependency, or actively claimed.
+    waiting on a dependency with no closed/merged/integrated evidence, or actively claimed.
   - `excluded`: carries `wontfix` (overrides ready status).
+  - After local authority activation, closure alone never releases a dependent: the
+    dispatch claim requires the prerequisite merge commit to be an ancestor of the
+    fetched target lineage.
 - **Caching**: Queries are cached in-memory for 60 seconds to protect GitHub API rate limits.
   Adding `?refresh=true` or `?refresh=1` forces an immediate cache refresh.
 - **Failures**: When the `gh` CLI is unauthenticated or fails, the endpoint returns HTTP 503
