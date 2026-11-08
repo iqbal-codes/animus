@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { initializeDatabase } from "../../apps/backend/src/registry/db";
-import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
+import { seedActivatedAuthority } from "./support/activated-authority";
 
 /**
  * Real compiled Bun binary proof for #165 AC6.
@@ -247,12 +247,11 @@ describe("packaged authority runtime", () => {
     // command/integration history), then mark it active.
     const db = initializeDatabase(join(stateDir, "console.db"));
     const seeded = seedMeaningfulInstallation(db, stateDir, home);
-    writeExecutionAuthority("local", {
+    seedActivatedAuthority(db, {
       stateDir,
       cutoverId: "cutover_binary",
       inventorySha256: HASH,
       backupManifestSha256: HASH,
-      phase: "active",
     });
 
     const status = Bun.spawnSync(

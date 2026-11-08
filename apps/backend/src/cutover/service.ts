@@ -528,16 +528,12 @@ export class AuthorityCutoverService {
 
     const blockingReasons: string[] = [];
     if (marker.error) blockingReasons.push(`authority_marker_unreadable:${marker.error}`);
-    if (marker.authority === "local" && (!operation || operation.status !== "activated")) {
-      blockingReasons.push("authority_marker_without_activated_cutover");
-    }
-    if (
-      marker.authority === "local" &&
-      operation &&
-      marker.cutover_id &&
-      marker.cutover_id !== operation.id
-    ) {
-      blockingReasons.push("authority_marker_cutover_mismatch");
+    if (marker.authority === "local") {
+      if (!operation || operation.status !== "activated" || !marker.cutover_id) {
+        blockingReasons.push("authority_marker_without_activated_cutover");
+      } else if (marker.cutover_id !== operation.id) {
+        blockingReasons.push("authority_marker_cutover_mismatch");
+      }
     }
     if (marker.authority === "migrating" && !operation) {
       blockingReasons.push("authority_fenced_without_operation");
@@ -582,7 +578,8 @@ export class AuthorityCutoverService {
         ? Boolean(
             operation &&
             operation.status === "activated" &&
-            (!marker.cutover_id || marker.cutover_id === operation.id),
+            Boolean(marker.cutover_id) &&
+            marker.cutover_id === operation.id,
           )
         : !marker.error;
 

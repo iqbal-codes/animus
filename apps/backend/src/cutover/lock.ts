@@ -1,4 +1,14 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  linkSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { isPidAlive } from "@animus/contracts/paths";
 
@@ -10,14 +20,18 @@ import { isPidAlive } from "@animus/contracts/paths";
  * concurrent abort/activate/stage race produce one consistent winner instead of a
  * local marker with a legacy/aborted database row.
  *
- * The lock is a directory created atomically. Its `owner.json` records a pid and
- * a unique token. A competitor may reclaim it only when the owner pid is proven
- * dead (`ESRCH`); missing/unreadable ownership is ambiguous and fails closed for
- * operator recovery. There is no time-based steal. Within one process an async
- * queue serializes callers so the synchronous probe never deadlocks the holder.
+ * The lock is an owner-token file published with `link(2)` from a fully-formed,
+ * fsynced temp record. `link` is atomic and refuses to replace an existing path,
+ * so exactly one process wins the create and no competitor can observe a partial
+ * owner record. A competitor may reclaim it only when the owner pid is proven
+ * dead (`ESRCH`); missing/unreadable ownership is corruption and fails closed for
+ * operator recovery. A crash before the `link` leaves no lock at all (only an
+ * inert temp file), so it is safely retryable. There is no time-based steal.
+ * Within one process an async queue serializes callers so the synchronous probe
+ * never deadlocks the holder.
  */
 
-const LOCK_DIRECTORY = ".authority-cutover.lock";
+const LOCK_FILE = ".authority-cutover.lock";
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 export type CutoverLockErrorCode = "cutover_lock_busy" | "cutover_lock_ambiguous";
@@ -79,65 +93,80 @@ function readOwner(path: string): { owner: LockOwner } | { missing: true } | { a
   }
 }
 
-async function acquireFileLock(lockDir: string, timeoutMs: number): Promise<() => void> {
+function writeOwnerRecordAtomically(path: string, owner: LockOwner): void {
+  const fd = openSync(path, "wx", 0o600);
+  try {
+    writeFileSync(fd, `${JSON.stringify(owner)}\n`);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+async function acquireFileLock(lockPath: string, timeoutMs: number): Promise<() => void> {
   const ownerToken = globalThis.crypto.randomUUID();
-  const ownerPath = join(lockDir, "owner.json");
+  const owner: LockOwner = {
+    pid: process.pid,
+    ownerToken,
+    createdAt: new Date().toISOString(),
+  };
+  const tempPath = `${lockPath}.${process.pid}.${ownerToken}.tmp`;
+  writeOwnerRecordAtomically(tempPath, owner);
   const deadline = Date.now() + timeoutMs;
-  let missingOwnerReads = 0;
-  for (;;) {
-    try {
-      mkdirSync(lockDir, { mode: 0o700 });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const inspected = readOwner(ownerPath);
-      if ("owner" in inspected) {
-        if (isPidAlive(inspected.owner.pid)) {
+  try {
+    for (;;) {
+      try {
+        linkSync(tempPath, lockPath);
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        const inspected = readOwner(lockPath);
+        if ("owner" in inspected) {
+          if (isPidAlive(inspected.owner.pid)) {
+            if (Date.now() >= deadline) {
+              throw new CutoverLockError(
+                "cutover_lock_busy",
+                `Authority cutover is already running under live process ${inspected.owner.pid}; retry after it settles`,
+              );
+            }
+            await sleep(25);
+            continue;
+          }
+          // Proven dead owner (ESRCH): safe stale reclamation.
+          try {
+            unlinkSync(lockPath);
+          } catch {}
+          continue;
+        }
+        if ("missing" in inspected) {
+          // The lock vanished between the failed link and the read; retry.
           if (Date.now() >= deadline) {
             throw new CutoverLockError(
               "cutover_lock_busy",
-              `Authority cutover is already running under live process ${inspected.owner.pid}; retry after it settles`,
+              `Authority cutover lock ${lockPath} is contended; retry after it settles`,
             );
           }
-          await sleep(25);
           continue;
         }
-        // Proven dead owner (ESRCH): safe stale reclamation.
-        rmSync(lockDir, { recursive: true, force: true });
-        continue;
+        // With atomic link publication a healthy creator never exposes a partial
+        // record, so unreadable ownership is a corrupt pre-existing lock.
+        throw new CutoverLockError(
+          "cutover_lock_ambiguous",
+          `Authority cutover lock ${lockPath} has unreadable ownership (${inspected.ambiguous}); explicit operator recovery is required`,
+        );
       }
-      if ("missing" in inspected) {
-        // The creator may still be writing its owner record; give it a bounded
-        // window, then require explicit operator recovery rather than stealing.
-        missingOwnerReads += 1;
-        if (missingOwnerReads > 40) {
-          throw new CutoverLockError(
-            "cutover_lock_ambiguous",
-            `Authority cutover lock ${lockDir} has no owner identity; explicit operator recovery is required`,
-          );
-        }
-        await sleep(25);
-        continue;
-      }
-      throw new CutoverLockError(
-        "cutover_lock_ambiguous",
-        `Authority cutover lock ${lockDir} has unreadable ownership (${inspected.ambiguous}); explicit operator recovery is required`,
-      );
     }
-    const owner: LockOwner = {
-      pid: process.pid,
-      ownerToken,
-      createdAt: new Date().toISOString(),
-    };
-    writeFileSync(ownerPath, `${JSON.stringify(owner)}\n`, { mode: 0o600 });
-    return () => {
-      try {
-        const current = JSON.parse(readFileSync(ownerPath, "utf-8")) as LockOwner;
-        if (current?.ownerToken === ownerToken) {
-          rmSync(lockDir, { recursive: true, force: true });
-        }
-      } catch {}
-    };
+  } finally {
+    try {
+      unlinkSync(tempPath);
+    } catch {}
   }
+  return () => {
+    try {
+      const current = JSON.parse(readFileSync(lockPath, "utf-8")) as LockOwner;
+      if (current?.ownerToken === ownerToken) unlinkSync(lockPath);
+    } catch {}
+  };
 }
 
 export async function withCutoverLock<T>(
@@ -145,18 +174,19 @@ export async function withCutoverLock<T>(
   run: () => Promise<T> | T,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<T> {
-  const lockDir = join(stateDir, LOCK_DIRECTORY);
-  const previous = inProcessQueues.get(lockDir) ?? Promise.resolve();
+  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  const lockPath = join(stateDir, LOCK_FILE);
+  const previous = inProcessQueues.get(lockPath) ?? Promise.resolve();
   let releaseProcess!: () => void;
   const gate = new Promise<void>((resolve) => {
     releaseProcess = resolve;
   });
   const tail = previous.then(() => gate);
-  inProcessQueues.set(lockDir, tail);
+  inProcessQueues.set(lockPath, tail);
   await previous.catch(() => {});
   let releaseFile: (() => void) | undefined;
   try {
-    releaseFile = await acquireFileLock(lockDir, timeoutMs);
+    releaseFile = await acquireFileLock(lockPath, timeoutMs);
     return await run();
   } finally {
     try {
@@ -164,7 +194,7 @@ export async function withCutoverLock<T>(
     } finally {
       releaseProcess();
       void tail.finally(() => {
-        if (inProcessQueues.get(lockDir) === tail) inProcessQueues.delete(lockDir);
+        if (inProcessQueues.get(lockPath) === tail) inProcessQueues.delete(lockPath);
       });
     }
   }
@@ -172,5 +202,5 @@ export async function withCutoverLock<T>(
 
 /** True when a cutover operation currently owns the cross-process lock. */
 export function cutoverLockPresent(stateDir: string): boolean {
-  return existsSync(join(stateDir, LOCK_DIRECTORY));
+  return existsSync(join(stateDir, LOCK_FILE));
 }

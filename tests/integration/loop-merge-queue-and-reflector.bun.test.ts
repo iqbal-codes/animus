@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -23,8 +23,24 @@ import * as loopExports from "../../scripts/loop/index";
 import * as localLoopExports from "../../scripts/local-loop";
 
 const tempDirs: string[] = [];
+const ORIGINAL_ANIMUS_STATE_DIR = process.env.ANIMUS_STATE_DIR;
+let isolatedStateDir: string | null = null;
+
+// These tests drive the merge journal and installation-hold check directly. Pin
+// both to a disposable state dir so they never read or write the operator's
+// live Animus home.
+beforeEach(async () => {
+  isolatedStateDir = await mkdtemp(join(tmpdir(), "merge-reflector-state-"));
+  process.env.ANIMUS_STATE_DIR = isolatedStateDir;
+});
 
 afterEach(async () => {
+  if (ORIGINAL_ANIMUS_STATE_DIR === undefined) delete process.env.ANIMUS_STATE_DIR;
+  else process.env.ANIMUS_STATE_DIR = ORIGINAL_ANIMUS_STATE_DIR;
+  if (isolatedStateDir) {
+    await rm(isolatedStateDir, { recursive: true, force: true });
+    isolatedStateDir = null;
+  }
   for (const d of tempDirs.splice(0)) {
     await rm(d, { recursive: true, force: true });
   }

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createFactoryClient } from "@animus/client";
 import { createBackendApp, type BackendApp } from "../../apps/backend/src/main";
 import { ProjectRegistryService, SyntheticForgeAdapter } from "../../apps/backend/src/registry";
-import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
+import { seedActivatedAuthorityAt } from "./support/activated-authority";
 import { runPlanCommand } from "../../scripts/cli/commands/operations";
 
 const REPO = "owner/repo";
@@ -84,7 +84,7 @@ describe("local dispatch through backend, client and CLI", () => {
   beforeEach(async () => {
     root = mkdtempSync(join(tmpdir(), "animus-dispatch-http-"));
     process.env.ANIMUS_HOME = join(root, "animus-home");
-    writeExecutionAuthority("local");
+    seedActivatedAuthorityAt(join(root, "state"));
     checkoutPath = join(root, "checkout");
     mkdirSync(checkoutPath, { recursive: true });
     execFileSync("git", ["init", "-q", checkoutPath]);

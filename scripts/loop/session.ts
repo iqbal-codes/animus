@@ -1,21 +1,63 @@
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { git, inspectLocalLoop, findExistingWorktreeForBranch, acquireIssueLock, prepareLoopWorktree, assertCandidate as assertCandidateInWorktree, DEFAULT_PROTECTED_PATHS, readHarnessChecks } from "./worktree";
+import {
+  git,
+  inspectLocalLoop,
+  findExistingWorktreeForBranch,
+  acquireIssueLock,
+  prepareLoopWorktree,
+  assertCandidate as assertCandidateInWorktree,
+  DEFAULT_PROTECTED_PATHS,
+  readHarnessChecks,
+} from "./worktree";
 import { computeExternalBlastRadius } from "./blast-radius";
-import { extractRequiredAcIds, validateIssue, formatEscalationHandoff, annotateDiffWithLineNumbers, assembleRolePromptContext } from "./prompt-context";
+import {
+  extractRequiredAcIds,
+  validateIssue,
+  formatEscalationHandoff,
+  annotateDiffWithLineNumbers,
+  assembleRolePromptContext,
+} from "./prompt-context";
 import { processRun } from "./process";
 import { resolveRoleBudgets, RoleInterrupted } from "./deadlines";
-import { loadIssueDossier, recordLapAttempt, syncDossierFindings, shouldTriggerReflection, type IssueDossier, type LapAttemptRecord } from "./dossier";
+import {
+  loadIssueDossier,
+  recordLapAttempt,
+  syncDossierFindings,
+  shouldTriggerReflection,
+  type IssueDossier,
+  type LapAttemptRecord,
+} from "./dossier";
 import { executeTerminalReflection } from "./reflector";
 import { renderPrompt, loadPrompt } from "./prompts";
-import { extractReport, validateEvidenceCitations, setupArtifactDirectories, evaluateHostReadiness } from "./artifacts";
-import { formatBuilderComment, formatQaFailureComment, formatCiCheckComment, formatReviewComment } from "./pr-reporting";
+import {
+  extractReport,
+  validateEvidenceCitations,
+  setupArtifactDirectories,
+  evaluateHostReadiness,
+} from "./artifacts";
+import {
+  formatBuilderComment,
+  formatQaFailureComment,
+  formatCiCheckComment,
+  formatReviewComment,
+} from "./pr-reporting";
 import { executeSubticketAutoMerge, evaluateSubticketAutoMerge } from "./merge-queue";
-import { readAnimusConfig, resolveProviderForRole, resolveModelForRole, resolveEffortForRole, resolveResumeBuilderSession } from "./config";
+import {
+  readAnimusConfig,
+  resolveProviderForRole,
+  resolveModelForRole,
+  resolveEffortForRole,
+  resolveResumeBuilderSession,
+} from "./config";
 import { providerSessionExists } from "./providers";
 import { resolveVerificationProfile, getProfileInstructions } from "./profiles";
-import { resolveAllowedSkills, resolveLoopExtensions, buildCuratedAppendPrompts } from "./harness-memory";
+import {
+  resolveAllowedSkills,
+  resolveLoopExtensions,
+  buildCuratedAppendPrompts,
+} from "./harness-memory";
 import { loadScheduleConfig } from "./scheduler";
 import { LoopPublisher } from "./publisher";
 import { runBoundedRole } from "./role-runner";
@@ -77,7 +119,14 @@ async function findExistingRunForWorktree(
  */
 export interface TerminalDispositionInput {
   stage: "builder" | "ordinary_checks" | "qa" | "ci" | "reviewer";
-  outcome: "approved" | "merged" | "waiting_approval" | "sent_back" | "needs_owner" | "failed" | "interrupted";
+  outcome:
+    | "approved"
+    | "merged"
+    | "waiting_approval"
+    | "sent_back"
+    | "needs_owner"
+    | "failed"
+    | "interrupted";
   candidate?: string;
   changedFiles?: string[];
   qaReport?: QaReport;
@@ -251,7 +300,8 @@ export class LapSession {
       parsedPartOf !== null && parsedPartOf > 0 && parsedPartOf !== issue.number
         ? parsedPartOf
         : undefined;
-    const integrationBranch = partOf !== undefined ? `factory/spec-${partOf}-integration` : undefined;
+    const integrationBranch =
+      partOf !== undefined ? `factory/spec-${partOf}-integration` : undefined;
     const baseBranch = integrationBranch ?? defaultBaseBranch;
 
     let remotes: string[] = [];
@@ -560,7 +610,9 @@ export class LapSession {
       depth: profileInstructions.depth,
       profile: effectiveProfile,
       skip_app_launch: profileInstructions.skipAppLaunch ? "true" : "false",
-      checks_status: existsSync(join(this.artifactsDir, "builder-checks.log")) ? "passed" : "pending",
+      checks_status: existsSync(join(this.artifactsDir, "builder-checks.log"))
+        ? "passed"
+        : "pending",
       holdout: existsSync(join(this.root, ".factory/holdout/HOLDOUT.md"))
         ? join(this.root, ".factory/holdout/HOLDOUT.md")
         : "",
@@ -675,7 +727,11 @@ export class LapSession {
     for (let i = 0; i < this.checks.length; i++) {
       await inspectLocalLoop(this.root);
       const startedAt = new Date().toISOString();
-      const result = await processRun(["sh", "-c", this.checks[i]!], this.state.worktree, this.timeout);
+      const result = await processRun(
+        ["sh", "-c", this.checks[i]!],
+        this.state.worktree,
+        this.timeout,
+      );
       const completedAt = new Date().toISOString();
       const artifact = join(this.runDirectory, `check-${i}.json`);
       const recordPath = `command-${i}.json`;
@@ -730,7 +786,9 @@ export class LapSession {
   /**
    * Stage 2: Black-Box QA in isolated worktree.
    */
-  async executeQa(builderReport: BuilderReport): Promise<{ qaReport: QaReport; evidenceOk: string }> {
+  async executeQa(
+    builderReport: BuilderReport,
+  ): Promise<{ qaReport: QaReport; evidenceOk: string }> {
     const requiredAcIds = extractRequiredAcIds(this.issue);
     const qaWorktreeDir = join(this.runDirectory, "qa-worktree");
     let testedIntegrationHead = this.state.candidate;
@@ -903,7 +961,7 @@ export class LapSession {
     const qaPassed = Boolean((qaReport as any).passed ?? qaReport.overall === "PASS");
     const reviewPassed = Boolean(
       (reviewReport as any).passed ??
-        (reviewReport.outcome === "approved" || reviewReport.outcome === "merge"),
+      (reviewReport.outcome === "approved" || reviewReport.outcome === "merge"),
     );
 
     const readiness = evaluateHostReadiness({
@@ -946,12 +1004,25 @@ export class LapSession {
         : "sent_back";
 
     const changedFilesFinal = (
-      await git(this.state.worktree, "diff", "--name-only", "--no-renames", this.base, candidateHead)
+      await git(
+        this.state.worktree,
+        "diff",
+        "--name-only",
+        "--no-renames",
+        this.base,
+        candidateHead,
+      )
     )
       .split("\n")
       .filter(Boolean);
 
-    const diffContentFinal = await git(this.state.worktree, "diff", "--no-renames", this.base, candidateHead);
+    const diffContentFinal = await git(
+      this.state.worktree,
+      "diff",
+      "--no-renames",
+      this.base,
+      candidateHead,
+    );
 
     const autoMergeEval = evaluateSubticketAutoMerge({
       isSubticket: this.partOf !== undefined,
@@ -1023,7 +1094,14 @@ export class LapSession {
     if (!changedFiles && candidate && this.state.worktree) {
       try {
         changedFiles = (
-          await git(this.state.worktree, "diff", "--name-only", "--no-renames", this.base, candidate)
+          await git(
+            this.state.worktree,
+            "diff",
+            "--name-only",
+            "--no-renames",
+            this.base,
+            candidate,
+          )
         )
           .split("\n")
           .filter(Boolean);
@@ -1070,7 +1148,12 @@ export class LapSession {
       {
         runId: this.runId,
         timestamp: new Date().toISOString(),
-        status: finalStatus as "failed" | "merged" | "needs_owner" | "sent_back" | "waiting_approval",
+        status: finalStatus as
+          | "failed"
+          | "merged"
+          | "needs_owner"
+          | "sent_back"
+          | "waiting_approval",
         candidateHead: candidate,
         artifactsDir: this.artifactsDir,
         evidence: [...this.state.evidence],
@@ -1078,8 +1161,7 @@ export class LapSession {
         recoveries: [...this.recoveries],
         sessions: { ...this.sessions },
         changedFiles,
-        failedStage:
-          input.stage === "reviewer" && input.isApproved ? undefined : input.stage,
+        failedStage: input.stage === "reviewer" && input.isApproved ? undefined : input.stage,
         errorExcerpt: input.errorExcerpt,
         reviewFindings,
         structuredFindings: input.syncedFindings as any,
@@ -1265,7 +1347,9 @@ export class LapSession {
 
       const targetBaseTip = (await git(this.root, "rev-parse", this.base)).trim();
       const currentHead = (await git(this.state.worktree, "rev-parse", "HEAD")).trim();
-      const mergeBase = (await git(this.state.worktree, "merge-base", this.base, currentHead)).trim();
+      const mergeBase = (
+        await git(this.state.worktree, "merge-base", this.base, currentHead)
+      ).trim();
 
       this.state.identities = {
         targetBaseTip,
@@ -1361,16 +1445,18 @@ export class LapSession {
       // -------------------------------------------------------------
       // STAGE 3: CODE REVIEW (loop-review)
       // -------------------------------------------------------------
-      const reviewReport = await this.invokeRole("reviewer", this.state.candidate, { evidence_ok: evidenceOk });
+      const reviewReport = await this.invokeRole("reviewer", this.state.candidate, {
+        evidence_ok: evidenceOk,
+      });
       this.state.reviewerReport = reviewReport;
       await this.assertCandidate(this.state.candidate);
-      await Bun.write(join(this.artifactsDir, "review.json"), JSON.stringify(reviewReport, null, 2));
+      await Bun.write(
+        join(this.artifactsDir, "review.json"),
+        JSON.stringify(reviewReport, null, 2),
+      );
       const reviewerDir = join(this.runDirectory, "reviewer");
       await mkdir(reviewerDir, { recursive: true });
-      await Bun.write(
-        join(reviewerDir, "report.md"),
-        reviewReport.summary ?? "Review approved",
-      );
+      await Bun.write(join(reviewerDir, "report.md"), reviewReport.summary ?? "Review approved");
 
       let reviewEval: {
         readiness: any;
@@ -1412,6 +1498,7 @@ export class LapSession {
           db: (this.options as any).db,
           dbPath: (this.options as any).dbPath,
           projectId: (this.options as any).projectId,
+          installationStateDir: this.installationStateDir,
         });
         const sessionFinalStatus: "waiting_approval" | "needs_owner" | "sent_back" | "merged" =
           mergeRes.finalStatus === "merged"

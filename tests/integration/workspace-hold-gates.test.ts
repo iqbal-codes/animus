@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
+import { seedActivatedAuthorityAt } from "./support/activated-authority";
 import { ProjectRegistryService, SyntheticForgeAdapter } from "../../apps/backend/src/registry";
 import { CommandLedger } from "../../apps/backend/src/command/ledger";
 import { SpecCoordinatorService } from "../../apps/backend/src/coordination";
@@ -107,7 +107,7 @@ describe("restored installation hold fences every outward writer", () => {
     home = join(root, "home");
     stateDir = join(home, "state");
     process.env.ANIMUS_HOME = home;
-    writeExecutionAuthority("local");
+    seedActivatedAuthorityAt(stateDir);
     checkout = join(root, "checkout");
     mkdirSync(checkout, { recursive: true });
     git(checkout, "init", "-q", "-b", "main");

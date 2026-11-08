@@ -13,7 +13,7 @@ import { CommandLedger } from "../../apps/backend/src/command/ledger";
 import { BrakeService } from "../../apps/backend/src/command/brakes";
 import { DispatchService, type DispatchRunner } from "../../apps/backend/src/dispatch";
 import { ExecutionObservationService, EvidenceError } from "../../apps/backend/src/evidence";
-import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
+import { seedActivatedAuthority } from "./support/activated-authority";
 import type { ArtifactSubmission } from "@animus/contracts/operator";
 
 const REPO = "owner/evidence-repo";
@@ -170,8 +170,8 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
   beforeEach(async () => {
     root = mkdtempSync(join(tmpdir(), "animus-evidence-"));
     process.env.ANIMUS_HOME = join(root, "animus-home");
-    writeExecutionAuthority("local");
     db = initializeDatabase(join(root, "state", "console.db"));
+    seedActivatedAuthority(db);
     forge = new SyntheticForgeAdapter({ [REPO]: 712 });
     registry = new ProjectRegistryService(db, forge);
     checkoutPath = join(root, "checkout");

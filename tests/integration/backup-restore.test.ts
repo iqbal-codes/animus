@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
-import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
+import { seedActivatedAuthorityAt } from "./support/activated-authority";
 import {
   ProjectRegistryService,
   SyntheticForgeAdapter,
@@ -331,7 +331,7 @@ describe("workspace backup and isolated restore", () => {
     home = join(root, "animus-home");
     stateDir = join(home, "state");
     process.env.ANIMUS_HOME = home;
-    writeExecutionAuthority("local");
+    seedActivatedAuthorityAt(stateDir);
     bareOrigin = join(root, "origin.git");
     execFileSync("git", ["init", "-q", "--bare", bareOrigin]);
     forge = new SyntheticForgeAdapter({ [REPO]: 913 }, forgeOptions());

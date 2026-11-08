@@ -11,7 +11,7 @@ import {
   type SyntheticForgeOptions,
 } from "../../apps/backend/src/registry";
 import { ExecutionObservationService } from "../../apps/backend/src/evidence";
-import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
+import { seedActivatedAuthorityAt } from "./support/activated-authority";
 import { runPlanCommand } from "../../scripts/cli/commands/operations";
 
 const REPO = "owner/standalone-delivery-http";
@@ -97,7 +97,7 @@ describe("standalone delivery gate through backend HTTP, client and CLI", () => 
   beforeEach(async () => {
     root = mkdtempSync(join(tmpdir(), "animus-standalone-http-"));
     process.env.ANIMUS_HOME = join(root, "animus-home");
-    writeExecutionAuthority("local");
+    seedActivatedAuthorityAt(join(root, "state"));
     checkoutPath = join(root, "checkout");
     bareOrigin = join(root, "origin.git");
     execFileSync("git", ["init", "-q", "--bare", bareOrigin]);

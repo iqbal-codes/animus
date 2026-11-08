@@ -2,6 +2,7 @@ import {
   closeSync,
   existsSync,
   fsyncSync,
+  linkSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -231,14 +232,33 @@ function readLockOwner(
 }
 
 /**
+ * Writes a fully-formed owner record to a private temp file and fsyncs it. The
+ * caller then atomically links/renames it into place, so a competing reader can
+ * never observe a zero-length or partially-written record.
+ */
+function writeOwnerRecordAtomically(path: string, owner: AuthorityLockOwner): void {
+  const fd = openSync(path, "wx", 0o600);
+  try {
+    writeFileSync(fd, `${JSON.stringify(owner)}\n`);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
  * True compare-and-swap serialization for the durable marker.
  *
- * The lock is an owner-token file created with `O_EXCL` (`wx`). A competing
- * process may only reclaim it when the recorded owner pid is *proven dead*
- * (`ESRCH`); unreadable/missing ownership is treated as ambiguous and fails
- * closed for explicit operator recovery. There is intentionally no time-based
- * steal. The lock spans the entire read -> compare -> write -> rename -> fsync
- * sequence, so two writers cannot both observe the same predecessor.
+ * The lock is an owner-token file published with `link(2)` from a fully-formed,
+ * fsynced temp record. `link` is atomic and refuses to replace an existing path,
+ * so exactly one process wins the create and no reader ever sees a partial
+ * owner record. A competing process may reclaim the lock only when the recorded
+ * owner pid is *proven dead* (`ESRCH`); unreadable/missing ownership is treated as
+ * corruption and fails closed for explicit operator recovery. A crash before the
+ * `link` leaves no lock at all (only an inert temp file), so it is safely
+ * retryable. There is intentionally no time-based steal. The lock spans the entire
+ * read -> compare -> write -> rename -> fsync sequence, so two writers cannot
+ * both observe the same predecessor.
  */
 function acquireMarkerLock(lockPath: string): () => void {
   if (PROCESS_LOCKS.has(lockPath)) {
@@ -252,66 +272,56 @@ function acquireMarkerLock(lockPath: string): () => void {
     ownerToken,
     createdAt: new Date().toISOString(),
   };
-  for (;;) {
-    let fd: number | undefined;
-    try {
-      fd = openSync(lockPath, "wx", 0o600);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const inspected = readLockOwner(lockPath);
-      if ("owner" in inspected) {
-        if (isPidAlive(inspected.owner.pid)) {
-          // Non-blocking by design: the async cutover operation lock serializes
-          // stage/activate/abort across processes, so direct marker contention is
-          // a real conflict. Never spin or sleep on the event loop.
-          throw new ExecutionAuthorityConflictError(
-            `Execution authority marker is locked by live process ${inspected.owner.pid}; re-read the marker and retry`,
-          );
-        }
-        // Proven dead owner (ESRCH): safe stale reclamation.
-        try {
-          unlinkSync(lockPath);
-        } catch {}
-        continue;
-      }
-      if ("missing" in inspected) {
-        // The creator may still be writing its owner record. Re-read a few times
-        // without blocking; persistent ambiguity fails closed for operator recovery.
-        for (let attempt = 0; attempt < 5; attempt += 1) {
-          const retry = readLockOwner(lockPath);
-          if ("owner" in retry) break;
-          if ("ambiguous" in retry) {
+  const tempPath = `${lockPath}.${process.pid}.${ownerToken}.tmp`;
+  writeOwnerRecordAtomically(tempPath, owner);
+  try {
+    for (let attempt = 0; attempt < 1000; attempt += 1) {
+      try {
+        linkSync(tempPath, lockPath);
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        const inspected = readLockOwner(lockPath);
+        if ("owner" in inspected) {
+          if (isPidAlive(inspected.owner.pid)) {
+            // Non-blocking by design: the async cutover operation lock serializes
+            // stage/activate/abort across processes, so direct marker contention is
+            // a real conflict. Never spin or sleep on the event loop.
             throw new ExecutionAuthorityConflictError(
-              `Execution authority marker lock ${lockPath} has unreadable ownership (${retry.ambiguous}); operation recovery is required`,
+              `Execution authority marker is locked by live process ${inspected.owner.pid}; re-read the marker and retry`,
             );
           }
+          // Proven dead owner (ESRCH): safe stale reclamation.
+          try {
+            unlinkSync(lockPath);
+          } catch {}
+          continue;
         }
-        if (existsSync(lockPath) && "missing" in readLockOwner(lockPath)) {
-          throw new ExecutionAuthorityConflictError(
-            `Execution authority marker lock ${lockPath} has no owner identity; operation recovery is required`,
-          );
+        if ("missing" in inspected) {
+          // The lock disappeared between the failed link and the read; retry.
+          continue;
         }
-        continue;
+        // With atomic link publication a healthy creator can never expose a
+        // partial record, so unreadable ownership means a corrupt pre-existing
+        // lock. Never steal it; require explicit operator recovery.
+        throw new ExecutionAuthorityConflictError(
+          `Execution authority marker lock ${lockPath} has unreadable ownership (${inspected.ambiguous}); operation recovery is required`,
+        );
       }
-      throw new ExecutionAuthorityConflictError(
-        `Execution authority marker lock ${lockPath} has unreadable ownership (${inspected.ambiguous}); operation recovery is required`,
-      );
     }
+  } finally {
     try {
-      writeFileSync(fd, `${JSON.stringify(owner)}\n`);
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    PROCESS_LOCKS.add(lockPath);
-    return () => {
-      PROCESS_LOCKS.delete(lockPath);
-      try {
-        const current = JSON.parse(readFileSync(lockPath, "utf-8")) as AuthorityLockOwner;
-        if (current?.ownerToken === ownerToken) unlinkSync(lockPath);
-      } catch {}
-    };
+      unlinkSync(tempPath);
+    } catch {}
   }
+  PROCESS_LOCKS.add(lockPath);
+  return () => {
+    PROCESS_LOCKS.delete(lockPath);
+    try {
+      const current = JSON.parse(readFileSync(lockPath, "utf-8")) as AuthorityLockOwner;
+      if (current?.ownerToken === ownerToken) unlinkSync(lockPath);
+    } catch {}
+  };
 }
 
 /**

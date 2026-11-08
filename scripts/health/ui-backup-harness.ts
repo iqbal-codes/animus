@@ -10,14 +10,14 @@ import { CommandLedger } from "../../apps/backend/src/command/ledger";
 import { BrakeService } from "../../apps/backend/src/command/brakes";
 import { DispatchService } from "../../apps/backend/src/dispatch";
 import { ExecutionObservationService } from "../../apps/backend/src/evidence";
-import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
+import { seedActivatedAuthorityAt } from "../../tests/integration/support/activated-authority";
 
 // Manual UI/persistence verification for workspace backup/restore. The harness
 // uses real SQLite, real files and a local bare git origin; it never touches a
 // live Animus home outside its temporary root.
 const root = mkdtempSync(join(tmpdir(), "animus-backup-ui-"));
 process.env.ANIMUS_HOME = root;
-writeExecutionAuthority("local");
+seedActivatedAuthorityAt(join(root, "state"));
 const checkout = join(root, "checkout");
 mkdirSync(checkout);
 const bareOrigin = join(root, "origin.git");

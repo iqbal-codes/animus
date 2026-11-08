@@ -18,19 +18,30 @@ written with `writeExecutionAuthority` (`packages/contracts/src/execution-author
 
 Writes are fsynced to a temporary file, atomically renamed, and the directory is
 fsynced. A rename alone is not a compare-and-swap: every write holds an
-`O_EXCL` owner-token lock (`.execution-authority.lock`) across the whole
-read -> compare -> write -> rename -> fsync sequence. A competitor may reclaim a
-stale lock only when the recorded pid is proven dead (`ESRCH`); missing or
-unreadable ownership is ambiguous and fails closed for operator recovery. There
-is no time-based steal. `expected` therefore behaves as a true cross-process
-compare-and-swap, so two processes cannot both observe the same predecessor.
-A malformed marker reads as `legacy` with an `error` surfaced by
+owner-token lock (`.execution-authority.lock`) across the whole
+read -> compare -> write -> rename -> fsync sequence. The lock owner record is
+written to a private, fsynced temp file and published with `link(2)`, which is
+atomic and refuses to replace an existing path. Exactly one process therefore
+wins the create, and no competitor can ever observe a zero-length or partial
+owner record. A competitor may reclaim a lock only when the recorded pid is
+proven dead (`ESRCH`; `EPERM` counts as alive); missing or unreadable ownership
+is corruption and fails closed for explicit operator recovery. There is no
+time-based steal. A crash before the `link` leaves no lock (only an inert temp
+file), so it is safely retryable. `expected` therefore behaves as a true
+cross-process compare-and-swap, so two processes cannot both observe the same
+predecessor. A malformed marker reads as `legacy` with an `error` surfaced by
 `animus authority status`; it never activates silently.
 
-All consumers read this marker. External writers also require the authority to be
-*settled*: `legacy` (before cutover) or a `local` marker backed by an `activated`
-cutover row. A `migrating` fence, an unreadable marker, or a `local` marker with a
-staged/activating operation stays fenced.
+All consumers read this marker. External writers and local dispatchers also
+require the authority to be *settled*: `legacy` (before cutover) or a `local`
+marker whose `cutover_id` names the single `activated` cutover row in the same
+database. There is no raw-marker bootstrap path: a `migrating` fence, an
+unreadable marker, a local marker without a `cutover_id`, a missing
+`authority_cutover_operations` table or zero rows, a staged/activating row, or a
+`cutover_id` that does not match the activated row all fail closed. Local
+dispatch re-checks this DB-verified decision both before work and inside the
+serialized claim transaction, so a marker written without the matching operation
+can never start a runner, lease or tool.
 
 | Consumer | Legacy | Migrating | Local |
 | --- | --- | --- | --- |

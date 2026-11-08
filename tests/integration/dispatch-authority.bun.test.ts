@@ -9,6 +9,7 @@ import {
   readExecutionAuthority,
   writeExecutionAuthority,
 } from "@animus/contracts/execution-authority";
+import { seedActivatedAuthorityAt } from "./support/activated-authority";
 import { loadMonitorRuntime } from "../../apps/backend/src/monitor/runtime";
 import { runLoopCliCommand, runSchedulerCliCommand } from "../../scripts/cli/commands/loop";
 import { runLapCommand } from "../../scripts/cli/commands/engine";
@@ -148,8 +149,58 @@ describe("dispatch execution authority cutover gate", () => {
     expect(runs.count).toBe(0);
   });
 
+  test("a raw local marker without an activated cutover row cannot dispatch", async () => {
+    addIssue(606);
+    await buildApp();
+    // Tamper-equivalent state: the marker says local but no DB operation proves it.
+    writeExecutionAuthority("local", {
+      stateDir: join(root, "animus-home", "state"),
+      cutoverId: "cutover_raw",
+    });
+    const plan = await importPlan(606);
+
+    const response = await app.fetch(
+      new Request(`http://127.0.0.1/api/v1/projects/${projectId}/dispatch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan_id: plan.id }),
+      }),
+    );
+    expect(response.status).toBe(409);
+    expect(((await response.json()) as { error: string }).error).toBe("authority_not_activated");
+    const runs = app.db.prepare("SELECT COUNT(*) AS count FROM dispatch_runs").get() as {
+      count: number;
+    };
+    expect(runs.count).toBe(0);
+  });
+
+  test("local dispatch is allowed only after the public stage and activate seam", async () => {
+    addIssue(607);
+    await buildApp();
+    const staged = await app.authority.stage({ actor: "operator" });
+    await app.authority.activate({
+      actor: "operator",
+      cutoverId: staged.operation.id,
+      inventorySha256: staged.operation.inventorySha256!,
+      backupManifestSha256: staged.operation.backupManifestSha256!,
+    });
+    expect(readExecutionAuthority().authority).toBe("local");
+    const plan = await importPlan(607);
+
+    const response = await app.fetch(
+      new Request(`http://127.0.0.1/api/v1/projects/${projectId}/dispatch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan_id: plan.id }),
+      }),
+    );
+    expect(response.status).toBe(201);
+    const run = (await response.json()) as { state: string };
+    expect(run.state).toBe("succeeded");
+  });
+
   test("production monitor dispatches the frozen local manifest without touching GitHub backlog or legacy launch", async () => {
-    writeExecutionAuthority("local");
+    seedActivatedAuthorityAt(join(root, "animus-home", "state"));
     addIssue(601);
 
     const runtime = await loadMonitorRuntime({ forge });
@@ -206,7 +257,7 @@ describe("dispatch execution authority cutover gate", () => {
   });
 
   test("animus scheduler dispatches locally without resolving a GitHub repository", async () => {
-    writeExecutionAuthority("local");
+    seedActivatedAuthorityAt(join(root, "animus-home", "state"));
     addIssue(602);
     await buildApp();
 
@@ -254,7 +305,7 @@ describe("dispatch execution authority cutover gate", () => {
   });
 
   test("local authority refuses every legacy direct launch before forge or process access", async () => {
-    writeExecutionAuthority("local");
+    seedActivatedAuthorityAt(join(root, "animus-home", "state"));
     const originalSpawn = Bun.spawnSync;
     const originalError = console.error;
     const originalLog = console.log;
@@ -299,7 +350,7 @@ describe("dispatch execution authority cutover gate", () => {
   });
 
   test("the standalone loop entry refuses local authority before invoking gh", () => {
-    writeExecutionAuthority("local");
+    seedActivatedAuthorityAt(join(root, "animus-home", "state"));
     const entry = join(import.meta.dir, "../../scripts/loop.ts");
     const result = Bun.spawnSync([process.execPath, entry, "--issue", "999", "--dry-run"], {
       env: { ...process.env, PATH: "/nonexistent" },
@@ -311,7 +362,7 @@ describe("dispatch execution authority cutover gate", () => {
   });
 
   test("the real default engine runs a bounded builder on the frozen contract and records a verified SHA", async () => {
-    writeExecutionAuthority("local");
+    seedActivatedAuthorityAt(join(root, "animus-home", "state"));
     addIssue(603);
     const prompts: string[] = [];
     app = await createBackendApp({
@@ -365,7 +416,7 @@ describe("dispatch execution authority cutover gate", () => {
   });
 
   test("legacy live-forge coordination dispatch is refused after local activation", async () => {
-    writeExecutionAuthority("local");
+    seedActivatedAuthorityAt(join(root, "animus-home", "state"));
     addIssue(605);
     await buildApp();
     let forgeReads = 0;
@@ -388,7 +439,7 @@ describe("dispatch execution authority cutover gate", () => {
   });
 
   test("the default engine refuses success without a committed candidate", async () => {
-    writeExecutionAuthority("local");
+    seedActivatedAuthorityAt(join(root, "animus-home", "state"));
     addIssue(604);
     app = await createBackendApp({
       stateDir: join(root, "animus-home", "state"),

@@ -7,7 +7,7 @@ import { createFactoryClient } from "@animus/client";
 import { createBackendApp, type BackendApp } from "../../apps/backend/src/main";
 import { ExecutionObservationService } from "../../apps/backend/src/evidence";
 import { ProjectRegistryService, SyntheticForgeAdapter } from "../../apps/backend/src/registry";
-import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
+import { seedActivatedAuthorityAt } from "./support/activated-authority";
 import { runPlanCommand } from "../../scripts/cli/commands/operations";
 
 const REPO = "owner/evidence-http";
@@ -83,7 +83,7 @@ describe("candidate-bound evidence through backend HTTP, client and CLI", () => 
   beforeEach(async () => {
     root = mkdtempSync(join(tmpdir(), "animus-evidence-http-"));
     process.env.ANIMUS_HOME = join(root, "animus-home");
-    writeExecutionAuthority("local");
+    seedActivatedAuthorityAt(join(root, "state"));
     checkoutPath = join(root, "checkout");
     mkdirSync(checkoutPath, { recursive: true });
     execFileSync("git", ["init", "-q", checkoutPath]);

@@ -20,14 +20,14 @@ import { DeliveryGateService, DeliveryRuntimeCoordinator } from "../../apps/back
 import { ChildIntegrationService } from "../../apps/backend/src/integration";
 import { FinalDeliveryService } from "../../apps/backend/src/final";
 import type { AgentTransport } from "../../scripts/loop/types";
-import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
+import { seedActivatedAuthorityAt } from "../../tests/integration/support/activated-authority";
 
 // Manual UI verification harness for final-spec delivery. It seeds a real kernel
 // database (temp SQLite, git worktrees and bare origin) with an offline forge and
 // model transport, then serves the final-source web build. No fixture mode.
 const root = mkdtempSync(join(tmpdir(), "animus-final-ui-"));
 process.env.ANIMUS_HOME = join(root, "home");
-writeExecutionAuthority("local");
+seedActivatedAuthorityAt(join(root, "state"));
 const artifactRoot = join(root, "home", "state", "artifacts");
 const db = initializeDatabase(join(root, "state", "console.db"));
 const checkout = join(root, "checkout");

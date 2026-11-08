@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
+import { seedActivatedAuthorityAt } from "./support/activated-authority";
 import {
   InstallationHeldError,
   InstallationHoldUnavailableError,
@@ -89,7 +89,7 @@ describe("native launch wrappers are fenced by the real installation hold", () =
     delete process.env.ANIMUS_STATE_DIR;
     delete process.env.FACTORY_STATE_DIR;
     process.env.ANIMUS_HOME = home;
-    writeExecutionAuthority("local");
+    seedActivatedAuthorityAt(stateDir);
     checkout = createCheckout(root);
     holdDatabase(stateDir);
   });

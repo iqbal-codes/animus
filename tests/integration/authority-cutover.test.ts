@@ -22,6 +22,7 @@ import {
   writeExecutionAuthority,
 } from "@animus/contracts/execution-authority";
 import { readInstallationHold } from "@animus/contracts/installation-hold";
+import { seedActivatedAuthority } from "./support/activated-authority";
 import type { AgentTransport } from "../../scripts/loop/types";
 
 const REPO = "owner/cutover-repo";
@@ -733,13 +734,14 @@ describe("authority cutover (#165)", () => {
     await buildApp();
     addIssue(702);
     const plan = await importPlan(702);
+    // Seed a genuinely activated authority so the real DB-verified dispatch path
+    // can create the pre-cutover run. It is reset to legacy below to represent an
+    // installation that already owns that run before the cutover is staged.
+    const seededAuthority = seedActivatedAuthority(app.db, { stateDir });
     const dispatch = new DispatchService(app.db, {
       plans: new PlanService(app.db, forge),
       ledger: new CommandLedger(app.db),
       brakes: new BrakeService(app.db),
-      // Fixture-only override: the run and evidence exist as legacy data before
-      // the cutover marker is staged. Production dispatch still reads the marker.
-      authority: () => "local",
       runner: async (context) => {
         writeFileSync(join(context.worktree_path, "evidence.txt"), "verified\n");
         git(context.worktree_path, "add", "evidence.txt");
@@ -784,6 +786,13 @@ describe("authority cutover (#165)", () => {
         },
       ],
     });
+
+    // Return the installation to pre-cutover legacy control: the run/evidence
+    // are real legacy data that the cutover must inventory and preserve.
+    app.db
+      .prepare("DELETE FROM authority_cutover_operations WHERE id = ?")
+      .run(seededAuthority.cutoverId);
+    writeExecutionAuthority("legacy", { stateDir, expected: "local", phase: null });
 
     const staged = await stage();
     expect(staged.response.status).toBe(201);

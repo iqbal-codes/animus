@@ -26,7 +26,7 @@ import { ChildIntegrationService } from "../../apps/backend/src/integration";
 import { FinalDeliveryService, handleProjectFinalRoute } from "../../apps/backend/src/final";
 import type { ForgePullRequest } from "../../apps/backend/src/registry/forge";
 import type { AgentTransport } from "../../scripts/loop/types";
-import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
+import { seedActivatedAuthority } from "./support/activated-authority";
 
 const REPO = "owner/final-delivery";
 const ORIGINAL_ANIMUS_HOME = process.env.ANIMUS_HOME;
@@ -354,8 +354,8 @@ describe("final-spec delivery coordination", () => {
     root = mkdtempSync(join(tmpdir(), "animus-final-delivery-"));
     process.env.ANIMUS_HOME = join(root, "animus-home");
     artifactRoot = join(root, "animus-home", "state", "artifacts");
-    writeExecutionAuthority("local");
     db = initializeDatabase(join(root, "state", "console.db"));
+    seedActivatedAuthority(db);
     bareOrigin = join(root, "origin.git");
     execFileSync("git", ["init", "-q", "--bare", bareOrigin]);
     checkoutPath = join(root, "checkout");

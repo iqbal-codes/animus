@@ -24,7 +24,7 @@ import { PublicationService } from "../../apps/backend/src/publication";
 import { DeliveryGateService, DeliveryRuntimeCoordinator } from "../../apps/backend/src/delivery";
 import { FinalDeliveryService } from "../../apps/backend/src/final";
 import type { AgentTransport } from "../../scripts/loop/types";
-import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
+import { seedActivatedAuthority } from "./support/activated-authority";
 
 const REPO = "owner/standalone-runtime";
 const ORIGINAL_ANIMUS_HOME = process.env.ANIMUS_HOME;
@@ -207,8 +207,8 @@ describe("standalone delivery runtime producer", () => {
     root = mkdtempSync(join(tmpdir(), "animus-standalone-runtime-"));
     process.env.ANIMUS_HOME = join(root, "animus-home");
     artifactRoot = join(root, "animus-home", "state", "artifacts");
-    writeExecutionAuthority("local");
     db = initializeDatabase(join(root, "state", "console.db"));
+    seedActivatedAuthority(db);
     bareOrigin = join(root, "origin.git");
     execFileSync("git", ["init", "-q", "--bare", bareOrigin]);
     forge = new SyntheticForgeAdapter({ [REPO]: 159 }, forgeOptions());

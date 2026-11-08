@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createFactoryClient } from "@animus/client";
 import { createBackendApp, type BackendApp } from "../../apps/backend/src/main";
 import { ProjectRegistryService, SyntheticForgeAdapter } from "../../apps/backend/src/registry";
-import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
+import { seedActivatedAuthorityAt } from "./support/activated-authority";
 import { runPlanCommand } from "../../scripts/cli/commands/operations";
 
 const REPO = "owner/publication-http";
@@ -92,7 +92,7 @@ describe("publication audit through backend HTTP, client and CLI", () => {
   beforeEach(async () => {
     root = mkdtempSync(join(tmpdir(), "animus-publication-http-"));
     process.env.ANIMUS_HOME = join(root, "animus-home");
-    writeExecutionAuthority("local");
+    seedActivatedAuthorityAt(join(root, "state"));
     checkoutPath = join(root, "checkout");
     bareOrigin = join(root, "origin.git");
     execFileSync("git", ["init", "-q", "--bare", bareOrigin]);

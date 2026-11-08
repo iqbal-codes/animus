@@ -47,11 +47,9 @@ import {
   writeWorkerOwner,
   type DispatchWorkerOwner,
 } from "./ownership";
-import {
-  readExecutionAuthority,
-  type ExecutionAuthority,
-} from "@animus/contracts/execution-authority";
+import { ExecutionAuthorityGateError } from "@animus/contracts/execution-authority";
 import { assertInstallationNotHeld } from "@animus/contracts/installation-hold";
+import { assertLocalDispatchAllowed } from "../authority/guard";
 import { ExecutionObservationService } from "../evidence/observations";
 import {
   BudgetGrantConflictError,
@@ -187,7 +185,6 @@ export interface DispatchServiceOptions {
   schedule?: (checkoutPath: string) => { parallel: number; max_laps: number };
   legacyActiveLaps?: (checkoutPath: string) => number;
   gitRunner?: (cmd: string[], options: { cwd: string }) => string;
-  authority?: () => ExecutionAuthority;
   engine?: DispatchEngineOptions;
   observations?: ExecutionObservationService;
   budget?: ExecutionBudgetService;
@@ -329,7 +326,6 @@ export class DispatchService {
   private readonly schedule: (checkoutPath: string) => { parallel: number; max_laps: number };
   private readonly legacyActiveLaps: (checkoutPath: string) => number;
   private readonly gitRunner: (cmd: string[], options: { cwd: string }) => string;
-  private readonly authority: () => ExecutionAuthority;
   private readonly observations: ExecutionObservationService;
   private readonly budget: ExecutionBudgetService;
   private readonly terminate: DispatchTerminator;
@@ -352,7 +348,6 @@ export class DispatchService {
       options.legacyActiveLaps ??
       ((checkoutPath) => countActiveLaps(resolveProjectWorkspace(checkoutPath).runsDir));
     this.gitRunner = options.gitRunner ?? defaultGitRunner;
-    this.authority = options.authority ?? (() => readExecutionAuthority().authority);
     this.observations = options.observations ?? new ExecutionObservationService(db);
     this.budget = options.budget ?? new ExecutionBudgetService(db);
     this.terminate = options.terminate ?? defaultTerminate;
@@ -1680,13 +1675,30 @@ export class DispatchService {
   }
 
   private assertAuthority(): void {
-    if (this.authority() !== "local") {
-      throw new DispatchError(
-        "authority_not_activated",
-        "Local execution authority is not activated; complete the validated #165 cutover before dispatching",
-      );
-    }
+    // A restored installation hold is the stronger fence: it must be reported even
+    // when the restored target's authority marker is missing or inconsistent, so
+    // an operator reconciles it instead of mistaking a downgrade for legacy.
     this.assertInstallationReady();
+    this.assertAuthorityVerified();
+  }
+
+  /**
+   * A marker string alone never authorizes dispatch. The database must prove the
+   * exact `activated` cutover operation the marker claims, so a raw `local`
+   * write, a staged/activating row or a marker from another database fails closed.
+   */
+  private assertAuthorityVerified(): void {
+    try {
+      assertLocalDispatchAllowed(this.db);
+    } catch (error) {
+      if (error instanceof ExecutionAuthorityGateError) {
+        throw new DispatchError(
+          "authority_not_activated",
+          "Local execution authority is not activated; complete the validated #165 cutover before dispatching",
+        );
+      }
+      throw error;
+    }
   }
 
   private assertInstallationReady(): void {
@@ -2421,8 +2433,11 @@ export class DispatchService {
 
     // A restored installation must not allocate work until an operator records
     // explicit ownership/external reconciliation. Re-checked inside the serialized
-    // claim transaction so a concurrent restore hold cannot be raced.
+    // claim transaction so a concurrent restore hold cannot be raced. The
+    // DB-verified authority is re-checked here too so a marker revocation between
+    // pre-check and claim cannot allocate a lease or start a tool.
     this.assertInstallationReady();
+    this.assertAuthorityVerified();
 
     let currentPlan: PlanRecord;
     try {

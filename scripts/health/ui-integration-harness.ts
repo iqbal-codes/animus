@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createBackendApp } from "../../apps/backend/src/main";
 import { ProjectRegistryService, SyntheticForgeAdapter } from "../../apps/backend/src/registry";
-import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
+import { seedActivatedAuthorityAt } from "../../tests/integration/support/activated-authority";
 import { ExecutionObservationService } from "../../apps/backend/src/evidence";
 
 // Manual UI verification harness for child integration. It builds the same
@@ -13,7 +13,7 @@ import { ExecutionObservationService } from "../../apps/backend/src/evidence";
 // and exposes it to a real browser; no production fixture mode is involved.
 const root = mkdtempSync(join(tmpdir(), "animus-integration-ui-"));
 process.env.ANIMUS_HOME = join(root, "home");
-writeExecutionAuthority("local");
+seedActivatedAuthorityAt(join(root, "state"));
 const checkout = join(root, "checkout");
 mkdirSync(checkout);
 const bareOrigin = join(root, "origin.git");

@@ -17,7 +17,7 @@ import {
   SyntheticForgeAdapter,
 } from "../../apps/backend/src/registry";
 import { PlanService } from "../../apps/backend/src/plans";
-import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
+import { seedActivatedAuthority } from "./support/activated-authority";
 import { CommandLedger } from "../../apps/backend/src/command/ledger";
 import { BrakeService } from "../../apps/backend/src/command/brakes";
 import {
@@ -123,9 +123,9 @@ describe("local dispatch ownership and frozen execution", () => {
   beforeEach(async () => {
     root = mkdtempSync(join(tmpdir(), "animus-dispatch-"));
     process.env.ANIMUS_HOME = join(root, "animus-home");
-    writeExecutionAuthority("local");
     dbPath = join(root, "state", "console.db");
     db = initializeDatabase(dbPath);
+    seedActivatedAuthority(db);
     forge = new SyntheticForgeAdapter({ [REPO]: 991 });
     registry = new ProjectRegistryService(db, forge);
     checkoutPath = join(root, "checkout");

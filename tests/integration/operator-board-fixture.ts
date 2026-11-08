@@ -29,7 +29,7 @@ import {
   type OperatorBoard,
   type OperatorWorkDetail,
 } from "@animus/contracts/operator";
-import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
+import { seedActivatedAuthority } from "./support/activated-authority";
 
 export const REPO = "owner/operator-board";
 export const ORIGINAL_ANIMUS_HOME = process.env.ANIMUS_HOME;
@@ -163,9 +163,9 @@ function offlineTransport(): AgentTransport {
 export async function createFixture(): Promise<Fixture> {
   const root = mkdtempSync(join(tmpdir(), "animus-operator-board-"));
   process.env.ANIMUS_HOME = join(root, "animus-home");
-  writeExecutionAuthority("local");
   const artifactRoot = join(root, "animus-home", "state", "artifacts");
   const db = initializeDatabase(join(root, "state", "console.db"));
+  seedActivatedAuthority(db);
   const bareOrigin = join(root, "origin.git");
   execFileSync("git", ["init", "-q", "--bare", bareOrigin]);
   const checkout = join(root, "checkout");

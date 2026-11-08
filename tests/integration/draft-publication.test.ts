@@ -13,7 +13,7 @@ import { DraftPublicationService } from "../../apps/backend/src/publication";
 import { ProjectRegistryService, SyntheticForgeAdapter } from "../../apps/backend/src/registry";
 import { runDraftCommand } from "../../scripts/cli/commands/operations";
 import { settleRestoreRelease, verifyRestoreRelease } from "../../apps/backend/src/restore/release";
-import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
+import { seedActivatedAuthority } from "./support/activated-authority";
 
 const REPO = "owner/repo";
 
@@ -418,19 +418,7 @@ describe("approved draft publication into GitHub issues and admission", () => {
 
   test("AC5: raw intake refines, approves, publishes and admits under local authority without later issue edits mutating it", async () => {
     const stateDir = join(fixture.root, "state");
-    const now = Date.now();
-    fixture.app.db
-      .prepare(
-        `INSERT INTO authority_cutover_operations
-           (id, status, actor, report, created_at, updated_at, activated_at)
-         VALUES ('cutover_ac5', 'activated', 'operator', '{}', ?, ?, ?)`,
-      )
-      .run(now, now, now);
-    writeExecutionAuthority("local", {
-      stateDir,
-      cutoverId: "cutover_ac5",
-      phase: "active",
-    });
+    seedActivatedAuthority(fixture.app.db, { stateDir, cutoverId: "cutover_ac5" });
 
     const scoped = fixture.client.forProject(fixture.projectId);
     const draft = await approveDraft(22);

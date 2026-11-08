@@ -52,6 +52,13 @@ export function evaluateExecutionAuthority(
     return { marker, settled: false, reason: "authority_cutover_in_progress" };
   }
   if (marker.authority === "local") {
+    // A `local` marker authorizes nothing on its own. It must be backed by the
+    // exact `activated` operation it claims, in this database. A missing table,
+    // zero rows, an unfinished operation or a different cutover id all fail
+    // closed: there is no raw-marker bootstrap path.
+    if (!marker.cutover_id) {
+      return { marker, settled: false, reason: "authority_marker_without_activated_cutover" };
+    }
     let rows: Array<{ id: string; status: string }>;
     try {
       rows = db.prepare("SELECT id, status FROM authority_cutover_operations").all() as Array<{
@@ -61,15 +68,11 @@ export function evaluateExecutionAuthority(
     } catch {
       return { marker, settled: false, reason: "authority_marker_without_activated_cutover" };
     }
-    // No cutover rows means this installation was marked local outside a staged
-    // operation (operator action or an embedder fixture). There is no incomplete
-    // operation row to authorize, so the marker is the only authority.
-    if (rows.length === 0) return { marker, settled: true, reason: null };
     const activated = rows.find((row) => row.status === "activated");
     if (!activated) {
       return { marker, settled: false, reason: "authority_marker_without_activated_cutover" };
     }
-    if (marker.cutover_id && marker.cutover_id !== activated.id) {
+    if (marker.cutover_id !== activated.id) {
       return { marker, settled: false, reason: "authority_marker_cutover_mismatch" };
     }
   }

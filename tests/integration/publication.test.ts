@@ -22,7 +22,7 @@ import {
   ensurePublicationTarget,
 } from "../../apps/backend/src/publication/outbox";
 import type { CreatePullRequestReviewInput } from "../../apps/backend/src/registry/forge";
-import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
+import { seedActivatedAuthority } from "./support/activated-authority";
 
 const REPO = "owner/publication-repo";
 const ORIGINAL_ANIMUS_HOME = process.env.ANIMUS_HOME;
@@ -346,8 +346,8 @@ describe("durable PR publication and per-lap audit", () => {
   beforeEach(async () => {
     root = mkdtempSync(join(tmpdir(), "animus-publication-"));
     process.env.ANIMUS_HOME = join(root, "animus-home");
-    writeExecutionAuthority("local");
     db = initializeDatabase(join(root, "state", "console.db"));
+    seedActivatedAuthority(db);
     bareOrigin = join(root, "origin.git");
     execFileSync("git", ["init", "-q", "--bare", bareOrigin]);
     forge = new SyntheticForgeAdapter({ [REPO]: 812 }, forgeOptions());
