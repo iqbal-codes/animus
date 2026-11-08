@@ -41,16 +41,22 @@ import type { AgentTransport, RoleBudget } from "../coordination/frozen-builder"
 import {
   clearWorkerOwner,
   pidOrGroupAlive,
+  processStartIdentity,
   readWorkerOwner,
   resolveWorkerOwnerPath,
   writeWorkerOwner,
+  type DispatchWorkerOwner,
 } from "./ownership";
 import {
   readExecutionAuthority,
   type ExecutionAuthority,
 } from "@animus/contracts/execution-authority";
 import { ExecutionObservationService } from "../evidence/observations";
-import { ExecutionBudgetService, type BudgetScopeKey } from "../work/budget";
+import {
+  BudgetGrantConflictError,
+  ExecutionBudgetService,
+  type BudgetScopeKey,
+} from "../work/budget";
 import {
   allocateWorktree,
   type WorktreeAllocation,
@@ -91,6 +97,7 @@ export type DispatchErrorCode =
   | "owner_may_still_run"
   | "termination_unconfirmed"
   | "stale_owner_generation"
+  | "idempotency_conflict"
   | "run_still_active"
   | "invalid_control"
   | "invalid_submission";
@@ -281,6 +288,7 @@ function createDefaultRunner(engine: DispatchEngineOptions = {}): DispatchRunner
         writeWorkerOwner({
           run_id: context.run_id,
           owner_token: context.owner_token,
+          ownership_generation: context.ownership_generation,
           pid,
           pgid: pid,
         });
@@ -682,7 +690,12 @@ export class DispatchService {
         idempotencyKey: submission.idempotency_key ?? requestId,
         now: this.clock(),
       });
-      this.updateCommand(requestId, "succeeded");
+      this.updateCommand(
+        requestId,
+        "succeeded",
+        undefined,
+        outcome.replayed ? `idempotent_replay:${outcome.grant.commandRequestId}` : undefined,
+      );
       return {
         grant: outcome.grant,
         budget: outcome.budget,
@@ -690,6 +703,10 @@ export class DispatchService {
         commandRequestId: requestId,
       };
     } catch (error) {
+      if (error instanceof BudgetGrantConflictError) {
+        this.failCommand(requestId, "idempotency_conflict", error.message);
+        throw new DispatchError("idempotency_conflict", error.message, error.details);
+      }
       this.failCommand(
         requestId,
         "storage_failed",
@@ -934,10 +951,17 @@ export class DispatchService {
       signal,
     });
 
-    const owner = readWorkerOwner(run.id);
+    // Validate the durable claim identity before any signal. A stale, foreign,
+    // unreadable or PID-reused record is never allowed to kill an unrelated process.
+    const ownerPathExists = existsSync(resolveWorkerOwnerPath(run.id));
+    const owner = ownerPathExists ? readWorkerOwner(run.id) : null;
+    const identityFailure = this.workerIdentityFailure(run, owner, ownerPathExists);
     // Terminate only the recorded bounded-builder process group. The coordinator
     // pid may be this backend; it is fenced by reconciliation, not killed here.
-    const target = owner ? { pid: owner.pid, pgid: owner.pgid } : { pid: null, pgid: null };
+    const target =
+      identityFailure === null && owner
+        ? { pid: owner.pid, pgid: owner.pgid }
+        : { pid: null, pgid: null };
     let terminateError: string | null = null;
     try {
       if (target.pid !== null || target.pgid !== null) {
@@ -948,7 +972,12 @@ export class DispatchService {
     }
 
     const process = this.processState(run);
-    const confirmed = !process.ownerAlive && !process.workerAlive && !process.worktreeLockAlive;
+    const confirmed =
+      identityFailure === null &&
+      terminateError === null &&
+      !process.ownerAlive &&
+      !process.workerAlive &&
+      !process.worktreeLockAlive;
     const now = this.clock();
     const control = this.budget.setControl({
       projectId,
@@ -956,7 +985,11 @@ export class DispatchService {
       workId: run.work_id,
       status: "stopping",
       actor: submission.actor,
-      reason: confirmed ? "termination_requested" : "termination_unconfirmed",
+      reason: identityFailure
+        ? "termination_unverified"
+        : confirmed
+          ? "termination_requested"
+          : "termination_unconfirmed",
       commandRequestId: requestId,
       lastRunId: run.id,
       now,
@@ -966,13 +999,15 @@ export class DispatchService {
     });
     try {
       this.ledger.updateOutcome(requestId, {
-        state: confirmed && !terminateError ? "succeeded" : "unknown",
+        state: confirmed ? "succeeded" : "unknown",
         provenance: {
           source: "dispatch_control",
           timestamp: new Date(now).toISOString(),
           actor: submission.actor,
           details:
-            terminateError ?? (confirmed ? "termination_requested" : "termination_unconfirmed"),
+            identityFailure ??
+            terminateError ??
+            (confirmed ? "termination_requested" : "termination_unconfirmed"),
         },
         ...(terminateError ? { error: terminateError } : {}),
       });
@@ -982,13 +1017,15 @@ export class DispatchService {
       run: this.getRun(projectId, run.id),
       control,
       budget: this.budget.getScope(this.scopeKeyFromRun(run)),
-      confirmed: confirmed && terminateError === null,
+      confirmed,
       commandRequestId: requestId,
-      detail: terminateError
-        ? `termination_error:${terminateError}`
-        : confirmed
-          ? "termination_requested"
-          : "termination_unconfirmed",
+      detail: identityFailure
+        ? `termination_unverified:${identityFailure}`
+        : terminateError
+          ? `termination_error:${terminateError}`
+          : confirmed
+            ? "termination_requested"
+            : "termination_unconfirmed",
     };
   }
 
@@ -1008,6 +1045,9 @@ export class DispatchService {
         { run_id: run.id },
       );
     }
+    // Effects must be readable and clear before the CAS. This also captures the
+    // retained head without pretending to reattach the old builder process.
+    const observedHead = this.inspectRunEffects(run);
     const requestId = `cmd_takeover_${randomUUID()}`;
     this.beginControlCommand(requestId, submission.actor, projectId, "takeover", run, {
       reason: submission.reason ?? null,
@@ -1023,14 +1063,18 @@ export class DispatchService {
     const changed = this.db
       .prepare(
         `UPDATE dispatch_runs
-         SET ownership_generation = ?, owner_token = ?, owner_pid = ?, lease_expires_at = ?, updated_at = ?
+         SET state = 'reconciled',
+             ownership_generation = ?, owner_token = ?, owner_pid = NULL,
+             head_sha = COALESCE(?, head_sha),
+             error = 'operator_takeover_after_owner_confirmed_dead',
+             finished_at = ?, updated_at = ?
          WHERE id = ? AND project_id = ? AND ownership_generation = ? AND ${activeStateCondition()}`,
       )
       .run(
         nextGeneration,
         ownerToken,
-        this.ownerPid(),
-        now + this.leaseMs,
+        observedHead,
+        now,
         now,
         run.id,
         projectId,
@@ -1047,6 +1091,7 @@ export class DispatchService {
         `Run ${run.id} ownership changed before takeover`,
       );
     }
+    clearWorkerOwner(run.id);
     const control = this.budget.setControl({
       projectId,
       deliveryId: run.delivery_id,
@@ -1061,16 +1106,43 @@ export class DispatchService {
       stopRequestedAt: null,
       stoppedAt: null,
     });
-    this.updateCommand(requestId, "succeeded");
     const updated = this.getRun(projectId, run.id);
+    const budget = this.budget.getScope(this.scopeKeyFromRun(updated));
+    if (
+      budget &&
+      budget.status !== "exhausted" &&
+      budget.consumedAttempts >= budget.allowedAttempts
+    ) {
+      this.maybeExhaustAfterRejection(updated, "takeover_reconciled");
+    }
+    this.updateCommand(requestId, "succeeded");
     return {
       run: updated,
       control,
-      budget: this.budget.getScope(this.scopeKeyFromRun(run)),
+      budget: this.budget.getScope(this.scopeKeyFromRun(updated)),
       confirmed: true,
       commandRequestId: requestId,
-      detail: `taken_over:generation=${updated.ownership_generation}`,
+      detail: `taken_over:generation=${updated.ownership_generation};prior_run_reconciled`,
     };
+  }
+
+  private workerIdentityFailure(
+    run: PlanDispatchRun,
+    owner: DispatchWorkerOwner | null,
+    ownerPathExists: boolean,
+  ): string | null {
+    if (!ownerPathExists) return null;
+    if (!owner) return "worker_owner_record_unreadable";
+    if (owner.run_id !== run.id) return "worker_owner_run_mismatch";
+    if (owner.owner_token !== run.owner_token) return "worker_owner_token_mismatch";
+    if (owner.ownership_generation !== run.ownership_generation) {
+      return "worker_owner_generation_mismatch";
+    }
+    if (owner.process_start === null) return "worker_owner_process_identity_unreadable";
+    if (processStartIdentity(owner.pid) !== owner.process_start) {
+      return "worker_owner_process_identity_unverified";
+    }
+    return null;
   }
 
   private processState(run: PlanDispatchRun): ExecutionProcessState {
@@ -1580,7 +1652,11 @@ export class DispatchService {
       .filter((member) => this.profileMatches(plan, member))
       .sort((left, right) => left.issue_number - right.issue_number);
 
-    let dependencyBlocked: number | null = null;
+    // Shared member eligibility: an exhausted, held, stopping or stopped sibling is
+    // skipped so it cannot starve independent work in the same plan. Explicit
+    // work selection still returns its precise refusal below.
+    const deliveryId = this.deliveryIdForPlan(project.id, plan.id);
+    const skipped: DispatchError[] = [];
     let activeBlocked = false;
     for (const member of candidates) {
       if (this.hasActiveRun(project.id, member.work_id)) {
@@ -1588,6 +1664,11 @@ export class DispatchService {
         continue;
       }
       if (this.hasSucceededRun(project.id, member.work_id)) continue;
+      const skip = this.memberEligibilitySkip(project.id, plan.id, deliveryId, member);
+      if (skip) {
+        skipped.push(skip);
+        continue;
+      }
       const blocked = this.dependencyBlock(
         project,
         plan,
@@ -1596,19 +1677,19 @@ export class DispatchService {
         this.targetBranch(plan, manifest),
       );
       if (blocked !== null) {
-        dependencyBlocked = blocked;
+        skipped.push(
+          new DispatchError(
+            "dependency_pending_integration",
+            `Prerequisite #${blocked} is not verified on the frozen target`,
+            { target_issue_number: blocked },
+          ),
+        );
         continue;
       }
       return member;
     }
 
-    if (dependencyBlocked !== null) {
-      throw new DispatchError(
-        "dependency_pending_integration",
-        `Prerequisite #${dependencyBlocked} is not verified on the frozen target`,
-        { target_issue_number: dependencyBlocked },
-      );
-    }
+    if (skipped.length > 0) throw skipped[0];
     if (activeBlocked) {
       throw new DispatchError(
         "claim_conflict",
@@ -1619,6 +1700,60 @@ export class DispatchService {
       "no_dispatchable_member",
       "No executable ticket in this plan is currently eligible",
     );
+  }
+
+  private memberEligibilitySkip(
+    projectId: string,
+    planId: string,
+    deliveryId: string | null,
+    member: PlanMember,
+  ): DispatchError | null {
+    if (!deliveryId) return null;
+    const control = this.budget.getControl({
+      projectId,
+      deliveryId,
+      workId: member.work_id,
+    });
+    if (control?.status === "held") {
+      return new DispatchError("work_held", `Work ${member.work_id} is held by the operator`);
+    }
+    if (control?.status === "stopping") {
+      return new DispatchError(
+        "work_stopping",
+        `Work ${member.work_id} is still stopping; termination is not yet reconciled`,
+      );
+    }
+    if (control?.status === "stopped") {
+      return new DispatchError(
+        "work_stopped",
+        `Work ${member.work_id} was stopped; resume it before dispatching again`,
+      );
+    }
+    const scope = this.budget.getScope({
+      projectId,
+      deliveryId,
+      planId,
+      workId: member.work_id,
+      gateProfile: member.gate_profile,
+    });
+    if (
+      scope &&
+      (scope.status === "exhausted" || scope.consumedAttempts >= scope.allowedAttempts)
+    ) {
+      return new DispatchError(
+        "budget_exhausted",
+        `Ticket #${member.issue_number} exhausted its ${scope.allowedAttempts}-attempt budget; grant an explicit additional attempt`,
+        {
+          work_id: member.work_id,
+          gate_profile: member.gate_profile,
+          allowed_attempts: scope.allowedAttempts,
+          consumed_attempts: scope.consumedAttempts,
+          retained_worktree_path: scope.retainedWorktreePath,
+          retained_branch: scope.retainedBranch,
+        },
+      );
+    }
+    return null;
   }
 
   private assertExplicitMemberAvailable(projectId: string, member: PlanMember): void {
@@ -2260,13 +2395,19 @@ export class DispatchService {
       .run(error, now, now, runId);
   }
 
-  private updateCommand(requestId: string, state: "running" | "succeeded", result?: string): void {
+  private updateCommand(
+    requestId: string,
+    state: "running" | "succeeded",
+    result?: string,
+    details?: string,
+  ): void {
     try {
       this.ledger.updateOutcome(requestId, {
         state,
         provenance: {
           source: "dispatch_service",
           timestamp: new Date(this.clock()).toISOString(),
+          ...(details ? { details } : {}),
         },
         ...(result ? { result: { head_sha: result } } : {}),
       });

@@ -704,8 +704,14 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
         verifiedArtifactIds: [],
       },
     };
-    const grants: Array<{ amount: number; reason: string; actor: string }> = [];
+    const grants: Array<{
+      amount: number;
+      reason: string;
+      actor: string;
+      idempotency_key?: string;
+    }> = [];
     const controls: string[] = [];
+    let grantAttempts = 0;
     const factory = {
       projects: async () => [mockProjects[0]!],
       forProject: () => ({
@@ -717,6 +723,8 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
         dispatchRunDetail: async () => detail,
         grantDispatchBudget: async (_runId: string, submission: any) => {
           grants.push(submission);
+          grantAttempts += 1;
+          if (grantAttempts === 1) throw new Error("ambiguous network response");
           return {
             grant: { ...detail.grants[0]!, amount: submission.amount, reason: submission.reason },
             budget: {
@@ -754,6 +762,14 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
     } as any;
 
     render(<DispatchControl factory={factory} />);
+    const dispatchButton = (await screen.findByRole("button", {
+      name: "Dispatch",
+    })) as HTMLButtonElement;
+    await waitFor(() => expect(dispatchButton.disabled).toBe(true));
+    expect(dispatchButton.getAttribute("title")).toContain("exhausted");
+    // The selected run detail is loaded before the panel is opened.
+    expect(screen.queryByTestId("run-budget-run-1")).toBeNull();
+
     fireEvent.click(await screen.findByRole("button", { name: "Budget & controls" }));
     const panel = await screen.findByTestId("run-budget-run-1");
     expect(panel.textContent).toContain("Needs owner");
@@ -768,9 +784,20 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
       target: { value: "unblock after diagnosis" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Grant attempt" }));
-    await waitFor(() =>
-      expect(grants).toEqual([{ amount: 2, reason: "unblock after diagnosis", actor: "operator" }]),
-    );
+    await waitFor(() => expect(grants).toHaveLength(1));
+    expect(grants[0]).toMatchObject({
+      amount: 2,
+      reason: "unblock after diagnosis",
+      actor: "operator",
+    });
+    expect(typeof grants[0]!.idempotency_key).toBe("string");
+    await waitFor(() => expect(screen.getByText("ambiguous network response")).toBeTruthy());
+
+    // A retry after an ambiguous response reuses the same submission key.
+    fireEvent.click(screen.getByRole("button", { name: "Grant attempt" }));
+    await waitFor(() => expect(grants).toHaveLength(2));
+    expect(grants[1]!.idempotency_key).toBe(grants[0]!.idempotency_key);
+    await waitFor(() => expect(screen.getByText(/grant \+2/)).toBeTruthy());
 
     fireEvent.click(screen.getByRole("button", { name: "Hold" }));
     await waitFor(() => expect(controls).toEqual(["hold"]));

@@ -44,6 +44,18 @@ export interface BudgetGrantOutcome {
   replayed: boolean;
 }
 
+export class BudgetGrantConflictError extends Error {
+  readonly code = "idempotency_conflict";
+
+  constructor(
+    message: string,
+    public readonly details: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = "BudgetGrantConflictError";
+  }
+}
+
 export interface ControlKey {
   projectId: string;
   deliveryId: string;
@@ -216,6 +228,7 @@ export class ExecutionBudgetService {
       .prepare("SELECT * FROM execution_budget_grants WHERE project_id = ? AND idempotency_key = ?")
       .get(scope.projectId, input.idempotencyKey) as unknown as GrantRow | undefined;
     if (existing) {
+      this.assertGrantReplayMatches(existing, scope, input);
       return {
         grant: this.mapGrant(existing),
         budget: this.getScopeById(scope.projectId, existing.scope_id) ?? scope,
@@ -230,6 +243,7 @@ export class ExecutionBudgetService {
         )
         .get(scope.projectId, input.idempotencyKey) as unknown as GrantRow | undefined;
       if (replayed) {
+        this.assertGrantReplayMatches(replayed, scope, input);
         return {
           grant: this.mapGrant(replayed),
           budget: this.getScopeById(scope.projectId, replayed.scope_id) ?? scope,
@@ -297,6 +311,35 @@ export class ExecutionBudgetService {
         replayed: false,
       };
     });
+  }
+
+  private assertGrantReplayMatches(
+    existing: GrantRow,
+    scope: ExecutionBudgetStatus,
+    input: Omit<BudgetGrantInput, keyof BudgetScopeKey>,
+  ): void {
+    if (
+      existing.scope_id === scope.scopeId &&
+      existing.amount === input.amount &&
+      existing.reason === input.reason &&
+      existing.actor === input.actor
+    ) {
+      return;
+    }
+    throw new BudgetGrantConflictError(
+      "The idempotency key is already bound to a different grant payload",
+      {
+        existing_grant_id: existing.id,
+        existing_scope_id: existing.scope_id,
+        existing_amount: existing.amount,
+        existing_reason: existing.reason,
+        existing_actor: existing.actor,
+        requested_scope_id: scope.scopeId,
+        requested_amount: input.amount,
+        requested_reason: input.reason,
+        requested_actor: input.actor,
+      },
+    );
   }
 
   listGrants(projectId: string, query: { scopeId?: string; deliveryId?: string; workId?: string }) {

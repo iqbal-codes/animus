@@ -487,6 +487,31 @@ describe("local dispatch through backend, client and CLI", () => {
     const replay = (await replayResponse.json()) as { replayed: boolean };
     expect(replay.replayed).toBe(true);
 
+    // Reusing the key with a different payload is a conflict, not a silent grant.
+    const conflictResponse = await app.fetch(
+      new Request(
+        `http://127.0.0.1/api/v1/projects/${projectId}/dispatch/runs/${encodeURIComponent(runId)}/grant`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            amount: 5,
+            reason: "changed payload",
+            actor: "operator",
+            idempotency_key: "http-grant-1",
+          }),
+        },
+      ),
+    );
+    expect(conflictResponse.status).toBe(409);
+    expect(((await conflictResponse.json()) as { error: string }).error).toBe(
+      "idempotency_conflict",
+    );
+    const failedGrant = app.db
+      .prepare("SELECT state FROM commands WHERE action = 'budget_grant' AND state = 'failed'")
+      .all() as Array<{ state: string }>;
+    expect(failedGrant).toHaveLength(1);
+
     const client = createFactoryClient({
       baseUrl: "http://127.0.0.1",
       fetch: backendFetch(app),

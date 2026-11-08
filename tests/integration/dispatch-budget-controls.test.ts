@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -15,8 +15,11 @@ import { BrakeService } from "../../apps/backend/src/command/brakes";
 import {
   DispatchService,
   resolveWorkerOwnerPath,
+  runLocalDispatchTick,
   writeWorkerOwner,
   type DispatchRunner,
+  type DispatchRunnerContext,
+  type DispatchTerminator,
 } from "../../apps/backend/src/dispatch";
 import { ExecutionObservationService } from "../../apps/backend/src/evidence";
 import { ExecutionBudgetService } from "../../apps/backend/src/work/budget";
@@ -175,6 +178,31 @@ describe("bounded attempt budgets and operator controls", () => {
       success: true,
       headSha: commitInWorktree(context.worktree_path, `impl-${context.issue_number}.txt`),
     });
+  }
+
+  async function deadProcessPid(): Promise<number> {
+    const { spawn } = await import("node:child_process");
+    const child = spawn(process.execPath, ["-e", "0"], { stdio: "ignore" });
+    const pid = child.pid!;
+    await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    return pid;
+  }
+
+  function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((next) => {
+      resolve = next;
+    });
+    return { promise, resolve };
+  }
+
+  async function waitForRunningRun(service: DispatchService, planId: string): Promise<void> {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const run = service.listRuns(projectId, { plan_id: planId })[0];
+      if (run?.state === "running") return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error("dispatch did not reach the running state");
   }
 
   function register(id: string, role: "automated_gate" | "peer_reviewer") {
@@ -523,9 +551,13 @@ describe("bounded attempt budgets and operator controls", () => {
     const writerPid = writer.pid!;
     const writerExited = new Promise<void>((resolve) => writer.once("exit", () => resolve()));
     try {
+      db.prepare(
+        "UPDATE dispatch_runs SET state = 'running', owner_pid = ?, owner_token = 'live-token' WHERE id = ?",
+      ).run(writerPid, failedRun.id);
       writeWorkerOwner({
         run_id: failedRun.id,
-        owner_token: failedRun.owner_token,
+        owner_token: "live-token",
+        ownership_generation: failedRun.ownership_generation,
         pid: writerPid,
         pgid: writerPid,
       });
@@ -533,9 +565,6 @@ describe("bounded attempt budgets and operator controls", () => {
         join(failedRun.worktree_path, ".worktree.lock"),
         JSON.stringify({ runId: failedRun.id, branch: failedRun.branch, pid: writerPid }),
       );
-      db.prepare(
-        "UPDATE dispatch_runs SET state = 'running', owner_pid = ?, owner_token = 'live-token' WHERE id = ?",
-      ).run(writerPid, failedRun.id);
 
       const restarted = makeService({ terminate: () => {}, processAlive: () => false });
       const stopped = restarted.applyControl(projectId, firstRunId, {
@@ -579,36 +608,457 @@ describe("bounded attempt budgets and operator controls", () => {
     }
   });
 
-  test("AC4: takeover transfers ownership only after the previous owner is confirmed dead", async () => {
-    addIssue(1000);
-    const plan = await plans.importPlan(projectId, { issue_number: 1000, kind: "standalone" });
+  test("B1: the scheduler skips an exhausted lowest-issue sibling and launches independent work", async () => {
+    addIssue(1700, specBody(["first", "second"]), ["ready-for-agent", "spec"]);
+    addIssue(1701, ticketBody({ partOf: 1700, criteria: ["AC1"], coverage: "AC1" }));
+    addIssue(1703, ticketBody({ partOf: 1700, criteria: ["AC2"], coverage: "AC2" }));
+    const plan = await plans.importPlan(projectId, { issue_number: 1700, kind: "spec" });
+    const exhaustedMember = plan.members.find((member) => member.issue_number === 1701)!;
+    const eligibleMember = plan.members.find((member) => member.issue_number === 1703)!;
+    const service = makeService({
+      runner: async (context: DispatchRunnerContext) => {
+        if (context.issue_number !== 1703) {
+          return { success: false, error: "rejected cycle" };
+        }
+        return {
+          success: true,
+          headSha: commitInWorktree(context.worktree_path, "scheduler-sibling.txt"),
+        };
+      },
+    });
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      await dispatchLap(service, plan.id, exhaustedMember.work_id);
+    }
+    expect(
+      service.getRunDetail(projectId, service.listRuns(projectId, { plan_id: plan.id })[0]!.id)
+        .budget?.status,
+    ).toBe("exhausted");
+
+    const tick = await runLocalDispatchTick({ db, registry, plans, dispatch: service });
+    expect(tick).toMatchObject({
+      action: "launched",
+      reason: "launch_successful",
+      issueNumber: 1703,
+    });
+    const launched = service.getRun(projectId, tick.runId!);
+    expect(launched.work_id).toBe(eligibleMember.work_id);
+    expect(launched.lap).toBe(1);
+    expect(launched.state).toBe("succeeded");
+
+    // The exhausted ticket keeps its precise explicit refusal.
+    await expect(
+      service.dispatch(projectId, {
+        plan_id: plan.id,
+        work_id: exhaustedMember.work_id,
+        actor: "operator",
+      }),
+    ).rejects.toMatchObject({ code: "budget_exhausted" });
+  });
+
+  test("B2: stop never signals a worker record whose owner identity is not this run", async () => {
+    addIssue(1800);
+    const plan = await plans.importPlan(projectId, { issue_number: 1800, kind: "standalone" });
+    const member = plan.members[0]!;
+    const service = makeService();
+    const runId = await dispatchLap(service, plan.id, member.work_id);
+    const run = service.getRun(projectId, runId);
+    db.prepare("UPDATE dispatch_runs SET state = 'running' WHERE id = ?").run(runId);
+
+    const { spawn } = await import("node:child_process");
+    const unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    unrelated.unref();
+    const unrelatedPid = unrelated.pid!;
+    try {
+      writeWorkerOwner({
+        run_id: run.id,
+        owner_token: "stale-foreign-token",
+        ownership_generation: run.ownership_generation,
+        pid: unrelatedPid,
+        pgid: unrelatedPid,
+      });
+
+      // Real default terminator: a stale/foreign record must not kill the unrelated process.
+      const stopped = service.applyControl(projectId, run.id, {
+        action: "stop",
+        actor: "operator",
+        reason: "reclaim stuck writer",
+        signal: "SIGTERM",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(() => process.kill(unrelatedPid, 0)).not.toThrow();
+      expect(stopped.confirmed).toBe(false);
+      expect(stopped.control.status).toBe("stopping");
+      expect(stopped.detail).toContain("termination_unverified");
+      expect(stopped.detail).toContain("token");
+    } finally {
+      try {
+        process.kill(-unrelatedPid, "SIGKILL");
+      } catch {}
+      try {
+        process.kill(unrelatedPid, "SIGKILL");
+      } catch {}
+    }
+  });
+
+  test("B2: a matching token with a different process start identity is PID reuse, never signalled", async () => {
+    addIssue(1801);
+    const plan = await plans.importPlan(projectId, { issue_number: 1801, kind: "standalone" });
+    const member = plan.members[0]!;
+    const service = makeService();
+    const runId = await dispatchLap(service, plan.id, member.work_id);
+    const run = service.getRun(projectId, runId);
+    db.prepare("UPDATE dispatch_runs SET state = 'running' WHERE id = ?").run(runId);
+    const { spawn } = await import("node:child_process");
+    const unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    unrelated.unref();
+    const pid = unrelated.pid!;
+    const signaled: Array<{ pid: number | null; pgid: number | null }> = [];
+    try {
+      writeWorkerOwner({
+        run_id: run.id,
+        owner_token: run.owner_token,
+        ownership_generation: run.ownership_generation,
+        pid,
+        pgid: pid,
+        process_start: "Mon Jan  1 00:00:00 1990",
+      });
+      const spy = makeService({
+        processAlive: () => false,
+        terminate: (target: Parameters<DispatchTerminator>[0]) => {
+          signaled.push(target);
+        },
+      });
+      const stopped = spy.applyControl(projectId, run.id, {
+        action: "stop",
+        actor: "operator",
+        reason: "pid reuse guard",
+      });
+      expect(signaled).toEqual([]);
+      expect(() => process.kill(pid, 0)).not.toThrow();
+      expect(stopped.confirmed).toBe(false);
+      expect(stopped.detail).toContain("process_identity");
+    } finally {
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {}
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {}
+    }
+  });
+
+  test("B2: an unreadable worker record is unknown and is never signalled", async () => {
+    addIssue(1802);
+    const plan = await plans.importPlan(projectId, { issue_number: 1802, kind: "standalone" });
+    const member = plan.members[0]!;
+    const service = makeService();
+    const runId = await dispatchLap(service, plan.id, member.work_id);
+    const run = service.getRun(projectId, runId);
+    db.prepare("UPDATE dispatch_runs SET state = 'running' WHERE id = ?").run(runId);
+    writeWorkerOwner({
+      run_id: run.id,
+      owner_token: run.owner_token,
+      ownership_generation: run.ownership_generation,
+      pid: 1,
+      pgid: 1,
+    });
+    writeFileSync(resolveWorkerOwnerPath(run.id), "{ not valid json");
+    const signaled: unknown[] = [];
+    const spy = makeService({
+      terminate: (target: Parameters<DispatchTerminator>[0]) => {
+        signaled.push(target);
+      },
+    });
+    try {
+      const stopped = spy.applyControl(projectId, run.id, {
+        action: "stop",
+        actor: "operator",
+        reason: "unreadable owner",
+      });
+      expect(signaled).toEqual([]);
+      expect(stopped.confirmed).toBe(false);
+      expect(stopped.detail).toContain("unreadable");
+    } finally {
+      unlinkSync(resolveWorkerOwnerPath(run.id));
+    }
+  });
+
+  test("B3: takeover terminalizes the stale run so public reconcile and the next numbered dispatch work", async () => {
+    addIssue(1900);
+    const plan = await plans.importPlan(projectId, { issue_number: 1900, kind: "standalone" });
     const member = plan.members[0]!;
     const service = makeService();
     const runId = await dispatchLap(service, plan.id, member.work_id);
     const original = service.getRun(projectId, runId);
+    const deadPid = await deadProcessPid();
+    db.prepare(
+      "UPDATE dispatch_runs SET state = 'interrupted', owner_pid = ?, error = 'owner_process_gone_pending_reconciliation' WHERE id = ?",
+    ).run(deadPid, runId);
+    writeWorkerOwner({
+      run_id: runId,
+      owner_token: original.owner_token,
+      ownership_generation: original.ownership_generation,
+      pid: deadPid,
+      pgid: deadPid,
+    });
+    expect(existsSync(resolveWorkerOwnerPath(runId))).toBe(true);
 
-    const blocked = makeService({ processAlive: () => true, ownerPid: () => 5555 });
-    db.prepare("UPDATE dispatch_runs SET state = 'running' WHERE id = ?").run(runId);
-    expect(() =>
-      blocked.applyControl(projectId, runId, {
-        action: "takeover",
-        actor: "operator",
-        reason: "failed coordinator",
-      }),
-    ).toThrowError(/may still be writing/);
-
-    const takeover = makeService({ processAlive: () => false, ownerPid: () => 7777 });
-    const result = takeover.applyControl(projectId, runId, {
+    const liveCoordinator = new DispatchService(db, {
+      plans,
+      ledger,
+      brakes,
+      ownerPid: () => process.pid,
+      runner: async () => ({ success: false, error: "rejected cycle" }),
+    });
+    const taken = liveCoordinator.applyControl(projectId, runId, {
       action: "takeover",
       actor: "operator",
-      reason: "failed coordinator confirmed dead",
+      reason: "prior coordinator confirmed dead",
     });
-    expect(result.confirmed).toBe(true);
-    expect(result.run.owner_pid).toBe(7777);
-    expect(result.run.ownership_generation).toBeGreaterThan(original.ownership_generation);
-    expect(result.run.owner_token).not.toBe(original.owner_token);
-    expect(result.control.status).toBe("active");
-    expect(result.budget?.consumedAttempts).toBe(1);
-    expect(takeover.getRun(projectId, runId).state).toBe("running");
+    expect(taken.confirmed).toBe(true);
+    expect(taken.run.state).toBe("reconciled");
+    expect(taken.run.owner_pid).toBeNull();
+    expect(taken.run.ownership_generation).toBeGreaterThan(original.ownership_generation);
+    expect(taken.run.owner_token).not.toBe(original.owner_token);
+    expect(taken.control.status).toBe("active");
+    expect(taken.budget?.consumedAttempts).toBe(1);
+    expect(existsSync(resolveWorkerOwnerPath(runId))).toBe(false);
+
+    // Public reconcile sees no active run to retain, and the next numbered lap dispatches.
+    expect(liveCoordinator.reconcile(projectId).retained).toEqual([]);
+    const nextId = await dispatchLap(liveCoordinator, plan.id, member.work_id);
+    expect(liveCoordinator.getRun(projectId, nextId).lap).toBe(2);
+  });
+
+  test("B3: takeover preserves an exhausted budget instead of silently resetting it", async () => {
+    addIssue(1901);
+    const plan = await plans.importPlan(projectId, { issue_number: 1901, kind: "standalone" });
+    const member = plan.members[0]!;
+    const service = makeService();
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      await dispatchLap(service, plan.id, member.work_id);
+    }
+    const [latest] = service.listRuns(projectId, { plan_id: plan.id });
+    const deadPid = await deadProcessPid();
+    db.prepare(
+      "UPDATE dispatch_runs SET state = 'interrupted', owner_pid = ?, error = 'owner_process_gone_pending_reconciliation' WHERE id = ?",
+    ).run(deadPid, latest!.id);
+
+    const liveCoordinator = new DispatchService(db, {
+      plans,
+      ledger,
+      brakes,
+      ownerPid: () => process.pid,
+      runner: async () => ({ success: false, error: "rejected cycle" }),
+    });
+    const taken = liveCoordinator.applyControl(projectId, latest!.id, {
+      action: "takeover",
+      actor: "operator",
+      reason: "recover exhausted work",
+    });
+    expect(taken.run.state).toBe("reconciled");
+    expect(taken.budget?.status).toBe("exhausted");
+    await expect(
+      liveCoordinator.dispatch(projectId, {
+        plan_id: plan.id,
+        work_id: member.work_id,
+        actor: "operator",
+      }),
+    ).rejects.toMatchObject({ code: "budget_exhausted" });
+  });
+
+  test("B3: failed termination stays stopping and only reconciliation releases it", async () => {
+    addIssue(1902);
+    const plan = await plans.importPlan(projectId, { issue_number: 1902, kind: "standalone" });
+    const member = plan.members[0]!;
+    const service = makeService();
+    const runId = await dispatchLap(service, plan.id, member.work_id);
+    const run = service.getRun(projectId, runId);
+    db.prepare("UPDATE dispatch_runs SET state = 'running' WHERE id = ?").run(runId);
+    const { spawn } = await import("node:child_process");
+    const writer = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    writer.unref();
+    const writerPid = writer.pid!;
+    const exited = new Promise<void>((resolve) => writer.once("exit", () => resolve()));
+    try {
+      writeWorkerOwner({
+        run_id: run.id,
+        owner_token: run.owner_token,
+        ownership_generation: run.ownership_generation,
+        pid: writerPid,
+        pgid: writerPid,
+      });
+      writeFileSync(
+        join(run.worktree_path, ".worktree.lock"),
+        JSON.stringify({ runId: run.id, branch: run.branch, pid: writerPid }),
+      );
+      const restarted = makeService({
+        processAlive: () => false,
+        terminate: () => {
+          throw new Error("kill denied");
+        },
+      });
+      const stopped = restarted.applyControl(projectId, run.id, {
+        action: "stop",
+        actor: "operator",
+        reason: "failed signal",
+      });
+      expect(stopped.confirmed).toBe(false);
+      expect(stopped.control.status).toBe("stopping");
+      expect(stopped.detail).toContain("termination_error");
+
+      process.kill(-writerPid, "SIGKILL");
+      await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 2000))]);
+      unlinkSync(resolveWorkerOwnerPath(run.id));
+      unlinkSync(join(run.worktree_path, ".worktree.lock"));
+      const released = restarted.reconcileRun(projectId, run.id);
+      expect(released.state).toBe("reconciled");
+      expect(restarted.getRunDetail(projectId, run.id).control?.status).toBe("stopped");
+    } finally {
+      try {
+        process.kill(-writerPid, "SIGKILL");
+      } catch {}
+    }
+  });
+
+  test("B3: a delayed result from a taken-over run is fenced instead of overwriting recovery", async () => {
+    addIssue(1903);
+    const plan = await plans.importPlan(projectId, { issue_number: 1903, kind: "standalone" });
+    const member = plan.members[0]!;
+    const deadPid = await deadProcessPid();
+    const pendingResult = deferred<{ success: boolean; headSha?: string }>();
+    const owner = new DispatchService(db, {
+      plans,
+      ledger,
+      brakes,
+      ownerPid: () => deadPid,
+      processAlive: () => false,
+      runner: async () => pendingResult.promise,
+    });
+    const pending = owner
+      .dispatch(projectId, {
+        plan_id: plan.id,
+        work_id: member.work_id,
+        actor: "operator",
+      })
+      .then(
+        (run) => ({ ok: true as const, run }),
+        (error) => ({ ok: false as const, error }),
+      );
+    await waitForRunningRun(owner, plan.id);
+    const running = owner.listRuns(projectId, { plan_id: plan.id })[0]!;
+    const lateHead = commitInWorktree(running.worktree_path, "late-result.txt");
+
+    const taker = new DispatchService(db, {
+      plans,
+      ledger,
+      brakes,
+      ownerPid: () => process.pid,
+      processAlive: () => false,
+      runner: async () => ({ success: false, error: "rejected cycle" }),
+    });
+    const taken = taker.applyControl(projectId, running.id, {
+      action: "takeover",
+      actor: "operator",
+      reason: "recover before the old runner returns",
+    });
+    expect(taken.run.state).toBe("reconciled");
+
+    pendingResult.resolve({ success: true, headSha: lateHead });
+    const outcome = await pending;
+    if (outcome.ok) throw new Error("the delayed runner unexpectedly committed");
+    expect((outcome.error as { code?: string }).code).toBe("stale_worker");
+    expect(taker.getRun(projectId, running.id).state).toBe("reconciled");
+  });
+
+  test("S1: a rejected final check/review marks the ticket exhausted immediately", async () => {
+    addIssue(2000);
+    const plan = await plans.importPlan(projectId, { issue_number: 2000, kind: "standalone" });
+    const member = plan.members[0]!;
+    register("reviewer-1", "peer_reviewer");
+    const service = makeService({ runner: committingRunner() });
+    let lastRunId = "";
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const run = await service.dispatch(projectId, {
+        plan_id: plan.id,
+        work_id: member.work_id,
+        actor: "operator",
+      });
+      lastRunId = run.id;
+      observations.recordRunObservation(projectId, run.id, {
+        stage: "independent_review",
+        status: "failed",
+        producer: { id: "reviewer-1", role: "peer_reviewer" },
+        checks: [{ name: "review", command: "review diff", result: "FAIL", detail: "rejected" }],
+        findings: [
+          {
+            severity: "blocking",
+            acKey: "AC1",
+            fileContext: "apps/backend/src/example.ts:42",
+            summary: `review rejection ${attempt}`,
+          },
+        ],
+      });
+    }
+    const detail = service.getRunDetail(projectId, lastRunId);
+    expect(detail.budget).toMatchObject({ status: "exhausted", remainingAttempts: 0 });
+    expect(detail.budget?.lastRejection).toBe("rejected_observation");
+    expect(detail.acceptance.reasons).toContain("budget_exhausted");
+  });
+
+  test("S2: reusing a grant idempotency key with a changed payload conflicts and records failure", async () => {
+    addIssue(2001);
+    const plan = await plans.importPlan(projectId, { issue_number: 2001, kind: "standalone" });
+    const member = plan.members[0]!;
+    const service = makeService();
+    const runId = await dispatchLap(service, plan.id, member.work_id);
+
+    const first = service.grantBudget(projectId, runId, {
+      amount: 1,
+      reason: "one more attempt",
+      actor: "operator",
+      idempotency_key: "grant-shared-key",
+    });
+    const allowed = first.budget.allowedAttempts;
+    expect(() =>
+      service.grantBudget(projectId, runId, {
+        amount: 5,
+        reason: "different payload",
+        actor: "another-operator",
+        idempotency_key: "grant-shared-key",
+      }),
+    ).toThrowError(expect.objectContaining({ code: "idempotency_conflict" }));
+
+    expect(service.listGrants(projectId, { runId })).toHaveLength(1);
+    expect(service.getRunDetail(projectId, runId).budget?.allowedAttempts).toBe(allowed);
+    const failed = ledger
+      .listCommands({ projectId, state: "failed" })
+      .filter((command) => command.action === "budget_grant");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.target).toMatchObject({ amount: 5, reason: "different payload" });
+
+    const replay = service.grantBudget(projectId, runId, {
+      amount: 1,
+      reason: "one more attempt",
+      actor: "operator",
+      idempotency_key: "grant-shared-key",
+    });
+    expect(replay.replayed).toBe(true);
+    expect(replay.budget.allowedAttempts).toBe(allowed);
+    const replayCommand = ledger.getCommand(replay.commandRequestId);
+    expect(replayCommand?.state).toBe("succeeded");
+    expect(JSON.stringify(replayCommand?.outcome)).toContain(
+      `idempotent_replay:${first.commandRequestId}`,
+    );
   });
 });

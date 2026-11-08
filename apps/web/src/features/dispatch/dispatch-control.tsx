@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   DispatchRunDetail,
   PlanDispatchRun,
@@ -24,6 +24,13 @@ const RUN_TONE: Record<
   interrupted: "warning",
   reconciled: "default",
 };
+
+function createGrantIdempotencyKey(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `grant-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 export function runsByPlan(runs: PlanDispatchRunList): Map<string, PlanDispatchRun[]> {
   const grouped = new Map<string, PlanDispatchRun[]>();
@@ -66,6 +73,8 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
   const [controlNotice, setControlNotice] = useState<Record<string, string>>({});
   const [grantAmount, setGrantAmount] = useState<Record<string, string>>({});
   const [grantReason, setGrantReason] = useState<Record<string, string>>({});
+  const grantKeys = useRef<Record<string, string>>({});
+  const detailInFlight = useRef<Set<string>>(new Set());
 
   const loadProject = useCallback(
     async (id: string) => {
@@ -129,6 +138,10 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
   const refresh = async () => {
     await loadProjects();
     if (projectId) await loadProject(projectId);
+    // Retry durability detail after an earlier read failure so Dispatch is not
+    // stranded in the fail-closed unknown state until a full page reload.
+    setDetails({});
+    setDetailError({});
   };
 
   const dispatch = async (planId: string) => {
@@ -178,29 +191,53 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
     }
   };
 
-  const loadDetail = async (runId: string) => {
-    setDetailLoading(runId);
-    setDetailError((current) => {
-      const copy = { ...current };
-      delete copy[runId];
-      return copy;
-    });
-    try {
-      const detail = await factory.forProject(projectId).dispatchRunDetail(runId);
-      setDetails((current) => ({ ...current, [runId]: detail }));
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setDetailError((current) => ({ ...current, [runId]: message }));
-    } finally {
-      setDetailLoading(null);
-    }
-  };
+  const loadDetail = useCallback(
+    async (runId: string) => {
+      if (detailInFlight.current.has(runId)) return;
+      const scoped = factory.forProject(projectId);
+      if (typeof scoped.dispatchRunDetail !== "function") return;
+      detailInFlight.current.add(runId);
+      setDetailLoading(runId);
+      setDetailError((current) => {
+        const copy = { ...current };
+        delete copy[runId];
+        return copy;
+      });
+      try {
+        const detail = await scoped.dispatchRunDetail(runId);
+        setDetails((current) => ({ ...current, [runId]: detail }));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setDetailError((current) => ({ ...current, [runId]: message }));
+      } finally {
+        detailInFlight.current.delete(runId);
+        setDetailLoading((current) => (current === runId ? null : current));
+      }
+    },
+    [factory, projectId],
+  );
 
   const toggleDetail = async (runId: string) => {
     const next = !detailExpanded[runId];
     setDetailExpanded((current) => ({ ...current, [runId]: next }));
     if (next && !details[runId]) await loadDetail(runId);
   };
+
+  // Load the selected run's durable budget/control state before the operator opens
+  // the panel, so Dispatch is never falsely enabled for exhausted or held work.
+  useEffect(() => {
+    if (!projectId) return;
+    const grouped = runsByPlan(runs);
+    for (const plan of plans) {
+      if (plan.authority !== "admitted") continue;
+      const planRuns = grouped.get(plan.id) ?? [];
+      const selected = selectedRuns[plan.id] ?? planRuns[0]?.id;
+      if (!selected) continue;
+      if (details[selected] || detailError[selected]) continue;
+      if (detailInFlight.current.has(selected)) continue;
+      void loadDetail(selected);
+    }
+  }, [projectId, plans, runs, selectedRuns, details, detailError, loadDetail]);
 
   const runControl = async (runId: string, action: "hold" | "resume" | "stop" | "takeover") => {
     setControlBusy(runId);
@@ -240,6 +277,10 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
       setError("A budget grant requires a reason");
       return;
     }
+    // One stable key per submission: a retry after an ambiguous response replays the
+    // same grant instead of adding allowance twice.
+    const idempotencyKey = grantKeys.current[runId] ?? createGrantIdempotencyKey();
+    grantKeys.current[runId] = idempotencyKey;
     setControlBusy(runId);
     setControlNotice((current) => {
       const copy = { ...current };
@@ -252,7 +293,9 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
         amount,
         reason,
         actor: "operator",
+        idempotency_key: idempotencyKey,
       });
+      delete grantKeys.current[runId];
       setControlNotice((current) => ({
         ...current,
         [runId]: `grant +${result.grant.amount}${result.replayed ? " (replayed)" : ""} · ${result.budget.status}`,
@@ -342,8 +385,11 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
               selectedDetail?.control !== null &&
               selectedDetail?.control !== undefined &&
               selectedDetail.control.status !== "active";
+            // An unknown budget/control state is not proof of eligibility: fail closed
+            // until the selected run's durable detail is available.
+            const detailUnknown = Boolean(run) && !selectedDetail;
             const dispatchDisabled =
-              busy || plan.hold_count > 0 || blockedByBudget || blockedByControl;
+              busy || plan.hold_count > 0 || blockedByBudget || blockedByControl || detailUnknown;
             return (
               <div
                 key={plan.id}
@@ -420,13 +466,17 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
                   onClick={() => void dispatch(plan.id)}
                   disabled={dispatchDisabled}
                   title={
-                    blockedByBudget
-                      ? "Ticket budget is exhausted; grant an explicit additional attempt"
-                      : blockedByControl
-                        ? "Work is held or stopping; resume it before dispatching"
-                        : plan.hold_count > 0
-                          ? "Plan has holds; resolve them before dispatching"
-                          : "Dispatch this frozen plan"
+                    detailUnknown
+                      ? detailError[run?.id ?? ""]
+                        ? "Attempt budget and control detail is unavailable; refresh before dispatching"
+                        : "Checking attempt budget and operator controls…"
+                      : blockedByBudget
+                        ? "Ticket budget is exhausted; grant an explicit additional attempt"
+                        : blockedByControl
+                          ? "Work is held or stopping; resume it before dispatching"
+                          : plan.hold_count > 0
+                            ? "Plan has holds; resolve them before dispatching"
+                            : "Dispatch this frozen plan"
                   }
                 >
                   {busy ? "Dispatching…" : "Dispatch"}
@@ -471,12 +521,14 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
                         notice={controlNotice[run.id] ?? null}
                         amount={grantAmount[run.id] ?? "1"}
                         reason={grantReason[run.id] ?? ""}
-                        onAmount={(value) =>
-                          setGrantAmount((current) => ({ ...current, [run.id]: value }))
-                        }
-                        onReason={(value) =>
-                          setGrantReason((current) => ({ ...current, [run.id]: value }))
-                        }
+                        onAmount={(value) => {
+                          delete grantKeys.current[run.id];
+                          setGrantAmount((current) => ({ ...current, [run.id]: value }));
+                        }}
+                        onReason={(value) => {
+                          delete grantKeys.current[run.id];
+                          setGrantReason((current) => ({ ...current, [run.id]: value }));
+                        }}
                         onControl={(action) => void runControl(run.id, action)}
                         onGrant={() => void grantAttempt(run.id)}
                       />

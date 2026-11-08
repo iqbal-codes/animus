@@ -44,6 +44,10 @@ function planSkipReason(error: DispatchError): LocalDispatchSkipReason | "contin
     case "dependency_pending_integration":
     case "plan_not_dispatchable":
     case "parent_not_dispatchable":
+    case "budget_exhausted":
+    case "work_held":
+    case "work_stopping":
+    case "work_stopped":
       return "continue";
     case "capacity_full":
       return "capacity_full";

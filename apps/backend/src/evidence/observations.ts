@@ -30,6 +30,7 @@ import {
   type ProducerRole,
 } from "@animus/contracts/operator";
 import { resolveAnimusStateDir } from "@animus/contracts/paths";
+import { ExecutionBudgetService } from "../work/budget";
 import { EvidenceError } from "./errors";
 
 interface RunRow {
@@ -146,6 +147,7 @@ export interface ExecutionObservationServiceOptions {
   artifactRoot?: string;
   clock?: () => number;
   gitRunner?: (cmd: string[], cwd: string) => string;
+  budget?: ExecutionBudgetService;
 }
 
 export interface ObservationQuery {
@@ -192,6 +194,7 @@ export class ExecutionObservationService {
   private readonly artifactRoot: string;
   private readonly clock: () => number;
   private readonly gitRunner: (cmd: string[], cwd: string) => string;
+  private readonly budget: ExecutionBudgetService;
 
   constructor(
     private readonly db: DatabaseSync,
@@ -199,6 +202,7 @@ export class ExecutionObservationService {
   ) {
     this.artifactRoot = options.artifactRoot ?? join(resolveAnimusStateDir(), "artifacts");
     this.clock = options.clock ?? (() => Date.now());
+    this.budget = options.budget ?? new ExecutionBudgetService(db);
     this.gitRunner =
       options.gitRunner ??
       ((cmd, cwd) =>
@@ -451,8 +455,56 @@ export class ExecutionObservationService {
         }
       }
 
+      // A rejected observation on the final allowed lap is an immediate Needs
+      // owner result, not something that waits for another dispatch attempt.
+      if (record.status !== "passed" && record.status !== "running") {
+        this.markExhaustedFromRejectedObservation(run, now);
+      }
+
       return this.getObservation(projectId, observationId);
     }, "observation");
+  }
+
+  private markExhaustedFromRejectedObservation(run: RunRow, now: number): void {
+    const scope = this.db
+      .prepare(
+        `SELECT id, base_limit, granted_attempts, consumed_attempts, status
+         FROM execution_budget_scopes
+         WHERE project_id = ? AND delivery_id = ? AND work_id = ? AND gate_profile = ?`,
+      )
+      .get(run.project_id, run.delivery_id, run.work_id, run.gate_profile) as
+      | {
+          id: string;
+          base_limit: number;
+          granted_attempts: number;
+          consumed_attempts: number;
+          status: "active" | "exhausted";
+        }
+      | undefined;
+    if (!scope || scope.status === "exhausted") return;
+    if (scope.consumed_attempts < scope.base_limit + scope.granted_attempts) return;
+    const latest = this.db
+      .prepare(
+        `SELECT id, worktree_path, branch, head_sha FROM dispatch_runs
+         WHERE project_id = ? AND delivery_id = ? AND work_id = ?
+         ORDER BY lap DESC LIMIT 1`,
+      )
+      .get(run.project_id, run.delivery_id, run.work_id) as
+      | { id: string; worktree_path: string; branch: string; head_sha: string | null }
+      | undefined;
+    if (!latest) return;
+    this.budget.markExhausted(
+      run.project_id,
+      scope.id,
+      {
+        runId: latest.id,
+        worktreePath: latest.worktree_path,
+        branch: latest.branch,
+        headSha: latest.head_sha,
+        reason: "rejected_observation",
+      },
+      now,
+    );
   }
 
   // -------------------------------------------------------------------------
