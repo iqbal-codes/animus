@@ -24,6 +24,11 @@ import { IntakeService, handleProjectIntakeRoute } from "./intake";
 import { WorkService, handleProjectWorkRoute } from "./work";
 import { PlanService, handleProjectPlanRoute } from "./plans";
 import {
+  DispatchService,
+  handleProjectDispatchRoute,
+  type DispatchServiceOptions,
+} from "./dispatch";
+import {
   initializeDatabase,
   ProjectRegistryService,
   ProjectRegistryError,
@@ -70,6 +75,7 @@ export interface BackendAppOptions {
   monitorIntervalMs?: number;
   monitorRuntime?: MonitorRuntime;
   forge?: ForgeAdapter;
+  dispatch?: Omit<DispatchServiceOptions, "plans" | "ledger" | "brakes">;
 }
 
 export interface BackendApp {
@@ -245,6 +251,20 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
   void Promise.resolve().then(() => {
     try {
       commandService.reconcile().catch(() => {});
+    } catch {}
+  });
+
+  const dispatchService = new DispatchService(registryService.getDb(), {
+    ...options?.dispatch,
+    plans: planService,
+    ledger: commandService.ledger,
+    brakes: commandService.brakes,
+  });
+
+  // Preserve interrupted/unknown ownership on startup instead of freeing claims by lease age.
+  void Promise.resolve().then(() => {
+    try {
+      dispatchService.reconcile();
     } catch {}
   });
 
@@ -721,6 +741,17 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
       if (scopedAction === "plans") {
         const planRes = await handleProjectPlanRoute(request, projectId, parts, planService);
         if (planRes) return planRes;
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
+      if (scopedAction === "dispatch") {
+        const dispatchRes = await handleProjectDispatchRoute(
+          request,
+          projectId,
+          parts,
+          dispatchService,
+        );
+        if (dispatchRes) return dispatchRes;
         return Response.json({ error: "not_found" }, { status: 404 });
       }
 

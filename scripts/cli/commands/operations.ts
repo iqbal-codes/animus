@@ -15,7 +15,14 @@ import {
   type FactoryConnectionOptions,
 } from "./onboarding-registration";
 import { CommandService } from "../../../apps/backend/src/command";
-import type { ControlAction, PlanKind, PlanRecord, Project, WorkRecord } from "@animus/contracts/operator";
+import type {
+  ControlAction,
+  PlanDispatchRun,
+  PlanKind,
+  PlanRecord,
+  Project,
+  WorkRecord,
+} from "@animus/contracts/operator";
 
 export async function runControlCommand(opts: {
   subcommand?: string;
@@ -531,7 +538,7 @@ export async function runPlanCommand(
   try {
     if (!opts.projectId) {
       throw new Error(
-        "Usage: factory plan <list|get|import|approve|revoke> --project <project-id>",
+        "Usage: factory plan <list|get|import|approve|revoke|dispatch|runs|run|reconcile> --project <project-id>",
       );
     }
     const scoped = createRegistrationClient(opts).forProject(opts.projectId);
@@ -619,13 +626,102 @@ export async function runPlanCommand(
       return 0;
     }
 
-    throw new Error(`Unknown plan subcommand: ${sub}. Expected list, get, import, approve, revoke.`);
+    if (sub === "dispatch") {
+      const planId = opts.positionals[2];
+      const workId = opts.positionals[3];
+      const issueNumber = opts.issue ? Number(opts.issue) : undefined;
+      if (!planId) {
+        throw new Error(
+          "Usage: factory plan dispatch <plan-id> [work-id] [--issue <n>] --project <project-id>",
+        );
+      }
+      if (issueNumber !== undefined && (!Number.isSafeInteger(issueNumber) || issueNumber <= 0)) {
+        throw new Error(`--issue must be a positive integer, got: ${opts.issue}`);
+      }
+      if (workId && issueNumber !== undefined) {
+        throw new Error("Provide either a work id positional or --issue, not both.");
+      }
+      const run = await scoped.dispatchPlan({
+        plan_id: planId,
+        ...(workId ? { work_id: workId } : {}),
+        ...(issueNumber !== undefined ? { issue_number: issueNumber } : {}),
+        ...(opts.actor ? { actor: opts.actor } : {}),
+      });
+      if (opts.json) console.log(JSON.stringify(run, null, 2));
+      else printRun(run);
+      return 0;
+    }
+
+    if (sub === "runs") {
+      const planId = opts.positionals[2];
+      const runs = await scoped.dispatchRuns(planId ? { planId } : undefined);
+      if (opts.json) {
+        console.log(JSON.stringify(runs, null, 2));
+      } else if (runs.length === 0) {
+        console.log("No dispatch runs.");
+      } else {
+        console.log(`Dispatch runs (${runs.length}):`);
+        for (const run of runs) printRun(run, "  ");
+      }
+      return 0;
+    }
+
+    if (sub === "run") {
+      const runId = opts.positionals[2];
+      if (!runId) throw new Error("Usage: factory plan run <run-id> --project <project-id>");
+      const run = await scoped.dispatchRun(runId);
+      if (opts.json) console.log(JSON.stringify(run, null, 2));
+      else printRun(run);
+      return 0;
+    }
+
+    if (sub === "reconcile") {
+      const runId = opts.positionals[2];
+      if (runId) {
+        const run = await scoped.reconcileDispatchRun(runId);
+        if (opts.json) console.log(JSON.stringify(run, null, 2));
+        else printRun(run);
+        return 0;
+      }
+      const result = await scoped.reconcileDispatch();
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(
+          `Dispatch reconciliation: retained=${result.retained.length} terminal=${result.reconciled.length}`,
+        );
+        for (const run of result.retained) printRun(run, "  ");
+      }
+      return 0;
+    }
+
+    throw new Error(
+      `Unknown plan subcommand: ${sub}. Expected list, get, import, approve, revoke, dispatch, runs, run, reconcile.`,
+    );
   } catch (err: any) {
     const msg = err?.message ?? String(err);
     if (opts.json) console.log(JSON.stringify({ ok: false, error: msg }));
     else console.error(`Error: ${msg}`);
     return 1;
   }
+}
+
+function printRun(run: PlanDispatchRun, indent = ""): void {
+  console.log(
+    `${indent}${run.id}  #${run.issue_number}  ${run.gate_profile}  ${run.state}  gen=${run.ownership_generation}`,
+  );
+  console.log(
+    `${indent}  Plan:      ${run.plan_id}  delivery=${run.delivery_id}`,
+  );
+  console.log(
+    `${indent}  Revision:  ${run.revision_id} (${run.content_hash})`,
+  );
+  console.log(
+    `${indent}  Owner:     ${run.owner_pid ?? "none"}  target=${run.target_branch}  merge=${run.merge_policy}`,
+  );
+  console.log(`${indent}  Worktree:  ${run.worktree_path}  branch=${run.branch}`);
+  if (run.head_sha) console.log(`${indent}  Head:      ${run.head_sha}`);
+  if (run.error) console.log(`${indent}  Error:     ${run.error}`);
 }
 
 function printPlan(plan: PlanRecord): void {

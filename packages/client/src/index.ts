@@ -16,6 +16,10 @@ import {
   planRecordSchema,
   planImportSubmissionSchema,
   planDecisionSubmissionSchema,
+  planDispatchSubmissionSchema,
+  planDispatchRunSchema,
+  planDispatchRunListSchema,
+  planDispatchReconciliationSchema,
   controlStateSchema,
   controlSubmissionSchema,
   lapEvidenceSchema,
@@ -113,6 +117,11 @@ import {
   type PlanRecord,
   type PlanImportSubmission,
   type PlanDecisionSubmission,
+  type PlanDispatchSubmission,
+  type PlanDispatchRun,
+  type PlanDispatchRunList,
+  type PlanDispatchReconciliation,
+  type PlanDispatchReconcileSubmission,
   type ControlState,
   type ControlAction,
   type OperatorErrorCode,
@@ -186,6 +195,11 @@ export {
   type PlanRecord,
   type PlanImportSubmission,
   type PlanDecisionSubmission,
+  type PlanDispatchSubmission,
+  type PlanDispatchRun,
+  type PlanDispatchRunList,
+  type PlanDispatchReconciliation,
+  type PlanDispatchReconcileSubmission,
   type Project,
   type ProjectList,
   type ProjectRegistration,
@@ -641,6 +655,33 @@ export function createFactoryClient(options: {
             parsed.data,
             planRecordSchema,
           );
+        },
+        async dispatchPlan(submission: PlanDispatchSubmission): Promise<PlanDispatchRun> {
+          const parsed = planDispatchSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(`${scopedBase}/dispatch`, parsed.data, planDispatchRunSchema);
+        },
+        async dispatchRuns(opts?: { planId?: string }): Promise<PlanDispatchRunList> {
+          const path = opts?.planId
+            ? `${scopedBase}/dispatch/runs?plan_id=${encodeURIComponent(opts.planId)}`
+            : `${scopedBase}/dispatch/runs`;
+          return getJson(path, planDispatchRunListSchema);
+        },
+        async dispatchRun(runId: string): Promise<PlanDispatchRun> {
+          return getJson(
+            `${scopedBase}/dispatch/runs/${encodeURIComponent(runId)}`,
+            planDispatchRunSchema,
+          );
+        },
+        async reconcileDispatchRun(runId: string): Promise<PlanDispatchRun> {
+          return postJson(
+            `${scopedBase}/dispatch/runs/${encodeURIComponent(runId)}/reconcile`,
+            {},
+            planDispatchRunSchema,
+          );
+        },
+        async reconcileDispatch(): Promise<PlanDispatchReconciliation> {
+          return postJson(`${scopedBase}/dispatch/reconcile`, {}, planDispatchReconciliationSchema);
         },
         async laps(): Promise<LapList> {
           return getJson(`${scopedBase}/laps`, lapListSchema);

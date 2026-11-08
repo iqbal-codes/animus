@@ -488,6 +488,7 @@ export interface SchedulerTickOptions {
   triage?: TriagePassHandler | null;
   fetchBacklog: () => Promise<{ issues: BacklogCandidate[]; closedNumbers: Set<number> }>;
   launchLap: (issue: BacklogCandidate) => Promise<{ runId: string }>;
+  dispatchLocal?: () => Promise<SchedulerTickResult>;
   db?: any;
   dbPath?: string;
 }
@@ -532,6 +533,12 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
       },
       triageStatus: "skipped",
     };
+  }
+
+  // Local dispatch consumes the frozen plan manifest and durable dispatch state.
+  // When provided, the GitHub backlog path below is never fetched or rebound.
+  if (options.dispatchLocal) {
+    return await options.dispatchLocal();
   }
 
   const mergedConfig = preflight.schedule;
@@ -665,6 +672,7 @@ export interface SchedulerLoopOptions {
   awaitTriageOnStop?: boolean;
   fetchBacklog: () => Promise<{ issues: BacklogCandidate[]; closedNumbers: Set<number> }>;
   launchLap: (issue: BacklogCandidate) => Promise<{ runId: string }>;
+  dispatchLocal?: () => Promise<SchedulerTickResult>;
   onTick?: (result: SchedulerTickResult) => void;
   signal?: AbortSignal;
 }
@@ -716,6 +724,7 @@ export function startSchedulerLoop(options: SchedulerLoopOptions): SchedulerLoop
           triage: options.triage,
           fetchBacklog: options.fetchBacklog,
           launchLap: options.launchLap,
+          dispatchLocal: options.dispatchLocal,
         });
 
         if (options.onTick) {

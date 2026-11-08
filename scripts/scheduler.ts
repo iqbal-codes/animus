@@ -5,14 +5,23 @@ import {
   loadScheduleConfig,
   runSchedulerTick,
   startSchedulerLoop,
-  awaitInFlightTriage,
   type BacklogCandidate,
   type SchedulerTickResult,
+  type TickSkipReason,
 } from "./loop/scheduler";
 import { readIssueContract } from "./loop";
 import { runAnimusLoop } from "./animus-loop";
 import { resolveProjectWorkspace } from "../packages/contracts/src/paths";
 import { parseDependencies, isActiveClaim } from "../apps/backend/src/intake/parser";
+import { initializeDatabase, ProjectRegistryService } from "../apps/backend/src/registry";
+import { PlanService } from "../apps/backend/src/plans";
+import { CommandLedger } from "../apps/backend/src/command/ledger";
+import { BrakeService } from "../apps/backend/src/command/brakes";
+import {
+  DispatchService,
+  runLocalDispatchTick,
+  type LocalDispatchTickResult,
+} from "../apps/backend/src/dispatch";
 
 export function parseSchedulerCliArgs(args: string[]): {
   once: boolean;
@@ -121,52 +130,94 @@ export function logTickResult(res: SchedulerTickResult): void {
   }
 }
 
+function toSchedulerTick(local: LocalDispatchTickResult): SchedulerTickResult {
+  if (local.action === "launched") {
+    return {
+      action: "launched",
+      reason: "launch_successful",
+      targetIssueNumber: local.issueNumber,
+      runId: local.runId,
+      activeLapsCount: 0,
+      detail: local.detail,
+    };
+  }
+  const reasons: Record<string, TickSkipReason> = {
+    no_active_projects: "no_admitted_issues",
+    no_admitted_plans: "no_admitted_issues",
+    no_eligible_work: "no_admitted_issues",
+    dry_run: "no_admitted_issues",
+    stop_brake_set: "stop_brake_set",
+    pause_brake_set: "pause_brake_set",
+    capacity_full: "capacity_full",
+    launch_failed: "launch_failed",
+  };
+  return {
+    action: "skipped",
+    reason: reasons[local.reason] ?? "launch_failed",
+    activeLapsCount: 0,
+    detail: local.detail,
+    error: local.error,
+  };
+}
+
 if (import.meta.main) {
+  let db: ReturnType<typeof initializeDatabase> | null = null;
   try {
     const { once, dryRun, interval } = parseSchedulerCliArgs(process.argv.slice(2));
     const root = resolve(import.meta.dir, "..");
-
-    const repoRes = Bun.spawnSync(["gh", "repo", "view", "--json", "nameWithOwner"], { cwd: root });
-    if (repoRes.exitCode !== 0) {
-      throw new Error("Unable to identify repository; ensure gh CLI is authenticated");
-    }
-    const repo = (JSON.parse(repoRes.stdout.toString()) as { nameWithOwner: string }).nameWithOwner;
-
     const workspace = resolveProjectWorkspace(root);
-    const sharedRoot = workspace.primaryRoot;
-    const runsDir = workspace.runsDir;
 
-    const fetchBacklog = async () => fetchGithubBacklog(root, repo);
+    db = initializeDatabase();
+    const registry = new ProjectRegistryService(db, new SystemForgeAdapter());
+    const plans = new PlanService(db, registry.getForge());
+    const brakes = new BrakeService(db);
+    const dispatch = new DispatchService(db, {
+      plans,
+      ledger: new CommandLedger(db),
+      brakes,
+    });
 
-    const launchLap = async (issue: BacklogCandidate): Promise<{ runId: string }> => {
-      if (dryRun) {
-        console.log(
-          `[DRY-RUN] Would launch autonomous lap for issue #${issue.number}: ${issue.title}`,
-        );
-        return { runId: `dry-run-issue-${issue.number}` };
-      }
+    // Preserve interrupted/unknown ownership before a new scheduling tick.
+    try {
+      dispatch.reconcile();
+    } catch {}
 
-      console.log(`Launching autonomous lap for issue #${issue.number}...`);
-      const contract = readIssueContract(root, issue.number, repo);
-      const result = await runAnimusLoop(root, contract, { push: true });
-      return { runId: result.candidate || `issue-${issue.number}` };
+    const dispatchLocal = async (): Promise<SchedulerTickResult> =>
+      toSchedulerTick(
+        await runLocalDispatchTick({
+          db: db!,
+          registry,
+          plans,
+          dispatch,
+          actor: "scheduler",
+          dryRun,
+        }),
+      );
+
+    const emptyBacklog = async (): Promise<{
+      issues: BacklogCandidate[];
+      closedNumbers: Set<number>;
+    }> => ({ issues: [], closedNumbers: new Set<number>() });
+    const legacyLaunchDisabled = async (): Promise<{ runId: string }> => {
+      throw new Error("Legacy GitHub launch path is disabled for local dispatch");
     };
 
     if (once) {
       const result = await runSchedulerTick({
         root,
-        sharedRoot,
-        runsDir,
-        repo,
+        sharedRoot: workspace.primaryRoot,
+        runsDir: workspace.runsDir,
+        repo: "",
         config: interval ? { interval_seconds: interval } : undefined,
-        fetchBacklog,
-        launchLap,
+        brakes,
+        fetchBacklog: emptyBacklog,
+        launchLap: legacyLaunchDisabled,
+        dispatchLocal,
       });
       logTickResult(result);
-      await awaitInFlightTriage(root);
     } else {
       console.log(
-        `Starting Factory Autonomous Scheduler (repository: ${repo}, interval: ${interval ?? loadScheduleConfig(root).interval_seconds}s)...`,
+        `Starting local plan scheduler (interval: ${interval ?? loadScheduleConfig(root).interval_seconds}s)...`,
       );
       console.log("Press Ctrl+C to stop.");
 
@@ -182,22 +233,27 @@ if (import.meta.main) {
 
       const loop = startSchedulerLoop({
         root,
-        sharedRoot,
-        runsDir,
-        repo,
+        sharedRoot: workspace.primaryRoot,
+        runsDir: workspace.runsDir,
+        repo: "",
         config: interval ? { interval_seconds: interval } : undefined,
         intervalMs: interval ? interval * 1000 : undefined,
-        fetchBacklog,
-        launchLap,
+        brakes,
+        fetchBacklog: emptyBacklog,
+        launchLap: legacyLaunchDisabled,
+        dispatchLocal,
         onTick: logTickResult,
         signal: controller.signal,
       });
 
       await loop.done;
-      await awaitInFlightTriage(root);
     }
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
+  } finally {
+    try {
+      db?.close();
+    } catch {}
   }
 }

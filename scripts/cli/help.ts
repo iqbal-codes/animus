@@ -88,8 +88,8 @@ export const helpEntries: readonly HelpEntry[] = [
   },
   {
     command: "plan",
-    spec: "plan <list|get|import|approve|revoke> --project <project-id>",
-    description: "Inspect and decide frozen local execution plans",
+    spec: "plan <list|get|import|approve|revoke|dispatch|runs|run|reconcile> --project <project-id>",
+    description: "Inspect, decide and dispatch frozen local execution plans",
   },
   {
     command: "project",

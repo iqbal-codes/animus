@@ -408,6 +408,81 @@ export const planDecisionSubmissionSchema = z
   .strict();
 export type PlanDecisionSubmission = z.infer<typeof planDecisionSubmissionSchema>;
 
+export const dispatchRunStateSchema = z.enum([
+  "claimed",
+  "dispatched",
+  "running",
+  "succeeded",
+  "failed",
+  "interrupted",
+  "reconciled",
+]);
+export type DispatchRunState = z.infer<typeof dispatchRunStateSchema>;
+
+export const dispatchMergePolicySchema = z.enum(["auto_after_gates", "manual"]);
+export type DispatchMergePolicy = z.infer<typeof dispatchMergePolicySchema>;
+
+export const planDispatchRunSchema = z.object({
+  id: z.string().min(1),
+  project_id: z.string().min(1),
+  delivery_id: z.string().min(1),
+  plan_id: z.string().min(1),
+  work_id: z.string().min(1),
+  revision_id: z.string().min(1),
+  content_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  issue_number: z.number().int().positive(),
+  role: planMemberRoleSchema,
+  gate_profile: planGateProfileSchema,
+  merge_policy: dispatchMergePolicySchema,
+  target_branch: z.string().min(1),
+  ownership_generation: z.number().int().positive(),
+  state: dispatchRunStateSchema,
+  actor: z.string().min(1),
+  command_request_id: z.string().min(1),
+  branch: z.string().min(1),
+  worktree_path: z.string().min(1),
+  base_sha: z.string().min(1),
+  owner_pid: z.number().int().positive().nullable(),
+  owner_token: z.string().min(1),
+  lease_expires_at: z.number().int().nonnegative().nullable(),
+  head_sha: z.string().nullable(),
+  error: z.string().nullable(),
+  launched_at: z.number().int().nonnegative().nullable(),
+  finished_at: z.number().int().nonnegative().nullable(),
+  created_at: z.number().int().nonnegative(),
+  updated_at: z.number().int().nonnegative(),
+});
+export type PlanDispatchRun = z.infer<typeof planDispatchRunSchema>;
+export const planDispatchRunListSchema = z.array(planDispatchRunSchema);
+export type PlanDispatchRunList = z.infer<typeof planDispatchRunListSchema>;
+
+export const planDispatchSubmissionSchema = z
+  .object({
+    plan_id: z.string().min(1),
+    work_id: z.string().min(1).optional(),
+    issue_number: z.number().int().positive().optional(),
+    actor: z.string().min(1).max(200).optional(),
+  })
+  .strict()
+  .refine((value) => !(value.work_id && value.issue_number), {
+    message: "Provide at most one of work_id or issue_number",
+  });
+export type PlanDispatchSubmission = z.infer<typeof planDispatchSubmissionSchema>;
+
+export const planDispatchReconcileSubmissionSchema = z
+  .object({
+    actor: z.string().min(1).max(200).optional(),
+  })
+  .strict();
+export type PlanDispatchReconcileSubmission = z.infer<typeof planDispatchReconcileSubmissionSchema>;
+
+export const planDispatchReconciliationSchema = z.object({
+  reconciled: z.array(planDispatchRunSchema),
+  retained: z.array(planDispatchRunSchema),
+  timestamp: z.string(),
+});
+export type PlanDispatchReconciliation = z.infer<typeof planDispatchReconciliationSchema>;
+
 export const evaluatedIssueSchema = z.object({
   number: z.number().int().positive(),
   title: z.string(),
