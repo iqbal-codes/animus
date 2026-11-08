@@ -24,6 +24,7 @@ import { RunControlManager, type ProcessTreeTerminator } from "./run-controls";
 import { GateAndReleaseManager } from "./gates-and-release";
 import { ReportSanitizer } from "@animus/contracts/sanitizer";
 import { EvidenceError } from "./errors";
+import { ExecutionObservationService } from "./observations";
 
 export class EvidenceService {
   public readonly verificationEngine: CandidateVerificationEngine;
@@ -32,12 +33,15 @@ export class EvidenceService {
   public readonly runControls: RunControlManager;
   public readonly gateAndRelease: GateAndReleaseManager;
   public readonly sanitizer: ReportSanitizer;
+  public readonly observations: ExecutionObservationService;
 
   constructor(
     private db: DatabaseSync,
     private forge?: ForgeAdapter,
     private ledger?: CommandLedger,
+    observations?: ExecutionObservationService,
   ) {
+    this.observations = observations ?? new ExecutionObservationService(db);
     this.verificationEngine = new CandidateVerificationEngine(db);
     this.landingGuard = new LandingGuard(this.verificationEngine, db);
     this.tieredActions = new TieredActionMatrix();

@@ -246,4 +246,204 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
     expect(await screen.findByTestId("dispatch-empty")).toBeTruthy();
     expect(screen.getByText(/No admitted plans for this project/)).toBeTruthy();
   });
+
+  test("DispatchControl exposes the selected run's checks, findings, artifacts and acceptance", async () => {
+    const plan = {
+      id: "plan-1",
+      project_id: "proj-1",
+      kind: "standalone" as const,
+      root_work_id: "work-1",
+      root_issue_number: 714,
+      root_title: "Standalone delivery",
+      graph_hash: "a".repeat(64),
+      authority: "admitted" as const,
+      member_count: 1,
+      ticket_count: 1,
+      hold_count: 0,
+      accepted_revision_id: "rev-1",
+      created_at: 1,
+      updated_at: 1,
+    };
+    const run = {
+      id: "run-1",
+      project_id: "proj-1",
+      delivery_id: "del-1",
+      plan_id: "plan-1",
+      work_id: "work-1",
+      revision_id: "rev-1",
+      content_hash: "b".repeat(64),
+      issue_number: 714,
+      role: "ticket" as const,
+      gate_profile: "standalone" as const,
+      merge_policy: "manual" as const,
+      target_branch: "main",
+      ownership_generation: 1,
+      state: "succeeded" as const,
+      actor: "operator",
+      command_request_id: "cmd-1",
+      branch: "factory/standalone-714",
+      worktree_path: "/tmp/worktree",
+      base_sha: "c".repeat(40),
+      owner_pid: 1,
+      owner_token: "token",
+      lease_expires_at: null,
+      head_sha: "d".repeat(40),
+      error: null,
+      launched_at: 1,
+      finished_at: 1,
+      created_at: 1,
+      updated_at: 1,
+    };
+    const report = {
+      observations: [
+        {
+          id: "obs-1",
+          projectId: "proj-1",
+          deliveryId: "del-1",
+          runId: "run-1",
+          lap: 1,
+          stage: "independent_review",
+          status: "passed",
+          candidateHeadSha: "d".repeat(40),
+          targetTipSha: "c".repeat(40),
+          mergeBaseSha: "c".repeat(40),
+          testedIdentity: "d".repeat(40),
+          integrationLineage: `${"a".repeat(64)}@main`,
+          producer: { id: "reviewer-2", role: "peer_reviewer" },
+          gateProfile: "standalone",
+          gateProfileVersion: 1,
+          error: null,
+          createdAt: 1,
+          checks: [
+            {
+              id: "chk-1",
+              observationId: "obs-1",
+              name: "unit",
+              command: "bun test",
+              result: "PASS",
+              durationMs: 12,
+              detail: null,
+              artifactPath: "checks/report.log",
+              createdAt: 1,
+            },
+          ],
+          artifacts: [
+            {
+              id: "art-1",
+              projectId: "proj-1",
+              observationId: "obs-1",
+              ownerType: "observation",
+              ownerId: "obs-1",
+              name: "unit-report",
+              relativePath: "checks/report.log",
+              mediaType: "text/plain",
+              sizeBytes: 26,
+              digestSha256: "e".repeat(64),
+              createdAt: 1,
+            },
+          ],
+        },
+      ],
+      findings: [
+        {
+          id: "find-1",
+          projectId: "proj-1",
+          deliveryId: "del-1",
+          runId: "run-1",
+          workId: "work-1",
+          issueNumber: 714,
+          acKey: "AC1",
+          severity: "blocking",
+          fileContext: "apps/backend/src/example.ts:10",
+          summary: "prepared criterion is not implemented",
+          originObservationId: "obs-0",
+          status: "resolved",
+          createdAt: 1,
+          resolvedAt: 2,
+          events: [
+            {
+              id: "evt-1",
+              findingId: "find-1",
+              sequence: 1,
+              action: "opened",
+              actor: "gate-1",
+              actorRole: "automated_gate",
+              observationId: "obs-0",
+              detail: null,
+              createdAt: 1,
+            },
+            {
+              id: "evt-2",
+              findingId: "find-1",
+              sequence: 2,
+              action: "recheck_passed",
+              actor: "reviewer-2",
+              actorRole: "peer_reviewer",
+              observationId: "obs-1",
+              detail: null,
+              createdAt: 2,
+            },
+          ],
+        },
+      ],
+      acceptance: {
+        runId: "run-1",
+        projectId: "proj-1",
+        deliveryId: "del-1",
+        gateProfile: "standalone",
+        candidateHeadSha: "d".repeat(40),
+        targetTipSha: "c".repeat(40),
+        mergeBaseSha: "c".repeat(40),
+        integrationLineage: `${"a".repeat(64)}@main`,
+        authorized: true,
+        reasons: [],
+        builderObservationId: "obs-0",
+        independentObservationId: "obs-1",
+        openBlockingFindingIds: [],
+        verifiedArtifactIds: ["art-1"],
+      },
+    };
+    const evidenceRequests: string[] = [];
+    const factory = {
+      projects: async () => [mockProjects[0]!],
+      forProject: () => ({
+        plans: async () => [plan],
+        dispatchRuns: async () => [run],
+        dispatchPlan: async () => {
+          throw new Error("must not dispatch");
+        },
+        runEvidence: async (runId: string) => {
+          evidenceRequests.push(runId);
+          return report;
+        },
+      }),
+    } as any;
+
+    render(<DispatchControl factory={factory} />);
+    const button = await screen.findByRole("button", { name: "View evidence" });
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+    expect(button.getAttribute("aria-controls")).toBe("run-evidence-run-1");
+    fireEvent.click(button);
+
+    const panel = await screen.findByTestId("run-evidence-run-1");
+    expect(evidenceRequests).toEqual(["run-1"]);
+    expect(
+      screen.getByRole("button", { name: "Hide evidence" }).getAttribute("aria-expanded"),
+    ).toBe("true");
+    expect(panel.textContent).toContain("Acceptance authorized");
+    expect(panel.textContent).toContain("independent_review");
+    expect(panel.textContent).toContain("bun test");
+    expect(panel.textContent).toContain("checks/report.log");
+    expect(panel.textContent).toContain("prepared criterion is not implemented");
+    expect(panel.textContent).toContain("recheck_passed");
+    expect(screen.getByLabelText("Finalized artifacts")).toBeTruthy();
+    expect(screen.getByLabelText("Factory findings")).toBeTruthy();
+
+    // Collapsing hides the panel without dropping the cached evidence.
+    fireEvent.click(screen.getByRole("button", { name: "Hide evidence" }));
+    await waitFor(() => expect(screen.queryByTestId("run-evidence-run-1")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "View evidence" }));
+    expect(await screen.findByTestId("run-evidence-run-1")).toBeTruthy();
+    expect(evidenceRequests).toEqual(["run-1"]);
+  });
 });

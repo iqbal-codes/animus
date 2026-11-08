@@ -41,6 +41,7 @@ import {
   readExecutionAuthority,
   type ExecutionAuthority,
 } from "@animus/contracts/execution-authority";
+import { ExecutionObservationService } from "../evidence/observations";
 import {
   allocateWorktree,
   type WorktreeAllocation,
@@ -147,6 +148,7 @@ export interface DispatchServiceOptions {
   gitRunner?: (cmd: string[], options: { cwd: string }) => string;
   authority?: () => ExecutionAuthority;
   engine?: DispatchEngineOptions;
+  observations?: ExecutionObservationService;
 }
 
 interface ProjectRow {
@@ -263,6 +265,7 @@ export class DispatchService {
   private readonly legacyActiveLaps: (checkoutPath: string) => number;
   private readonly gitRunner: (cmd: string[], options: { cwd: string }) => string;
   private readonly authority: () => ExecutionAuthority;
+  private readonly observations: ExecutionObservationService;
 
   constructor(
     private readonly db: DatabaseSync,
@@ -283,6 +286,7 @@ export class DispatchService {
       ((checkoutPath) => countActiveLaps(resolveProjectWorkspace(checkoutPath).runsDir));
     this.gitRunner = options.gitRunner ?? defaultGitRunner;
     this.authority = options.authority ?? (() => readExecutionAuthority().authority);
+    this.observations = options.observations ?? new ExecutionObservationService(db);
   }
 
   async dispatch(projectId: string, submission: DispatchSubmission): Promise<PlanDispatchRun> {
@@ -556,57 +560,88 @@ export class DispatchService {
 
   private finalize(run: PlanDispatchRun, result: DispatchRunResult): PlanDispatchRun {
     const verified = this.verifyCandidate(run, result);
-    const current = this.db
-      .prepare("SELECT * FROM dispatch_runs WHERE id = ?")
-      .get(run.id) as unknown as DispatchRunRow | undefined;
-    if (
-      !current ||
-      current.ownership_generation !== run.ownership_generation ||
-      current.owner_token !== run.owner_token ||
-      !(ACTIVE_STATES as readonly string[]).includes(current.state)
-    ) {
-      this.failCommand(
-        run.command_request_id,
-        "stale_worker",
-        "result superseded by a newer owner",
-      );
-      throw new DispatchError(
-        "stale_worker",
-        "Worker result was superseded by a newer ownership generation",
-      );
-    }
-
-    const now = this.clock();
     const nextState = verified.success ? "succeeded" : "failed";
     const error = verified.success ? null : (verified.error ?? "dispatch_failed");
-    const changed = this.db
-      .prepare(
-        `UPDATE dispatch_runs
-         SET state = ?, head_sha = ?, error = ?, finished_at = ?, updated_at = ?
-         WHERE id = ? AND ownership_generation = ? AND owner_token = ?
-           AND state IN ('running', 'dispatched', 'interrupted')`,
-      )
-      .run(
-        nextState,
-        verified.success ? (verified.headSha ?? null) : null,
-        error,
-        now,
-        now,
-        run.id,
-        run.ownership_generation,
-        run.owner_token,
-      ) as { changes: number };
+    const now = this.clock();
 
-    if (changed.changes === 0) {
-      this.failCommand(
-        run.command_request_id,
-        "stale_worker",
-        "result superseded by a newer owner",
-      );
-      throw new DispatchError(
-        "stale_worker",
-        "Worker result was superseded by a newer ownership generation",
-      );
+    try {
+      // The terminal state and its immutable stage observation commit together so a
+      // partial persistence cannot report a result without its evidence.
+      this.db.exec("BEGIN IMMEDIATE;");
+      const current = this.db
+        .prepare("SELECT * FROM dispatch_runs WHERE id = ?")
+        .get(run.id) as unknown as DispatchRunRow | undefined;
+      if (
+        !current ||
+        current.ownership_generation !== run.ownership_generation ||
+        current.owner_token !== run.owner_token ||
+        !(ACTIVE_STATES as readonly string[]).includes(current.state)
+      ) {
+        throw new DispatchError(
+          "stale_worker",
+          "Worker result was superseded by a newer ownership generation",
+        );
+      }
+
+      const changed = this.db
+        .prepare(
+          `UPDATE dispatch_runs
+           SET state = ?, head_sha = ?, error = ?, finished_at = ?, updated_at = ?
+           WHERE id = ? AND ownership_generation = ? AND owner_token = ?
+             AND state IN ('running', 'dispatched', 'interrupted')`,
+        )
+        .run(
+          nextState,
+          verified.success ? (verified.headSha ?? null) : null,
+          error,
+          now,
+          now,
+          run.id,
+          run.ownership_generation,
+          run.owner_token,
+        ) as { changes: number };
+
+      if (changed.changes === 0) {
+        throw new DispatchError(
+          "stale_worker",
+          "Worker result was superseded by a newer ownership generation",
+        );
+      }
+
+      this.observations.recordRunObservation(run.project_id, run.id, {
+        stage: "builder_execution",
+        status: verified.success ? "passed" : "failed",
+        producer: { id: run.actor, role: "builder", name: "dispatch-builder" },
+        checks: [
+          {
+            name: "builder_commit",
+            command: "git rev-parse HEAD",
+            result: verified.success ? "PASS" : "FAIL",
+            detail: verified.success
+              ? `candidate ${verified.headSha ?? ""}`
+              : (verified.error ?? "dispatch_failed"),
+          },
+        ],
+        findings: [],
+        artifacts: [],
+      });
+
+      this.db.exec("COMMIT;");
+    } catch (caught) {
+      try {
+        this.db.exec("ROLLBACK;");
+      } catch {}
+      if (caught instanceof DispatchError) {
+        this.failCommand(
+          run.command_request_id,
+          caught.code === "stale_worker" ? "stale_worker" : "storage_failed",
+          caught.message,
+        );
+        throw caught;
+      }
+      const message = caught instanceof Error ? caught.message : String(caught);
+      this.failCommand(run.command_request_id, "storage_failed", message);
+      throw new DispatchError("storage_failed", message);
     }
 
     clearWorkerOwner(run.id);

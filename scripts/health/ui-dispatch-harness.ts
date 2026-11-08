@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { createBackendApp } from "../../apps/backend/src/main";
 import { ProjectRegistryService, SyntheticForgeAdapter } from "../../apps/backend/src/registry";
 import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
+import { ExecutionObservationService } from "../../apps/backend/src/evidence";
 
 // Manual UI/persistence verification only: the process boundary commits locally,
 // while the real application owns admission, claims, worktrees, and run records.
@@ -70,6 +71,7 @@ const project = await new ProjectRegistryService(app.db, forge).registerProject(
   name: "Dispatch verification",
   checkout_path: checkout,
 });
+const plans = new Map<number, string>();
 for (const number of [500, 501]) {
   const response = await app.fetch(
     new Request(`http://127.0.0.1/api/v1/projects/${project.id}/plans/import`, {
@@ -79,7 +81,55 @@ for (const number of [500, 501]) {
     }),
   );
   if (!response.ok) throw new Error(`Admission failed: ${await response.text()}`);
+  plans.set(number, ((await response.json()) as { id: string }).id);
 }
+
+// Seed a real candidate-bound evidence trail for the successful delivery so the
+// operator surface renders actual checks, findings, artifacts and acceptance.
+const dispatchResponse = await app.fetch(
+  new Request(`http://127.0.0.1/api/v1/projects/${project.id}/dispatch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ plan_id: plans.get(500), actor: "operator" }),
+  }),
+);
+if (!dispatchResponse.ok) throw new Error(`Seed dispatch failed: ${await dispatchResponse.text()}`);
+const seedRun = (await dispatchResponse.json()) as { id: string };
+const evidence = new ExecutionObservationService(app.db);
+const artifactDir = join(root, "home", "state", "artifacts", project.id, "checks");
+mkdirSync(artifactDir, { recursive: true });
+writeFileSync(join(artifactDir, "report.log"), "independent review passed\n");
+evidence.recordRunObservation(project.id, seedRun.id, {
+  stage: "technical_checks",
+  status: "failed",
+  producer: { id: "gate-1", role: "automated_gate" },
+  checks: [{ name: "unit", command: "bun test", result: "FAIL", detail: "1 failing" }],
+  findings: [
+    {
+      severity: "blocking",
+      acKey: "AC1",
+      fileContext: "apps/backend/src/example.ts:10",
+      summary: "prepared criterion is not implemented",
+    },
+  ],
+});
+const [seedFinding] = evidence.listFindings(project.id, { runId: seedRun.id });
+evidence.recordFindingFix(project.id, seedFinding!.id, { actor: "operator" });
+evidence.recordFindingRecheck(project.id, seedFinding!.id, {
+  producer: { id: "reviewer-2", role: "peer_reviewer" },
+  status: "passed",
+  checks: [
+    { name: "unit", command: "bun test", result: "PASS", artifactPath: "checks/report.log" },
+  ],
+  artifacts: [
+    {
+      ownerType: "observation",
+      name: "unit-report",
+      relativePath: "checks/report.log",
+      mediaType: "text/plain",
+    },
+  ],
+});
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,

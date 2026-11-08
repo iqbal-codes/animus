@@ -17,10 +17,13 @@ import {
 import { CommandService } from "../../../apps/backend/src/command";
 import type {
   ControlAction,
+  ExecutionObservationRecord,
+  FactoryFindingRecord,
   PlanDispatchRun,
   PlanKind,
   PlanRecord,
   Project,
+  RunEvidenceReport,
   WorkRecord,
 } from "@animus/contracts/operator";
 
@@ -538,7 +541,7 @@ export async function runPlanCommand(
   try {
     if (!opts.projectId) {
       throw new Error(
-        "Usage: factory plan <list|get|import|approve|revoke|dispatch|runs|run|reconcile> --project <project-id>",
+        "Usage: factory plan <list|get|import|approve|revoke|dispatch|runs|run|evidence|findings|reconcile> --project <project-id>",
       );
     }
     const scoped = createRegistrationClient(opts).forProject(opts.projectId);
@@ -670,8 +673,35 @@ export async function runPlanCommand(
       const runId = opts.positionals[2];
       if (!runId) throw new Error("Usage: factory plan run <run-id> --project <project-id>");
       const run = await scoped.dispatchRun(runId);
-      if (opts.json) console.log(JSON.stringify(run, null, 2));
-      else printRun(run);
+      if (opts.json) {
+        console.log(JSON.stringify(run, null, 2));
+      } else {
+        printRun(run);
+        printEvidence(await scoped.runEvidence(runId));
+      }
+      return 0;
+    }
+
+    if (sub === "evidence") {
+      const runId = opts.positionals[2];
+      if (!runId) throw new Error("Usage: factory plan evidence <run-id> --project <project-id>");
+      const report = await scoped.runEvidence(runId);
+      if (opts.json) console.log(JSON.stringify(report, null, 2));
+      else printEvidence(report);
+      return 0;
+    }
+
+    if (sub === "findings") {
+      const runId = opts.positionals[2];
+      const findings = await scoped.findings(runId ? { runId } : undefined);
+      if (opts.json) {
+        console.log(JSON.stringify(findings, null, 2));
+      } else if (findings.length === 0) {
+        console.log("No findings.");
+      } else {
+        console.log(`Findings (${findings.length}):`);
+        for (const finding of findings) printFinding(finding, "  ");
+      }
       return 0;
     }
 
@@ -696,7 +726,7 @@ export async function runPlanCommand(
     }
 
     throw new Error(
-      `Unknown plan subcommand: ${sub}. Expected list, get, import, approve, revoke, dispatch, runs, run, reconcile.`,
+      `Unknown plan subcommand: ${sub}. Expected list, get, import, approve, revoke, dispatch, runs, run, evidence, findings, reconcile.`,
     );
   } catch (err: any) {
     const msg = err?.message ?? String(err);
@@ -722,6 +752,52 @@ function printRun(run: PlanDispatchRun, indent = ""): void {
   console.log(`${indent}  Worktree:  ${run.worktree_path}  branch=${run.branch}`);
   if (run.head_sha) console.log(`${indent}  Head:      ${run.head_sha}`);
   if (run.error) console.log(`${indent}  Error:     ${run.error}`);
+}
+
+function printEvidence(report: RunEvidenceReport): void {
+  console.log("  Checks & findings:");
+  console.log(`  Observations (${report.observations.length}):`);
+  for (const observation of report.observations) printObservation(observation, "    ");
+  console.log(`  Findings (${report.findings.length}):`);
+  for (const finding of report.findings) printFinding(finding, "    ");
+  const acceptance = report.acceptance;
+  console.log(
+    `  Acceptance: ${acceptance.authorized ? "AUTHORIZED" : "BLOCKED"}  candidate=${acceptance.candidateHeadSha ?? "none"} target=${acceptance.targetTipSha ?? "none"}`,
+  );
+  for (const reason of acceptance.reasons) console.log(`    blocked: ${reason}`);
+}
+
+function printObservation(observation: ExecutionObservationRecord, indent: string): void {
+  console.log(
+    `${indent}${observation.stage} [${observation.status}] lap=${observation.lap} producer=${observation.producer.id}(${observation.producer.role}) profile=${observation.gateProfile}@v${observation.gateProfileVersion}`,
+  );
+  console.log(
+    `${indent}  candidate=${observation.candidateHeadSha} target=${observation.targetTipSha} merge-base=${observation.mergeBaseSha}`,
+  );
+  console.log(
+    `${indent}  tested=${observation.testedIdentity} lineage=${observation.integrationLineage}`,
+  );
+  for (const check of observation.checks) {
+    console.log(`${indent}  check ${check.result} ${check.name}: ${check.command}`);
+    if (check.detail) console.log(`${indent}    ${check.detail}`);
+  }
+  for (const artifact of observation.artifacts) {
+    console.log(
+      `${indent}  artifact ${artifact.ownerType}:${artifact.ownerId} ${artifact.relativePath} ${artifact.sizeBytes}B sha256=${artifact.digestSha256}`,
+    );
+  }
+}
+
+function printFinding(finding: FactoryFindingRecord, indent: string): void {
+  console.log(
+    `${indent}${finding.id} [${finding.severity}/${finding.status}] #${finding.issueNumber}${finding.acKey ? ` ${finding.acKey}` : ""} ${finding.fileContext}`,
+  );
+  console.log(`${indent}  ${finding.summary}`);
+  for (const event of finding.events) {
+    console.log(
+      `${indent}  ${event.sequence}. ${event.action} by ${event.actor} (${event.actorRole})${event.observationId ? ` obs=${event.observationId}` : ""}${event.detail ? `: ${event.detail}` : ""}`,
+    );
+  }
 }
 
 function printPlan(plan: PlanRecord): void {
