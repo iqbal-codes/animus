@@ -23,6 +23,7 @@ import type {
   PlanDispatchRun,
   DraftAnswerInput,
   DraftRecord,
+  DraftPublication,
   PlanKind,
   PlanRecord,
   Project,
@@ -524,7 +525,7 @@ export async function runDraftCommand(
   try {
     if (!opts.projectId) {
       throw new Error(
-        "Usage: factory draft <list|get|refine|revise|approve|reject|request-changes> --project <project-id>",
+        "Usage: factory draft <list|get|refine|revise|approve|reject|request-changes|publish|publication|publications|reconcile-publication> --project <project-id>",
       );
     }
     const scoped = createRegistrationClient(opts).forProject(opts.projectId);
@@ -604,8 +605,57 @@ export async function runDraftCommand(
       return 0;
     }
 
+    if (sub === "publish") {
+      const draftId = opts.positionals[2];
+      if (!draftId)
+        throw new Error("Usage: factory draft publish <draft-id> --project <project-id>");
+      const publication = await scoped.publishDraft(draftId);
+      if (opts.json) console.log(JSON.stringify(publication, null, 2));
+      else printDraftPublication(publication);
+      return publication.state === "failed" || publication.state === "unknown" ? 1 : 0;
+    }
+
+    if (sub === "reconcile-publication") {
+      const publicationId = opts.positionals[2];
+      if (!publicationId)
+        throw new Error(
+          "Usage: factory draft reconcile-publication <publication-id> --project <project-id>",
+        );
+      const publication = await scoped.reconcileDraftPublication(publicationId);
+      if (opts.json) console.log(JSON.stringify(publication, null, 2));
+      else printDraftPublication(publication);
+      return publication.state === "failed" || publication.state === "unknown" ? 1 : 0;
+    }
+
+    if (sub === "publication") {
+      const draftId = opts.positionals[2];
+      if (!draftId)
+        throw new Error("Usage: factory draft publication <draft-id> --project <project-id>");
+      const publication = await scoped.draftPublicationByDraft(draftId);
+      if (opts.json) console.log(JSON.stringify(publication, null, 2));
+      else printDraftPublication(publication);
+      return 0;
+    }
+
+    if (sub === "publications") {
+      const items = await scoped.draftPublications();
+      if (opts.json) {
+        console.log(JSON.stringify(items, null, 2));
+      } else if (items.length === 0) {
+        console.log("No draft publications.");
+      } else {
+        console.log(`Draft publications (${items.length}):`);
+        for (const item of items) {
+          console.log(
+            `  ${item.id}  ${item.state.padEnd(11)} kind=${item.kind} draft=${item.draftId} rev=${item.revisionNumber} source=#${item.sourceIssueNumber}`,
+          );
+        }
+      }
+      return 0;
+    }
+
     throw new Error(
-      `Unknown draft subcommand: ${sub}. Expected list, get, refine, revise, approve, reject, or request-changes.`,
+      `Unknown draft subcommand: ${sub}. Expected list, get, refine, revise, approve, reject, request-changes, publish, publication, publications, or reconcile-publication.`,
     );
   } catch (err: any) {
     const msg = err?.message ?? String(err);
@@ -689,6 +739,57 @@ function printDraft(record: DraftRecord): void {
       `  Decision:    ${record.latest_decision.decision} rev=${record.latest_decision.revision_number} (${record.latest_decision.reason})`,
     );
   }
+}
+
+function printDraftPublication(publication: DraftPublication): void {
+  console.log(`Draft publication ${publication.id} (${publication.state})`);
+  console.log(`  Draft:       ${publication.draftId} revision ${publication.revisionNumber}`);
+  console.log(`  Kind:        ${publication.kind}`);
+  console.log(`  Source:      #${publication.sourceIssueNumber} (original request preserved)`);
+  console.log(
+    `  Contract:    ${publication.specIssueNumber ? `#${publication.specIssueNumber}` : "not published"}`,
+  );
+  console.log(`  Plan:        ${publication.planId ?? "not admitted"}`);
+  if (publication.integrationBranch) {
+    console.log(`  Integration: ${publication.integrationBranch}`);
+  }
+  if (publication.lastError) console.log(`  Error:       ${publication.lastError}`);
+  if (publication.members.length > 0) {
+    console.log("  Members:");
+    for (const member of publication.members) {
+      console.log(
+        `    ${member.nodeKey.padEnd(16)} ${member.role.padEnd(6)} ${member.state.padEnd(8)} ${member.issueNumber ? `#${member.issueNumber}` : "(pending)"}  ${member.title}`,
+      );
+    }
+  }
+  if (publication.relationships.length > 0) {
+    console.log("  Relationships:");
+    for (const relationship of publication.relationships) {
+      console.log(
+        `    ${relationship.kind.padEnd(12)} ${relationship.fromNodeKey} -> ${relationship.toNodeKey}  ${relationship.source} ${relationship.state}${relationship.detail ? ` (${relationship.detail})` : ""}`,
+      );
+    }
+  }
+  const failed = publication.intents.filter(
+    (intent) => intent.state === "failed" || intent.state === "unknown",
+  );
+  if (failed.length > 0) {
+    console.log("  Unresolved operations:");
+    for (const intent of failed) {
+      console.log(
+        `    ${intent.kind} ${intent.operationKey} state=${intent.state} ${intent.lastError ?? ""}`,
+      );
+    }
+  }
+  if (publication.holds.length > 0) {
+    console.log("  Admission holds:");
+    for (const hold of publication.holds) {
+      console.log(`    ${hold.code} (${hold.severity}): ${hold.detail}`);
+    }
+  }
+  console.log(
+    `  Admitted:    ${publication.planAuthority === "admitted" ? "yes" : "no"} (${publication.planAuthority ?? "not evaluated"})`,
+  );
 }
 
 function printWork(record: WorkRecord): void {

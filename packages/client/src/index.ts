@@ -85,6 +85,9 @@ import {
   publicationStatusSchema,
   publicationStatusListSchema,
   publicationEvidenceBindingRequestSchema,
+  draftPublicationSchema,
+  draftPublicationListSchema,
+  draftPublicationSubmissionSchema,
   landingGuardResultSchema,
   landingSubmissionSchema,
   landingExecutionResultSchema,
@@ -148,6 +151,8 @@ import {
   type DraftRefineSubmission,
   type DraftRevisionSubmission,
   type DraftDecisionSubmission,
+  type DraftPublication,
+  type DraftPublicationList,
   type PlanList,
   type PlanRecord,
   type PlanImportSubmission,
@@ -233,6 +238,9 @@ export {
   publicationStatusSchema,
   publicationStatusListSchema,
   publicationEvidenceBindingRequestSchema,
+  draftPublicationSchema,
+  draftPublicationListSchema,
+  draftPublicationSubmissionSchema,
   planListSchema,
   planRecordSchema,
   planImportSubmissionSchema,
@@ -712,6 +720,33 @@ export function createFactoryClient(options: {
             `${scopedBase}/drafts/${encodeURIComponent(draftId)}/decisions`,
             parsed.data,
             draftRecordSchema,
+          );
+        },
+        async draftPublications(): Promise<DraftPublicationList> {
+          return getJson(`${scopedBase}/draft-publications`, draftPublicationListSchema);
+        },
+        async draftPublication(publicationId: string): Promise<DraftPublication> {
+          return getJson(
+            `${scopedBase}/draft-publications/${encodeURIComponent(publicationId)}`,
+            draftPublicationSchema,
+          );
+        },
+        async draftPublicationByDraft(draftId: string): Promise<DraftPublication> {
+          return getJson(
+            `${scopedBase}/draft-publications/by-draft/${encodeURIComponent(draftId)}`,
+            draftPublicationSchema,
+          );
+        },
+        async publishDraft(draftId: string): Promise<DraftPublication> {
+          const parsed = draftPublicationSubmissionSchema.safeParse({ draft_id: draftId });
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(`${scopedBase}/draft-publications`, parsed.data, draftPublicationSchema);
+        },
+        async reconcileDraftPublication(publicationId: string): Promise<DraftPublication> {
+          return postJson(
+            `${scopedBase}/draft-publications/${encodeURIComponent(publicationId)}/reconcile`,
+            {},
+            draftPublicationSchema,
           );
         },
         async plans(): Promise<PlanList> {
