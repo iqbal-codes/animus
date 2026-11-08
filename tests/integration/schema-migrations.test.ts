@@ -17,6 +17,7 @@ const DISPATCH_V4 = "delivery_dispatch_ownership";
 const EVIDENCE_V5 = "execution_observations_findings_artifacts";
 const BUDGET_V6 = "execution_budgets_and_controls";
 const PUBLICATION_V7 = "publication_audit_outgoing_intents";
+const DRAFT_PUBLICATION_V10 = "approved_draft_issue_publication";
 const RESTORE_V11 = "workspace_backup_restore";
 
 const ALL_MIGRATIONS = [
@@ -27,6 +28,8 @@ const ALL_MIGRATIONS = [
   { version: 5, name: EVIDENCE_V5 },
   { version: 6, name: BUDGET_V6 },
   { version: 7, name: PUBLICATION_V7 },
+  // Versions 8 (#158) and 9 (#159) are reserved for their lanes.
+  { version: 10, name: DRAFT_PUBLICATION_V10 },
   { version: 11, name: RESTORE_V11 },
 ];
 
@@ -143,6 +146,9 @@ describe("coherent schema migration registry", () => {
         "publication_intents",
         "publication_evidence_bindings",
         "publication_summaries",
+        "draft_publications",
+        "draft_publication_members",
+        "draft_publication_relationships",
       ]) {
         expect(tableExists(db, table)).toBe(true);
       }

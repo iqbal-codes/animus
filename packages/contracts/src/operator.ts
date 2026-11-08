@@ -111,6 +111,16 @@ export const operatorErrorSchema = z.object({
     "draft_planning_unavailable",
     "draft_planning_failed",
     "draft_storage_failed",
+    "draft_publication_not_found",
+    "draft_publication_project_not_found",
+    "draft_publication_not_approved",
+    "draft_publication_not_publishable",
+    "draft_publication_stale_revision",
+    "draft_publication_draft_changed",
+    "draft_publication_transport_unsupported",
+    "draft_publication_invalid_plan",
+    "draft_publication_source_missing",
+    "draft_publication_failed",
     "plan_import_failed",
     "observation_not_found",
     "finding_not_found",
@@ -2077,6 +2087,136 @@ export const publicationStatusSchema = z.object({
 export type PublicationStatus = z.infer<typeof publicationStatusSchema>;
 export const publicationStatusListSchema = z.array(publicationStatusSchema);
 export type PublicationStatusList = z.infer<typeof publicationStatusListSchema>;
+
+/**
+ * Approved draft revision publication into real GitHub spec/ticket issues.
+ *
+ * This is deliberately separate from delivery PR publication: it publishes the
+ * operator-approved contract graph, then hands the confirmed issue identities to
+ * the same frozen plan admission as skill-prepared work. It never dispatches a
+ * builder and never mutates the original report.
+ */
+export const draftPublicationStateSchema = z.enum([
+  "pending",
+  "publishing",
+  "published",
+  "admitted",
+  "failed",
+  "unknown",
+]);
+export type DraftPublicationState = z.infer<typeof draftPublicationStateSchema>;
+
+export const draftPublicationMemberStateSchema = z.enum([
+  "pending",
+  "created",
+  "verified",
+  "failed",
+]);
+export type DraftPublicationMemberState = z.infer<typeof draftPublicationMemberStateSchema>;
+
+export const draftPublicationRelationshipStateSchema = z.enum([
+  "pending",
+  "verified",
+  "fallback_textual",
+  "unknown",
+  "failed",
+]);
+export type DraftPublicationRelationshipState = z.infer<
+  typeof draftPublicationRelationshipStateSchema
+>;
+
+export const draftPublicationIntentKindSchema = z.enum([
+  "create_issue",
+  "create_issue_relationship",
+  "link_source_issue",
+]);
+export type DraftPublicationIntentKind = z.infer<typeof draftPublicationIntentKindSchema>;
+
+export const draftPublicationResourceKindSchema = z.enum(["issue", "relationship"]);
+export type DraftPublicationResourceKind = z.infer<typeof draftPublicationResourceKindSchema>;
+
+export const draftPublicationMemberSchema = z.object({
+  id: z.string().min(1),
+  publicationId: z.string().min(1),
+  nodeKey: z.string().min(1),
+  role: planMemberRoleSchema,
+  ordinal: z.number().int().nonnegative(),
+  title: z.string().min(1),
+  labels: z.array(z.string()),
+  issueNumber: z.number().int().positive().nullable(),
+  workId: z.string().min(1).nullable(),
+  state: draftPublicationMemberStateSchema,
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type DraftPublicationMember = z.infer<typeof draftPublicationMemberSchema>;
+
+export const draftPublicationRelationshipSchema = z.object({
+  id: z.string().min(1),
+  publicationId: z.string().min(1),
+  kind: z.enum(["parent_child", "dependency"]),
+  fromNodeKey: z.string().min(1),
+  toNodeKey: z.string().min(1),
+  fromIssueNumber: z.number().int().positive().nullable(),
+  toIssueNumber: z.number().int().positive().nullable(),
+  source: planDependencySourceSchema,
+  state: draftPublicationRelationshipStateSchema,
+  detail: z.string().nullable(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type DraftPublicationRelationship = z.infer<typeof draftPublicationRelationshipSchema>;
+
+export const draftPublicationIntentSchema = z.object({
+  id: z.string().min(1),
+  publicationId: z.string().min(1),
+  projectId: z.string().min(1),
+  operationKey: z.string().min(1),
+  kind: draftPublicationIntentKindSchema,
+  resourceKind: draftPublicationResourceKindSchema,
+  state: publicationIntentStateSchema,
+  attempts: z.number().int().nonnegative(),
+  remoteObjectId: z.string().min(1).nullable(),
+  remoteUrl: z.string().min(1).nullable(),
+  lastError: z.string().nullable(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type DraftPublicationIntent = z.infer<typeof draftPublicationIntentSchema>;
+
+export const draftPublicationSchema = z.object({
+  id: z.string().min(1),
+  projectId: z.string().min(1),
+  draftId: z.string().min(1),
+  revisionId: z.string().min(1),
+  revisionNumber: z.number().int().positive(),
+  planHash: z.string().regex(/^[a-f0-9]{64}$/),
+  kind: planKindSchema,
+  state: draftPublicationStateSchema,
+  sourceIssueNumber: z.number().int().positive(),
+  specIssueNumber: z.number().int().positive().nullable(),
+  integrationBranch: z.string().min(1).nullable(),
+  deliveryBranch: z.string().min(1),
+  planId: z.string().min(1).nullable(),
+  planAuthority: planAuthoritySchema.nullable(),
+  holds: z.array(planHoldSchema),
+  lastError: z.string().nullable(),
+  members: z.array(draftPublicationMemberSchema),
+  relationships: z.array(draftPublicationRelationshipSchema),
+  intents: z.array(draftPublicationIntentSchema),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type DraftPublication = z.infer<typeof draftPublicationSchema>;
+export const draftPublicationListSchema = z.array(draftPublicationSchema);
+export type DraftPublicationList = z.infer<typeof draftPublicationListSchema>;
+
+export const draftPublicationSubmissionSchema = z
+  .object({
+    draft_id: z.string().min(1),
+  })
+  .strict();
+export type DraftPublicationSubmission = z.infer<typeof draftPublicationSubmissionSchema>;
 
 export const publicationEvidenceBindingRequestSchema = z
   .object({

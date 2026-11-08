@@ -149,10 +149,10 @@ export function ensureCreatePullRequestIntent(
   if (present) return;
   db.prepare(
     `INSERT INTO publication_intents
-       (id, target_id, project_id, operation_key, kind, state, request_json, attempts,
-        remote_object_id, remote_url, last_error, created_at, updated_at)
+       (id, target_id, project_id, operation_key, kind, resource_kind, state,
+        request_json, attempts, remote_object_id, remote_url, last_error, created_at, updated_at)
      VALUES (?, ?, (SELECT project_id FROM publication_targets WHERE id = ?),
-             ?, 'create_pr', 'queued', ?, 0, NULL, NULL, NULL, ?, ?)`,
+             ?, 'create_pr', 'pull_request', 'queued', ?, 0, NULL, NULL, NULL, ?, ?)`,
   ).run(
     `int_${randomUUID()}`,
     targetId,
@@ -199,9 +199,9 @@ export function enqueuePublicationEvent(db: DatabaseSync, input: PublicationEven
   );
   db.prepare(
     `INSERT INTO publication_intents
-       (id, target_id, project_id, operation_key, kind, state, request_json, attempts,
-        remote_object_id, remote_url, last_error, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'publish_event', 'queued', ?, 0, NULL, NULL, NULL, ?, ?)`,
+       (id, target_id, project_id, operation_key, kind, resource_kind, state,
+        request_json, attempts, remote_object_id, remote_url, last_error, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'publish_event', 'pull_request', 'queued', ?, 0, NULL, NULL, NULL, ?, ?)`,
   ).run(
     `int_${randomUUID()}`,
     input.targetId,

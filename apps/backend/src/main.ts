@@ -51,6 +51,7 @@ import { SpecCoordinatorService, handleProjectCoordinationRoute } from "./coordi
 import { EvidenceService, handleProjectEvidenceRoute } from "./evidence";
 import { PublicationService, handleProjectPublicationRoute } from "./publication";
 import { BackupRestoreService, handleBackupRoute, handleRestoreRoute } from "./restore";
+import { DraftPublicationService, handleProjectDraftPublicationRoute } from "./publication";
 import { HarnessService, handleHarnessRoute } from "./harness";
 import {
   validateCsrfProtection,
@@ -101,6 +102,7 @@ export interface BackendApp {
   db: DatabaseSync;
   publication: PublicationService;
   backup: BackupRestoreService;
+  draftPublication: DraftPublicationService;
   stop(): Promise<void>;
 }
 
@@ -304,6 +306,12 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
   const publicationService = new PublicationService(
     registryService.getDb(),
     registryService.getForge(),
+  );
+  const draftPublicationService = new DraftPublicationService(
+    registryService.getDb(),
+    registryService.getForge(),
+    draftService,
+    planService,
   );
 
   const backupService = new BackupRestoreService(db, {
@@ -851,6 +859,17 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
         return Response.json({ error: "not_found" }, { status: 404 });
       }
 
+      if (scopedAction === "draft-publications") {
+        const draftPublicationRes = await handleProjectDraftPublicationRoute(
+          request,
+          projectId,
+          parts,
+          draftPublicationService,
+        );
+        if (draftPublicationRes) return draftPublicationRes;
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
       if (scopedAction === "laps") {
         return handleLapsRoute(request, parts.slice(1), routeContext, projectId);
       }
@@ -926,6 +945,7 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
   return {
     publication: publicationService,
     backup: backupService,
+    draftPublication: draftPublicationService,
     fetch: appFetch,
     websocket,
     monitor,

@@ -1,14 +1,16 @@
 // @vitest-environment jsdom
 import React from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type {
   DraftBoundary,
+  DraftPublication,
   DraftRecord,
   DraftSpecPlan,
   DraftStandalonePlan,
   Project,
 } from "@animus/contracts/operator";
+import { FactoryClientError } from "@animus/client";
 import {
   buildAnswerSubmission,
   draftActionsOf,
@@ -27,6 +29,9 @@ const draftRecordMock = vi.hoisted(() => {
     decideDraft: null as
       | null
       | ((id: string, submission: { decision: string; reason: string }) => Promise<DraftRecord>),
+    publication: null as DraftPublication | null,
+    publishDraft: null as null | (() => Promise<DraftPublication>),
+    reconcilePublication: null as null | (() => Promise<DraftPublication>),
   };
 });
 
@@ -46,6 +51,20 @@ vi.mock("../../apps/web/src/lib/factory-client", () => {
     async decideDraft(id: string, submission: { decision: string; reason: string }) {
       if (!draftRecordMock.decideDraft) throw new Error("unexpected decision");
       return draftRecordMock.decideDraft(id, submission);
+    },
+    async draftPublicationByDraft() {
+      if (!draftRecordMock.publication) {
+        throw new FactoryClientError("draft_publication_not_found");
+      }
+      return draftRecordMock.publication;
+    },
+    async publishDraft() {
+      if (!draftRecordMock.publishDraft) throw new Error("unexpected publish");
+      return draftRecordMock.publishDraft();
+    },
+    async reconcileDraftPublication() {
+      if (!draftRecordMock.reconcilePublication) throw new Error("unexpected reconcile");
+      return draftRecordMock.reconcilePublication();
     },
   });
   return {
@@ -68,6 +87,9 @@ afterEach(() => {
   draftRecordMock.draftError = null;
   draftRecordMock.reviseDraft = null;
   draftRecordMock.decideDraft = null;
+  draftRecordMock.publication = null;
+  draftRecordMock.publishDraft = null;
+  draftRecordMock.reconcilePublication = null;
 });
 
 const project: Project = {
@@ -770,5 +792,210 @@ describe("drafts screen", () => {
     for (const name of [/Approve for publication/, /Request changes/, /Reject/]) {
       expect(screen.getByRole("button", { name }).className).toContain("min-h-11");
     }
+  });
+
+  test("an approved draft publishes its real contract graph without fabricated URLs", async () => {
+    const base = reviewRecord();
+    const record: DraftRecord = {
+      ...base,
+      status: "approved",
+      authorization: {
+        approved: true,
+        approved_revision_id: base.latest_revision.id,
+        can_publish: true,
+      },
+    };
+    const publication: DraftPublication = {
+      id: "dpub_1",
+      projectId: "proj-1",
+      draftId: record.id,
+      revisionId: record.latest_revision.id,
+      revisionNumber: record.latest_revision.revision_number,
+      planHash: "c".repeat(64),
+      kind: "standalone",
+      state: "admitted",
+      sourceIssueNumber: 21,
+      specIssueNumber: null,
+      integrationBranch: null,
+      deliveryBranch: "main",
+      planId: "plan_1",
+      planAuthority: "admitted",
+      holds: [],
+      lastError: null,
+      members: [
+        {
+          id: "m_root",
+          publicationId: "dpub_1",
+          nodeKey: "root",
+          role: "ticket",
+          ordinal: 0,
+          title: "Add the small button",
+          labels: ["ready-for-agent"],
+          issueNumber: 24,
+          workId: "work_24",
+          state: "verified",
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+      relationships: [],
+      intents: [
+        {
+          id: "int_1",
+          publicationId: "dpub_1",
+          projectId: "proj-1",
+          operationKey: "create_issue:dpub_1:root",
+          kind: "create_issue",
+          resourceKind: "issue",
+          state: "accepted",
+          attempts: 1,
+          remoteObjectId: "24",
+          remoteUrl: null,
+          lastError: null,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    draftRecordMock.projects = [project];
+    draftRecordMock.drafts = [record];
+    draftRecordMock.draft = record;
+    draftRecordMock.publishDraft = vi.fn(async () => {
+      draftRecordMock.publication = publication;
+      return publication;
+    });
+    render(<DraftsScreen />);
+
+    await waitFor(() => expect(screen.getByText("Approved for publication")).toBeTruthy());
+    fireEvent.click(screen.getByRole("option", { name: /Improve onboarding/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Publish approved draft to GitHub/ })).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Publish approved draft to GitHub/ }));
+
+    await waitFor(() => expect(draftRecordMock.publishDraft).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByText(/Refined contract: #24/)).toBeTruthy());
+    expect(screen.getByText(/Source request #21 is preserved/)).toBeTruthy();
+    expect(screen.getByText(/Admitted to the local queue/)).toBeTruthy();
+    expect(within(screen.getByLabelText("Publication")).queryByText(/https?:\/\//)).toBeNull();
+    expect(screen.queryByRole("button", { name: /Reconcile draft publication/ })).toBeNull();
+  });
+
+  test("a failed publication shows the exact hold and exposes a real retry", async () => {
+    const base = reviewRecord();
+    const record: DraftRecord = {
+      ...base,
+      status: "approved",
+      authorization: {
+        approved: true,
+        approved_revision_id: base.latest_revision.id,
+        can_publish: true,
+      },
+    };
+    const failed: DraftPublication = {
+      id: "dpub_2",
+      projectId: "proj-1",
+      draftId: record.id,
+      revisionId: record.latest_revision.id,
+      revisionNumber: 2,
+      planHash: "d".repeat(64),
+      kind: "spec",
+      state: "unknown",
+      sourceIssueNumber: 21,
+      specIssueNumber: 24,
+      integrationBranch: null,
+      deliveryBranch: "main",
+      planId: null,
+      planAuthority: null,
+      holds: [],
+      lastError: "publication create timed out after remote acceptance",
+      members: [
+        {
+          id: "m_root",
+          publicationId: "dpub_2",
+          nodeKey: "root",
+          role: "spec",
+          ordinal: 0,
+          title: "Ship the feature",
+          labels: ["spec", "ready-for-human"],
+          issueNumber: 24,
+          workId: null,
+          state: "verified",
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        {
+          id: "m_child",
+          publicationId: "dpub_2",
+          nodeKey: "child:C1",
+          role: "ticket",
+          ordinal: 1,
+          title: "First slice",
+          labels: ["ready-for-agent"],
+          issueNumber: null,
+          workId: null,
+          state: "pending",
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+      relationships: [],
+      intents: [
+        {
+          id: "int_2",
+          publicationId: "dpub_2",
+          projectId: "proj-1",
+          operationKey: "create_issue:dpub_2:child:C1",
+          kind: "create_issue",
+          resourceKind: "issue",
+          state: "unknown",
+          attempts: 1,
+          remoteObjectId: null,
+          remoteUrl: null,
+          lastError: "publication create timed out after remote acceptance",
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const admitted: DraftPublication = {
+      ...failed,
+      state: "published",
+      lastError: null,
+      members: failed.members.map((member) =>
+        member.nodeKey === "child:C1"
+          ? { ...member, issueNumber: 25, state: "verified" as const }
+          : member,
+      ),
+      intents: failed.intents.map((intent) => ({ ...intent, state: "accepted" as const })),
+    };
+    draftRecordMock.projects = [project];
+    draftRecordMock.drafts = [record];
+    draftRecordMock.draft = record;
+    draftRecordMock.publication = failed;
+    draftRecordMock.reconcilePublication = vi.fn(async () => {
+      draftRecordMock.publication = admitted;
+      return admitted;
+    });
+    render(<DraftsScreen />);
+
+    await waitFor(() => expect(screen.getByText("Approved for publication")).toBeTruthy());
+    fireEvent.click(screen.getByRole("option", { name: /Improve onboarding/ }));
+    await waitFor(() => expect(screen.getByText(/Publication outcome unknown/)).toBeTruthy());
+    expect(screen.getByText(/publication create timed out/)).toBeTruthy();
+    expect(screen.getAllByText("pending").length).toBeGreaterThan(0);
+
+    const retry = screen.getByRole("button", { name: /Reconcile draft publication/ });
+    expect(retry.textContent).toContain("Retry publication");
+    expect(retry.className).toContain("min-h-11");
+    fireEvent.click(retry);
+
+    await waitFor(() => expect(draftRecordMock.reconcilePublication).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByText(/Published · awaiting admission/)).toBeTruthy());
+    expect(screen.getByText(/#25/)).toBeTruthy();
   });
 });

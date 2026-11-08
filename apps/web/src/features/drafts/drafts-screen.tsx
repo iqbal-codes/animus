@@ -13,9 +13,11 @@ import {
 import type {
   DraftDecisionKind,
   DraftList,
+  DraftPublication,
   DraftRecord,
   Project,
 } from "@animus/contracts/operator";
+import { FactoryClientError } from "@animus/client";
 import { client } from "@/lib/factory-client";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -56,6 +58,8 @@ export function DraftsScreen() {
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
   const [record, setRecord] = useState<DraftRecord | null>(null);
   const [recordError, setRecordError] = useState<string | null>(null);
+  const [publication, setPublication] = useState<DraftPublication | null>(null);
+  const [publicationError, setPublicationError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -95,8 +99,22 @@ export function DraftsScreen() {
   const loadRecord = useCallback(async (targetProjectId: string, draftId: string) => {
     setRecordError(null);
     setRecord(null);
+    setPublication(null);
+    setPublicationError(null);
     try {
-      setRecord(await client.forProject(targetProjectId).draft(draftId));
+      const scoped = client.forProject(targetProjectId);
+      setRecord(await scoped.draft(draftId));
+      if (typeof scoped.draftPublicationByDraft === "function") {
+        try {
+          setPublication(await scoped.draftPublicationByDraft(draftId));
+        } catch (error) {
+          if (
+            !(error instanceof FactoryClientError && error.code === "draft_publication_not_found")
+          ) {
+            setPublicationError(messageOf(error));
+          }
+        }
+      }
     } catch (error) {
       setRecordError(messageOf(error));
     }
@@ -117,6 +135,8 @@ export function DraftsScreen() {
       setProjectId(nextProjectId);
       setSelectedDraftId(null);
       setRecord(null);
+      setPublication(null);
+      setPublicationError(null);
       setNotice(null);
       setActionError(null);
       setState({ phase: "loading" });
@@ -266,6 +286,41 @@ export function DraftsScreen() {
     },
     [projectId, selected, refresh],
   );
+
+  const publishDraft = useCallback(async () => {
+    if (!projectId || !selected) return;
+    setBusy("publish");
+    setActionError(null);
+    setNotice(null);
+    setPublicationError(null);
+    try {
+      const next = await client.forProject(projectId).publishDraft(selected.id);
+      setPublication(next);
+      await refresh();
+      setNotice(`Publication ${next.state}.`);
+    } catch (error) {
+      setActionError(messageOf(error));
+    } finally {
+      setBusy(null);
+    }
+  }, [projectId, selected, refresh]);
+
+  const reconcilePublication = useCallback(async () => {
+    if (!projectId || !publication) return;
+    setBusy("reconcile-publication");
+    setActionError(null);
+    setNotice(null);
+    try {
+      const next = await client.forProject(projectId).reconcileDraftPublication(publication.id);
+      setPublication(next);
+      await refresh();
+      setNotice(`Publication ${next.state}.`);
+    } catch (error) {
+      setPublicationError(messageOf(error));
+    } finally {
+      setBusy(null);
+    }
+  }, [projectId, publication, refresh]);
 
   const moveSelection = useCallback(
     (target: number) => {
@@ -455,11 +510,15 @@ export function DraftsScreen() {
             <DraftDetail
               key={`${record.id}:${record.latest_revision.id}`}
               record={record}
+              publication={publication}
+              publicationError={publicationError}
               busy={busy}
               onSubmitAnswers={submitAnswers}
               onDecision={submitDecision}
               onRequestChanges={requestChanges}
               onRegenerate={regenerate}
+              onPublish={publishDraft}
+              onReconcilePublication={reconcilePublication}
             />
           )}
         </section>
@@ -470,18 +529,26 @@ export function DraftsScreen() {
 
 function DraftDetail({
   record,
+  publication,
+  publicationError,
   busy,
   onSubmitAnswers,
   onDecision,
   onRequestChanges,
   onRegenerate,
+  onPublish,
+  onReconcilePublication,
 }: {
   record: DraftRecord;
+  publication: DraftPublication | null;
+  publicationError: string | null;
   busy: string | null;
   onSubmitAnswers: (answers: Record<string, string>) => Promise<void>;
   onDecision: (decision: Decision, reason: string, instructions?: string) => Promise<void>;
   onRequestChanges: (reason: string, instructions: string) => Promise<void>;
   onRegenerate: (instructions: string) => Promise<void>;
+  onPublish: () => Promise<void>;
+  onReconcilePublication: () => Promise<void>;
 }) {
   const content = planContentOf(record);
   const plan = record.latest_revision.plan;
@@ -752,7 +819,232 @@ function DraftDetail({
           )}
         </section>
       )}
+
+      <PublicationPanel
+        record={record}
+        publication={publication}
+        publicationError={publicationError}
+        busy={busy}
+        onPublish={onPublish}
+        onReconcile={onReconcilePublication}
+      />
     </div>
+  );
+}
+
+const PUBLICATION_TONE: Record<DraftPublication["state"], keyof typeof TONE_BADGE_CLASS> = {
+  pending: "neutral",
+  publishing: "info",
+  published: "warning",
+  admitted: "success",
+  failed: "error",
+  unknown: "warning",
+};
+
+const PUBLICATION_LABEL: Record<DraftPublication["state"], string> = {
+  pending: "Not published",
+  publishing: "Publishing",
+  published: "Published · awaiting admission",
+  admitted: "Admitted to the local queue",
+  failed: "Publication failed",
+  unknown: "Publication outcome unknown",
+};
+
+function PublicationPanel({
+  record,
+  publication,
+  publicationError,
+  busy,
+  onPublish,
+  onReconcile,
+}: {
+  record: DraftRecord;
+  publication: DraftPublication | null;
+  publicationError: string | null;
+  busy: string | null;
+  onPublish: () => Promise<void>;
+  onReconcile: () => Promise<void>;
+}) {
+  const approved = record.authorization.approved && record.authorization.can_publish;
+  if (!publication && !approved && !publicationError) {
+    if (record.latest_revision.kind === "clarification") return null;
+    return (
+      <section aria-label="Publication" className="flex flex-col gap-2">
+        <h3 className="text-sm font-medium text-foreground">GitHub publication</h3>
+        <p className="text-[11px] leading-[1.4] text-text-muted">
+          Approve this revision to publish the exact approved spec and tickets. Publication does not
+          dispatch builders or rewrite the original request.
+        </p>
+      </section>
+    );
+  }
+
+  if (!publication) {
+    return (
+      <section aria-label="Publication" className="flex flex-col gap-3">
+        <h3 className="text-sm font-medium text-foreground">GitHub publication</h3>
+        {publicationError && (
+          <p role="alert" className="text-xs text-error">
+            {publicationError}
+          </p>
+        )}
+        {approved && (
+          <>
+            <p className="text-[11px] leading-[1.4] text-text-muted">
+              Revision {record.latest_revision.revision_number} is approved. Publish the exact
+              approved contract graph to GitHub, then admit it through the frozen local queue.
+            </p>
+            <div>
+              <Button
+                size="sm"
+                className="min-h-11 sm:min-h-8"
+                onClick={() => void onPublish()}
+                disabled={busy !== null}
+                aria-label="Publish approved draft to GitHub"
+              >
+                {busy === "publish" ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <GitBranch className="size-3.5" />
+                )}
+                <span>Publish plan</span>
+              </Button>
+            </div>
+          </>
+        )}
+      </section>
+    );
+  }
+
+  const root = publication.members.find((member) => member.nodeKey === "root") ?? null;
+  const contractIssueNumber = publication.specIssueNumber ?? root?.issueNumber ?? null;
+  const tone = PUBLICATION_TONE[publication.state];
+  const canReconcile = publication.state !== "admitted";
+
+  return (
+    <section aria-label="Publication" className="flex flex-col gap-3" aria-live="polite">
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="text-sm font-medium text-foreground">GitHub publication</h3>
+        <span
+          className={cn(
+            "rounded-full px-2 py-0.5 text-[11px] leading-[1.4] font-medium",
+            TONE_BADGE_CLASS[tone],
+          )}
+        >
+          {PUBLICATION_LABEL[publication.state]}
+        </span>
+        <span className="text-[11px] leading-[1.4] text-text-muted">
+          revision {publication.revisionNumber}
+        </span>
+      </div>
+
+      <p className="text-[11px] leading-[1.4] text-text-muted">
+        Source request #{publication.sourceIssueNumber} is preserved; this publication links the
+        refined contract back to it.
+      </p>
+      <p className="text-xs text-text-secondary">
+        {contractIssueNumber
+          ? `Refined contract: #${contractIssueNumber}`
+          : "Refined contract issue is not published yet."}
+      </p>
+
+      {publicationError && (
+        <p role="alert" className="text-xs text-error">
+          {publicationError}
+        </p>
+      )}
+      {publication.lastError && (
+        <p role="alert" className="text-xs text-error">
+          {publication.lastError}
+        </p>
+      )}
+
+      <div className="flex flex-col gap-2">
+        <h4 className="text-xs font-medium text-foreground">
+          Issues ({publication.members.filter((member) => member.issueNumber !== null).length}/
+          {publication.members.length})
+        </h4>
+        <ul className="flex flex-col gap-1.5">
+          {publication.members.map((member) => (
+            <li
+              key={member.id}
+              className="rounded-[var(--radius-news)] border border-[var(--border-subtle)] p-2.5"
+            >
+              <p className="flex flex-wrap items-center gap-2 text-xs text-foreground">
+                <span className="font-mono text-[11px] text-text-secondary">
+                  {member.issueNumber ? `#${member.issueNumber}` : "pending"}
+                </span>
+                <span className="text-[11px] text-text-muted">{member.role}</span>
+                <span className="text-[11px] text-text-muted">{member.state}</span>
+                <span className="min-w-0 break-words">{member.title}</span>
+              </p>
+              {member.labels.length > 0 && (
+                <p className="mt-1 text-[11px] leading-[1.4] text-text-muted">
+                  Labels: {member.labels.join(", ")}
+                </p>
+              )}
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {publication.relationships.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          <h4 className="text-xs font-medium text-foreground">Relationships</h4>
+          <ul className="flex flex-col gap-1 text-[11px] leading-[1.4] text-text-secondary">
+            {publication.relationships.map((relationship) => (
+              <li key={relationship.id} className="break-words">
+                {relationship.kind === "parent_child" ? "parent-child" : "depends on"}{" "}
+                {relationship.fromNodeKey} → {relationship.toNodeKey} · {relationship.source} ·{" "}
+                {relationship.state}
+                {relationship.detail ? ` (${relationship.detail})` : ""}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {publication.holds.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <h4 className="text-xs font-medium text-warning">Admission holds</h4>
+          <ul className="flex flex-col gap-1 text-[11px] leading-[1.4] text-text-secondary">
+            {publication.holds.map((hold) => (
+              <li key={`${hold.code}:${hold.member_work_id ?? hold.issue_number ?? "plan"}`}>
+                {hold.code} ({hold.severity}): {hold.detail}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {canReconcile && (
+        <div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="min-h-11 sm:min-h-8"
+            onClick={() => void onReconcile()}
+            disabled={busy !== null}
+            aria-label="Reconcile draft publication"
+          >
+            {busy === "reconcile-publication" ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="size-3.5" />
+            )}
+            <span>
+              {publication.state === "failed" || publication.state === "unknown"
+                ? "Retry publication"
+                : "Reconcile publication"}
+            </span>
+          </Button>
+          <p className="mt-2 text-[11px] leading-[1.4] text-text-muted">
+            Reconcile reads the remote issues and relationships before any retry, so a partial
+            publication is never duplicated.
+          </p>
+        </div>
+      )}
+    </section>
   );
 }
 
