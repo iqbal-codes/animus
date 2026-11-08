@@ -21,6 +21,8 @@ import {
   updatePrBodyEvidence,
 } from "../../../../scripts/loop/pr-reporting";
 import { extractValidDiffLines } from "../../../../scripts/loop/pr-publication";
+import { validateHostedAssetUrl } from "../../../../scripts/loop/evidence-manager";
+import { processRun } from "../../../../scripts/loop/process";
 import type { ForgeAdapter, ForgePullRequest } from "../registry/forge";
 import { PublicationError } from "./errors";
 
@@ -36,6 +38,9 @@ interface TargetRow {
   target_branch: string;
   candidate_head_sha: string;
   base_sha: string;
+  remote_source_ref: string | null;
+  remote_source_sha: string | null;
+  remote_verified_at: number | null;
   state: PublicationTarget["state"];
   active_pull_request_id: string | null;
   last_error: string | null;
@@ -47,6 +52,7 @@ interface PullRequestRow {
   id: string;
   target_id: string;
   project_id: string;
+  repository: string | null;
   number: number | null;
   url: string | null;
   head_branch: string;
@@ -56,6 +62,7 @@ interface PullRequestRow {
   draft: number;
   state: "open" | "closed" | "merged" | "superseded";
   active: number;
+  remote_retired: number;
   created_by_intent: string | null;
   created_at: number;
   updated_at: number;
@@ -143,11 +150,35 @@ interface FindingRow {
   file_context: string;
 }
 
+export interface PublicationRemoteResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  timedOut?: boolean;
+}
+
+export type PublicationRemoteRunner = (
+  args: string[],
+  cwd: string,
+) => Promise<PublicationRemoteResult>;
+
 export interface PublicationServiceOptions {
   clock?: () => number;
   gitRunner?: (cmd: string[], cwd: string) => string;
+  /** Bounded remote git transport (push/ls-remote); injectable for offline tests. */
+  gitRemote?: PublicationRemoteRunner;
   sanitizer?: ReportSanitizer;
 }
+
+/**
+ * Production remote git transport. Reuses the bounded process owner used by the
+ * local loop so a push cannot hang unbounded or outlive the publication attempt.
+ */
+const defaultGitRemote: PublicationRemoteRunner = async (args, cwd) => {
+  return processRun(["git", ...args], cwd, 30_000, undefined, { manageSignals: false });
+};
+
+const RETIRE_FAILED = "superseded_pull_request_retire_failed";
 
 const LOCAL_PATH_PATTERNS: RegExp[] = [
   /file:\/\/[^\s)\]"'`]+/g,
@@ -184,6 +215,7 @@ export function publicationMarker(operationKey: string): string {
 export class PublicationService {
   private readonly clock: () => number;
   private readonly gitRunner: (cmd: string[], cwd: string) => string;
+  private readonly gitRemote: PublicationRemoteRunner;
   private readonly sanitizer: ReportSanitizer;
   private readonly locks = new Map<string, Promise<unknown>>();
 
@@ -202,6 +234,7 @@ export class PublicationService {
           stdio: ["ignore", "pipe", "pipe"],
         }).trim());
     this.sanitizer = options.sanitizer ?? new ReportSanitizer();
+    this.gitRemote = options.gitRemote ?? defaultGitRemote;
   }
 
   // -------------------------------------------------------------------------
@@ -245,14 +278,18 @@ export class PublicationService {
     const publishedEventCount = eventIntents.filter((intent) => intent.state === "accepted").length;
     const remoteStale = Boolean(
       activePr &&
-      ((activePr.headRefOid !== null && activePr.headRefOid !== target.candidate_head_sha) ||
+      (activePr.headRefOid !== target.candidate_head_sha ||
         activePr.baseBranch !== target.target_branch ||
         activePr.headBranch !== target.source_branch),
     );
+    const evidenceState = this.evidenceCompleteness(target, evidence);
     const auditComplete =
       Boolean(activePr) &&
       !remoteStale &&
-      target.last_error !== "remote_pull_request_unreadable" &&
+      this.remoteSourceVerified(target) &&
+      !this.isBlockingRemoteError(target.last_error) &&
+      evidenceState.pending === 0 &&
+      evidenceState.unsafe === 0 &&
       Boolean(summaryIntent && summaryIntent.state === "accepted") &&
       queuedEventCount === 0 &&
       failedIntentCount === 0 &&
@@ -348,26 +385,11 @@ export class PublicationService {
     hostedUrl: string,
   ): PublicationStatus {
     const target = this.loadTarget(projectId, targetId);
-    let parsed: URL;
-    try {
-      parsed = new URL(hostedUrl);
-    } catch {
-      throw new PublicationError("publication_invalid_url", "Hosted evidence URL is invalid");
-    }
-    if (parsed.protocol !== "https:") {
+    const hostedCheck = validateHostedAssetUrl(hostedUrl);
+    if (!hostedCheck.ok) {
       throw new PublicationError(
         "publication_invalid_url",
-        "Hosted evidence URL must use https to be externally accessible",
-      );
-    }
-    if (
-      parsed.hostname === "localhost" ||
-      parsed.hostname === "127.0.0.1" ||
-      parsed.hostname.endsWith(".local")
-    ) {
-      throw new PublicationError(
-        "publication_invalid_url",
-        "Hosted evidence URL must not point at a local address",
+        `Hosted evidence URL is not publishable: ${hostedCheck.reason ?? "unsupported URL"}`,
       );
     }
     const artifact = this.db
@@ -408,6 +430,7 @@ export class PublicationService {
       // intent supersedes an older active PR only after the replacement is accepted.
       pr = (await this.executeCreateIntent(target, createIntent)) ?? pr;
     }
+    await this.retireSupersededPullRequests(this.loadTarget(target.project_id, target.id));
     if (!pr) {
       this.refreshTargetState(target.id);
       return;
@@ -511,14 +534,23 @@ export class PublicationService {
     target: TargetRow,
     intent: IntentRow,
   ): Promise<PullRequestRow | null> {
+    // A crash between claim and the remote call must not leave the intent stuck in
+    // 'attempting'. Coerce it to explicit 'unknown' and reconcile by remote read-back
+    // before any retry, exactly like event and summary intents.
+    if (intent.state === "attempting") {
+      this.db
+        .prepare("UPDATE publication_intents SET state = 'unknown', updated_at = ? WHERE id = ?")
+        .run(this.clock(), intent.id);
+      intent = this.loadIntent(intent.id);
+    }
     if (!this.claimIntent(intent)) {
-      const existing = this.activePullRequest(target);
-      return existing;
+      return this.activePullRequest(target);
     }
     const project = this.loadProject(target.project_id);
     const now = this.clock();
     try {
       this.assertCandidateCommitted(target, project);
+      await this.ensureRemoteSourceRef(target, project);
       const remotePrs = await this.listRemotePullRequests(project.repo_name);
       const matching = remotePrs.find(
         (pr) =>
@@ -527,21 +559,14 @@ export class PublicationService {
           pr.base === target.target_branch,
       );
       if (matching) {
-        const pr = this.bindPullRequest(target, matching, intent.id, now);
+        this.assertRemoteBinding(target, project, matching, true);
+        const prior = this.activePullRequest(target);
+        const existing = this.findPullRequestByNumber(target.id, matching.number);
+        const supersede = prior && prior.id !== existing?.id ? prior : null;
+        const pr = this.bindPullRequest(target, matching, intent.id, now, supersede);
+        if (supersede) await this.retirePullRequest(target, supersede);
         this.acceptIntent(intent, String(matching.number), matching.html_url ?? null);
         return pr;
-      }
-
-      const active = this.activePullRequest(target);
-      if (active) {
-        if (
-          active.head_branch === target.source_branch &&
-          active.base_branch === target.target_branch
-        ) {
-          this.acceptIntent(intent, active.number ? String(active.number) : null, active.url);
-          return active;
-        }
-        await this.supersedePullRequest(target, active);
       }
 
       if (typeof this.forge.createPullRequest !== "function") {
@@ -560,22 +585,15 @@ export class PublicationService {
       });
       const readBack = await this.readRemotePullRequest(project.repo_name, created.number);
       const verified = readBack ?? created;
-      if (
-        verified.head !== target.source_branch ||
-        verified.base !== target.target_branch ||
-        String(verified.state).toUpperCase() !== "OPEN"
-      ) {
-        throw new PublicationError(
-          "publication_wrong_binding",
-          `Remote PR #${verified.number} does not match source '${target.source_branch}' and target '${target.target_branch}'`,
-          {
-            head: verified.head,
-            base: verified.base,
-            state: verified.state,
-          },
-        );
-      }
-      const pr = this.bindPullRequest(target, verified, intent.id, now);
+      this.assertRemoteBinding(target, project, verified, true);
+
+      // Only retire a prior active PR after the replacement exists and its remote
+      // head/base/repo binding has been read back successfully. A failed create or a
+      // mismatched head leaves the delivery's previous live PR untouched.
+      const prior = this.activePullRequest(target);
+      const supersede = prior && prior.number !== verified.number ? prior : null;
+      const pr = this.bindPullRequest(target, verified, intent.id, now, supersede);
+      if (supersede) await this.retirePullRequest(target, supersede);
       this.acceptIntent(intent, String(verified.number), verified.html_url ?? null);
       return pr;
     } catch (caught) {
@@ -600,7 +618,12 @@ export class PublicationService {
           pr.base === target.target_branch,
       );
       if (!matching) return null;
-      const pr = this.bindPullRequest(target, matching, intent.id, this.clock());
+      this.assertRemoteBinding(target, project, matching, true);
+      const prior = this.activePullRequest(target);
+      const existing = this.findPullRequestByNumber(target.id, matching.number);
+      const supersede = prior && prior.id !== existing?.id ? prior : null;
+      const pr = this.bindPullRequest(target, matching, intent.id, this.clock(), supersede);
+      if (supersede) await this.retirePullRequest(target, supersede);
       this.acceptIntent(intent, String(matching.number), matching.html_url ?? null);
       return pr;
     } catch {
@@ -608,21 +631,191 @@ export class PublicationService {
     }
   }
 
-  private async supersedePullRequest(target: TargetRow, pr: PullRequestRow): Promise<void> {
-    const project = this.loadProject(target.project_id);
-    if (pr.number !== null && typeof this.forge.updatePullRequest === "function") {
-      await this.forge.updatePullRequest(project.repo_name, pr.number, { state: "closed" });
+  /**
+   * Push the exact committed branch candidate to the recorded remote and persist the
+   * observed source ref. A push rejection, timeout or read-back mismatch fails closed;
+   * a PR is never created against a branch that only exists locally.
+   */
+  private async ensureRemoteSourceRef(target: TargetRow, project: ProjectRow): Promise<void> {
+    const ref = `refs/heads/${target.source_branch}`;
+    const push = await this.gitRemote(
+      ["push", "--porcelain", "origin", `${ref}:${ref}`],
+      project.checkout_path,
+    );
+    if (push.timedOut) {
+      throw new PublicationError(
+        "publication_push_unknown",
+        `git push ${ref} timed out; the remote outcome is unknown`,
+      );
+    }
+    if (push.exitCode !== 0) {
+      throw new PublicationError(
+        "publication_push_failed",
+        `git push ${ref} failed: ${(push.stderr || push.stdout).trim() || `exit ${push.exitCode}`}`,
+      );
+    }
+    const listed = await this.gitRemote(["ls-remote", "origin", ref], project.checkout_path);
+    if (listed.timedOut) {
+      throw new PublicationError(
+        "publication_remote_unverified",
+        `git ls-remote ${ref} timed out; the remote source ref is unverified`,
+      );
+    }
+    if (listed.exitCode !== 0) {
+      throw new PublicationError(
+        "publication_remote_unverified",
+        `git ls-remote ${ref} failed: ${(listed.stderr || listed.stdout).trim() || `exit ${listed.exitCode}`}`,
+      );
+    }
+    const entry = listed.stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.endsWith(`\t${ref}`) || line.endsWith(` ${ref}`));
+    const remoteSha = entry?.split(/\s+/)[0] ?? null;
+    if (!remoteSha) {
+      throw new PublicationError(
+        "publication_remote_unverified",
+        `Remote source ref ${ref} is missing after push`,
+      );
+    }
+    if (remoteSha !== target.candidate_head_sha) {
+      throw new PublicationError(
+        "publication_remote_ref_mismatch",
+        `Remote source ref ${ref} is ${remoteSha}, not the committed candidate ${target.candidate_head_sha}`,
+      );
     }
     this.db
       .prepare(
-        "UPDATE publication_pull_requests SET active = 0, state = 'superseded', updated_at = ? WHERE id = ?",
+        `UPDATE publication_targets
+            SET remote_source_ref = ?, remote_source_sha = ?, remote_verified_at = ?,
+                updated_at = ?
+          WHERE id = ?`,
       )
-      .run(this.clock(), pr.id);
+      .run(ref, remoteSha, this.clock(), this.clock(), target.id);
+  }
+
+  /**
+   * Validate the exact repository/head/base/headRefOid binding a transport reports.
+   * A missing or advanced remote head is never treated as the local candidate.
+   */
+  private assertRemoteBinding(
+    target: TargetRow,
+    project: ProjectRow,
+    remote: ForgePullRequest,
+    requireOpen: boolean,
+  ): void {
+    const normalize = (value: string) =>
+      value
+        .replace(/^https?:\/\/github\.com\//i, "")
+        .replace(/\.git$/i, "")
+        .toLowerCase();
+    if (remote.repository && normalize(remote.repository) !== normalize(project.repo_name)) {
+      throw new PublicationError(
+        "publication_wrong_binding",
+        `Remote PR #${remote.number} belongs to '${remote.repository}', not '${project.repo_name}'`,
+      );
+    }
+    if (remote.head !== target.source_branch || remote.base !== target.target_branch) {
+      throw new PublicationError(
+        "publication_wrong_binding",
+        `Remote PR #${remote.number} does not match source '${target.source_branch}' and target '${target.target_branch}'`,
+        { head: remote.head, base: remote.base, state: remote.state },
+      );
+    }
+    if (requireOpen && String(remote.state).toUpperCase() !== "OPEN") {
+      throw new PublicationError(
+        "publication_wrong_binding",
+        `Remote PR #${remote.number} is '${remote.state}', not OPEN`,
+      );
+    }
+    if (!remote.headRefOid) {
+      throw new PublicationError(
+        "publication_head_unverified",
+        `Remote PR #${remote.number} did not report its head SHA; refusing to bind an unverified candidate`,
+      );
+    }
+    if (remote.headRefOid !== target.candidate_head_sha) {
+      throw new PublicationError(
+        "publication_head_mismatch",
+        `Remote PR #${remote.number} head ${remote.headRefOid} does not match the pushed candidate ${target.candidate_head_sha}`,
+      );
+    }
+  }
+
+  private remoteSourceVerified(target: TargetRow): boolean {
+    return (
+      target.remote_source_ref === `refs/heads/${target.source_branch}` &&
+      target.remote_source_sha === target.candidate_head_sha
+    );
+  }
+
+  private isBlockingRemoteError(error: string | null): boolean {
+    return error === "remote_pull_request_unreadable" || error === RETIRE_FAILED;
+  }
+
+  private setTargetError(targetId: string, error: string | null): void {
     this.db
+      .prepare("UPDATE publication_targets SET last_error = ?, updated_at = ? WHERE id = ?")
+      .run(error, this.clock(), targetId);
+  }
+
+  /**
+   * Retire a superseded remote PR only after the replacement exists. Retire failure is
+   * durable and retried by reconciliation instead of silently leaving two live PRs.
+   */
+  private async retirePullRequest(target: TargetRow, pr: PullRequestRow): Promise<boolean> {
+    if (pr.number === null) {
+      this.db
+        .prepare(
+          "UPDATE publication_pull_requests SET remote_retired = 1, updated_at = ? WHERE id = ?",
+        )
+        .run(this.clock(), pr.id);
+      return true;
+    }
+    if (typeof this.forge.updatePullRequest !== "function") {
+      this.setTargetError(target.id, RETIRE_FAILED);
+      return false;
+    }
+    const project = this.loadProject(target.project_id);
+    try {
+      await this.forge.updatePullRequest(project.repo_name, pr.number, { state: "closed" });
+      this.db
+        .prepare(
+          "UPDATE publication_pull_requests SET remote_retired = 1, updated_at = ? WHERE id = ?",
+        )
+        .run(this.clock(), pr.id);
+      return true;
+    } catch {
+      this.setTargetError(target.id, RETIRE_FAILED);
+      return false;
+    }
+  }
+
+  private async retireSupersededPullRequests(target: TargetRow): Promise<void> {
+    const rows = this.db
       .prepare(
-        "UPDATE publication_targets SET active_pull_request_id = NULL, updated_at = ? WHERE id = ?",
+        `SELECT * FROM publication_pull_requests
+          WHERE target_id = ? AND state = 'superseded' AND remote_retired = 0`,
       )
-      .run(this.clock(), target.id);
+      .all(target.id) as unknown as PullRequestRow[];
+    if (rows.length === 0) {
+      if (target.last_error === RETIRE_FAILED) this.setTargetError(target.id, null);
+      return;
+    }
+    for (const row of rows) {
+      const retired = await this.retirePullRequest(target, row);
+      if (!retired) return;
+    }
+    if (this.loadTarget(target.project_id, target.id).last_error === RETIRE_FAILED) {
+      this.setTargetError(target.id, null);
+    }
+  }
+
+  private findPullRequestByNumber(targetId: string, number: number): PullRequestRow | null {
+    const row = this.db
+      .prepare("SELECT * FROM publication_pull_requests WHERE target_id = ? AND number = ?")
+      .get(targetId, number) as unknown as PullRequestRow | undefined;
+    return row ?? null;
   }
 
   private async observeActivePullRequest(
@@ -654,8 +847,13 @@ export class PublicationService {
     const state = String(remote.state).toUpperCase();
     const nextState = state === "MERGED" ? "merged" : state === "CLOSED" ? "closed" : "open";
     if (nextState === "open") {
+      // A healthy read clears only the transport-unreadable marker. Durable
+      // publication problems (failed retirement, head mismatch) stay visible until
+      // reconciliation actually resolves them.
       this.db
-        .prepare("UPDATE publication_targets SET last_error = NULL, updated_at = ? WHERE id = ?")
+        .prepare(
+          "UPDATE publication_targets SET last_error = NULL, updated_at = ? WHERE id = ? AND last_error = 'remote_pull_request_unreadable'",
+        )
         .run(this.clock(), target.id);
     }
     this.db
@@ -721,7 +919,11 @@ export class PublicationService {
               commitId: target.candidate_head_sha,
               body,
               event: "COMMENT",
-              comments: [{ path: location.path, line: location.line, body: event.body }],
+              // Every outbound nested comment body crosses the same sanitizer as the
+              // review body; raw event bodies may still carry secrets or local paths.
+              comments: [
+                { path: location.path, line: location.line, body: this.sanitize(event.body) },
+              ],
             });
             this.acceptIntent(intent, review.id ?? null, review.html_url ?? null);
             return;
@@ -1098,6 +1300,42 @@ export class PublicationService {
     }));
   }
 
+  private listTargetArtifacts(target: TargetRow): ArtifactRow[] {
+    return this.db
+      .prepare(
+        `SELECT a.id, a.name, a.relative_path, a.media_type, a.size_bytes,
+                a.digest_sha256, a.observation_id
+           FROM execution_artifacts a
+           JOIN execution_observations o ON o.id = a.observation_id
+           JOIN dispatch_runs r ON r.id = o.run_id
+          WHERE a.project_id = ? AND r.delivery_id = ? AND r.work_id = ?
+          ORDER BY a.created_at ASC, a.id ASC`,
+      )
+      .all(target.project_id, target.delivery_id, target.work_id) as unknown as ArtifactRow[];
+  }
+
+  /**
+   * Audit completeness requires every finalized artifact to have a currently valid
+   * operator-supplied URL. A local path or an unsafe host is never counted as
+   * externally accessible evidence.
+   */
+  private evidenceCompleteness(
+    target: TargetRow,
+    evidence: PublicationEvidenceBinding[],
+  ): { pending: number; unsafe: number } {
+    let pending = 0;
+    let unsafe = 0;
+    for (const artifact of this.listTargetArtifacts(target)) {
+      const binding = evidence.find((item) => item.artifactId === artifact.id);
+      if (!binding || binding.status !== "supplied_unverified" || !binding.hostedUrl) {
+        pending += 1;
+        continue;
+      }
+      if (!validateHostedAssetUrl(binding.hostedUrl).ok) unsafe += 1;
+    }
+    return { pending, unsafe };
+  }
+
   private activePullRequest(target: TargetRow): PullRequestRow | null {
     if (!target.active_pull_request_id) return null;
     return this.loadPullRequest(target.active_pull_request_id);
@@ -1115,69 +1353,90 @@ export class PublicationService {
     remote: ForgePullRequest,
     intentId: string | null,
     now: number,
+    supersede: PullRequestRow | null = null,
   ): PullRequestRow {
-    this.db
-      .prepare(
-        "UPDATE publication_pull_requests SET active = 0, updated_at = ? WHERE target_id = ? AND active = 1",
-      )
-      .run(now, target.id);
-    const existing = this.db
-      .prepare("SELECT * FROM publication_pull_requests WHERE target_id = ? AND number = ?")
-      .get(target.id, remote.number) as unknown as PullRequestRow | undefined;
-    if (existing) {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
       this.db
         .prepare(
-          `UPDATE publication_pull_requests
-              SET active = 1, state = 'open', head_branch = ?, base_branch = ?,
-                  candidate_head_sha = ?, head_ref_oid = ?, url = ?, updated_at = ?
-            WHERE id = ?`,
+          "UPDATE publication_pull_requests SET active = 0, updated_at = ? WHERE target_id = ? AND active = 1",
+        )
+        .run(now, target.id);
+      if (supersede && supersede.number !== remote.number) {
+        this.db
+          .prepare(
+            "UPDATE publication_pull_requests SET state = 'superseded', remote_retired = 0, updated_at = ? WHERE id = ?",
+          )
+          .run(now, supersede.id);
+      }
+      const existing = this.db
+        .prepare("SELECT * FROM publication_pull_requests WHERE target_id = ? AND number = ?")
+        .get(target.id, remote.number) as unknown as PullRequestRow | undefined;
+      if (existing) {
+        this.db
+          .prepare(
+            `UPDATE publication_pull_requests
+                SET active = 1, state = 'open', repository = ?, head_branch = ?, base_branch = ?,
+                    candidate_head_sha = ?, head_ref_oid = ?, url = ?, remote_retired = 0,
+                    updated_at = ?
+              WHERE id = ?`,
+          )
+          .run(
+            remote.repository ?? this.loadProject(target.project_id).repo_name,
+            remote.head,
+            remote.base,
+            target.candidate_head_sha,
+            remote.headRefOid ?? null,
+            remote.html_url ?? existing.url,
+            now,
+            existing.id,
+          );
+        this.db
+          .prepare(
+            "UPDATE publication_targets SET active_pull_request_id = ?, state = 'publishing', last_error = NULL, updated_at = ? WHERE id = ?",
+          )
+          .run(existing.id, now, target.id);
+        this.db.exec("COMMIT");
+        return this.loadPullRequest(existing.id)!;
+      }
+      const prId = `pr_${target.id}_${remote.number}`;
+      this.db
+        .prepare(
+          `INSERT INTO publication_pull_requests
+             (id, target_id, project_id, repository, number, url, head_branch, base_branch,
+              candidate_head_sha, head_ref_oid, draft, state, active, created_by_intent,
+              created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'open', 1, ?, ?, ?)`,
         )
         .run(
+          prId,
+          target.id,
+          target.project_id,
+          remote.repository ?? this.loadProject(target.project_id).repo_name,
+          remote.number,
+          remote.html_url ??
+            `https://github.com/${this.loadProject(target.project_id).repo_name}/pull/${remote.number}`,
           remote.head,
           remote.base,
           target.candidate_head_sha,
           remote.headRefOid ?? null,
-          remote.html_url ?? existing.url,
+          intentId,
           now,
-          existing.id,
+          now,
         );
       this.db
         .prepare(
           "UPDATE publication_targets SET active_pull_request_id = ?, state = 'publishing', last_error = NULL, updated_at = ? WHERE id = ?",
         )
-        .run(existing.id, now, target.id);
-      return this.loadPullRequest(existing.id)!;
+        .run(prId, now, target.id);
+      this.db.exec("COMMIT");
+      return this.loadPullRequest(prId)!;
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {}
+      throw error;
     }
-    const prId = `pr_${target.id}_${remote.number}`;
-    this.db
-      .prepare(
-        `INSERT INTO publication_pull_requests
-           (id, target_id, project_id, number, url, head_branch, base_branch,
-            candidate_head_sha, head_ref_oid, draft, state, active, created_by_intent,
-            created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'open', 1, ?, ?, ?)`,
-      )
-      .run(
-        prId,
-        target.id,
-        target.project_id,
-        remote.number,
-        remote.html_url ??
-          `https://github.com/${this.loadProject(target.project_id).repo_name}/pull/${remote.number}`,
-        remote.head,
-        remote.base,
-        target.candidate_head_sha,
-        remote.headRefOid ?? null,
-        intentId,
-        now,
-        now,
-      );
-    this.db
-      .prepare(
-        "UPDATE publication_targets SET active_pull_request_id = ?, state = 'publishing', last_error = NULL, updated_at = ? WHERE id = ?",
-      )
-      .run(prId, now, target.id);
-    return this.loadPullRequest(prId)!;
   }
 
   private markTarget(targetId: string, state: TargetRow["state"], error: string | null): void {
@@ -1214,16 +1473,17 @@ export class PublicationService {
         intent.state === "accepted",
     );
     const allEventsAccepted = eventIntents.every((intent) => intent.state === "accepted");
+    const evidenceState = this.evidenceCompleteness(target, this.listBindings(targetId));
     const remoteStale = Boolean(
       activePr &&
-      ((activePr.headRefOid !== null && activePr.headRefOid !== target.candidate_head_sha) ||
+      (activePr.headRefOid !== target.candidate_head_sha ||
         activePr.baseBranch !== target.target_branch ||
         activePr.headBranch !== target.source_branch),
     );
     let state: TargetRow["state"];
     if (target.state === "no_candidate") {
       state = "no_candidate";
-    } else if (target.last_error === "remote_pull_request_unreadable") {
+    } else if (this.isBlockingRemoteError(target.last_error)) {
       state = "unknown";
     } else if (remoteStale) {
       state = "unknown";
@@ -1231,7 +1491,14 @@ export class PublicationService {
       state = "unknown";
     } else if (failed > 0) {
       state = "failed";
-    } else if (activePr && allEventsAccepted && summaryAccepted) {
+    } else if (
+      activePr &&
+      allEventsAccepted &&
+      summaryAccepted &&
+      this.remoteSourceVerified(target) &&
+      evidenceState.pending === 0 &&
+      evidenceState.unsafe === 0
+    ) {
       state = "published";
     } else if (activePr) {
       state = "publishing";
@@ -1359,6 +1626,17 @@ export class PublicationService {
     });
     const failed = intents.filter((intent) => intent.state === "failed").length;
     const unknown = intents.filter((intent) => intent.state === "unknown").length;
+    const evidenceState = this.evidenceCompleteness(target, evidence);
+    const auditStatus =
+      activePr &&
+      queuedEvents.length === 0 &&
+      failed === 0 &&
+      unknown === 0 &&
+      this.remoteSourceVerified(target) &&
+      evidenceState.pending === 0 &&
+      evidenceState.unsafe === 0
+        ? "complete"
+        : "incomplete";
 
     const observations = this.db
       .prepare(
@@ -1394,7 +1672,7 @@ export class PublicationService {
       `**Ticket:** #${target.issue_number} · **Work:** \`${target.work_id}\` · **Profile:** ${target.gate_profile}`,
       `**Candidate:** \`${target.candidate_head_sha}\` · **Base:** \`${target.base_sha}\``,
       `**Source → target:** \`${target.source_branch}\` → \`${target.target_branch}\``,
-      `**Audit status:** ${activePr && queuedEvents.length === 0 && failed === 0 && unknown === 0 ? "complete" : "incomplete"}`,
+      `**Audit status:** ${auditStatus}`,
       activePr
         ? `**Pull request:** [#${activePr.number}](${activePr.url}) (${activePr.draft ? "draft" : "ready"})`
         : "**Pull request:** none yet — audit events are queued until a real candidate PR exists.",
@@ -1453,9 +1731,11 @@ export class PublicationService {
       );
       for (const artifact of artifacts) {
         const binding = evidence.find((item) => item.artifactId === artifact.id);
-        const access = binding?.hostedUrl
-          ? `[supplied by operator](${binding.hostedUrl}) *(supplied unverified)*`
-          : "manual upload pending";
+        const hostedCheck = binding?.hostedUrl ? validateHostedAssetUrl(binding.hostedUrl) : null;
+        const access =
+          binding?.hostedUrl && hostedCheck?.ok
+            ? `[supplied by operator](<${binding.hostedUrl}>) *(supplied unverified)*`
+            : "manual upload pending";
         lines.push(
           `| ${escapeMarkdownTableCell(artifact.name)} | ${escapeMarkdownTableCell(artifact.media_type)} | ${artifact.size_bytes}B | \`${artifact.digest_sha256.slice(0, 16)}…\` | ${access} |`,
         );
@@ -1505,6 +1785,9 @@ export class PublicationService {
       targetBranch: row.target_branch,
       candidateHeadSha: row.candidate_head_sha,
       baseSha: row.base_sha,
+      remoteSourceRef: row.remote_source_ref,
+      remoteSourceSha: row.remote_source_sha,
+      remoteVerifiedAt: row.remote_verified_at,
       state: row.state,
       activePullRequestId: row.active_pull_request_id,
       lastError: row.last_error,
@@ -1518,6 +1801,7 @@ export class PublicationService {
       id: row.id,
       targetId: row.target_id,
       projectId: row.project_id,
+      repository: row.repository,
       number: row.number,
       url: row.url,
       headBranch: row.head_branch,

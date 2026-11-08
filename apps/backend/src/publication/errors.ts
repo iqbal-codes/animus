@@ -6,6 +6,12 @@ export type PublicationErrorCode =
   | "publication_candidate_mismatch"
   | "publication_transport_unsupported"
   | "publication_wrong_binding"
+  | "publication_push_failed"
+  | "publication_push_unknown"
+  | "publication_remote_unverified"
+  | "publication_remote_ref_mismatch"
+  | "publication_head_unverified"
+  | "publication_head_mismatch"
   | "publication_summary_binding_ambiguous"
   | "publication_evidence_not_found"
   | "publication_invalid_url";

@@ -18,8 +18,14 @@ function errorStatus(code: PublicationError["code"]): number {
     case "publication_summary_binding_ambiguous":
     case "publication_candidate_mismatch":
     case "publication_no_candidate":
+    case "publication_remote_ref_mismatch":
+    case "publication_head_unverified":
+    case "publication_head_mismatch":
       return 409;
     case "publication_transport_unsupported":
+    case "publication_push_failed":
+    case "publication_push_unknown":
+    case "publication_remote_unverified":
       return 502;
     default:
       return 500;

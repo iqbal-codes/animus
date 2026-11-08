@@ -57,6 +57,20 @@ describe("publication audit through backend HTTP, client and CLI", () => {
   let forge: SyntheticForgeAdapter;
   let projectId: string;
   let checkoutPath: string;
+  let bareOrigin: string;
+
+  function remoteHead(branch: string): string | null {
+    try {
+      const sha = execFileSync(
+        "git",
+        ["--git-dir", bareOrigin, "rev-parse", "--verify", `refs/heads/${branch}`],
+        { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
+      ).trim();
+      return sha || null;
+    } catch {
+      return null;
+    }
+  }
 
   function backendFetch(application: BackendApp) {
     return async (input: string, init?: RequestInit) => application.fetch(new Request(input, init));
@@ -80,6 +94,8 @@ describe("publication audit through backend HTTP, client and CLI", () => {
     process.env.ANIMUS_HOME = join(root, "animus-home");
     writeExecutionAuthority("local");
     checkoutPath = join(root, "checkout");
+    bareOrigin = join(root, "origin.git");
+    execFileSync("git", ["init", "-q", "--bare", bareOrigin]);
     mkdirSync(checkoutPath, { recursive: true });
     execFileSync("git", ["init", "-q", checkoutPath]);
     execFileSync("git", [
@@ -90,12 +106,26 @@ describe("publication audit through backend HTTP, client and CLI", () => {
       "origin",
       `https://github.com/${REPO}.git`,
     ]);
+    execFileSync("git", [
+      "-C",
+      checkoutPath,
+      "config",
+      `url.${bareOrigin}.insteadOf`,
+      `https://github.com/${REPO}.git`,
+    ]);
     execFileSync("git", ["-C", checkoutPath, "config", "user.email", "test@example.com"]);
     execFileSync("git", ["-C", checkoutPath, "config", "user.name", "Test"]);
     execFileSync("git", ["-C", checkoutPath, "commit", "--allow-empty", "-q", "-m", "base"]);
     execFileSync("git", ["-C", checkoutPath, "branch", "-M", "main"]);
+    execFileSync("git", ["-C", checkoutPath, "push", "-q", "origin", "main"]);
 
-    forge = new SyntheticForgeAdapter({ [REPO]: 915 });
+    forge = new SyntheticForgeAdapter(
+      { [REPO]: 915 },
+      {
+        requireRemoteSourceRef: true,
+        resolveHeadRefOid: (_repo, branch) => remoteHead(branch),
+      },
+    );
     forge.addIssue(REPO, {
       number: 900,
       title: "Standalone delivery",
@@ -248,7 +278,9 @@ describe("publication audit through backend HTTP, client and CLI", () => {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ hosted_url: "https://example.com/a.png" }),
+          body: JSON.stringify({
+            hosted_url: "https://github.com/user-attachments/assets/a.png",
+          }),
         },
       ),
     );

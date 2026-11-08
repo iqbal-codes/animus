@@ -109,7 +109,11 @@ export function ensurePublicationTarget(
     db.prepare(
       `UPDATE publication_targets
           SET candidate_head_sha = ?, base_sha = ?, source_branch = ?, target_branch = ?,
-              state = ?, last_error = NULL, updated_at = ?
+              state = ?, last_error = NULL,
+              remote_source_ref = CASE WHEN ? THEN NULL ELSE remote_source_ref END,
+              remote_source_sha = CASE WHEN ? THEN NULL ELSE remote_source_sha END,
+              remote_verified_at = CASE WHEN ? THEN NULL ELSE remote_verified_at END,
+              updated_at = ?
         WHERE id = ?`,
     ).run(
       seed.candidateHeadSha,
@@ -117,6 +121,9 @@ export function ensurePublicationTarget(
       seed.sourceBranch,
       seed.targetBranch,
       nextState,
+      candidateChanged ? 1 : 0,
+      candidateChanged ? 1 : 0,
+      candidateChanged ? 1 : 0,
       now,
       existing.id,
     );

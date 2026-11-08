@@ -1,7 +1,22 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * A GitHub "pull request does not exist" response is the only case that may be
+ * treated as an absent PR. Auth failures, outages, rate limits, timeouts and
+ * malformed responses must throw so callers never mistake them for a closed PR.
+ */
+function isPullRequestNotFound(error: unknown): boolean {
+  const failure = error as { message?: unknown; stderr?: unknown; stdout?: unknown };
+  const text = [failure?.message, failure?.stderr, failure?.stdout]
+    .filter((value): value is string => typeof value === "string")
+    .join("\n");
+  return /could not resolve to a pull ?request|no pull requests? found|pull request .*not found|http 404|status (?:code )?404|\b404 not found\b/i.test(
+    text,
+  );
+}
 import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
@@ -52,6 +67,8 @@ export interface ForgePullRequest {
   html_url?: string;
   draft?: boolean;
   headRefOid?: string;
+  /** Transport-confirmed repository identity; validated against the recorded repo. */
+  repository?: string;
 }
 
 export interface CreatePullRequestInput {
@@ -893,12 +910,14 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
     ];
     if (input.draft) args.push("--draft");
     try {
-      const output = execFileSync("gh", args, {
-        encoding: "utf-8",
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+      const output = await this.runner(["gh", ...args]);
       const match = output.match(/\/pull\/(\d+)/);
-      const prNumber = match && match[1] ? parseInt(match[1], 10) : 1;
+      if (!match || !match[1]) {
+        throw new Error(
+          `gh pr create did not return a pull request URL for ${cleanRepo}: '${output.trim()}'`,
+        );
+      }
+      const prNumber = parseInt(match[1], 10);
       return {
         number: prNumber,
         title: input.title,
@@ -907,6 +926,8 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
         base: input.base,
         state: "OPEN",
         html_url: output.trim(),
+        draft: Boolean(input.draft),
+        repository: cleanRepo,
       };
     } catch (error: any) {
       throw new Error(
@@ -917,65 +938,62 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
 
   async listPullRequests(repo: string): Promise<ForgePullRequest[]> {
     const cleanRepo = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
-    try {
-      const output = execFileSync(
-        "gh",
-        [
-          "pr",
-          "list",
-          "--repo",
-          cleanRepo,
-          "--state",
-          "all",
-          "--limit",
-          "100",
-          "--json",
-          "number,title,body,headRefName,baseRefName,state,url,isDraft,headRefOid",
-        ],
-        {
-          encoding: "utf-8",
-          stdio: ["ignore", "pipe", "pipe"],
-        },
-      );
-      const items = JSON.parse(output);
-      return items.map((i: any) => ({
-        number: i.number,
-        title: i.title,
-        body: i.body || "",
-        head: i.headRefName,
-        base: i.baseRefName,
-        state: i.state,
-        html_url: i.url,
-        draft: Boolean(i.isDraft),
-        ...(typeof i.headRefOid === "string" ? { headRefOid: i.headRefOid } : {}),
-      }));
-    } catch (error: any) {
-      throw new Error(
-        `Failed to list pull requests for ${cleanRepo}: ${error?.message || String(error)}`,
-      );
+    const output = await this.runner([
+      "gh",
+      "pr",
+      "list",
+      "--repo",
+      cleanRepo,
+      "--state",
+      "all",
+      "--limit",
+      "100",
+      "--json",
+      "number,title,body,headRefName,baseRefName,state,url,isDraft,headRefOid",
+    ]);
+    const items = JSON.parse(output);
+    if (!Array.isArray(items)) {
+      throw new Error(`Malformed pull request list for ${cleanRepo}`);
     }
+    return items.map((i: any) => ({
+      number: i.number,
+      title: i.title,
+      body: i.body || "",
+      head: i.headRefName,
+      base: i.baseRefName,
+      state: i.state,
+      html_url: i.url,
+      draft: Boolean(i.isDraft),
+      ...(typeof i.headRefOid === "string" ? { headRefOid: i.headRefOid } : {}),
+      repository: cleanRepo,
+    }));
   }
 
   async getPullRequest(repo: string, prNumber: number): Promise<ForgePullRequest | null> {
     const cleanRepo = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
     try {
-      const output = execFileSync(
+      const output = await this.runner([
         "gh",
-        [
-          "pr",
-          "view",
-          String(prNumber),
-          "--repo",
-          cleanRepo,
-          "--json",
-          "number,title,body,headRefName,baseRefName,state,url,isDraft,headRefOid",
-        ],
-        {
-          encoding: "utf-8",
-          stdio: ["ignore", "pipe", "pipe"],
-        },
-      );
+        "pr",
+        "view",
+        String(prNumber),
+        "--repo",
+        cleanRepo,
+        "--json",
+        "number,title,body,headRefName,baseRefName,state,url,isDraft,headRefOid",
+      ]);
       const i = JSON.parse(output);
+      if (
+        !i ||
+        typeof i !== "object" ||
+        Array.isArray(i) ||
+        typeof i.number !== "number" ||
+        typeof i.headRefName !== "string" ||
+        typeof i.baseRefName !== "string" ||
+        typeof i.state !== "string"
+      ) {
+        throw new Error(`Malformed pull request response for ${cleanRepo}#${prNumber}`);
+      }
       return {
         number: i.number,
         title: i.title,
@@ -986,9 +1004,14 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
         html_url: i.url,
         draft: Boolean(i.isDraft),
         ...(typeof i.headRefOid === "string" ? { headRefOid: i.headRefOid } : {}),
+        repository: cleanRepo,
       };
-    } catch {
-      return null;
+    } catch (error) {
+      // Only a genuine GitHub "not found" is an absent PR. Every other failure
+      // (auth, outage, timeout, malformed JSON) propagates so publication marks
+      // the target unknown instead of treating the PR as closed.
+      if (isPullRequestNotFound(error)) return null;
+      throw error instanceof Error ? error : new Error(String(error));
     }
   }
 
@@ -1009,7 +1032,7 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
             return next;
           })();
     try {
-      execFileSync("gh", args, { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+      await this.runner(["gh", ...args]);
     } catch (error: any) {
       throw new Error(
         `Failed to update pull request ${prNumber} for ${cleanRepo}: ${error?.message || String(error)}`,
@@ -1048,18 +1071,15 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
       "utf-8",
     );
     try {
-      const output = execFileSync(
+      const output = await this.runner([
         "gh",
-        [
-          "api",
-          `repos/${owner}/${name}/pulls/${prNumber}/reviews`,
-          "--method",
-          "POST",
-          "--input",
-          payloadPath,
-        ],
-        { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
-      );
+        "api",
+        `repos/${owner}/${name}/pulls/${prNumber}/reviews`,
+        "--method",
+        "POST",
+        "--input",
+        payloadPath,
+      ]);
       const parsed = JSON.parse(output || "{}");
       return {
         ...(parsed.id !== undefined ? { id: String(parsed.id) } : {}),
@@ -1079,11 +1099,12 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
     const [owner, name] = cleanRepo.split("/");
     if (!owner || !name) throw new Error(`Invalid repository '${repo}'`);
     try {
-      const output = execFileSync(
+      const output = await this.runner([
         "gh",
-        ["api", `repos/${owner}/${name}/pulls/${prNumber}/reviews`, "--paginate"],
-        { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
-      );
+        "api",
+        `repos/${owner}/${name}/pulls/${prNumber}/reviews`,
+        "--paginate",
+      ]);
       const items = JSON.parse(output || "[]");
       return items.map((item: any) => ({
         ...(item.id !== undefined ? { id: String(item.id) } : {}),
@@ -1097,6 +1118,13 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
       );
     }
   }
+}
+
+export interface SyntheticForgeOptions {
+  /** Resolve the real remote head for a branch so offline transports can report it. */
+  resolveHeadRefOid?: (repo: string, branch: string) => string | null;
+  /** Refuse to create a PR whose source branch is not present on the remote. */
+  requireRemoteSourceRef?: boolean;
 }
 
 export class SyntheticForgeAdapter implements IssueForgeAdapter {
@@ -1137,16 +1165,32 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
   public failNextComment = false;
   public failNextPullRequest = false;
   public failNextUpdate = false;
+  public failNextUpdateCount = 0;
   public failNextReview = false;
   public failNextGetPullRequest = false;
   public failNextListPullRequests = false;
 
-  constructor(initialRepos?: Record<string, number>) {
+  constructor(
+    initialRepos?: Record<string, number>,
+    private readonly options: SyntheticForgeOptions = {},
+  ) {
     if (initialRepos) {
       for (const [name, id] of Object.entries(initialRepos)) {
         this.repos.set(name.toLowerCase(), { id, repoName: name });
       }
     }
+  }
+
+  private withResolvedHead(repo: string, pr: ForgePullRequest): ForgePullRequest {
+    const resolved =
+      String(pr.state).toUpperCase() === "OPEN"
+        ? (this.options.resolveHeadRefOid?.(repo, pr.head) ?? null)
+        : null;
+    return {
+      ...pr,
+      repository: repo,
+      ...(resolved ? { headRefOid: resolved } : {}),
+    };
   }
 
   addRepository(repoName: string, id?: number): ForgeRepoInfo {
@@ -1394,7 +1438,7 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
     const key = repo.toLowerCase();
     const prMap = this.pullRequestsByRepo.get(key);
     if (!prMap) return [];
-    return Array.from(prMap.values()).map((p) => ({ ...p }));
+    return Array.from(prMap.values()).map((p) => this.withResolvedHead(repo, p));
   }
 
   async getPullRequest(repo: string, prNumber: number): Promise<ForgePullRequest | null> {
@@ -1406,13 +1450,19 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
     const prMap = this.pullRequestsByRepo.get(key);
     if (!prMap) return null;
     const found = prMap.get(prNumber);
-    return found ? { ...found } : null;
+    return found ? this.withResolvedHead(repo, found) : null;
   }
 
   async createPullRequest(repo: string, input: CreatePullRequestInput): Promise<ForgePullRequest> {
     if (this.failNextPullRequest) {
       this.failNextPullRequest = false;
       throw new Error("Synthetic forge pull request creation failed");
+    }
+    const remoteHead = this.options.resolveHeadRefOid?.(repo, input.head) ?? null;
+    if (this.options.requireRemoteSourceRef && !remoteHead) {
+      throw new Error(
+        `Remote source ref refs/heads/${input.head} is missing; refusing to create a pull request`,
+      );
     }
     const key = repo.toLowerCase();
     let prMap = this.pullRequestsByRepo.get(key);
@@ -1431,6 +1481,8 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
       state: "OPEN",
       html_url: `https://github.com/${repo}/pull/${prNumber}`,
       draft: Boolean(input.draft),
+      repository: repo,
+      ...(remoteHead ? { headRefOid: remoteHead } : {}),
     };
     prMap.set(prNumber, pr);
     // GitHub issues and pull requests share the comment surface. Mirror the PR
@@ -1458,8 +1510,9 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
     prNumber: number,
     input: UpdatePullRequestInput,
   ): Promise<ForgePullRequest> {
-    if (this.failNextUpdate) {
+    if (this.failNextUpdate || this.failNextUpdateCount > 0) {
       this.failNextUpdate = false;
+      if (this.failNextUpdateCount > 0) this.failNextUpdateCount -= 1;
       throw new Error("Synthetic forge pull request update failed");
     }
     const key = repo.toLowerCase();
@@ -1470,7 +1523,7 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
     if (input.base !== undefined) pr.base = input.base;
     if (input.state === "closed") pr.state = "CLOSED";
     if (input.state === "open") pr.state = "OPEN";
-    return { ...pr };
+    return this.withResolvedHead(repo, pr);
   }
 
   async createPullRequestReview(

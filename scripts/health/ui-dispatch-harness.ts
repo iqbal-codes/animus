@@ -15,14 +15,31 @@ process.env.ANIMUS_HOME = join(root, "home");
 writeExecutionAuthority("local");
 const checkout = join(root, "checkout");
 mkdirSync(checkout);
+const bareOrigin = join(root, "origin.git");
+execFileSync("git", ["init", "-q", "--bare", bareOrigin]);
 function git(args: string[], cwd = checkout): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
+}
+function remoteHead(branch: string): string | null {
+  try {
+    return (
+      execFileSync(
+        "git",
+        ["--git-dir", bareOrigin, "rev-parse", "--verify", `refs/heads/${branch}`],
+        { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
+      ).trim() || null
+    );
+  } catch {
+    return null;
+  }
 }
 git(["init", "-q", "-b", "main"]);
 git(["config", "user.email", "harness@test.local"]);
 git(["config", "user.name", "UI Harness"]);
 git(["remote", "add", "origin", "https://github.com/owner/repo.git"]);
+git(["config", `url.${bareOrigin}.insteadOf`, "https://github.com/owner/repo.git"]);
 git(["commit", "--allow-empty", "-q", "-m", "baseline"]);
+git(["push", "-q", "origin", "main"]);
 const body = [
   "## Source and problem",
   "Verify local dispatch from the operator console.",
@@ -36,7 +53,13 @@ const body = [
   "Operator dispatch and persistence.",
   "Depends on: None",
 ].join("\n\n");
-const forge = new SyntheticForgeAdapter({ "owner/repo": 913 });
+const forge = new SyntheticForgeAdapter(
+  { "owner/repo": 913 },
+  {
+    requireRemoteSourceRef: true,
+    resolveHeadRefOid: (_repo, branch) => remoteHead(branch),
+  },
+);
 for (const [number, title] of [
   [500, "Verify local dispatch from the operator console"],
   [501, "Verify an honest launch failure"],
@@ -184,6 +207,25 @@ const publicationBeforeResponse = await app.fetch(
 );
 if (!publicationBeforeResponse.ok)
   throw new Error(`Seed publication read failed: ${await publicationBeforeResponse.text()}`);
+const publicationBefore = (await publicationBeforeResponse.json()) as {
+  target: { id: string };
+};
+const runEvidenceResponse = await app.fetch(
+  new Request(
+    `http://127.0.0.1/api/v1/projects/${project.id}/evidence/runs/${encodeURIComponent(seedRun.id)}`,
+  ),
+);
+if (!runEvidenceResponse.ok)
+  throw new Error(`Seed run evidence read failed: ${await runEvidenceResponse.text()}`);
+const runEvidence = (await runEvidenceResponse.json()) as {
+  observations: Array<{ artifacts: Array<{ id: string }> }>;
+};
+const seedArtifact = runEvidence.observations.flatMap((observation) => observation.artifacts)[0];
+if (!seedArtifact) throw new Error("Seed artifact was not persisted");
+await postJson(
+  `/publication/targets/${encodeURIComponent(publicationBefore.target.id)}/evidence/${encodeURIComponent(seedArtifact.id)}/bind`,
+  { hosted_url: "https://github.com/user-attachments/assets/report.png" },
+);
 const publishResponse = await app.fetch(
   new Request(
     `http://127.0.0.1/api/v1/projects/${project.id}/publication/runs/${encodeURIComponent(seedRun.id)}/publish`,
