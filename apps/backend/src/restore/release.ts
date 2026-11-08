@@ -156,7 +156,7 @@ async function observeIntent(
       case "create_issue":
         return await observeIssueMarker(forge, row);
       case "create_issue_relationship":
-        return await observeRelationship(forge, row);
+        return await observeRelationship(db, forge, row);
       case "link_source_issue":
         return await observeSourceLink(forge, row);
       default:
@@ -259,12 +259,31 @@ async function observeIssueMarker(forge: ForgeAdapter, row: IntentRow): Promise<
 }
 
 async function observeRelationship(
+  db: DatabaseSync,
   forge: ForgeAdapter,
   row: IntentRow,
 ): Promise<RemoteObservation> {
   const request = parseRequest(row.request_json);
-  const from = typeof request.fromIssueNumber === "number" ? request.fromIssueNumber : null;
-  const to = typeof request.toIssueNumber === "number" ? request.toIssueNumber : null;
+  let from = typeof request.fromIssueNumber === "number" ? request.fromIssueNumber : null;
+  let to = typeof request.toIssueNumber === "number" ? request.toIssueNumber : null;
+  if ((from === null || to === null) && row.draft_publication_id) {
+    const members = new Map(
+      (
+        db
+          .prepare(
+            "SELECT node_key, issue_number FROM draft_publication_members WHERE publication_id = ?",
+          )
+          .all(row.draft_publication_id) as Array<{
+          node_key: string;
+          issue_number: number | null;
+        }>
+      ).map((member) => [member.node_key, member.issue_number]),
+    );
+    const fromKey = typeof request.fromNodeKey === "string" ? request.fromNodeKey : null;
+    const toKey = typeof request.toNodeKey === "string" ? request.toNodeKey : null;
+    if (from === null && fromKey) from = members.get(fromKey) ?? null;
+    if (to === null && toKey) to = members.get(toKey) ?? null;
+  }
   if (from === null || to === null) {
     return {
       observation: "absent",
