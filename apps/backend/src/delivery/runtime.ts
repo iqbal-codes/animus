@@ -400,7 +400,7 @@ export class DeliveryRuntimeCoordinator {
     findings: DeliveryRuntimeFinding[],
   ): Promise<{ id: string } | null> {
     try {
-      if (this.options.correction) {
+      if (this.options.correction && run.gate_profile === "final") {
         return await this.options.correction.dispatch({
           projectId: run.project_id,
           runId: run.id,
