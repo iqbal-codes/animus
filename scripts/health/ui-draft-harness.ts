@@ -208,12 +208,21 @@ const resolvedPlans: Record<number, DraftPlan> = {
   21: standalonePlan("Clarify onboarding with a guided first step", ["AC1", "AC2"]),
 };
 
+const revisedPlans: Record<number, DraftPlan> = {
+  21: standalonePlan("Clarify onboarding with a revised guided first step", ["AC1", "AC2"]),
+  23: { ...specPlan(), title: "Ship the revised console draft review surface" } as DraftPlan,
+};
+
 const planner: DraftPlanner = async (request: DraftPlanningRequest) => {
   const issueNumber = request.work.revision.provenance.issue_number;
   // Once the operator has answered the clarification, produce the reviewable
   // plan — a realistic two-step refinement through the real planning seam.
   const answered = (request.prior?.answers.length ?? 0) > 0;
-  const plan = (answered ? resolvedPlans[issueNumber] : undefined) ?? plans[issueNumber];
+  const revising = (request.prior?.instructions ?? "").trim().length > 0;
+  const plan =
+    (revising ? revisedPlans[issueNumber] : undefined) ??
+    (answered ? resolvedPlans[issueNumber] : undefined) ??
+    plans[issueNumber];
   if (!plan) throw new Error(`No runtime harness plan for issue ${issueNumber}`);
   return {
     plan,

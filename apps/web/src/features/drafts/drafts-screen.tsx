@@ -270,9 +270,8 @@ export function DraftsScreen() {
   const moveSelection = useCallback(
     (target: number) => {
       if (drafts.length === 0) return;
-      const index = drafts.findIndex((draft) => draft.id === selectedDraftId);
       const bounded = Math.min(Math.max(target, 0), drafts.length - 1);
-      const next = drafts[index === -1 ? 0 : bounded];
+      const next = drafts[bounded];
       if (next && next.id !== selectedDraftId) selectDraft(next.id);
     },
     [drafts, selectedDraftId, selectDraft],

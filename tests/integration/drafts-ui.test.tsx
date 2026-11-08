@@ -709,6 +709,19 @@ describe("drafts screen", () => {
     const listbox = screen.getByRole("listbox", { name: "Drafts" });
     expect(listbox.getAttribute("aria-activedescendant")).toBeNull();
 
+    // End from a fresh list selects the last draft, not the first.
+    fireEvent.keyDown(listbox, { key: "End" });
+    await waitFor(() =>
+      expect(listbox.getAttribute("aria-activedescendant")).toBe("draft-option-draft_c"),
+    );
+
+    fireEvent.keyDown(listbox, { key: "Home" });
+    await waitFor(() =>
+      expect(listbox.getAttribute("aria-activedescendant")).toBe("draft-option-draft_a"),
+    );
+
+    // Clear the selection so ArrowDown exercises the no-selection path.
+    fireEvent.keyDown(listbox, { key: "Escape" });
     fireEvent.keyDown(listbox, { key: "ArrowDown" });
     await waitFor(() =>
       expect(listbox.getAttribute("aria-activedescendant")).toBe("draft-option-draft_a"),
