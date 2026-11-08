@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { isPidAlive, resolveAnimusStateDir } from "./paths";
+import { isPidAlive, resolveAnimusStateDir, withLockMutationSync } from "./paths";
 
 /**
  * Execution authority marker shared by the scheduler, monitor, CLI and #165 cutover.
@@ -247,6 +247,31 @@ function writeOwnerRecordAtomically(path: string, owner: AuthorityLockOwner): vo
 }
 
 /**
+ * Serialize stale reclamation under the shared atomic `mkdir` guard before any
+ * unlink. The dead owner is re-read under the guard and removed only when it is
+ * still proven dead, so two reclaimers can never unlink each other's fresh
+ * owner. Guard contention fails fast (the caller retries); it is never silently
+ * stolen, because forcing the guard would repeat the stale-owner race.
+ */
+function reclaimDeadMarkerLock(lockPath: string): void {
+  try {
+    withLockMutationSync(lockPath, () => {
+      const current = readLockOwner(lockPath);
+      if (!("owner" in current) || isPidAlive(current.owner.pid)) return;
+      try {
+        unlinkSync(lockPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    });
+  } catch {
+    throw new ExecutionAuthorityConflictError(
+      `Execution authority marker lock ${lockPath} reclamation is contended; re-read the marker and retry`,
+    );
+  }
+}
+
+/**
  * True compare-and-swap serialization for the durable marker.
  *
  * The lock is an owner-token file published with `link(2)` from a fully-formed,
@@ -254,11 +279,12 @@ function writeOwnerRecordAtomically(path: string, owner: AuthorityLockOwner): vo
  * so exactly one process wins the create and no reader ever sees a partial
  * owner record. A competing process may reclaim the lock only when the recorded
  * owner pid is *proven dead* (`ESRCH`); unreadable/missing ownership is treated as
- * corruption and fails closed for explicit operator recovery. A crash before the
- * `link` leaves no lock at all (only an inert temp file), so it is safely
- * retryable. There is intentionally no time-based steal. The lock spans the entire
- * read -> compare -> write -> rename -> fsync sequence, so two writers cannot
- * both observe the same predecessor.
+ * corruption and fails closed for explicit operator recovery. Reclamation is
+ * serialized under the atomic `mkdir` guard above (see `reclaimDeadMarkerLock`).
+ * A crash before the `link` leaves no lock at all (only an inert temp file), so it
+ * is safely retryable. There is intentionally no time-based steal. The lock spans
+ * the entire read -> compare -> write -> rename -> fsync sequence, so two writers
+ * cannot both observe the same predecessor.
  */
 function acquireMarkerLock(lockPath: string): () => void {
   if (PROCESS_LOCKS.has(lockPath)) {
@@ -274,10 +300,12 @@ function acquireMarkerLock(lockPath: string): () => void {
   };
   const tempPath = `${lockPath}.${process.pid}.${ownerToken}.tmp`;
   writeOwnerRecordAtomically(tempPath, owner);
+  let acquired = false;
   try {
     for (let attempt = 0; attempt < 1000; attempt += 1) {
       try {
         linkSync(tempPath, lockPath);
+        acquired = true;
         break;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
@@ -291,10 +319,9 @@ function acquireMarkerLock(lockPath: string): () => void {
               `Execution authority marker is locked by live process ${inspected.owner.pid}; re-read the marker and retry`,
             );
           }
-          // Proven dead owner (ESRCH): safe stale reclamation.
-          try {
-            unlinkSync(lockPath);
-          } catch {}
+          // Proven dead owner (ESRCH): reclaim under the atomic guard so two
+          // reclaimers cannot both free the path and unlink a fresh live owner.
+          reclaimDeadMarkerLock(lockPath);
           continue;
         }
         if ("missing" in inspected) {
@@ -308,6 +335,12 @@ function acquireMarkerLock(lockPath: string): () => void {
           `Execution authority marker lock ${lockPath} has unreadable ownership (${inspected.ambiguous}); operation recovery is required`,
         );
       }
+    }
+    if (!acquired) {
+      // Exhaustion is a real conflict, never a successful (unheld) acquisition.
+      throw new ExecutionAuthorityConflictError(
+        `Execution authority marker lock ${lockPath} could not be acquired; re-read the marker and retry`,
+      );
     }
   } finally {
     try {

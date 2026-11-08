@@ -37,6 +37,26 @@ export async function withLockMutation<T>(lock: string, mutate: () => T): Promis
   }
 }
 
+/**
+ * Synchronous, non-blocking sibling of {@link withLockMutation} for synchronous
+ * callers such as the authority marker lock. It uses the same atomic `mkdir`
+ * guard and fail-closed contract, but never blocks the event loop: if the guard
+ * is already held it throws immediately so the caller fails fast and retries.
+ * This is deliberate — lock contention must not block Node/Bun's event loop, and
+ * force-reclaiming the guard would repeat the stale-owner race it serializes.
+ */
+export function withLockMutationSync<T>(lock: string, mutate: () => T): T {
+  const guard = `${lock}.mutex`;
+  mkdirSync(guard);
+  try {
+    return mutate();
+  } finally {
+    try {
+      rmSync(guard, { recursive: true, force: true });
+    } catch {}
+  }
+}
+
 export interface WorkWindowConfig {
   enabled: boolean;
   start_time: string;
