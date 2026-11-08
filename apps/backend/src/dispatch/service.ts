@@ -5,6 +5,14 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
   planDispatchRunSchema,
+  type BudgetGrantList,
+  type BudgetGrantResult,
+  type BudgetGrantSubmission,
+  type DispatchRunDetail,
+  type ExecutionBudgetStatus,
+  type ExecutionControlResult,
+  type ExecutionControlSubmission,
+  type ExecutionProcessState,
   type FrozenContract,
   type PlanDispatchReconciliation,
   type PlanDispatchRun,
@@ -42,6 +50,7 @@ import {
   type ExecutionAuthority,
 } from "@animus/contracts/execution-authority";
 import { ExecutionObservationService } from "../evidence/observations";
+import { ExecutionBudgetService, type BudgetScopeKey } from "../work/budget";
 import {
   allocateWorktree,
   type WorktreeAllocation,
@@ -73,6 +82,17 @@ export type DispatchErrorCode =
   | "owner_still_alive"
   | "external_effect_unverified"
   | "authority_not_activated"
+  | "budget_exhausted"
+  | "budget_scope_missing"
+  | "work_held"
+  | "work_stopping"
+  | "work_stopped"
+  | "control_not_found"
+  | "owner_may_still_run"
+  | "termination_unconfirmed"
+  | "stale_owner_generation"
+  | "run_still_active"
+  | "invalid_control"
   | "invalid_submission";
 
 export class DispatchError extends Error {
@@ -117,6 +137,11 @@ export interface DispatchRunResult {
 
 export type DispatchRunner = (context: DispatchRunnerContext) => Promise<DispatchRunResult>;
 
+export type DispatchTerminator = (
+  target: { pid: number | null; pgid: number | null },
+  signal: NodeJS.Signals,
+) => void;
+
 export interface DispatchEngineOptions {
   /** External model/process transport. Internal dispatch callbacks are not injectable here. */
   transport?: AgentTransport;
@@ -149,6 +174,8 @@ export interface DispatchServiceOptions {
   authority?: () => ExecutionAuthority;
   engine?: DispatchEngineOptions;
   observations?: ExecutionObservationService;
+  budget?: ExecutionBudgetService;
+  terminate?: DispatchTerminator;
 }
 
 interface ProjectRow {
@@ -216,6 +243,22 @@ function defaultGitRunner(cmd: string[], options: { cwd: string }): string {
   }).trim();
 }
 
+function defaultTerminate(
+  target: { pid: number | null; pgid: number | null },
+  signal: NodeJS.Signals,
+): void {
+  if (target.pgid !== null && target.pgid > 0) {
+    try {
+      process.kill(-target.pgid, signal);
+    } catch {}
+  }
+  if (target.pid !== null && target.pid > 0) {
+    try {
+      process.kill(target.pid, signal);
+    } catch {}
+  }
+}
+
 function createDefaultRunner(engine: DispatchEngineOptions = {}): DispatchRunner {
   return async (context: DispatchRunnerContext): Promise<DispatchRunResult> => {
     const result = await runFrozenBuilder({
@@ -267,6 +310,8 @@ export class DispatchService {
   private readonly gitRunner: (cmd: string[], options: { cwd: string }) => string;
   private readonly authority: () => ExecutionAuthority;
   private readonly observations: ExecutionObservationService;
+  private readonly budget: ExecutionBudgetService;
+  private readonly terminate: DispatchTerminator;
 
   constructor(
     private readonly db: DatabaseSync,
@@ -288,6 +333,8 @@ export class DispatchService {
     this.gitRunner = options.gitRunner ?? defaultGitRunner;
     this.authority = options.authority ?? (() => readExecutionAuthority().authority);
     this.observations = options.observations ?? new ExecutionObservationService(db);
+    this.budget = options.budget ?? new ExecutionBudgetService(db);
+    this.terminate = options.terminate ?? defaultTerminate;
   }
 
   async dispatch(projectId: string, submission: DispatchSubmission): Promise<PlanDispatchRun> {
@@ -301,6 +348,8 @@ export class DispatchService {
     const targetBranch = this.targetBranch(plan, manifest);
     const member = this.selectMember(project, plan, manifest, submission);
     this.assertProfile(plan, member);
+    this.assertControlAvailability(project.id, plan.id, member);
+    this.assertBudgetForNextAttempt(project, plan, member, submission);
 
     const blocked = this.dependencyBlock(project, plan, manifest, member, targetBranch);
     if (blocked !== null) {
@@ -539,6 +588,32 @@ export class DispatchService {
 
     clearWorkerOwner(runId);
 
+    const reconciled = this.getRun(projectId, runId);
+    const control = this.budget.getControl({
+      projectId,
+      deliveryId: reconciled.delivery_id,
+      workId: reconciled.work_id,
+    });
+    if (control && (control.status === "stopping" || control.status === "held")) {
+      this.budget.setControl({
+        projectId,
+        deliveryId: reconciled.delivery_id,
+        workId: reconciled.work_id,
+        status: "stopped",
+        actor: "operator",
+        reason: "termination_reconciled",
+        commandRequestId: control.commandRequestId ?? reconciled.command_request_id,
+        lastRunId: reconciled.id,
+        now,
+        stopSignal: control.stopSignal,
+        stopRequestedAt: control.stopRequestedAt,
+        stoppedAt: now,
+      });
+    }
+    if (reconciled.state !== "succeeded") {
+      this.maybeExhaustAfterRejection(reconciled, "run_reconciled");
+    }
+
     try {
       this.ledger.markReconciled(run.command_request_id, {
         state: "failed",
@@ -558,6 +633,530 @@ export class DispatchService {
     }
 
     return this.getRun(projectId, runId);
+  }
+
+  listGrants(projectId: string, query: { runId?: string; workId?: string } = {}): BudgetGrantList {
+    let workId = query.workId;
+    let deliveryId: string | undefined;
+    if (query.runId) {
+      const run = this.getRun(projectId, query.runId);
+      workId = run.work_id;
+      deliveryId = run.delivery_id;
+    }
+    return this.budget.listGrants(projectId, {
+      ...(workId ? { workId } : {}),
+      ...(deliveryId ? { deliveryId } : {}),
+    });
+  }
+
+  grantBudget(
+    projectId: string,
+    runId: string,
+    submission: BudgetGrantSubmission,
+  ): BudgetGrantResult {
+    if (!Number.isSafeInteger(submission.amount) || submission.amount <= 0) {
+      throw new DispatchError("invalid_submission", "A budget grant amount must be positive");
+    }
+    const run = this.getRun(projectId, runId);
+    const key = this.scopeKeyFromRun(run);
+    const scope = this.budget.getScope(key);
+    if (!scope) {
+      throw new DispatchError(
+        "budget_scope_missing",
+        `Run ${runId} has no allocated attempt budget yet`,
+        { run_id: runId },
+      );
+    }
+    const requestId = `cmd_grant_${randomUUID()}`;
+    this.beginControlCommand(requestId, submission.actor, projectId, "budget_grant", run, {
+      amount: submission.amount,
+      reason: submission.reason,
+      idempotency_key: submission.idempotency_key ?? null,
+    });
+    try {
+      const outcome = this.budget.applyGrant(scope, {
+        amount: submission.amount,
+        reason: submission.reason,
+        actor: submission.actor,
+        commandRequestId: requestId,
+        idempotencyKey: submission.idempotency_key ?? requestId,
+        now: this.clock(),
+      });
+      this.updateCommand(requestId, "succeeded");
+      return {
+        grant: outcome.grant,
+        budget: outcome.budget,
+        replayed: outcome.replayed,
+        commandRequestId: requestId,
+      };
+    } catch (error) {
+      this.failCommand(
+        requestId,
+        "storage_failed",
+        error instanceof Error ? error.message : String(error),
+      );
+      throw new DispatchError(
+        "storage_failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+
+  getRunDetail(projectId: string, runId: string): DispatchRunDetail {
+    const run = this.getRun(projectId, runId);
+    const key = this.scopeKeyFromRun(run);
+    const budget = this.budget.getScope(key);
+    const control = this.budget.getControl({
+      projectId,
+      deliveryId: run.delivery_id,
+      workId: run.work_id,
+    });
+    const grants = this.budget.listGrants(projectId, {
+      deliveryId: run.delivery_id,
+      workId: run.work_id,
+    });
+    const attemptRows = this.db
+      .prepare(
+        `SELECT id, lap, ownership_generation, state, issue_number, head_sha, error, created_at, finished_at
+         FROM dispatch_runs WHERE delivery_id = ? AND work_id = ? ORDER BY lap ASC, created_at ASC`,
+      )
+      .all(run.delivery_id, run.work_id) as Array<{
+      id: string;
+      lap: number;
+      ownership_generation: number;
+      state: PlanDispatchRun["state"];
+      issue_number: number;
+      head_sha: string | null;
+      error: string | null;
+      created_at: number;
+      finished_at: number | null;
+    }>;
+    const plan = this.loadPlan(projectId, run.plan_id);
+    const criteria = plan.acceptance_criteria.filter(
+      (criterion) => criterion.work_id === run.work_id,
+    );
+    const openFindings = this.observations.listFindings(projectId, {
+      deliveryId: run.delivery_id,
+      workId: run.work_id,
+      status: "open",
+    });
+    return {
+      run,
+      budget,
+      control,
+      grants,
+      attempts: attemptRows.map((row) => ({
+        runId: row.id,
+        lap: row.lap,
+        ownershipGeneration: row.ownership_generation,
+        state: row.state,
+        issueNumber: row.issue_number,
+        headSha: row.head_sha,
+        error: row.error,
+        createdAt: row.created_at,
+        finishedAt: row.finished_at,
+      })),
+      process: this.processState(run),
+      acceptanceCriteria: criteria.map((criterion) => ({
+        acKey: criterion.ac_key,
+        text: criterion.text,
+        openFindingIds: openFindings
+          .filter((finding) => finding.acKey === criterion.ac_key)
+          .map((finding) => finding.id),
+      })),
+      openFindings,
+      acceptance: this.observations.evaluateAcceptance(projectId, run.id),
+    };
+  }
+
+  applyControl(
+    projectId: string,
+    runId: string,
+    submission: ExecutionControlSubmission,
+  ): ExecutionControlResult {
+    const run = this.getRun(projectId, runId);
+    if (
+      submission.expected_ownership_generation !== undefined &&
+      submission.expected_ownership_generation !== run.ownership_generation
+    ) {
+      throw new DispatchError(
+        "stale_owner_generation",
+        `Run ${runId} generation is ${run.ownership_generation}, not ${submission.expected_ownership_generation}`,
+        { run_id: runId, ownership_generation: run.ownership_generation },
+      );
+    }
+    switch (submission.action) {
+      case "hold":
+        return this.holdRun(projectId, run, submission);
+      case "resume":
+        return this.resumeRun(projectId, run, submission);
+      case "stop":
+        return this.stopRun(projectId, run, submission);
+      case "takeover":
+        return this.takeoverRun(projectId, run, submission);
+      default:
+        throw new DispatchError("invalid_control", `Unknown control action`);
+    }
+  }
+
+  private holdRun(
+    projectId: string,
+    run: PlanDispatchRun,
+    submission: ExecutionControlSubmission,
+  ): ExecutionControlResult {
+    const key = {
+      projectId,
+      deliveryId: run.delivery_id,
+      workId: run.work_id,
+    };
+    const current = this.budget.getControl(key);
+    if (current?.status === "stopping") {
+      throw new DispatchError(
+        "work_stopping",
+        `Run ${run.id} has an unconfirmed stop; reconcile termination before holding`,
+      );
+    }
+    const requestId = `cmd_hold_${randomUUID()}`;
+    this.beginControlCommand(requestId, submission.actor, projectId, "hold", run, {
+      reason: submission.reason ?? null,
+    });
+    const control = this.budget.setControl({
+      ...key,
+      status: "held",
+      actor: submission.actor,
+      reason: submission.reason ?? "operator_hold",
+      commandRequestId: requestId,
+      lastRunId: run.id,
+      now: this.clock(),
+    });
+    this.updateCommand(requestId, "succeeded");
+    return {
+      run: this.getRun(projectId, run.id),
+      control,
+      budget: this.budget.getScope(this.scopeKeyFromRun(run)),
+      confirmed: true,
+      commandRequestId: requestId,
+      detail: "held",
+    };
+  }
+
+  private resumeRun(
+    projectId: string,
+    run: PlanDispatchRun,
+    submission: ExecutionControlSubmission,
+  ): ExecutionControlResult {
+    const key = {
+      projectId,
+      deliveryId: run.delivery_id,
+      workId: run.work_id,
+    };
+    const current = this.budget.getControl(key);
+    if (!current) {
+      throw new DispatchError("control_not_found", `Work ${run.work_id} has no hold to resume`);
+    }
+    if (current.status !== "held" && current.status !== "stopped") {
+      throw new DispatchError(
+        "invalid_control",
+        `Work ${run.work_id} is ${current.status}; only held or stopped work can resume`,
+      );
+    }
+    const scope = this.budget.getScope(this.scopeKeyFromRun(run));
+    if (!scope) {
+      throw new DispatchError("budget_scope_missing", `Work ${run.work_id} has no attempt budget`);
+    }
+    if (scope.status === "exhausted" || scope.consumedAttempts >= scope.allowedAttempts) {
+      throw new DispatchError(
+        "budget_exhausted",
+        "Resume cannot reset consumed attempts; grant an explicit additional attempt",
+        { allowed_attempts: scope.allowedAttempts, consumed_attempts: scope.consumedAttempts },
+      );
+    }
+    const active = this.db
+      .prepare(
+        `SELECT id FROM dispatch_runs WHERE project_id = ? AND work_id = ? AND ${activeStateCondition()} LIMIT 1`,
+      )
+      .get(projectId, run.work_id) as { id: string } | undefined;
+    if (active) {
+      const activeRun = this.getRun(projectId, active.id);
+      const process = this.processState(activeRun);
+      if (process.ownerAlive || process.workerAlive || process.worktreeLockAlive) {
+        throw new DispatchError(
+          "owner_may_still_run",
+          `Run ${activeRun.id} may still be writing; reconcile or stop its process tree first`,
+          { run_id: activeRun.id },
+        );
+      }
+      throw new DispatchError(
+        "run_still_active",
+        `Run ${activeRun.id} is still active; reconcile it before resuming`,
+        { run_id: activeRun.id },
+      );
+    }
+    const requestId = `cmd_resume_${randomUUID()}`;
+    this.beginControlCommand(requestId, submission.actor, projectId, "resume", run, {
+      reason: submission.reason ?? null,
+    });
+    const control = this.budget.setControl({
+      ...key,
+      status: "active",
+      actor: submission.actor,
+      reason: submission.reason ?? "operator_resume",
+      commandRequestId: requestId,
+      lastRunId: run.id,
+      now: this.clock(),
+      stopSignal: null,
+      stopRequestedAt: null,
+      stoppedAt: null,
+    });
+    this.updateCommand(requestId, "succeeded");
+    return {
+      run: this.getRun(projectId, run.id),
+      control,
+      budget: scope,
+      confirmed: true,
+      commandRequestId: requestId,
+      detail: "resumed",
+    };
+  }
+
+  private stopRun(
+    projectId: string,
+    run: PlanDispatchRun,
+    submission: ExecutionControlSubmission,
+  ): ExecutionControlResult {
+    if (!(ACTIVE_STATES as readonly string[]).includes(run.state)) {
+      throw new DispatchError("run_not_active", `Run ${run.id} is already terminal (${run.state})`);
+    }
+    const requestId = `cmd_stop_${randomUUID()}`;
+    const signal = (submission.signal ?? "SIGTERM") as NodeJS.Signals;
+    this.beginControlCommand(requestId, submission.actor, projectId, "stop", run, {
+      reason: submission.reason ?? null,
+      signal,
+    });
+
+    const owner = readWorkerOwner(run.id);
+    // Terminate only the recorded bounded-builder process group. The coordinator
+    // pid may be this backend; it is fenced by reconciliation, not killed here.
+    const target = owner ? { pid: owner.pid, pgid: owner.pgid } : { pid: null, pgid: null };
+    let terminateError: string | null = null;
+    try {
+      if (target.pid !== null || target.pgid !== null) {
+        this.terminate(target, signal);
+      }
+    } catch (error) {
+      terminateError = error instanceof Error ? error.message : String(error);
+    }
+
+    const process = this.processState(run);
+    const confirmed = !process.ownerAlive && !process.workerAlive && !process.worktreeLockAlive;
+    const now = this.clock();
+    const control = this.budget.setControl({
+      projectId,
+      deliveryId: run.delivery_id,
+      workId: run.work_id,
+      status: "stopping",
+      actor: submission.actor,
+      reason: confirmed ? "termination_requested" : "termination_unconfirmed",
+      commandRequestId: requestId,
+      lastRunId: run.id,
+      now,
+      stopSignal: signal,
+      stopRequestedAt: now,
+      stoppedAt: null,
+    });
+    try {
+      this.ledger.updateOutcome(requestId, {
+        state: confirmed && !terminateError ? "succeeded" : "unknown",
+        provenance: {
+          source: "dispatch_control",
+          timestamp: new Date(now).toISOString(),
+          actor: submission.actor,
+          details:
+            terminateError ?? (confirmed ? "termination_requested" : "termination_unconfirmed"),
+        },
+        ...(terminateError ? { error: terminateError } : {}),
+      });
+    } catch {}
+
+    return {
+      run: this.getRun(projectId, run.id),
+      control,
+      budget: this.budget.getScope(this.scopeKeyFromRun(run)),
+      confirmed: confirmed && terminateError === null,
+      commandRequestId: requestId,
+      detail: terminateError
+        ? `termination_error:${terminateError}`
+        : confirmed
+          ? "termination_requested"
+          : "termination_unconfirmed",
+    };
+  }
+
+  private takeoverRun(
+    projectId: string,
+    run: PlanDispatchRun,
+    submission: ExecutionControlSubmission,
+  ): ExecutionControlResult {
+    if (!(ACTIVE_STATES as readonly string[]).includes(run.state)) {
+      throw new DispatchError("run_not_active", `Run ${run.id} is already terminal (${run.state})`);
+    }
+    const process = this.processState(run);
+    if (process.ownerAlive || process.workerAlive || process.worktreeLockAlive) {
+      throw new DispatchError(
+        "owner_may_still_run",
+        `Run ${run.id} may still be writing; takeover refused until its process tree is confirmed dead`,
+        { run_id: run.id },
+      );
+    }
+    const requestId = `cmd_takeover_${randomUUID()}`;
+    this.beginControlCommand(requestId, submission.actor, projectId, "takeover", run, {
+      reason: submission.reason ?? null,
+    });
+    const now = this.clock();
+    const generationRow = this.db
+      .prepare(
+        "SELECT COALESCE(MAX(ownership_generation), 0) AS generation FROM dispatch_runs WHERE delivery_id = ?",
+      )
+      .get(run.delivery_id) as { generation: number };
+    const nextGeneration = generationRow.generation + 1;
+    const ownerToken = randomUUID();
+    const changed = this.db
+      .prepare(
+        `UPDATE dispatch_runs
+         SET ownership_generation = ?, owner_token = ?, owner_pid = ?, lease_expires_at = ?, updated_at = ?
+         WHERE id = ? AND project_id = ? AND ownership_generation = ? AND ${activeStateCondition()}`,
+      )
+      .run(
+        nextGeneration,
+        ownerToken,
+        this.ownerPid(),
+        now + this.leaseMs,
+        now,
+        run.id,
+        projectId,
+        run.ownership_generation,
+      ) as { changes: number };
+    if (changed.changes === 0) {
+      this.failCommand(
+        requestId,
+        "stale_owner_generation",
+        "Run ownership changed before takeover",
+      );
+      throw new DispatchError(
+        "stale_owner_generation",
+        `Run ${run.id} ownership changed before takeover`,
+      );
+    }
+    const control = this.budget.setControl({
+      projectId,
+      deliveryId: run.delivery_id,
+      workId: run.work_id,
+      status: "active",
+      actor: submission.actor,
+      reason: submission.reason ?? "operator_takeover",
+      commandRequestId: requestId,
+      lastRunId: run.id,
+      now,
+      stopSignal: null,
+      stopRequestedAt: null,
+      stoppedAt: null,
+    });
+    this.updateCommand(requestId, "succeeded");
+    const updated = this.getRun(projectId, run.id);
+    return {
+      run: updated,
+      control,
+      budget: this.budget.getScope(this.scopeKeyFromRun(run)),
+      confirmed: true,
+      commandRequestId: requestId,
+      detail: `taken_over:generation=${updated.ownership_generation}`,
+    };
+  }
+
+  private processState(run: PlanDispatchRun): ExecutionProcessState {
+    const ownerPid = run.owner_pid;
+    const ownerAlive = ownerPid !== null && this.safeProcessAlive(ownerPid);
+
+    let workerPid: number | null = null;
+    let workerPgid: number | null = null;
+    let workerAlive = false;
+    if (existsSync(resolveWorkerOwnerPath(run.id))) {
+      const owner = readWorkerOwner(run.id);
+      if (!owner) {
+        // An unreadable ownership record is unknown, not absent: fail closed.
+        workerAlive = true;
+      } else {
+        workerPid = owner.pid;
+        workerPgid = owner.pgid;
+        workerAlive = pidOrGroupAlive(owner.pid, owner.pgid);
+      }
+    }
+
+    let worktreeLockPid: number | null = null;
+    let worktreeLockAlive = false;
+    const lockPath = join(run.worktree_path, ".worktree.lock");
+    if (existsSync(lockPath)) {
+      try {
+        const lock = JSON.parse(readFileSync(lockPath, "utf-8")) as { pid?: unknown };
+        if (typeof lock.pid === "number" && Number.isSafeInteger(lock.pid) && lock.pid > 0) {
+          worktreeLockPid = lock.pid;
+          worktreeLockAlive = this.safeProcessAlive(lock.pid);
+        } else {
+          worktreeLockAlive = true;
+        }
+      } catch {
+        worktreeLockAlive = true;
+      }
+    }
+
+    return {
+      ownerPid,
+      ownerAlive,
+      workerPid,
+      workerPgid,
+      workerAlive,
+      worktreeLockPid,
+      worktreeLockAlive,
+    };
+  }
+
+  private safeProcessAlive(pid: number): boolean {
+    try {
+      return this.processAlive(pid);
+    } catch {
+      return true;
+    }
+  }
+
+  private beginControlCommand(
+    requestId: string,
+    actor: string,
+    projectId: string,
+    action: string,
+    run: PlanDispatchRun,
+    details: Record<string, unknown> = {},
+  ): void {
+    try {
+      this.ledger.recordBeforeDispatch({
+        requestId,
+        actor,
+        projectId,
+        action,
+        target: {
+          run_id: run.id,
+          delivery_id: run.delivery_id,
+          work_id: run.work_id,
+          issue_number: run.issue_number,
+          ownership_generation: run.ownership_generation,
+          ...details,
+        },
+      });
+    } catch (error) {
+      throw new DispatchError(
+        "storage_failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   }
 
   private finalize(run: PlanDispatchRun, result: DispatchRunResult): PlanDispatchRun {
@@ -654,6 +1253,7 @@ export class DispatchService {
     }
 
     this.failCommand(run.command_request_id, "dispatch_failed", error ?? "dispatch_failed");
+    this.maybeExhaustAfterRejection(run, error ?? "dispatch_failed");
     throw new DispatchError("dispatch_failed", error ?? "dispatch_failed", { run_id: run.id });
   }
 
@@ -830,6 +1430,53 @@ export class DispatchService {
       const ownerToken = randomUUID();
       const ownerPid = this.ownerPid();
       const leaseExpiresAt = now + this.leaseMs;
+
+      // The attempt budget is the ticket (delivery + work + gate profile). It is
+      // checked and consumed in this same serialized claim, so two coordinators can
+      // never allocate the same numbered attempt.
+      const budgetKey: BudgetScopeKey = {
+        projectId: project.id,
+        deliveryId: delivery.id,
+        planId: plan.id,
+        workId: member.work_id,
+        gateProfile: member.gate_profile,
+      };
+      const scope = this.budget.ensureScope(
+        { ...budgetKey, baseLimit: this.budgetBaseLimit(manifest, member), now },
+        true,
+      );
+      if (lap > scope.allowedAttempts) {
+        const latest = this.db
+          .prepare(
+            `SELECT id, worktree_path, branch, head_sha FROM dispatch_runs
+             WHERE delivery_id = ? AND work_id = ? ORDER BY lap DESC LIMIT 1`,
+          )
+          .get(delivery.id, member.work_id) as
+          | { id: string; worktree_path: string; branch: string; head_sha: string | null }
+          | undefined;
+        const retention = {
+          runId: latest?.id ?? runId,
+          worktreePath: latest?.worktree_path ?? worktreePath,
+          branch: latest?.branch ?? branch,
+          headSha: latest?.head_sha ?? null,
+          reason: "budget_exhausted",
+        };
+        this.budget.markExhausted(project.id, scope.scopeId, retention, now);
+        this.db.exec("COMMIT;");
+        throw new DispatchError(
+          "budget_exhausted",
+          `Ticket #${member.issue_number} exhausted its ${scope.allowedAttempts}-attempt budget; grant an explicit additional attempt`,
+          {
+            work_id: member.work_id,
+            gate_profile: member.gate_profile,
+            allowed_attempts: scope.allowedAttempts,
+            consumed_attempts: scope.consumedAttempts,
+            retained_worktree_path: retention.worktreePath,
+            retained_branch: retention.branch,
+          },
+        );
+      }
+
       this.db
         .prepare(
           `INSERT INTO dispatch_runs
@@ -866,6 +1513,7 @@ export class DispatchService {
           now,
           now,
         );
+      this.budget.recordConsumed(project.id, scope.scopeId, lap, now);
       this.db.exec("COMMIT;");
 
       const run = this.getRun(project.id, runId);
@@ -1009,6 +1657,143 @@ export class DispatchService {
     return member.role === "ticket" && member.gate_profile === "standalone";
   }
 
+  private budgetBaseLimit(manifest: PlanManifest, member: PlanMember): number {
+    return member.gate_profile === "final"
+      ? manifest.budgets.final_max_laps
+      : manifest.budgets.child_max_laps;
+  }
+
+  private deliveryIdForPlan(projectId: string, planId: string): string | null {
+    const row = this.db
+      .prepare("SELECT id FROM deliveries WHERE project_id = ? AND plan_id = ?")
+      .get(projectId, planId) as { id: string } | undefined;
+    return row?.id ?? null;
+  }
+
+  private scopeKeyFromRun(run: PlanDispatchRun): BudgetScopeKey {
+    return {
+      projectId: run.project_id,
+      deliveryId: run.delivery_id,
+      planId: run.plan_id,
+      workId: run.work_id,
+      gateProfile: run.gate_profile,
+    };
+  }
+
+  private assertControlAvailability(projectId: string, planId: string, member: PlanMember): void {
+    const deliveryId = this.deliveryIdForPlan(projectId, planId);
+    if (!deliveryId) return;
+    const control = this.budget.getControl({ projectId, deliveryId, workId: member.work_id });
+    if (!control) return;
+    if (control.status === "held") {
+      throw new DispatchError("work_held", `Work ${member.work_id} is held by the operator`);
+    }
+    if (control.status === "stopping") {
+      throw new DispatchError(
+        "work_stopping",
+        `Work ${member.work_id} is still stopping; termination is not yet reconciled`,
+      );
+    }
+    if (control.status === "stopped") {
+      throw new DispatchError(
+        "work_stopped",
+        `Work ${member.work_id} was stopped; resume it before dispatching again`,
+      );
+    }
+  }
+
+  /** Fail before allocating a worktree/branch when the ticket budget is already spent. */
+  private assertBudgetForNextAttempt(
+    project: ProjectRow,
+    plan: PlanRecord,
+    member: PlanMember,
+    submission: DispatchSubmission,
+  ): void {
+    const deliveryId = this.deliveryIdForPlan(project.id, plan.id);
+    if (!deliveryId) return;
+    const key: BudgetScopeKey = {
+      projectId: project.id,
+      deliveryId,
+      planId: plan.id,
+      workId: member.work_id,
+      gateProfile: member.gate_profile,
+    };
+    const scope = this.budget.getScope(key);
+    if (!scope) return;
+    if (scope.status !== "exhausted" && scope.consumedAttempts < scope.allowedAttempts) return;
+    if (scope.status !== "exhausted") {
+      this.markBudgetExhaustedFromLatestRun(project.id, key, scope, "budget_exhausted");
+    }
+    this.recordRejection(project, submission, "budget_exhausted", {
+      plan_id: plan.id,
+      work_id: member.work_id,
+      gate_profile: member.gate_profile,
+      allowed_attempts: scope.allowedAttempts,
+      consumed_attempts: scope.consumedAttempts,
+    });
+    throw new DispatchError(
+      "budget_exhausted",
+      `Ticket #${member.issue_number} exhausted its ${scope.allowedAttempts}-attempt budget; grant an explicit additional attempt`,
+      {
+        work_id: member.work_id,
+        gate_profile: member.gate_profile,
+        allowed_attempts: scope.allowedAttempts,
+        consumed_attempts: scope.consumedAttempts,
+        retained_worktree_path: scope.retainedWorktreePath,
+        retained_branch: scope.retainedBranch,
+      },
+    );
+  }
+
+  private markBudgetExhaustedFromLatestRun(
+    projectId: string,
+    key: BudgetScopeKey,
+    scope: ExecutionBudgetStatus,
+    reason: string,
+  ): void {
+    const latest = this.db
+      .prepare(
+        `SELECT id, worktree_path, branch, head_sha FROM dispatch_runs
+         WHERE delivery_id = ? AND work_id = ? ORDER BY lap DESC LIMIT 1`,
+      )
+      .get(key.deliveryId, key.workId) as
+      | { id: string; worktree_path: string; branch: string; head_sha: string | null }
+      | undefined;
+    if (!latest) return;
+    this.budget.markExhausted(
+      projectId,
+      scope.scopeId,
+      {
+        runId: latest.id,
+        worktreePath: latest.worktree_path,
+        branch: latest.branch,
+        headSha: latest.head_sha,
+        reason,
+      },
+      this.clock(),
+    );
+  }
+
+  /** A rejected final allowed attempt moves the ticket to Needs owner immediately. */
+  private maybeExhaustAfterRejection(run: PlanDispatchRun, reason: string): void {
+    const key = this.scopeKeyFromRun(run);
+    const scope = this.budget.getScope(key);
+    if (!scope) return;
+    if (scope.consumedAttempts < scope.allowedAttempts) return;
+    this.budget.markExhausted(
+      run.project_id,
+      scope.scopeId,
+      {
+        runId: run.id,
+        worktreePath: run.worktree_path,
+        branch: run.branch,
+        headSha: run.head_sha ?? null,
+        reason,
+      },
+      this.clock(),
+    );
+  }
+
   private dependencyBlock(
     project: ProjectRow,
     plan: PlanRecord,
@@ -1145,6 +1930,7 @@ export class DispatchService {
       );
     }
     this.assertProfile(currentPlan, currentMember);
+    this.assertControlAvailability(project.id, currentPlan.id, currentMember);
 
     const brakeCode = this.brakeFailure(project.id, scheduled);
     if (brakeCode) {

@@ -384,4 +384,179 @@ describe("local dispatch through backend, client and CLI", () => {
     expect(body.error).toBe("plan_not_dispatchable");
     expect(body.details?.holds?.map((hold) => hold.code)).toContain("incomplete_child_discovery");
   });
+
+  test("HTTP/client/CLI expose attempt budgets, grants and operator controls", async () => {
+    const plan = await importPlan(501, "standalone");
+    const dispatchRun = async () =>
+      app.fetch(
+        new Request(`http://127.0.0.1/api/v1/projects/${projectId}/dispatch`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ plan_id: plan.id, actor: "operator" }),
+        }),
+      );
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const response = await dispatchRun();
+      expect(response.status).toBe(502);
+      const runsResponse = await app.fetch(
+        new Request(
+          `http://127.0.0.1/api/v1/projects/${projectId}/dispatch/runs?plan_id=${encodeURIComponent(plan.id)}`,
+        ),
+      );
+      const runs = (await runsResponse.json()) as Array<{ id: string; lap: number }>;
+      expect(runs[0]!.lap).toBe(attempt);
+    }
+
+    const refused = await dispatchRun();
+    expect(refused.status).toBe(409);
+    expect(((await refused.json()) as { error: string }).error).toBe("budget_exhausted");
+
+    const runsResponse = await app.fetch(
+      new Request(
+        `http://127.0.0.1/api/v1/projects/${projectId}/dispatch/runs?plan_id=${encodeURIComponent(plan.id)}`,
+      ),
+    );
+    const runs = (await runsResponse.json()) as Array<{ id: string; lap: number }>;
+    expect(runs).toHaveLength(3);
+    const runId = runs[0]!.id;
+
+    const detailResponse = await app.fetch(
+      new Request(
+        `http://127.0.0.1/api/v1/projects/${projectId}/dispatch/runs/${encodeURIComponent(runId)}/detail`,
+      ),
+    );
+    expect(detailResponse.status).toBe(200);
+    const detail = (await detailResponse.json()) as {
+      budget: { status: string; consumedAttempts: number; allowedAttempts: number };
+      attempts: Array<{ lap: number }>;
+      grants: Array<{ id: string; amount: number }>;
+      process: { ownerPid: number | null; ownerAlive: boolean };
+    };
+    expect(detail.budget).toMatchObject({
+      status: "exhausted",
+      consumedAttempts: 3,
+      allowedAttempts: 3,
+    });
+    expect(detail.attempts.map((attempt) => attempt.lap)).toEqual([1, 2, 3]);
+    expect(detail.process).toMatchObject({ ownerPid: 4242, ownerAlive: true });
+
+    const grantResponse = await app.fetch(
+      new Request(
+        `http://127.0.0.1/api/v1/projects/${projectId}/dispatch/runs/${encodeURIComponent(runId)}/grant`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            amount: 1,
+            reason: "root cause identified",
+            actor: "operator",
+            idempotency_key: "http-grant-1",
+          }),
+        },
+      ),
+    );
+    expect(grantResponse.status).toBe(200);
+    const granted = (await grantResponse.json()) as {
+      grant: { amount: number };
+      budget: { status: string; grantedAttempts: number; allowedAttempts: number };
+      replayed: boolean;
+    };
+    expect(granted.replayed).toBe(false);
+    expect(granted.budget).toMatchObject({
+      status: "active",
+      grantedAttempts: 1,
+      allowedAttempts: 4,
+    });
+
+    const replayResponse = await app.fetch(
+      new Request(
+        `http://127.0.0.1/api/v1/projects/${projectId}/dispatch/runs/${encodeURIComponent(runId)}/grant`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            amount: 1,
+            reason: "root cause identified",
+            actor: "operator",
+            idempotency_key: "http-grant-1",
+          }),
+        },
+      ),
+    );
+    const replay = (await replayResponse.json()) as { replayed: boolean };
+    expect(replay.replayed).toBe(true);
+
+    const client = createFactoryClient({
+      baseUrl: "http://127.0.0.1",
+      fetch: backendFetch(app),
+    });
+    const scoped = client.forProject(projectId);
+    const clientDetail = await scoped.dispatchRunDetail(runId);
+    expect(clientDetail.budget?.status).toBe("active");
+    const clientGrants = await scoped.dispatchGrants({ runId });
+    expect(clientGrants).toHaveLength(1);
+    const clientGrant = await scoped.grantDispatchBudget(runId, {
+      amount: 1,
+      reason: "http grant",
+      actor: "operator",
+      idempotency_key: "http-grant-2",
+    });
+    expect(clientGrant.budget.allowedAttempts).toBe(5);
+
+    const cliDetail = await captureLogs(() =>
+      runPlanCommand({
+        subcommand: "detail",
+        positionals: ["plan", "detail", runId],
+        projectId,
+        fetch: backendFetch(app),
+        json: true,
+      }),
+    );
+    expect(cliDetail.code).toBe(0);
+    const parsedDetail = JSON.parse(cliDetail.logs.join("\n")) as {
+      budget: { status: string };
+      attempts: unknown[];
+    };
+    expect(parsedDetail.budget.status).toBe("active");
+    expect(parsedDetail.attempts).toHaveLength(3);
+
+    const cliHold = await captureLogs(() =>
+      runPlanCommand({
+        subcommand: "hold",
+        positionals: ["plan", "hold", runId],
+        projectId,
+        reason: "hold for review",
+        actor: "operator",
+        fetch: backendFetch(app),
+        json: true,
+      }),
+    );
+    expect(cliHold.code).toBe(0);
+    const held = JSON.parse(cliHold.logs.join("\n")) as {
+      control: { status: string };
+      commandRequestId: string;
+    };
+    expect(held.control.status).toBe("held");
+
+    const holdCommand = app.db
+      .prepare("SELECT action, state FROM commands WHERE request_id = ?")
+      .get(held.commandRequestId) as { action: string; state: string } | undefined;
+    expect(holdCommand).toMatchObject({ action: "hold", state: "succeeded" });
+
+    const cliResume = await captureLogs(() =>
+      runPlanCommand({
+        subcommand: "resume",
+        positionals: ["plan", "resume", runId],
+        projectId,
+        reason: "review complete",
+        actor: "operator",
+        fetch: backendFetch(app),
+        json: true,
+      }),
+    );
+    expect(cliResume.code).toBe(0);
+    const resumed = JSON.parse(cliResume.logs.join("\n")) as { control: { status: string } };
+    expect(resumed.control.status).toBe("active");
+  });
 });

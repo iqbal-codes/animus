@@ -692,6 +692,20 @@ export class ExecutionObservationService {
       reasons.push("open_blocking_findings");
     }
 
+    // Exhausted ticket budgets are Needs owner: a merge/acceptance must not advance
+    // work that requires an explicit operator grant, even if the build itself passed.
+    const budget = this.db
+      .prepare(
+        `SELECT status FROM execution_budget_scopes
+         WHERE project_id = ? AND delivery_id = ? AND work_id = ? AND gate_profile = ?`,
+      )
+      .get(projectId, run.delivery_id, run.work_id, run.gate_profile) as
+      | { status: "active" | "exhausted" }
+      | undefined;
+    if (budget?.status === "exhausted") {
+      reasons.push("budget_exhausted");
+    }
+
     if (run.state !== "succeeded") {
       reasons.push("run_not_succeeded");
     }

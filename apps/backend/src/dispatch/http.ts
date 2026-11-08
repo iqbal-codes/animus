@@ -1,4 +1,10 @@
 import {
+  budgetGrantListSchema,
+  budgetGrantResultSchema,
+  budgetGrantSubmissionSchema,
+  dispatchRunDetailSchema,
+  executionControlResultSchema,
+  executionControlSubmissionSchema,
   planDispatchReconcileSubmissionSchema,
   planDispatchReconciliationSchema,
   planDispatchRunListSchema,
@@ -13,8 +19,10 @@ function errorStatus(code: DispatchError["code"]): number {
     case "plan_not_found":
     case "member_not_in_plan":
     case "run_not_found":
+    case "control_not_found":
       return 404;
     case "invalid_submission":
+    case "invalid_control":
       return 400;
     case "storage_failed":
       return 500;
@@ -152,6 +160,94 @@ export async function handleProjectDispatchRoute(
     } catch (error) {
       return failure(error);
     }
+  }
+
+  if (parts.length === 5 && parts[2] === "runs" && parts[4] === "detail") {
+    if (request.method !== "GET") {
+      return Response.json(
+        { error: "method_not_allowed" },
+        { status: 405, headers: { Allow: "GET" } },
+      );
+    }
+    try {
+      const detail = dispatchService.getRunDetail(projectId, decodeURIComponent(parts[3]!));
+      return Response.json(dispatchRunDetailSchema.parse(detail));
+    } catch (error) {
+      return failure(error);
+    }
+  }
+
+  if (parts.length === 5 && parts[2] === "runs" && parts[4] === "grant") {
+    if (request.method !== "POST") {
+      return Response.json(
+        { error: "method_not_allowed" },
+        { status: 405, headers: { Allow: "POST" } },
+      );
+    }
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return Response.json({ error: "invalid_payload" }, { status: 400 });
+    }
+    const parsed = budgetGrantSubmissionSchema.safeParse(body);
+    if (!parsed.success) {
+      return Response.json({ error: "invalid_payload" }, { status: 400 });
+    }
+    try {
+      const result = dispatchService.grantBudget(
+        projectId,
+        decodeURIComponent(parts[3]!),
+        parsed.data,
+      );
+      return Response.json(budgetGrantResultSchema.parse(result));
+    } catch (error) {
+      return failure(error);
+    }
+  }
+
+  if (parts.length === 5 && parts[2] === "runs" && parts[4] === "control") {
+    if (request.method !== "POST") {
+      return Response.json(
+        { error: "method_not_allowed" },
+        { status: 405, headers: { Allow: "POST" } },
+      );
+    }
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return Response.json({ error: "invalid_payload" }, { status: 400 });
+    }
+    const parsed = executionControlSubmissionSchema.safeParse(body);
+    if (!parsed.success) {
+      return Response.json({ error: "invalid_payload" }, { status: 400 });
+    }
+    try {
+      const result = dispatchService.applyControl(
+        projectId,
+        decodeURIComponent(parts[3]!),
+        parsed.data,
+      );
+      return Response.json(executionControlResultSchema.parse(result));
+    } catch (error) {
+      return failure(error);
+    }
+  }
+
+  if (parts.length === 3 && parts[2] === "grants") {
+    if (request.method !== "GET") {
+      return Response.json(
+        { error: "method_not_allowed" },
+        { status: 405, headers: { Allow: "GET" } },
+      );
+    }
+    const url = new URL(request.url);
+    const grants = dispatchService.listGrants(projectId, {
+      runId: url.searchParams.get("run_id") ?? undefined,
+      workId: url.searchParams.get("work_id") ?? undefined,
+    });
+    return Response.json(budgetGrantListSchema.parse(grants));
   }
 
   return null;

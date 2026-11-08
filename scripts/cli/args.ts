@@ -61,6 +61,9 @@ export interface ParsedCliArgs {
     publish?: boolean;
     candidate?: string;
     kind?: string;
+    amount?: string;
+    "idempotency-key"?: string;
+    signal?: string;
   };
 }
 
@@ -126,6 +129,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       publish: { type: "boolean", default: false },
       candidate: { type: "string" },
       kind: { type: "string" },
+      amount: { type: "string" },
+      "idempotency-key": { type: "string" },
+      signal: { type: "string" },
     },
   });
 
