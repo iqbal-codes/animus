@@ -12,6 +12,15 @@ import {
   releaseReadinessResultSchema,
   sanitizedReportSchema,
   landingGuardResultSchema,
+  executionObservationRequestSchema,
+  executionObservationRecordSchema,
+  observationListSchema,
+  findingListSchema,
+  factoryFindingRecordSchema,
+  findingFixRequestSchema,
+  findingRecheckRequestSchema,
+  acceptanceDecisionSchema,
+  runEvidenceReportSchema,
 } from "@animus/contracts/operator";
 import type { EvidenceService } from "./service";
 import { EvidenceError } from "./errors";
@@ -30,6 +39,167 @@ export async function handleProjectEvidenceRoute(
   const subAction = parts[offset + 2];
 
   try {
+    // Candidate-bound execution observations, findings and finalized artifacts.
+    if (subAction === "observations") {
+      if (parts.length === offset + 4) {
+        if (request.method !== "GET") {
+          return Response.json(
+            { error: "method_not_allowed" },
+            { status: 405, headers: { Allow: "GET" } },
+          );
+        }
+        const record = service.observations.getObservation(
+          projectId,
+          decodeURIComponent(parts[offset + 3]!),
+        );
+        return Response.json(executionObservationRecordSchema.parse(record));
+      }
+      if (request.method === "POST") {
+        let body: unknown;
+        try {
+          body = await request.json();
+        } catch {
+          return Response.json({ error: "invalid_payload" }, { status: 400 });
+        }
+        const parsed = executionObservationRequestSchema.safeParse(body);
+        if (!parsed.success) {
+          return Response.json({ error: "invalid_payload" }, { status: 400 });
+        }
+        const { run_id, producer_credential, ...submission } = parsed.data;
+        if (submission.stage === "builder_execution") {
+          return Response.json({ error: "stage_writer_restricted" }, { status: 422 });
+        }
+        const producer = service.observations.authenticateProducer(projectId, producer_credential);
+        const record = service.observations.recordRunObservation(projectId, run_id, {
+          ...submission,
+          producer,
+        });
+        return Response.json(executionObservationRecordSchema.parse(record), { status: 201 });
+      }
+      if (request.method === "GET") {
+        const url = new URL(request.url);
+        const records = service.observations.listObservations(projectId, {
+          runId: url.searchParams.get("run_id") ?? undefined,
+          deliveryId: url.searchParams.get("delivery_id") ?? undefined,
+          candidateHeadSha: url.searchParams.get("candidate_head_sha") ?? undefined,
+          workId: url.searchParams.get("work_id") ?? undefined,
+        });
+        return Response.json(observationListSchema.parse(records));
+      }
+      return Response.json(
+        { error: "method_not_allowed" },
+        { status: 405, headers: { Allow: "GET, POST" } },
+      );
+    }
+
+    if (subAction === "findings") {
+      if (parts.length === offset + 5) {
+        const findingId = decodeURIComponent(parts[offset + 3]!);
+        const operation = parts[offset + 4];
+        if (request.method !== "POST") {
+          return Response.json(
+            { error: "method_not_allowed" },
+            { status: 405, headers: { Allow: "POST" } },
+          );
+        }
+        let body: unknown;
+        try {
+          body = await request.json();
+        } catch {
+          return Response.json({ error: "invalid_payload" }, { status: 400 });
+        }
+        if (operation === "fix") {
+          const parsed = findingFixRequestSchema.safeParse(body);
+          if (!parsed.success) {
+            return Response.json({ error: "invalid_payload" }, { status: 400 });
+          }
+          const producer = service.observations.authenticateProducer(
+            projectId,
+            parsed.data.producer_credential,
+          );
+          const finding = service.observations.recordFindingFix(projectId, findingId, {
+            actor: producer.id,
+            ...(parsed.data.detail !== undefined ? { detail: parsed.data.detail } : {}),
+          });
+          return Response.json(factoryFindingRecordSchema.parse(finding));
+        }
+        if (operation === "recheck") {
+          const parsed = findingRecheckRequestSchema.safeParse(body);
+          if (!parsed.success) {
+            return Response.json({ error: "invalid_payload" }, { status: 400 });
+          }
+          const { producer_credential, ...submission } = parsed.data;
+          const producer = service.observations.authenticateProducer(
+            projectId,
+            producer_credential,
+          );
+          const finding = service.observations.recordFindingRecheck(projectId, findingId, {
+            ...submission,
+            producer,
+          });
+          return Response.json(factoryFindingRecordSchema.parse(finding));
+        }
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
+      if (parts.length === offset + 4) {
+        if (request.method !== "GET") {
+          return Response.json(
+            { error: "method_not_allowed" },
+            { status: 405, headers: { Allow: "GET" } },
+          );
+        }
+        const finding = service.observations.getFinding(
+          projectId,
+          decodeURIComponent(parts[offset + 3]!),
+        );
+        return Response.json(factoryFindingRecordSchema.parse(finding));
+      }
+
+      if (request.method !== "GET") {
+        return Response.json(
+          { error: "method_not_allowed" },
+          { status: 405, headers: { Allow: "GET" } },
+        );
+      }
+      const url = new URL(request.url);
+      const findings = service.observations.listFindings(projectId, {
+        runId: url.searchParams.get("run_id") ?? undefined,
+        deliveryId: url.searchParams.get("delivery_id") ?? undefined,
+        workId: url.searchParams.get("work_id") ?? undefined,
+        status: (url.searchParams.get("status") as "open" | "resolved" | null) ?? undefined,
+      });
+      return Response.json(findingListSchema.parse(findings));
+    }
+
+    if (subAction === "acceptance" && parts.length === offset + 4) {
+      if (request.method !== "GET") {
+        return Response.json(
+          { error: "method_not_allowed" },
+          { status: 405, headers: { Allow: "GET" } },
+        );
+      }
+      const decision = service.observations.evaluateAcceptance(
+        projectId,
+        decodeURIComponent(parts[offset + 3]!),
+      );
+      return Response.json(acceptanceDecisionSchema.parse(decision));
+    }
+
+    if (subAction === "runs" && parts.length === offset + 4) {
+      if (request.method !== "GET") {
+        return Response.json(
+          { error: "method_not_allowed" },
+          { status: 405, headers: { Allow: "GET" } },
+        );
+      }
+      const report = service.observations.getRunEvidence(
+        projectId,
+        decodeURIComponent(parts[offset + 3]!),
+      );
+      return Response.json(runEvidenceReportSchema.parse(report));
+    }
+
     // 1. Verification Records (AC1, AC2)
     if (subAction === "verification") {
       if (request.method === "POST") {
@@ -272,6 +442,21 @@ ${verif.review ? verif.review.summary : "No review conducted."}`;
         unverified_candidate_blocked: 422,
         release_policy_incomplete: 422,
         process_tree_termination_failed: 500,
+        observation_not_found: 404,
+        finding_not_found: 404,
+        artifact_not_found: 404,
+        run_not_found: 404,
+        artifact_corrupt: 422,
+        artifact_unsafe_path: 422,
+        forged_ownership: 422,
+        self_certification_rejected: 422,
+        unauthorized_producer: 403,
+        producer_exists: 409,
+        stage_writer_restricted: 422,
+        builder_claim_mismatch: 422,
+        stale_candidate_evidence: 422,
+        acceptance_blocked: 422,
+        invalid_stage_producer: 422,
       };
       const status = statusMap[err.code] ?? 400;
       return Response.json({ error: err.code, details: err.details }, { status });

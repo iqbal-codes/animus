@@ -107,6 +107,21 @@ export const operatorErrorSchema = z.object({
     "draft_planning_failed",
     "draft_storage_failed",
     "plan_import_failed",
+    "observation_not_found",
+    "finding_not_found",
+    "artifact_not_found",
+    "artifact_corrupt",
+    "artifact_unsafe_path",
+    "forged_ownership",
+    "self_certification_rejected",
+    "stale_candidate_evidence",
+    "acceptance_blocked",
+    "invalid_stage_producer",
+    "unauthorized_producer",
+    "producer_exists",
+    "stage_writer_restricted",
+    "builder_claim_mismatch",
+    "run_not_found",
   ]),
 });
 export type OperatorErrorCode = z.infer<typeof operatorErrorSchema>["error"];
@@ -735,6 +750,7 @@ export const planDispatchRunSchema = z.object({
   merge_policy: dispatchMergePolicySchema,
   target_branch: z.string().min(1),
   ownership_generation: z.number().int().positive(),
+  lap: z.number().int().positive(),
   state: dispatchRunStateSchema,
   actor: z.string().min(1),
   command_request_id: z.string().min(1),
@@ -1476,6 +1492,259 @@ export const candidateVerificationSubmissionSchema = z.object({
   review: independentReviewSchema.optional(),
 });
 export type CandidateVerificationSubmission = z.infer<typeof candidateVerificationSubmissionSchema>;
+
+// ---------------------------------------------------------------------------
+// Candidate-bound execution observations, findings and finalized artifacts
+// ---------------------------------------------------------------------------
+
+/** Bumped whenever the gate-profile definition changes; older observations stop authorizing acceptance. */
+export const GATE_PROFILE_VERSION = 1;
+
+export const executionStageSchema = z.enum([
+  "builder_execution",
+  "technical_checks",
+  "independent_review",
+  "final_acceptance",
+]);
+export type ExecutionStage = z.infer<typeof executionStageSchema>;
+
+export const executionObservationStatusSchema = z.enum([
+  "running",
+  "passed",
+  "failed",
+  "inconclusive",
+  "interrupted",
+]);
+export type ExecutionObservationStatus = z.infer<typeof executionObservationStatusSchema>;
+
+export const executionCheckSubmissionSchema = z.object({
+  name: z.string().min(1).max(200),
+  command: z.string().max(4000),
+  result: checkResultSchema,
+  durationMs: z.number().int().nonnegative().optional(),
+  detail: z.string().max(8000).optional(),
+  artifactPath: z.string().min(1).max(1000).optional(),
+});
+export type ExecutionCheckSubmission = z.infer<typeof executionCheckSubmissionSchema>;
+
+export const findingSeveritySchema = z.enum(["blocking", "conditional"]);
+export type FindingSeverity = z.infer<typeof findingSeveritySchema>;
+
+export const findingSubmissionSchema = z.object({
+  severity: findingSeveritySchema,
+  acKey: z.string().min(1).max(200).optional(),
+  fileContext: z.string().min(1).max(4000),
+  summary: z.string().min(1).max(8000),
+  workId: z.string().min(1).optional(),
+});
+export type FindingSubmission = z.infer<typeof findingSubmissionSchema>;
+
+export const artifactOwnerTypeSchema = z.enum(["observation", "finding"]);
+export type ArtifactOwnerType = z.infer<typeof artifactOwnerTypeSchema>;
+
+export const artifactSubmissionSchema = z.object({
+  ownerType: artifactOwnerTypeSchema,
+  /** Index into this submission's findings when ownerType is "finding". */
+  ownerFindingIndex: z.number().int().nonnegative().optional(),
+  name: z.string().min(1).max(200),
+  relativePath: z.string().min(1).max(1000),
+  mediaType: z.string().min(1).max(200),
+});
+export type ArtifactSubmission = z.infer<typeof artifactSubmissionSchema>;
+
+export const executionObservationSubmissionSchema = z.object({
+  stage: executionStageSchema,
+  status: executionObservationStatusSchema,
+  producer: producerIdentitySchema,
+  checks: z.array(executionCheckSubmissionSchema).default([]),
+  findings: z.array(findingSubmissionSchema).default([]),
+  artifacts: z.array(artifactSubmissionSchema).default([]),
+});
+export type ExecutionObservationSubmission = z.infer<typeof executionObservationSubmissionSchema>;
+export type ExecutionObservationSubmissionInput = z.input<
+  typeof executionObservationSubmissionSchema
+>;
+
+// Public HTTP writer: identity is proven by a durable credential minted by the
+// trusted backend boundary, never by caller-supplied producer strings.
+export const executionObservationRequestSchema = z
+  .object({
+    run_id: z.string().min(1),
+    producer_credential: z.string().min(1).max(500),
+    stage: executionStageSchema,
+    status: executionObservationStatusSchema,
+    checks: z.array(executionCheckSubmissionSchema).default([]),
+    findings: z.array(findingSubmissionSchema).default([]),
+    artifacts: z.array(artifactSubmissionSchema).default([]),
+  })
+  .strict();
+export type ExecutionObservationRequest = z.infer<typeof executionObservationRequestSchema>;
+export type ExecutionObservationRequestInput = z.input<typeof executionObservationRequestSchema>;
+
+export const findingEventActionSchema = z.enum([
+  "opened",
+  "fix_submitted",
+  "recheck_passed",
+  "recheck_failed",
+  "recheck_inconclusive",
+]);
+export type FindingEventAction = z.infer<typeof findingEventActionSchema>;
+
+export const executionCheckRecordSchema = z.object({
+  id: z.string().min(1),
+  observationId: z.string().min(1),
+  name: z.string().min(1),
+  command: z.string(),
+  result: checkResultSchema,
+  durationMs: z.number().int().nonnegative().nullable(),
+  detail: z.string().nullable(),
+  artifactPath: z.string().nullable(),
+  createdAt: z.number().int().nonnegative(),
+});
+export type ExecutionCheckRecord = z.infer<typeof executionCheckRecordSchema>;
+
+export const executionArtifactRecordSchema = z.object({
+  id: z.string().min(1),
+  projectId: z.string().min(1),
+  observationId: z.string().min(1),
+  ownerType: artifactOwnerTypeSchema,
+  ownerId: z.string().min(1),
+  name: z.string().min(1),
+  relativePath: z.string().min(1),
+  mediaType: z.string().min(1),
+  sizeBytes: z.number().int().nonnegative(),
+  digestSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  createdAt: z.number().int().nonnegative(),
+});
+export type ExecutionArtifactRecord = z.infer<typeof executionArtifactRecordSchema>;
+
+export const findingEventRecordSchema = z.object({
+  id: z.string().min(1),
+  findingId: z.string().min(1),
+  sequence: z.number().int().positive(),
+  action: findingEventActionSchema,
+  actor: z.string().min(1),
+  actorRole: producerRoleSchema,
+  observationId: z.string().min(1).nullable(),
+  detail: z.string().nullable(),
+  createdAt: z.number().int().nonnegative(),
+});
+export type FindingEventRecord = z.infer<typeof findingEventRecordSchema>;
+
+export const factoryFindingRecordSchema = z.object({
+  id: z.string().min(1),
+  projectId: z.string().min(1),
+  deliveryId: z.string().min(1),
+  runId: z.string().min(1),
+  workId: z.string().min(1).nullable(),
+  issueNumber: z.number().int().positive(),
+  acKey: z.string().min(1).nullable(),
+  severity: findingSeveritySchema,
+  fileContext: z.string().min(1),
+  summary: z.string().min(1),
+  originObservationId: z.string().min(1),
+  status: z.enum(["open", "resolved"]),
+  createdAt: z.number().int().nonnegative(),
+  resolvedAt: z.number().int().nonnegative().nullable(),
+  events: z.array(findingEventRecordSchema),
+});
+export type FactoryFindingRecord = z.infer<typeof factoryFindingRecordSchema>;
+
+export const executionObservationRecordSchema = z.object({
+  id: z.string().min(1),
+  projectId: z.string().min(1),
+  deliveryId: z.string().min(1),
+  runId: z.string().min(1),
+  lap: z.number().int().positive(),
+  attemptKey: z.string().min(1),
+  stage: executionStageSchema,
+  status: executionObservationStatusSchema,
+  candidateHeadSha: z.string().min(1),
+  targetTipSha: z.string().min(1),
+  mergeBaseSha: z.string().min(1),
+  testedIdentity: z.string().min(1),
+  integrationLineage: z.string().min(1),
+  producer: producerIdentitySchema,
+  gateProfile: planGateProfileSchema,
+  gateProfileVersion: z.number().int().positive(),
+  error: z.string().nullable(),
+  createdAt: z.number().int().nonnegative(),
+  checks: z.array(executionCheckRecordSchema),
+  artifacts: z.array(executionArtifactRecordSchema),
+});
+export type ExecutionObservationRecord = z.infer<typeof executionObservationRecordSchema>;
+
+export const acceptanceDecisionSchema = z.object({
+  runId: z.string().min(1),
+  projectId: z.string().min(1),
+  deliveryId: z.string().min(1),
+  gateProfile: planGateProfileSchema,
+  candidateHeadSha: z.string().nullable(),
+  targetTipSha: z.string().nullable(),
+  mergeBaseSha: z.string().nullable(),
+  integrationLineage: z.string(),
+  authorized: z.boolean(),
+  reasons: z.array(z.string()),
+  builderObservationId: z.string().min(1).nullable(),
+  independentObservationId: z.string().min(1).nullable(),
+  openBlockingFindingIds: z.array(z.string().min(1)),
+  verifiedArtifactIds: z.array(z.string().min(1)),
+});
+export type AcceptanceDecision = z.infer<typeof acceptanceDecisionSchema>;
+
+export const runEvidenceReportSchema = z.object({
+  observations: z.array(executionObservationRecordSchema),
+  findings: z.array(factoryFindingRecordSchema),
+  acceptance: acceptanceDecisionSchema,
+});
+export type RunEvidenceReport = z.infer<typeof runEvidenceReportSchema>;
+
+export const findingFixSubmissionSchema = z
+  .object({
+    actor: z.string().min(1).max(200),
+    detail: z.string().max(8000).optional(),
+  })
+  .strict();
+export type FindingFixSubmission = z.infer<typeof findingFixSubmissionSchema>;
+
+export const findingFixRequestSchema = z
+  .object({
+    producer_credential: z.string().min(1).max(500),
+    detail: z.string().max(8000).optional(),
+  })
+  .strict();
+export type FindingFixRequest = z.infer<typeof findingFixRequestSchema>;
+
+export const findingRecheckSubmissionSchema = z
+  .object({
+    producer: producerIdentitySchema,
+    status: z.enum(["passed", "failed", "inconclusive"]),
+    stage: executionStageSchema.optional(),
+    runId: z.string().min(1).optional(),
+    checks: z.array(executionCheckSubmissionSchema).default([]),
+    artifacts: z.array(artifactSubmissionSchema).default([]),
+    detail: z.string().max(8000).optional(),
+  })
+  .strict();
+export type FindingRecheckSubmission = z.infer<typeof findingRecheckSubmissionSchema>;
+export type FindingRecheckSubmissionInput = z.input<typeof findingRecheckSubmissionSchema>;
+
+export const findingRecheckRequestSchema = z
+  .object({
+    producer_credential: z.string().min(1).max(500),
+    status: z.enum(["passed", "failed", "inconclusive"]),
+    stage: executionStageSchema.optional(),
+    runId: z.string().min(1).optional(),
+    checks: z.array(executionCheckSubmissionSchema).default([]),
+    artifacts: z.array(artifactSubmissionSchema).default([]),
+    detail: z.string().max(8000).optional(),
+  })
+  .strict();
+export type FindingRecheckRequest = z.infer<typeof findingRecheckRequestSchema>;
+export type FindingRecheckRequestInput = z.input<typeof findingRecheckRequestSchema>;
+
+export const observationListSchema = z.array(executionObservationRecordSchema);
+export const findingListSchema = z.array(factoryFindingRecordSchema);
 
 export const landingGuardDecisionSchema = z.enum(["allowed", "blocked"]);
 export type LandingGuardDecision = z.infer<typeof landingGuardDecisionSchema>;

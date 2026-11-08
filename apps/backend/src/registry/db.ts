@@ -8,6 +8,7 @@ import {
 import { applyCommandMigrations } from "../command/db";
 import { applyCoordinationMigrations } from "../coordination/db";
 import { applyEvidenceMigrations } from "../evidence/db";
+import { EVIDENCE_MIGRATIONS } from "../evidence/schema";
 import { WORK_MIGRATIONS } from "../work/db";
 import { DRAFT_MIGRATIONS } from "../draft/db";
 import { DISPATCH_MIGRATIONS } from "../dispatch/db";
@@ -18,14 +19,15 @@ import { applyMigrations, type Migration } from "./migrations";
  *
  * Versions are owned here, not by the feature modules that contribute them.
  * Work identity (#152) owns version 1, prepared plan admission (#153) owns
- * version 2, local draft authoring (#161) owns version 3, and delivery
- * dispatch ownership (#154) owns version 4. A future lane appends the next
- * version instead of claiming an existing one.
+ * version 2, local draft authoring (#161) owns version 3, delivery dispatch
+ * ownership (#154) owns version 4, and execution evidence (#155) owns version 5.
+ * A future lane appends the next version instead of claiming an existing one.
  */
 export const SCHEMA_MIGRATIONS: Migration[] = [
   ...WORK_MIGRATIONS,
   ...DRAFT_MIGRATIONS,
   ...DISPATCH_MIGRATIONS,
+  ...EVIDENCE_MIGRATIONS,
 ];
 
 export function resolveStateDir(): string {

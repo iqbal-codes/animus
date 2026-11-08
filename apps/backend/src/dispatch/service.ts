@@ -41,6 +41,7 @@ import {
   readExecutionAuthority,
   type ExecutionAuthority,
 } from "@animus/contracts/execution-authority";
+import { ExecutionObservationService } from "../evidence/observations";
 import {
   allocateWorktree,
   type WorktreeAllocation,
@@ -147,6 +148,7 @@ export interface DispatchServiceOptions {
   gitRunner?: (cmd: string[], options: { cwd: string }) => string;
   authority?: () => ExecutionAuthority;
   engine?: DispatchEngineOptions;
+  observations?: ExecutionObservationService;
 }
 
 interface ProjectRow {
@@ -172,6 +174,7 @@ interface DispatchRunRow {
   merge_policy: "auto_after_gates" | "manual";
   target_branch: string;
   ownership_generation: number;
+  lap: number;
   state: PlanDispatchRun["state"];
   actor: string;
   command_request_id: string;
@@ -263,6 +266,7 @@ export class DispatchService {
   private readonly legacyActiveLaps: (checkoutPath: string) => number;
   private readonly gitRunner: (cmd: string[], options: { cwd: string }) => string;
   private readonly authority: () => ExecutionAuthority;
+  private readonly observations: ExecutionObservationService;
 
   constructor(
     private readonly db: DatabaseSync,
@@ -283,6 +287,7 @@ export class DispatchService {
       ((checkoutPath) => countActiveLaps(resolveProjectWorkspace(checkoutPath).runsDir));
     this.gitRunner = options.gitRunner ?? defaultGitRunner;
     this.authority = options.authority ?? (() => readExecutionAuthority().authority);
+    this.observations = options.observations ?? new ExecutionObservationService(db);
   }
 
   async dispatch(projectId: string, submission: DispatchSubmission): Promise<PlanDispatchRun> {
@@ -385,6 +390,7 @@ export class DispatchService {
         requestId,
         actor: submission.actor ?? "operator",
         scheduled: Boolean(submission.scheduled),
+        explicit: Boolean(submission.work_id || submission.issue_number),
         runId: `run_${randomUUID()}`,
       });
     } catch (error) {
@@ -556,57 +562,88 @@ export class DispatchService {
 
   private finalize(run: PlanDispatchRun, result: DispatchRunResult): PlanDispatchRun {
     const verified = this.verifyCandidate(run, result);
-    const current = this.db
-      .prepare("SELECT * FROM dispatch_runs WHERE id = ?")
-      .get(run.id) as unknown as DispatchRunRow | undefined;
-    if (
-      !current ||
-      current.ownership_generation !== run.ownership_generation ||
-      current.owner_token !== run.owner_token ||
-      !(ACTIVE_STATES as readonly string[]).includes(current.state)
-    ) {
-      this.failCommand(
-        run.command_request_id,
-        "stale_worker",
-        "result superseded by a newer owner",
-      );
-      throw new DispatchError(
-        "stale_worker",
-        "Worker result was superseded by a newer ownership generation",
-      );
-    }
-
-    const now = this.clock();
     const nextState = verified.success ? "succeeded" : "failed";
     const error = verified.success ? null : (verified.error ?? "dispatch_failed");
-    const changed = this.db
-      .prepare(
-        `UPDATE dispatch_runs
-         SET state = ?, head_sha = ?, error = ?, finished_at = ?, updated_at = ?
-         WHERE id = ? AND ownership_generation = ? AND owner_token = ?
-           AND state IN ('running', 'dispatched', 'interrupted')`,
-      )
-      .run(
-        nextState,
-        verified.success ? (verified.headSha ?? null) : null,
-        error,
-        now,
-        now,
-        run.id,
-        run.ownership_generation,
-        run.owner_token,
-      ) as { changes: number };
+    const now = this.clock();
 
-    if (changed.changes === 0) {
-      this.failCommand(
-        run.command_request_id,
-        "stale_worker",
-        "result superseded by a newer owner",
-      );
-      throw new DispatchError(
-        "stale_worker",
-        "Worker result was superseded by a newer ownership generation",
-      );
+    try {
+      // The terminal state and its immutable stage observation commit together so a
+      // partial persistence cannot report a result without its evidence.
+      this.db.exec("BEGIN IMMEDIATE;");
+      const current = this.db
+        .prepare("SELECT * FROM dispatch_runs WHERE id = ?")
+        .get(run.id) as unknown as DispatchRunRow | undefined;
+      if (
+        !current ||
+        current.ownership_generation !== run.ownership_generation ||
+        current.owner_token !== run.owner_token ||
+        !(ACTIVE_STATES as readonly string[]).includes(current.state)
+      ) {
+        throw new DispatchError(
+          "stale_worker",
+          "Worker result was superseded by a newer ownership generation",
+        );
+      }
+
+      const changed = this.db
+        .prepare(
+          `UPDATE dispatch_runs
+           SET state = ?, head_sha = ?, error = ?, finished_at = ?, updated_at = ?
+           WHERE id = ? AND ownership_generation = ? AND owner_token = ?
+             AND state IN ('running', 'dispatched', 'interrupted')`,
+        )
+        .run(
+          nextState,
+          verified.success ? (verified.headSha ?? null) : null,
+          error,
+          now,
+          now,
+          run.id,
+          run.ownership_generation,
+          run.owner_token,
+        ) as { changes: number };
+
+      if (changed.changes === 0) {
+        throw new DispatchError(
+          "stale_worker",
+          "Worker result was superseded by a newer ownership generation",
+        );
+      }
+
+      this.observations.recordRunObservation(run.project_id, run.id, {
+        stage: "builder_execution",
+        status: verified.success ? "passed" : "failed",
+        producer: { id: run.actor, role: "builder", name: "dispatch-builder" },
+        checks: [
+          {
+            name: "builder_commit",
+            command: "git rev-parse HEAD",
+            result: verified.success ? "PASS" : "FAIL",
+            detail: verified.success
+              ? `candidate ${verified.headSha ?? ""}`
+              : (verified.error ?? "dispatch_failed"),
+          },
+        ],
+        findings: [],
+        artifacts: [],
+      });
+
+      this.db.exec("COMMIT;");
+    } catch (caught) {
+      try {
+        this.db.exec("ROLLBACK;");
+      } catch {}
+      if (caught instanceof DispatchError) {
+        this.failCommand(
+          run.command_request_id,
+          caught.code === "stale_worker" ? "stale_worker" : "storage_failed",
+          caught.message,
+        );
+        throw caught;
+      }
+      const message = caught instanceof Error ? caught.message : String(caught);
+      this.failCommand(run.command_request_id, "storage_failed", message);
+      throw new DispatchError("storage_failed", message);
     }
 
     clearWorkerOwner(run.id);
@@ -667,6 +704,7 @@ export class DispatchService {
     requestId: string;
     actor: string;
     scheduled?: boolean;
+    explicit?: boolean;
     runId: string;
   }): ClaimedRun {
     const {
@@ -681,6 +719,7 @@ export class DispatchService {
       requestId,
       actor,
       scheduled,
+      explicit,
       runId,
     } = input;
     const manifestRow = this.db
@@ -703,6 +742,7 @@ export class DispatchService {
         member,
         targetBranch,
         scheduled: Boolean(scheduled),
+        explicit: Boolean(explicit),
       });
 
       let delivery = this.db
@@ -771,6 +811,16 @@ export class DispatchService {
         )
         .get(delivery.id) as { generation: number };
       const generation = generationRow.generation + 1;
+      // The execution lap is allocated per ticket (work item), transactionally in
+      // this same serialized claim. A resumed/reconciled run keeps its row and lap;
+      // only a new builder/fix cycle consumes the next ticket lap. Budget enforcement
+      // (limit, grants, exhaustion) belongs to #156.
+      const lapRow = this.db
+        .prepare(
+          "SELECT COALESCE(MAX(lap), 0) AS lap FROM dispatch_runs WHERE delivery_id = ? AND work_id = ?",
+        )
+        .get(delivery.id, member.work_id) as { lap: number };
+      const lap = lapRow.lap + 1;
       const worktreePath = join(
         getProjectWorktreesDir(project.checkout_path),
         "dispatch",
@@ -785,10 +835,10 @@ export class DispatchService {
           `INSERT INTO dispatch_runs
              (id, project_id, delivery_id, plan_id, work_id, revision_id, content_hash,
               issue_number, role, gate_profile, merge_policy, target_branch,
-              ownership_generation, state, actor, command_request_id, branch, worktree_path,
+              ownership_generation, lap, state, actor, command_request_id, branch, worktree_path,
               base_sha, owner_pid, owner_token, lease_expires_at, head_sha, error,
               launched_at, finished_at, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'claimed', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'claimed', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)`,
         )
         .run(
           runId,
@@ -804,6 +854,7 @@ export class DispatchService {
           mergePolicy,
           targetBranch,
           generation,
+          lap,
           actor,
           requestId,
           branch,
@@ -926,7 +977,10 @@ export class DispatchService {
     if (this.hasActiveRun(projectId, member.work_id)) {
       throw new DispatchError("claim_conflict", `Work ${member.work_id} already has an active run`);
     }
-    if (this.hasSucceededRun(projectId, member.work_id)) {
+    if (
+      this.hasSucceededRun(projectId, member.work_id) &&
+      !this.hasOpenFinding(projectId, member.work_id)
+    ) {
       throw new DispatchError(
         "already_succeeded",
         `Work ${member.work_id} already succeeded and awaits downstream integration`,
@@ -1029,6 +1083,20 @@ export class DispatchService {
     return Boolean(row);
   }
 
+  /**
+   * An open finding for the ticket means its last builder/fix cycle did not close
+   * the defect, so an explicit re-dispatch starts the next ticket lap. Whether and
+   * how many laps may be granted is #156's budget policy.
+   */
+  private hasOpenFinding(projectId: string, workId: string): boolean {
+    const row = this.db
+      .prepare(
+        "SELECT 1 AS present FROM factory_findings WHERE project_id = ? AND work_id = ? AND status = 'open' LIMIT 1",
+      )
+      .get(projectId, workId);
+    return Boolean(row);
+  }
+
   private countActiveRuns(projectId: string): number {
     const row = this.db
       .prepare(
@@ -1045,8 +1113,9 @@ export class DispatchService {
     member: PlanMember;
     targetBranch: string;
     scheduled: boolean;
+    explicit: boolean;
   }): void {
-    const { project, plan, manifest, member, targetBranch, scheduled } = input;
+    const { project, plan, manifest, member, targetBranch, scheduled, explicit } = input;
 
     let currentPlan: PlanRecord;
     try {
@@ -1100,7 +1169,10 @@ export class DispatchService {
     if (this.hasActiveRun(project.id, currentMember.work_id)) {
       throw new DispatchError("claim_conflict", "Work already has an active run");
     }
-    if (this.hasSucceededRun(project.id, currentMember.work_id)) {
+    if (
+      this.hasSucceededRun(project.id, currentMember.work_id) &&
+      !(explicit && this.hasOpenFinding(project.id, currentMember.work_id))
+    ) {
       throw new DispatchError("already_succeeded", "Work already succeeded");
     }
 
@@ -1469,6 +1541,7 @@ export class DispatchService {
       merge_policy: row.merge_policy,
       target_branch: row.target_branch,
       ownership_generation: row.ownership_generation,
+      lap: row.lap,
       state: row.state,
       actor: row.actor,
       command_request_id: row.command_request_id,
