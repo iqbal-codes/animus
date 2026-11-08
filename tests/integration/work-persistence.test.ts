@@ -365,11 +365,14 @@ describe("project work identity and immutable revisions", () => {
     expect(db.prepare("PRAGMA foreign_keys;").get()).toEqual({ foreign_keys: 1 });
     expect(
       db.prepare("SELECT version, name FROM schema_migrations ORDER BY version").all(),
-    ).toEqual([{ version: 1, name: "project_work_identity_and_revisions" }]);
+    ).toEqual([
+      { version: 1, name: "project_work_identity_and_revisions" },
+      { version: 2, name: "prepared_plan_admission" },
+    ]);
     db.close();
     db = initializeDatabase(dbPath);
     expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({
-      count: 1,
+      count: 2,
     });
   });
 

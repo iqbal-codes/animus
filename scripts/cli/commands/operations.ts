@@ -15,7 +15,7 @@ import {
   type FactoryConnectionOptions,
 } from "./onboarding-registration";
 import { CommandService } from "../../../apps/backend/src/command";
-import type { ControlAction, Project, WorkRecord } from "@animus/contracts/operator";
+import type { ControlAction, PlanKind, PlanRecord, Project, WorkRecord } from "@animus/contracts/operator";
 
 export async function runControlCommand(opts: {
   subcommand?: string;
@@ -510,6 +510,146 @@ function printWork(record: WorkRecord): void {
     for (const comment of record.revision.source.comments) {
       console.log(`    ${comment.author ?? "unknown"}: ${comment.body}`);
     }
+  }
+}
+
+export async function runPlanCommand(
+  opts: FactoryConnectionOptions & {
+    subcommand?: string;
+    positionals: string[];
+    projectId?: string;
+    issue?: string;
+    kind?: string;
+    deliveryBranch?: string;
+    reason?: string;
+    actor?: string;
+    json?: boolean;
+  },
+): Promise<number> {
+  const sub = opts.subcommand ?? "list";
+  try {
+    if (!opts.projectId) {
+      throw new Error(
+        "Usage: factory plan <list|get|import|approve|revoke> --project <project-id>",
+      );
+    }
+    const scoped = createRegistrationClient(opts).forProject(opts.projectId);
+
+    if (sub === "list") {
+      const plans = await scoped.plans();
+      if (opts.json) {
+        console.log(JSON.stringify(plans, null, 2));
+      } else if (plans.length === 0) {
+        console.log("No admitted plans.");
+      } else {
+        console.log(`Plans (${plans.length}):`);
+        for (const plan of plans) {
+          console.log(
+            `  ${plan.id}  ${plan.kind}  #${plan.root_issue_number}  ${plan.authority}  tickets=${plan.ticket_count}  holds=${plan.hold_count}`,
+          );
+        }
+      }
+      return 0;
+    }
+
+    if (sub === "get") {
+      const planId = opts.positionals[2];
+      if (!planId) throw new Error("Usage: factory plan get <plan-id> --project <project-id>");
+      const plan = await scoped.plan(planId);
+      if (opts.json) console.log(JSON.stringify(plan, null, 2));
+      else printPlan(plan);
+      return 0;
+    }
+
+    if (sub === "import") {
+      const kind = opts.kind;
+      if (kind !== "standalone" && kind !== "spec") {
+        throw new Error("Usage: factory plan import <work-id> --kind <standalone|spec>");
+      }
+      const workId = opts.positionals[2];
+      const issueNumber = opts.issue ? Number(opts.issue) : undefined;
+      if (issueNumber !== undefined && (!Number.isSafeInteger(issueNumber) || issueNumber <= 0)) {
+        throw new Error(`--issue must be a positive integer, got: ${opts.issue}`);
+      }
+      if (Boolean(workId) === Boolean(issueNumber)) {
+        throw new Error(
+          "Provide exactly one work id positional or --issue <number> when importing a plan.",
+        );
+      }
+      const plan = await scoped.importPlan({
+        ...(workId ? { work_id: workId } : { issue_number: issueNumber }),
+        kind: kind as PlanKind,
+        ...(opts.deliveryBranch ? { delivery_branch: opts.deliveryBranch } : {}),
+      });
+      if (opts.json) console.log(JSON.stringify(plan, null, 2));
+      else printPlan(plan);
+      return 0;
+    }
+
+    if (sub === "approve" || sub === "revoke") {
+      const planId = opts.positionals[2];
+      if (!planId) {
+        throw new Error(
+          `Usage: factory plan ${sub} <plan-id> --project <project-id> [--reason <text>]`,
+        );
+      }
+      const submission = {
+        ...(opts.actor ? { actor: opts.actor } : {}),
+        ...(opts.reason ? { reason: opts.reason } : {}),
+      };
+      const plan =
+        sub === "approve"
+          ? await scoped.approvePlan(planId, submission)
+          : await scoped.revokePlan(planId, submission);
+      if (opts.json) console.log(JSON.stringify(plan, null, 2));
+      else printPlan(plan);
+      return 0;
+    }
+
+    throw new Error(`Unknown plan subcommand: ${sub}. Expected list, get, import, approve, revoke.`);
+  } catch (err: any) {
+    const msg = err?.message ?? String(err);
+    if (opts.json) console.log(JSON.stringify({ ok: false, error: msg }));
+    else console.error(`Error: ${msg}`);
+    return 1;
+  }
+}
+
+function printPlan(plan: PlanRecord): void {
+  console.log(`Plan ${plan.id} (${plan.kind})`);
+  console.log(`  Authority:  ${plan.authority}`);
+  console.log(`  Dispatch:   ${plan.dispatchable ? "eligible" : "held"}`);
+  console.log(`  Root:       #${plan.members.find((m) => m.work_id === plan.root_work_id)?.issue_number ?? "?"}`);
+  console.log(`  Graph:      ${plan.graph_hash}`);
+  console.log(`  Delivery:   ${plan.delivery_branch}`);
+  console.log(`  Integration:${plan.integration_branch ? ` ${plan.integration_branch}` : " none"}`);
+  if (plan.accepted_revision) {
+    console.log(
+      `  Accepted:   ${plan.accepted_revision.revision_id} (rev ${plan.accepted_revision.revision_number}, ${plan.accepted_revision.content_hash})`,
+    );
+  } else {
+    console.log("  Accepted:   none");
+  }
+  console.log(`  Members (${plan.members.length}):`);
+  for (const member of plan.members) {
+    console.log(
+      `    #${member.issue_number}  ${member.role}  ${member.gate_profile}  ${member.revision_id}  ${member.title}`,
+    );
+  }
+  if (plan.holds.length > 0) {
+    console.log(`  Holds (${plan.holds.length}):`);
+    for (const item of plan.holds) {
+      const member = item.issue_number ? ` #${item.issue_number}` : "";
+      console.log(`    [${item.severity}] ${item.code}${member}: ${item.detail}`);
+    }
+  } else {
+    console.log("  Holds:      none");
+  }
+  console.log(`  Decisions (${plan.decisions.length}):`);
+  for (const decision of plan.decisions) {
+    console.log(
+      `    ${decision.sequence}. ${decision.action} -> ${decision.outcome} by ${decision.actor} (${decision.source})${decision.reason ? `: ${decision.reason}` : ""}`,
+    );
   }
 }
 

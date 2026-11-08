@@ -12,6 +12,10 @@ import {
   evaluatedIssueSchema,
   workListSchema,
   workRecordSchema,
+  planListSchema,
+  planRecordSchema,
+  planImportSubmissionSchema,
+  planDecisionSubmissionSchema,
   controlStateSchema,
   controlSubmissionSchema,
   lapEvidenceSchema,
@@ -105,6 +109,10 @@ import {
   type EvaluatedIssue,
   type WorkList,
   type WorkRecord,
+  type PlanList,
+  type PlanRecord,
+  type PlanImportSubmission,
+  type PlanDecisionSubmission,
   type ControlState,
   type ControlAction,
   type OperatorErrorCode,
@@ -170,6 +178,14 @@ export {
   targetBindingResultSchema,
   branchIntegrationSubmissionSchema,
   branchIntegrationResultSchema,
+  planListSchema,
+  planRecordSchema,
+  planImportSubmissionSchema,
+  planDecisionSubmissionSchema,
+  type PlanList,
+  type PlanRecord,
+  type PlanImportSubmission,
+  type PlanDecisionSubmission,
   type Project,
   type ProjectList,
   type ProjectRegistration,
@@ -590,6 +606,41 @@ export function createFactoryClient(options: {
         },
         async workItem(workId: string): Promise<WorkRecord> {
           return getJson(`${scopedBase}/work/${encodeURIComponent(workId)}`, workRecordSchema);
+        },
+        async plans(): Promise<PlanList> {
+          return getJson(`${scopedBase}/plans`, planListSchema);
+        },
+        async plan(planId: string): Promise<PlanRecord> {
+          return getJson(`${scopedBase}/plans/${encodeURIComponent(planId)}`, planRecordSchema);
+        },
+        async importPlan(submission: PlanImportSubmission): Promise<PlanRecord> {
+          const parsed = planImportSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(`${scopedBase}/plans/import`, parsed.data, planRecordSchema);
+        },
+        async approvePlan(
+          planId: string,
+          submission: PlanDecisionSubmission = {},
+        ): Promise<PlanRecord> {
+          const parsed = planDecisionSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/plans/${encodeURIComponent(planId)}/approve`,
+            parsed.data,
+            planRecordSchema,
+          );
+        },
+        async revokePlan(
+          planId: string,
+          submission: PlanDecisionSubmission = {},
+        ): Promise<PlanRecord> {
+          const parsed = planDecisionSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/plans/${encodeURIComponent(planId)}/revoke`,
+            parsed.data,
+            planRecordSchema,
+          );
         },
         async laps(): Promise<LapList> {
           return getJson(`${scopedBase}/laps`, lapListSchema);

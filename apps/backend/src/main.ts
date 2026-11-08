@@ -22,6 +22,7 @@ import {
 import { configuration, hostOrigin, type Configuration } from "./config";
 import { IntakeService, handleProjectIntakeRoute } from "./intake";
 import { WorkService, handleProjectWorkRoute } from "./work";
+import { PlanService, handleProjectPlanRoute } from "./plans";
 import {
   initializeDatabase,
   ProjectRegistryService,
@@ -132,6 +133,7 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     registryService.getForge(),
   );
   const workService = new WorkService(registryService.getDb());
+  const planService = new PlanService(registryService.getDb(), registryService.getForge());
   const onboardingService = new ProjectOnboardingService(registryService);
   const harnessService = new HarnessService();
 
@@ -713,6 +715,12 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
       if (scopedAction === "work") {
         const workRes = await handleProjectWorkRoute(request, projectId, parts, workService);
         if (workRes) return workRes;
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
+      if (scopedAction === "plans") {
+        const planRes = await handleProjectPlanRoute(request, projectId, parts, planService);
+        if (planRes) return planRes;
         return Response.json({ error: "not_found" }, { status: 404 });
       }
 

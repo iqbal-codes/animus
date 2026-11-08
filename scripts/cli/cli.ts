@@ -13,6 +13,7 @@ import {
   runIntakeCommand,
   runProjectCommand,
   runPromotionCommand,
+  runPlanCommand,
   runWorkCommand,
 } from "./commands/operations";
 import { runLoopCliCommand, runSchedulerCliCommand } from "./commands/loop";
@@ -280,6 +281,21 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         subcommand,
         positionals,
         projectId: values.project,
+        factoryUrl: values["factory-url"],
+        factoryToken: values["factory-token"],
+        json: values.json,
+      });
+
+    case "plan":
+      return await runPlanCommand({
+        subcommand,
+        positionals,
+        projectId: values.project,
+        issue: values.issue,
+        kind: values.kind,
+        deliveryBranch: values["base-branch"],
+        reason: values.reason,
+        actor: values.actor,
         factoryUrl: values["factory-url"],
         factoryToken: values["factory-token"],
         json: values.json,
