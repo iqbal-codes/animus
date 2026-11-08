@@ -1902,6 +1902,130 @@ describe("workspace backup and isolated restore", () => {
     await seeded.finishActive();
   }, 30000);
 
+  test.each(["publish_event", "update_summary"] as const)(
+    "resolved %s reads the exact remote marker and never emits a duplicate",
+    async (kind) => {
+      const seeded = await seed(`marker-${kind}`);
+      try {
+        const bundle = await backup(`marker-${kind}`);
+        const restored = await restore(bundle, join(root, `marker-${kind}-home`));
+        const path = join(restored.state, BACKUP_DATABASE_FILE);
+        const pr = restoredPrFacts(path);
+        const operationKey = `restore-marker:${kind}`;
+        const marker = `<!-- animus-publication:${operationKey} -->`;
+        const db = new DatabaseSync(path);
+        try {
+          db.prepare(
+            `INSERT INTO publication_intents (id,target_id,project_id,operation_key,kind,resource_kind,state,attempts,request_json,created_at,updated_at) VALUES ('int_marker',?,?,?,?,'pull_request','unknown',1,'{}',?,?)`,
+          ).run(pr.targetId, pr.projectId, operationKey, kind, Date.now(), Date.now());
+        } finally {
+          db.close();
+        }
+        if (kind === "publish_event") {
+          forge.addIssue(REPO, {
+            number: pr.number,
+            title: "PR audit",
+            state: "OPEN",
+            body: "",
+            comments: [{ id: "remote-comment-marker", body: marker }],
+          });
+        } else {
+          await forge.updatePullRequest(REPO, pr.number, { body: marker });
+        }
+        const inspected = await inspect(restored.state);
+        const response = await app.fetch(
+          new Request(
+            `http://127.0.0.1/api/v1/restores/reconcile?state_dir=${encodeURIComponent(restored.state)}`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(
+                releasePayload(inspected, {
+                  intents: inspected.unresolved.intents.map((intent) => ({
+                    intentId: intent.intentId,
+                    disposition: intent.intentId === "int_marker" ? "resolved" : "abandoned",
+                  })),
+                }),
+              ),
+            },
+          ),
+        );
+        expect(response.status, await response.clone().text()).toBe(200);
+        const settled = new DatabaseSync(path);
+        try {
+          expect(
+            settled
+              .prepare(
+                "SELECT state, remote_object_id FROM publication_intents WHERE id='int_marker'",
+              )
+              .get(),
+          ).toMatchObject({
+            state: "accepted",
+            remote_object_id:
+              kind === "publish_event" ? "remote-comment-marker" : String(pr.number),
+          });
+          expect(
+            settled.prepare("SELECT state FROM commands WHERE action='restore_release'").get(),
+          ).toMatchObject({ state: "succeeded" });
+        } finally {
+          settled.close();
+        }
+      } finally {
+        await seeded.finishActive();
+      }
+    },
+    30000,
+  );
+
+  test("a ledger failure rolls back release and all intent dispositions", async () => {
+    const seeded = await seed("ledger-rollback");
+    try {
+      const bundle = await backup("ledger-rollback");
+      const restored = await restore(bundle, join(root, "ledger-rollback-home"));
+      const path = join(restored.state, BACKUP_DATABASE_FILE);
+      const db = new DatabaseSync(path);
+      try {
+        db.exec(
+          "CREATE TRIGGER reject_release_outcome BEFORE UPDATE ON commands WHEN NEW.action='restore_release' AND NEW.state='succeeded' BEGIN SELECT RAISE(ABORT,'ledger outcome unavailable'); END;",
+        );
+      } finally {
+        db.close();
+      }
+      const inspected = await inspect(restored.state);
+      const response = await app.fetch(
+        new Request(
+          `http://127.0.0.1/api/v1/restores/reconcile?state_dir=${encodeURIComponent(restored.state)}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(releasePayload(inspected)),
+          },
+        ),
+      );
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      const settled = new DatabaseSync(path);
+      try {
+        expect(readInstallationHold(settled).held).toBe(true);
+        expect(
+          settled
+            .prepare("SELECT COUNT(*) AS n FROM commands WHERE action='restore_release'")
+            .get(),
+        ).toMatchObject({ n: 0 });
+        for (const intent of inspected.unresolved.intents) {
+          expect(
+            settled
+              .prepare("SELECT state FROM publication_intents WHERE id=?")
+              .get(intent.intentId),
+          ).toMatchObject({ state: intent.state });
+        }
+      } finally {
+        settled.close();
+      }
+    } finally {
+      await seeded.finishActive();
+    }
+  }, 30000);
+
   test("B3-R: a concurrently enqueued intent fences the release and rolls back every disposition", async () => {
     const seeded = await seed("release-fence-atomic");
     const bundle = await backup("release-fence-atomic");

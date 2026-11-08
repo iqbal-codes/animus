@@ -1129,14 +1129,6 @@ export class BackupRestoreService {
 
       const ledger = isLive && this.ledger ? this.ledger : new CommandLedger(db);
       const requestId = `cmd_restore_release_${hold.sourceRestoreId ?? "unknown"}_${now}`;
-      ledger.recordBeforeDispatch({
-        requestId,
-        actor: input.actor,
-        projectId: null,
-        action: "restore_release",
-        target: reconciliation as unknown as Record<string, unknown>,
-      });
-
       let released: InstallationHold;
       try {
         settleRestoreRelease({
@@ -1147,6 +1139,8 @@ export class BackupRestoreService {
           actor: input.actor,
           now,
           reconciliation,
+          ledger,
+          requestId,
         });
         released = readInstallationHold(db);
       } catch (error) {
@@ -1156,14 +1150,6 @@ export class BackupRestoreService {
         throw error;
       }
 
-      ledger.updateOutcome(requestId, {
-        state: "succeeded",
-        provenance: {
-          source: "restore_release",
-          timestamp: new Date(now).toISOString(),
-          details: `released ${Number(verification.report.unresolvedRunCount)} run(s) and ${Number(verification.report.unresolvedIntentCount)} intent(s)`,
-        },
-      });
       return released;
     } finally {
       if (!isLive) {

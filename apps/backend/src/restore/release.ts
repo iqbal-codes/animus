@@ -1,4 +1,6 @@
 import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { CommandLedger } from "../command/ledger";
 import { DatabaseSync } from "node:sqlite";
 import type {
   RestoreIntentFact,
@@ -141,6 +143,8 @@ interface RemoteObservation {
   relationSource?: "textual" | "native" | "textual+native" | null;
   /** Full readback used to bind local PR bookkeeping for a resolved create_pr. */
   pullRequest?: ForgePullRequest | null;
+  relationshipFrom?: number;
+  relationshipTo?: number;
 }
 
 /**
@@ -162,7 +166,7 @@ async function observeIntent(
         return await observeCreatePullRequest(forge, db, row);
       case "publish_event":
       case "update_summary":
-        return observeTargetEvent(db, row);
+        return await observeTargetEvent(forge, db, row);
       case "create_review":
         return await observeReview(forge, db, row);
       case "create_issue":
@@ -262,27 +266,56 @@ async function observeCreatePullRequest(
   };
 }
 
-function observeTargetEvent(db: DatabaseSync, row: IntentRow): RemoteObservation {
-  if (!row.target_id) {
-    return { observation: "unverified", detail: "Intent is not bound to a publication target" };
-  }
+async function observeTargetEvent(
+  forge: ForgeAdapter,
+  db: DatabaseSync,
+  row: IntentRow,
+): Promise<RemoteObservation> {
+  if (!row.target_id)
+    return { observation: "unreadable", detail: "Intent has no publication target" };
   const active = db
     .prepare(
-      `SELECT number FROM publication_pull_requests
-        WHERE target_id = ? AND active = 1 AND number IS NOT NULL
-        LIMIT 1`,
+      `SELECT number FROM publication_pull_requests WHERE target_id = ? AND active = 1 AND number IS NOT NULL LIMIT 1`,
     )
     .get(row.target_id) as { number: number } | undefined;
-  if (!active) {
-    return {
-      observation: "absent",
-      detail: "No active pull request exists to carry this audit event",
-    };
+  if (!active)
+    return { observation: "absent", detail: "No active pull request carries this audit event" };
+  const marker = publicationMarker(row.operation_key);
+  if (row.kind === "update_summary") {
+    if (!forge.getPullRequest)
+      return { observation: "unreadable", detail: "Forge cannot read the summary" };
+    const pr = await forge.getPullRequest(row.repo_name, active.number);
+    if (!pr) return { observation: "unreadable", detail: "Summary pull request cannot be read" };
+    return (pr.body ?? "").includes(marker)
+      ? {
+          observation: "present",
+          detail: "Exact summary operation marker observed",
+          remoteObjectId: String(active.number),
+          remoteUrl: pr.html_url ?? null,
+        }
+      : { observation: "absent", detail: "Summary operation marker is absent" };
   }
-  return {
-    observation: "unverified",
-    detail: `Active pull request #${active.number} exists; comment mark readback is unavailable offline`,
-  };
+  if (!forge.listPullRequestReviews || !forge.getIssue)
+    return { observation: "unreadable", detail: "Forge cannot read all audit locations" };
+  const reviews = await forge.listPullRequestReviews(row.repo_name, active.number);
+  const review = reviews.find((item) => (item.body ?? "").includes(marker));
+  if (review?.id)
+    return {
+      observation: "present",
+      detail: "Exact review operation marker observed",
+      remoteObjectId: review.id,
+      remoteUrl: review.html_url ?? null,
+    };
+  const issue = await forge.getIssue(row.repo_name, active.number);
+  if (!issue) return { observation: "unreadable", detail: "Audit comments cannot be read" };
+  const comment = issue.comments?.find((item) => (item.body ?? "").includes(marker));
+  return comment?.id
+    ? {
+        observation: "present",
+        detail: "Exact audit comment operation marker observed",
+        remoteObjectId: comment.id,
+      }
+    : { observation: "absent", detail: "Exact audit operation marker is absent" };
 }
 
 async function observeReview(
@@ -290,7 +323,7 @@ async function observeReview(
   db: DatabaseSync,
   row: IntentRow,
 ): Promise<RemoteObservation> {
-  const target = observeTargetEvent(db, row);
+  const target = await observeTargetEvent(forge, db, row);
   if (target.observation === "absent") return target;
   if (!row.target_id) return target;
   const active = db
@@ -310,7 +343,8 @@ async function observeReview(
   const request = parseRequest(row.request_json);
   const commitId = typeof request.commitId === "string" ? request.commitId : null;
   const reviews = await forge.listPullRequestReviews(row.repo_name, active.number);
-  const match = commitId ? reviews.find((review) => (review.body ?? "").includes(commitId)) : null;
+  const marker = publicationMarker(row.operation_key);
+  const match = reviews.find((review) => (review.body ?? "").includes(marker));
   return match
     ? {
         observation: "present",
@@ -390,6 +424,8 @@ async function observeRelationship(
       detail: `Issue #${childNumber} carries the exact ${kind ?? "canonical"} reference to #${relatedNumber}`,
       remoteObjectId: `#${childNumber}->#${relatedNumber}`,
       relationSource: "textual",
+      relationshipFrom: from,
+      relationshipTo: to,
     };
   }
   // Native relationships may exist without a textual line; distinguish a
@@ -407,6 +443,8 @@ async function observeRelationship(
       detail: `Native ${kind ?? "relationship"} #${childNumber} -> #${relatedNumber} exists`,
       remoteObjectId: `#${childNumber}->#${relatedNumber}`,
       relationSource: "native",
+      relationshipFrom: from,
+      relationshipTo: to,
     };
   }
   if (native === "unreadable") {
@@ -700,6 +738,8 @@ export function settleRestoreRelease(input: {
   actor: string;
   now: number;
   reconciliation: Record<string, unknown>;
+  ledger?: CommandLedger;
+  requestId?: string;
 }): void {
   const { db, verification, expected, actor, now, reconciliation } = input;
   const runDispositions = indexDispositions(input.dispositions.runs);
@@ -740,6 +780,16 @@ export function settleRestoreRelease(input: {
         );
       }
     }
+
+    const ledger = input.ledger ?? new CommandLedger(db);
+    const requestId = input.requestId ?? `cmd_restore_release_${randomUUID()}`;
+    ledger.recordBeforeDispatch({
+      requestId,
+      actor,
+      projectId: null,
+      action: "restore_release",
+      target: reconciliation,
+    });
 
     for (const row of currentIntents) {
       const disposition = intentDispositions.get(row.id);
@@ -785,6 +835,14 @@ export function settleRestoreRelease(input: {
     }
 
     reconcileInstallationHold(db, { actor, now, reconciliation, expected });
+    ledger.updateOutcome(requestId, {
+      state: "succeeded",
+      provenance: {
+        source: "restore_release",
+        timestamp: new Date(now).toISOString(),
+        details: `released ${verification.runs.length} run(s) and ${verification.intents.length} intent(s)`,
+      },
+    });
     db.exec("COMMIT;");
   } catch (error) {
     try {
@@ -829,6 +887,43 @@ function applyResolvedIntent(
       acceptRestoredIntent(db, row, observation, now);
       return;
     }
+    case "create_issue": {
+      const request = parseRequest(row.request_json);
+      const nodeKey = typeof request.nodeKey === "string" ? request.nodeKey : null;
+      const issueNumber = Number(observation.remoteObjectId);
+      if (
+        !row.draft_publication_id ||
+        !nodeKey ||
+        !Number.isSafeInteger(issueNumber) ||
+        issueNumber <= 0
+      )
+        throw new RestoreReleaseError(
+          "restore_reconcile_conflict",
+          `Issue intent ${row.id} has no exact member identity`,
+        );
+      const changed = db
+        .prepare(
+          `UPDATE draft_publication_members SET issue_number=?, state='created', updated_at=? WHERE publication_id=? AND node_key=? AND (issue_number IS NULL OR issue_number=?)`,
+        )
+        .run(issueNumber, now, row.draft_publication_id, nodeKey, issueNumber);
+      if (Number(changed.changes) !== 1)
+        throw new RestoreReleaseError(
+          "restore_reconcile_conflict",
+          `Issue member ${nodeKey} could not be bound`,
+        );
+      db.prepare(
+        `UPDATE draft_publication_relationships SET from_issue_number=?,updated_at=? WHERE publication_id=? AND from_node_key=? AND from_issue_number IS NULL`,
+      ).run(issueNumber, now, row.draft_publication_id, nodeKey);
+      db.prepare(
+        `UPDATE draft_publication_relationships SET to_issue_number=?,updated_at=? WHERE publication_id=? AND to_node_key=? AND to_issue_number IS NULL`,
+      ).run(issueNumber, now, row.draft_publication_id, nodeKey);
+      if (nodeKey === "root")
+        db.prepare(
+          `UPDATE draft_publications SET spec_issue_number=CASE WHEN kind='spec' THEN ? ELSE spec_issue_number END,updated_at=? WHERE id=?`,
+        ).run(issueNumber, now, row.draft_publication_id);
+      acceptRestoredIntent(db, row, observation, now);
+      return;
+    }
     case "create_issue_relationship": {
       const request = parseRequest(row.request_json);
       const kind = typeof request.kind === "string" ? request.kind : null;
@@ -843,13 +938,15 @@ function applyResolvedIntent(
       const result = db
         .prepare(
           `UPDATE draft_publication_relationships
-              SET state = 'verified', source = ?, detail = ?, updated_at = ?
+              SET state = 'verified', source = ?, detail = ?, updated_at = ?, from_issue_number = ?, to_issue_number = ?
             WHERE publication_id = ? AND kind = ? AND from_node_key = ? AND to_node_key = ?`,
         )
         .run(
           observation.relationSource ?? "textual",
           observation.detail,
           now,
+          observation.relationshipFrom ?? null,
+          observation.relationshipTo ?? null,
           row.draft_publication_id,
           kind,
           fromKey,

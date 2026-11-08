@@ -12,6 +12,7 @@ import { PlanService } from "../../apps/backend/src/plans";
 import { DraftPublicationService } from "../../apps/backend/src/publication";
 import { ProjectRegistryService, SyntheticForgeAdapter } from "../../apps/backend/src/registry";
 import { runDraftCommand } from "../../scripts/cli/commands/operations";
+import { settleRestoreRelease, verifyRestoreRelease } from "../../apps/backend/src/restore/release";
 
 const REPO = "owner/repo";
 
@@ -636,6 +637,61 @@ describe("partial, ambiguous and unsupported publication recovery", () => {
       expect((await scoped.draftPublication(partial.id)).planId).toBeNull();
     },
   );
+
+  test("resolved restore create_issue immediately binds its draft member and relationship identities", async () => {
+    const forge = new AmbiguousCreateForge({ [REPO]: 501 });
+    fixture = await buildFixture(forge);
+    forge.ambiguousOnCreate = 2;
+    forge.failNextListAfterAmbiguous = true;
+    const draft = await approveDraft(21);
+    const scoped = fixture.client.forProject(fixture.projectId);
+    const partial = await scoped.publishDraft(draft.id);
+    const uncertain = partial.intents.find((intent) => intent.state === "unknown")!;
+    const remote = (await forge.listIssues(REPO, "ALL")).find((issue) =>
+      bodyOf(issue).includes(uncertain.operationKey),
+    )!;
+    expect(remote).toBeTruthy();
+    fixture.app.db.exec(
+      "INSERT INTO installation_holds (id,status,reason,source_restore_id,restored_at) VALUES ('installation','held','restore test','restore-member',42) ON CONFLICT(id) DO UPDATE SET status='held',source_restore_id='restore-member',restored_at=42;",
+    );
+    const dispositions = {
+      runs: [],
+      intents: partial.intents
+        .filter((intent) => intent.state !== "accepted" && intent.state !== "abandoned")
+        .map((intent) => ({
+          intentId: intent.id,
+          disposition: intent.id === uncertain.id ? ("resolved" as const) : ("abandoned" as const),
+        })),
+    };
+    const verification = await verifyRestoreRelease({
+      db: fixture.app.db,
+      forge,
+      dispositions,
+      now: Date.now(),
+    });
+    settleRestoreRelease({
+      db: fixture.app.db,
+      verification,
+      dispositions,
+      expected: { sourceRestoreId: "restore-member", restoredAt: 42 },
+      actor: "operator",
+      now: Date.now(),
+      reconciliation: {},
+    });
+    const member = fixture.app.db
+      .prepare(
+        "SELECT issue_number,state FROM draft_publication_members WHERE publication_id=? AND node_key='child:C1'",
+      )
+      .get(partial.id);
+    expect(member).toMatchObject({ issue_number: remote.number, state: "created" });
+    expect(
+      fixture.app.db
+        .prepare(
+          "SELECT to_issue_number FROM draft_publication_relationships WHERE publication_id=? AND kind='dependency'",
+        )
+        .get(partial.id),
+    ).toMatchObject({ to_issue_number: remote.number });
+  });
 
   test("AC2/AC3: unsupported native relationships fall back to canonical textual references", async () => {
     const forge = new SyntheticForgeAdapter({ [REPO]: 501 });

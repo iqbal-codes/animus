@@ -73,14 +73,19 @@ export class CommandLedger {
   }
 
   private runInTransaction<T>(action: () => T, errorMessage: string): T {
+    const savepoint = this.db.isTransaction ? `command_${randomUUID().replaceAll("-", "")}` : null;
     try {
-      this.db.exec("BEGIN IMMEDIATE;");
+      this.db.exec(savepoint ? `SAVEPOINT ${savepoint};` : "BEGIN IMMEDIATE;");
       const result = action();
-      this.db.exec("COMMIT;");
+      this.db.exec(savepoint ? `RELEASE SAVEPOINT ${savepoint};` : "COMMIT;");
       return result;
     } catch (err: any) {
       try {
-        this.db.exec("ROLLBACK;");
+        this.db.exec(
+          savepoint
+            ? `ROLLBACK TO SAVEPOINT ${savepoint}; RELEASE SAVEPOINT ${savepoint};`
+            : "ROLLBACK;",
+        );
       } catch {}
       throw new CommandStorageError(`${errorMessage}: ${err?.message ?? String(err)}`);
     }
