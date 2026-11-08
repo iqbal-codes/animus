@@ -2927,3 +2927,190 @@ export const finalDeliveryVerifySubmissionSchema = z
   })
   .strict();
 export type FinalDeliveryVerifySubmission = z.infer<typeof finalDeliveryVerifySubmissionSchema>;
+
+// ---------------------------------------------------------------------------
+// Operator board projection over existing kanban columns
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical lane ids for the existing operator board. The projection never adds
+ * columns; placement is derived from planning/dispatch/gate/landing facts with
+ * the precedence order returned alongside the board.
+ */
+export const operatorBoardLaneIdSchema = z.enum([
+  "triage",
+  "ready",
+  "working",
+  "approval",
+  "needs-owner",
+  "parked",
+  "merged",
+  "failed",
+]);
+export type OperatorBoardLaneId = z.infer<typeof operatorBoardLaneIdSchema>;
+
+export const operatorCardKindSchema = z.enum(["spec", "ticket", "unplanned"]);
+export type OperatorCardKind = z.infer<typeof operatorCardKindSchema>;
+
+export const operatorSpecProgressSchema = z.object({
+  integrated: z.number().int().nonnegative(),
+  required: z.number().int().nonnegative(),
+  delivered: z.boolean(),
+  finalState: finalDeliveryStateSchema.nullable(),
+});
+export type OperatorSpecProgress = z.infer<typeof operatorSpecProgressSchema>;
+
+/**
+ * Token/cost usage is only recorded when a canonical store has it. Local plan
+ * dispatches record none, so `available: false` carries an honest reason rather
+ * than fabricated zeros.
+ */
+export const operatorWorkerUsageSchema = z.object({
+  available: z.boolean(),
+  tokensIn: z.number().int().nonnegative().nullable(),
+  tokensOut: z.number().int().nonnegative().nullable(),
+  cacheReadTokens: z.number().int().nonnegative().nullable(),
+  costMicros: z.number().int().nonnegative().nullable(),
+  detail: z.string().min(1),
+});
+export type OperatorWorkerUsage = z.infer<typeof operatorWorkerUsageSchema>;
+
+export const operatorBoardProcessSchema = z.object({
+  ownerPid: z.number().int().positive().nullable(),
+  ownerAlive: z.boolean(),
+  workerPid: z.number().int().positive().nullable(),
+  workerAlive: z.boolean(),
+  worktreeLockPid: z.number().int().positive().nullable(),
+  worktreeLockAlive: z.boolean(),
+});
+export type OperatorBoardProcess = z.infer<typeof operatorBoardProcessSchema>;
+
+export const operatorBoardParentSchema = z.object({
+  workId: z.string().min(1),
+  issueNumber: z.number().int().positive(),
+  title: z.string().min(1),
+});
+export type OperatorBoardParent = z.infer<typeof operatorBoardParentSchema>;
+
+export const operatorBoardRunSchema = z.object({
+  id: z.string().min(1),
+  lap: z.number().int().positive(),
+  state: dispatchRunStateSchema,
+  headSha: z.string().min(1).nullable(),
+  error: z.string().nullable(),
+});
+export type OperatorBoardRun = z.infer<typeof operatorBoardRunSchema>;
+
+export const operatorBoardPullRequestSchema = z.object({
+  number: z.number().int().positive(),
+  url: z.string().min(1).nullable(),
+  state: publicationPullRequestStateSchema,
+  draft: z.boolean(),
+});
+export type OperatorBoardPullRequest = z.infer<typeof operatorBoardPullRequestSchema>;
+
+export const operatorBoardCardSchema = z.object({
+  id: z.string().min(1),
+  kind: operatorCardKindSchema,
+  lane: operatorBoardLaneIdSchema,
+  workId: z.string().min(1),
+  issueNumber: z.number().int().positive(),
+  title: z.string().min(1),
+  ref: z.string().min(1),
+  updatedAt: z.number().int().nonnegative(),
+  role: planMemberRoleSchema.nullable(),
+  gateProfile: planGateProfileSchema.nullable(),
+  planId: z.string().min(1).nullable(),
+  planKind: planKindSchema.nullable(),
+  parent: operatorBoardParentSchema.nullable(),
+  stageLabel: z.string().min(1),
+  detail: z.string(),
+  precedence: z.array(z.string().min(1)),
+  specProgress: operatorSpecProgressSchema.nullable(),
+  latestRun: operatorBoardRunSchema.nullable(),
+  budgetStatus: z.enum(["active", "exhausted"]).nullable(),
+  controlStatus: executionControlStatusSchema.nullable(),
+  integrationState: integrationStateSchema.nullable(),
+  gateState: deliveryGateStateSchema.nullable(),
+  finalState: finalDeliveryStateSchema.nullable(),
+  pullRequest: operatorBoardPullRequestSchema.nullable(),
+  process: operatorBoardProcessSchema.nullable(),
+  usage: operatorWorkerUsageSchema,
+});
+export type OperatorBoardCard = z.infer<typeof operatorBoardCardSchema>;
+
+export const operatorBoardCountsSchema = z.object({
+  /** Parent specifications. */
+  specs: z.number().int().nonnegative(),
+  /** Executable planned tickets (child tickets plus standalone tickets). */
+  tickets: z.number().int().nonnegative(),
+  /** Imported work that is not part of any approved plan. */
+  unplanned: z.number().int().nonnegative(),
+  /** Distinct active workers with a live owner/worker process. */
+  workers: z.number().int().nonnegative(),
+  /** Configured parallel capacity. */
+  capacity: z.number().int().positive(),
+});
+export type OperatorBoardCounts = z.infer<typeof operatorBoardCountsSchema>;
+
+export const operatorBoardLaneSchema = z.object({
+  id: operatorBoardLaneIdSchema,
+  count: z.number().int().nonnegative(),
+  cards: z.array(operatorBoardCardSchema),
+});
+export type OperatorBoardLane = z.infer<typeof operatorBoardLaneSchema>;
+
+export const operatorBoardSchema = z.object({
+  projectId: z.string().min(1),
+  repository: z.string().min(1),
+  generatedAt: z.number().int().nonnegative(),
+  precedence: z.array(z.string().min(1)),
+  counts: operatorBoardCountsSchema,
+  lanes: z.array(operatorBoardLaneSchema),
+  usage: operatorWorkerUsageSchema,
+});
+export type OperatorBoard = z.infer<typeof operatorBoardSchema>;
+
+export const operatorWorkDetailSchema = z.object({
+  projectId: z.string().min(1),
+  generatedAt: z.number().int().nonnegative(),
+  work: workRecordSchema,
+  kind: operatorCardKindSchema,
+  lane: operatorBoardLaneIdSchema,
+  stageLabel: z.string().min(1),
+  detail: z.string(),
+  precedence: z.array(z.string().min(1)),
+  role: planMemberRoleSchema.nullable(),
+  planId: z.string().min(1).nullable(),
+  planKind: planKindSchema.nullable(),
+  parent: operatorBoardParentSchema.nullable(),
+  specProgress: operatorSpecProgressSchema.nullable(),
+  contract: z.object({
+    title: z.string().min(1),
+    body: z.string(),
+    labels: z.array(z.string()),
+    state: z.enum(["OPEN", "CLOSED"]),
+    revisionNumber: z.number().int().positive(),
+    contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+    sourceUrl: z.string().min(1),
+  }),
+  plan: planRecordSchema.nullable(),
+  final: finalDeliveryStatusSchema.nullable(),
+  runs: z.array(planDispatchRunSchema),
+  latestRun: dispatchRunDetailSchema.nullable(),
+  evidence: runEvidenceReportSchema.nullable(),
+  integration: integrationStatusSchema.nullable(),
+  gate: deliveryGateStatusSchema.nullable(),
+  publication: publicationStatusSchema.nullable(),
+  retained: z
+    .object({
+      worktreePath: z.string().min(1),
+      branch: z.string().min(1),
+      runId: z.string().min(1).nullable(),
+      headSha: z.string().min(1).nullable(),
+    })
+    .nullable(),
+  process: operatorBoardProcessSchema.nullable(),
+  usage: operatorWorkerUsageSchema,
+});
+export type OperatorWorkDetail = z.infer<typeof operatorWorkDetailSchema>;

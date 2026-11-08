@@ -64,6 +64,7 @@ import {
   handleProjectDeliveryRoute,
 } from "./delivery";
 import { FinalDeliveryService, handleProjectFinalRoute } from "./final";
+import { OperatorBoardService, handleProjectBoardRoute } from "./board";
 import { HarnessService, handleHarnessRoute } from "./harness";
 import {
   validateCsrfProtection,
@@ -118,6 +119,7 @@ export interface BackendApp {
   draftPublication: DraftPublicationService;
   delivery: DeliveryGateService;
   final: FinalDeliveryService;
+  board: OperatorBoardService;
   stop(): Promise<void>;
 }
 
@@ -374,6 +376,18 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     stateDir: options?.stateDir ?? resolveStateDir(),
     ledger: commandService.ledger,
     forge: registryService.getForge(),
+  });
+
+  const boardService = new OperatorBoardService({
+    projects: registryService,
+    work: workService,
+    plans: planService,
+    dispatch: dispatchService,
+    observations: observationService,
+    publication: publicationService,
+    integration: integrationService,
+    gate: deliveryService,
+    final: finalService,
   });
 
   const monitorRuntime =
@@ -957,6 +971,12 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
         return Response.json({ error: "not_found" }, { status: 404 });
       }
 
+      if (scopedAction === "board") {
+        const boardRes = await handleProjectBoardRoute(request, projectId, parts, boardService);
+        if (boardRes) return boardRes;
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
       if (scopedAction === "laps") {
         return handleLapsRoute(request, parts.slice(1), routeContext, projectId);
       }
@@ -1035,6 +1055,7 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     draftPublication: draftPublicationService,
     delivery: deliveryService,
     final: finalService,
+    board: boardService,
     fetch: appFetch,
     websocket,
     monitor,

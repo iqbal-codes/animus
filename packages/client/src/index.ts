@@ -106,6 +106,8 @@ import {
   finalDeliveryStatusListSchema,
   finalDeliveryAdvanceSubmissionSchema,
   finalDeliveryVerifySubmissionSchema,
+  operatorBoardSchema,
+  operatorWorkDetailSchema,
   landingGuardResultSchema,
   landingSubmissionSchema,
   landingExecutionResultSchema,
@@ -181,6 +183,8 @@ import {
   type PlanDispatchReconciliation,
   type PlanDispatchReconcileSubmission,
   type DispatchRunDetail,
+  type OperatorBoard,
+  type OperatorWorkDetail,
   type BudgetGrantList,
   type BudgetGrantResult,
   type BudgetGrantSubmission,
@@ -302,6 +306,8 @@ export {
   type PlanDispatchReconciliation,
   type PlanDispatchReconcileSubmission,
   type DispatchRunDetail,
+  type OperatorBoard,
+  type OperatorWorkDetail,
   type BudgetGrantList,
   type BudgetGrantResult,
   type BudgetGrantSubmission,
@@ -1371,6 +1377,15 @@ export function createFactoryClient(options: {
             `${scopedBase}/final/${encodeURIComponent(planId)}/verify-merge`,
             parsed.data,
             finalDeliveryStatusSchema,
+          );
+        },
+        async board(): Promise<OperatorBoard> {
+          return getJson(`${scopedBase}/board`, operatorBoardSchema);
+        },
+        async workDetail(workId: string): Promise<OperatorWorkDetail> {
+          return getJson(
+            `${scopedBase}/board/work/${encodeURIComponent(workId)}`,
+            operatorWorkDetailSchema,
           );
         },
       };

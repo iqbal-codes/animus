@@ -8,7 +8,8 @@ import { JobsScreen } from "@/features/jobs/jobs-screen";
 import { InboxScreen } from "@/features/inbox/inbox-screen";
 import { DraftsScreen } from "@/features/drafts/drafts-screen";
 import { SettingsModal } from "@/features/settings/settings-modal";
-import { JOBS_BOARD, selectInbox } from "@/features/jobs/jobs-model";
+import { emptyBoard, mapOperatorBoard, selectInbox } from "@/features/jobs/jobs-model";
+import { useOperatorBoard } from "@/features/jobs/use-board";
 import type { BackendState } from "@/features/jobs/factory-status";
 import { loadPreferences, savePreferences, type Preferences } from "@/lib/preferences";
 
@@ -23,6 +24,7 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [health, setHealth] = useState<Health | null>(null);
   const [healthChecked, setHealthChecked] = useState(false);
+  const { state: boardState, projectId, reload } = useOperatorBoard();
 
   const checkHealth = useCallback(async () => {
     try {
@@ -44,7 +46,13 @@ export function App() {
       ? "disconnected"
       : "connecting";
 
-  const inboxItems = selectInbox(JOBS_BOARD, { includeFailed: preferences.notifyFailedJobs });
+  const board =
+    boardState.phase === "ready" && boardState.board
+      ? mapOperatorBoard(boardState.board)
+      : emptyBoard();
+  const boardLoading = boardState.phase === "loading";
+  const boardError = boardState.phase === "error" ? boardState.message : null;
+  const inboxItems = selectInbox(board, { includeFailed: preferences.notifyFailedJobs });
 
   const handleSave = (next: Preferences) => {
     savePreferences(next);
@@ -58,7 +66,7 @@ export function App() {
           <AppSidebar
             activeId={tab}
             onSelect={setTab}
-            jobCount={JOBS_BOARD.totalJobs}
+            jobCount={board.totalJobs}
             inboxCount={preferences.notifyNeedsAttention ? inboxItems.length : undefined}
             settingsOpen={settingsOpen}
             onOpenSettings={() => setSettingsOpen(true)}
@@ -67,17 +75,23 @@ export function App() {
           <SidebarInset className="min-w-0">
             {tab === "inbox" && (
               <InboxScreen
-                board={JOBS_BOARD}
+                board={board}
                 backendState={backendState}
                 includeFailed={preferences.notifyFailedJobs}
+                loading={boardLoading}
+                error={boardError}
                 onOpenJobs={() => setTab("jobs")}
               />
             )}
             {tab === "jobs" && (
               <JobsScreen
-                board={JOBS_BOARD}
+                board={board}
                 backendState={backendState}
                 density={preferences.cardDensity}
+                projectId={projectId}
+                loading={boardLoading}
+                error={boardError}
+                onRefresh={() => void reload()}
               />
             )}
             {tab === "drafts" && <DraftsScreen />}

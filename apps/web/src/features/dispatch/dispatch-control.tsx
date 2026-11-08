@@ -29,7 +29,7 @@ const RUN_TONE: Record<
   reconciled: "default",
 };
 
-function createGrantIdempotencyKey(): string {
+export function createGrantIdempotencyKey(): string {
   if (typeof globalThis.crypto?.randomUUID === "function") {
     return globalThis.crypto.randomUUID();
   }
@@ -1029,7 +1029,7 @@ function PublicationAuditPanel({
 }
 
 /** Selected-run detail: durable checks, findings, artifacts and acceptance state. */
-function RunEvidencePanel({ report }: { report: RunEvidenceReport }) {
+export function RunEvidencePanel({ report }: { report: RunEvidenceReport }) {
   const { acceptance, observations, findings } = report;
   return (
     <section
@@ -1183,7 +1183,7 @@ const DELIVERY_STAGE_TONE: Record<
 };
 
 /** Full-delivery gate plus verified remote merge state for standalone tickets. */
-function DeliveryGatePanel({
+export function DeliveryGatePanel({
   status,
   verifying,
   onVerify,
@@ -1277,7 +1277,7 @@ function DeliveryGatePanel({
 const CONTROL_ACTIONS = ["hold", "resume", "stop", "takeover"] as const;
 
 /** Durable attempt budget, grant history, retained workspace and process state. */
-function RunBudgetPanel({
+export function RunBudgetPanel({
   detail,
   busy,
   notice,
@@ -1491,7 +1491,7 @@ const INTEGRATION_TONE: Record<
   unknown: "warning",
 };
 
-function ChildIntegrationPanel({
+export function ChildIntegrationPanel({
   status,
   landing,
   notice,
@@ -1645,7 +1645,7 @@ const FINAL_DELIVERY_TONE: Record<
 };
 
 /** Manifest-bound final-spec progress, combined candidate, gates and manual merge. */
-function FinalDeliveryPanel({
+export function FinalDeliveryPanel({
   status,
   busy,
   onAdvance,
