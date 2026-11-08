@@ -27,6 +27,7 @@ import type {
   PlanRecord,
   Project,
   PublicationStatus,
+  IntegrationStatus,
   RunEvidenceReport,
   WorkRecord,
 } from "@animus/contracts/operator";
@@ -733,7 +734,7 @@ export async function runPlanCommand(
   try {
     if (!opts.projectId) {
       throw new Error(
-        "Usage: factory plan <list|get|import|approve|revoke|dispatch|runs|run|detail|evidence|findings|grants|grant|hold|resume|stop|takeover|reconcile|publication|audit|publish|bind-evidence> --project <project-id>",
+        "Usage: factory plan <list|get|import|approve|revoke|dispatch|runs|run|detail|evidence|findings|grants|grant|hold|resume|stop|takeover|reconcile|publication|audit|publish|bind-evidence|integration|integrations|land> --project <project-id>",
       );
     }
     const scoped = createRegistrationClient(opts).forProject(opts.projectId);
@@ -936,6 +937,42 @@ export async function runPlanCommand(
       return 0;
     }
 
+    if (sub === "integration") {
+      const runId = opts.positionals[2];
+      if (!runId) throw new Error("Usage: factory plan integration <run-id> --project <project-id>");
+      const status = await scoped.integrationStatus(runId);
+      if (opts.json) console.log(JSON.stringify(status, null, 2));
+      else printIntegration(status);
+      return 0;
+    }
+
+    if (sub === "integrations") {
+      const statuses = await scoped.integrations();
+      if (opts.json) {
+        console.log(JSON.stringify(statuses, null, 2));
+      } else if (statuses.length === 0) {
+        console.log("No child integrations.");
+      } else {
+        console.log(`Child integrations (${statuses.length}):`);
+        for (const status of statuses) printIntegration(status, "  ");
+      }
+      return 0;
+    }
+
+    if (sub === "land") {
+      const runId = opts.positionals[2];
+      if (!runId) throw new Error("Usage: factory plan land <run-id> --project <project-id>");
+      const status = await scoped.landChild(runId, {
+        ...(opts.actor ? { actor: opts.actor } : {}),
+        ...(opts.reason ? { reason: opts.reason } : {}),
+      });
+      if (opts.json) console.log(JSON.stringify(status, null, 2));
+      else {
+        printIntegration(status);
+      }
+      return status.state === "integrated" ? 0 : 2;
+    }
+
     if (sub === "reconcile") {
       const runId = opts.positionals[2];
       if (runId) {
@@ -1031,7 +1068,7 @@ export async function runPlanCommand(
     }
 
     throw new Error(
-      `Unknown plan subcommand: ${sub}. Expected list, get, import, approve, revoke, dispatch, runs, run, detail, evidence, findings, grants, grant, hold, resume, stop, takeover, reconcile, publication, audit, publish, bind-evidence.`,
+      `Unknown plan subcommand: ${sub}. Expected list, get, import, approve, revoke, dispatch, runs, run, detail, evidence, findings, grants, grant, hold, resume, stop, takeover, reconcile, publication, audit, publish, bind-evidence, integration, integrations, land.`,
     );
   } catch (err: any) {
     const msg = err?.message ?? String(err);
@@ -1155,6 +1192,45 @@ function printFinding(finding: FactoryFindingRecord, indent: string): void {
     console.log(
       `${indent}  ${event.sequence}. ${event.action} by ${event.actor} (${event.actorRole})${event.observationId ? ` obs=${event.observationId}` : ""}${event.detail ? `: ${event.detail}` : ""}`,
     );
+  }
+}
+
+function printIntegration(status: IntegrationStatus, indent = ""): void {
+  console.log(
+    `${indent}Integration run ${status.runId} — ticket #${status.issueNumber} (${status.gateProfile}, merge=${status.mergePolicy})`,
+  );
+  console.log(`${indent}  State:      ${status.state}`);
+  console.log(`${indent}  Target:     ${status.targetBranch}`);
+  if (status.blockers.length > 0) {
+    console.log(`${indent}  Blockers (${status.blockers.length}):`);
+    for (const blocker of status.blockers) {
+      console.log(`${indent}    ${blocker.code}: ${blocker.message}`);
+    }
+  }
+  if (status.requiredChecks.length > 0) {
+    console.log(`${indent}  Required checks:`);
+    for (const check of status.requiredChecks) {
+      console.log(
+        `${indent}    ${check.name}: ${check.status}${check.conclusion ? `/${check.conclusion}` : ""}`,
+      );
+    }
+  }
+  const active = status.publication?.pullRequests.find((pr) => pr.active);
+  console.log(
+    active
+      ? `${indent}  Pull request: #${active.number ?? "?"} ${active.url ?? ""} (${active.state}${active.draft ? ", draft" : ""})`
+      : `${indent}  Pull request: none`,
+  );
+  if (status.integration) {
+    console.log(
+      `${indent}  Integrated: candidate=${status.integration.candidateHeadSha.slice(0, 8)} merge=${status.integration.mergeSha.slice(0, 8)} before=${status.integration.targetTipBeforeSha.slice(0, 8)} after=${status.integration.targetTipAfterSha.slice(0, 8)}`,
+    );
+  }
+  if (status.events.length > 0) {
+    console.log(`${indent}  Attempts (${status.events.length}):`);
+    for (const event of status.events) {
+      console.log(`${indent}    ${event.kind} ${event.reasons.join("; ") || "-"}`);
+    }
   }
 }
 

@@ -1606,7 +1606,7 @@ export type CandidateVerificationSubmission = z.infer<typeof candidateVerificati
 // ---------------------------------------------------------------------------
 
 /** Bumped whenever the gate-profile definition changes; older observations stop authorizing acceptance. */
-export const GATE_PROFILE_VERSION = 1;
+export const GATE_PROFILE_VERSION = 2;
 
 export const executionStageSchema = z.enum([
   "builder_execution",
@@ -1972,6 +1972,127 @@ export const publicationEvidenceBindingRequestSchema = z
 export type PublicationEvidenceBindingRequest = z.infer<
   typeof publicationEvidenceBindingRequestSchema
 >;
+
+// ---------------------------------------------------------------------------
+// Child gate integration: serialized auto-merge into the spec integration branch
+// ---------------------------------------------------------------------------
+
+export const integrationStateSchema = z.enum([
+  "not_ready",
+  "blocked",
+  "ready",
+  "integrating",
+  "integrated",
+  "unknown",
+]);
+export type IntegrationState = z.infer<typeof integrationStateSchema>;
+
+export const integrationBlockReasonSchema = z.enum([
+  "integration_profile_invalid",
+  "integration_merge_policy_manual",
+  "integration_run_not_succeeded",
+  "integration_candidate_missing",
+  "integration_acceptance_blocked",
+  "integration_publication_missing",
+  "integration_publication_incomplete",
+  "integration_remote_unreadable",
+  "integration_remote_binding_mismatch",
+  "integration_pull_request_closed",
+  "integration_ci_missing",
+  "integration_ci_pending",
+  "integration_ci_failed",
+  "integration_target_missing",
+  "integration_target_drift",
+  "integration_conflict",
+  "integration_merge_rejected",
+  "integration_merge_unknown",
+  "integration_lineage_unverified",
+]);
+export type IntegrationBlockReason = z.infer<typeof integrationBlockReasonSchema>;
+
+export const integrationBlockerSchema = z.object({
+  code: z.union([integrationBlockReasonSchema, z.string().min(1)]),
+  message: z.string().min(1),
+  details: z.record(z.string(), z.unknown()).optional(),
+});
+export type IntegrationBlocker = z.infer<typeof integrationBlockerSchema>;
+
+export const requiredCheckSchema = z.object({
+  name: z.string().min(1),
+  required: z.boolean(),
+  status: z.string().min(1),
+  conclusion: z.string().min(1).nullable(),
+});
+export type RequiredCheck = z.infer<typeof requiredCheckSchema>;
+
+export const childIntegrationSchema = z.object({
+  id: z.string().min(1),
+  projectId: z.string().min(1),
+  deliveryId: z.string().min(1),
+  planId: z.string().min(1),
+  workId: z.string().min(1),
+  runId: z.string().min(1),
+  issueNumber: z.number().int().positive(),
+  sourceBranch: z.string().min(1),
+  targetBranch: z.string().min(1),
+  candidateHeadSha: z.string().min(1),
+  baseSha: z.string().min(1),
+  targetTipBeforeSha: z.string().min(1),
+  targetTipAfterSha: z.string().min(1),
+  mergeSha: z.string().min(1),
+  remotePullRequestNumber: z.number().int().positive(),
+  remotePullRequestUrl: z.string().min(1).nullable(),
+  evidenceIdentity: z.string().min(1),
+  integratedAt: z.number().int().nonnegative(),
+});
+export type ChildIntegration = z.infer<typeof childIntegrationSchema>;
+
+export const integrationEventKindSchema = z.enum(["blocked", "merged", "reconciled"]);
+export type IntegrationEventKind = z.infer<typeof integrationEventKindSchema>;
+
+export const integrationEventSchema = z.object({
+  id: z.string().min(1),
+  projectId: z.string().min(1),
+  runId: z.string().min(1),
+  kind: integrationEventKindSchema,
+  candidateHeadSha: z.string().min(1),
+  targetTipSha: z.string().min(1),
+  mergeSha: z.string().min(1).nullable(),
+  reasons: z.array(z.string()),
+  createdAt: z.number().int().nonnegative(),
+});
+export type IntegrationEvent = z.infer<typeof integrationEventSchema>;
+
+export const integrationStatusSchema = z.object({
+  runId: z.string().min(1),
+  projectId: z.string().min(1),
+  deliveryId: z.string().min(1),
+  planId: z.string().min(1),
+  workId: z.string().min(1),
+  issueNumber: z.number().int().positive(),
+  gateProfile: planGateProfileSchema,
+  mergePolicy: dispatchMergePolicySchema,
+  targetBranch: z.string().min(1),
+  state: integrationStateSchema,
+  blockers: z.array(integrationBlockerSchema),
+  acceptance: acceptanceDecisionSchema,
+  publication: publicationStatusSchema.nullable(),
+  requiredChecks: z.array(requiredCheckSchema),
+  integration: childIntegrationSchema.nullable(),
+  events: z.array(integrationEventSchema),
+});
+export type IntegrationStatus = z.infer<typeof integrationStatusSchema>;
+export const integrationStatusListSchema = z.array(integrationStatusSchema);
+export type IntegrationStatusList = z.infer<typeof integrationStatusListSchema>;
+
+export const integrationLandSubmissionSchema = z
+  .object({
+    actor: z.string().min(1).max(200).optional(),
+    reason: z.string().min(1).max(2000).optional(),
+  })
+  .strict();
+export type IntegrationLandSubmission = z.infer<typeof integrationLandSubmissionSchema>;
+
 export const dispatchAttemptSchema = z.object({
   runId: z.string().min(1),
   lap: z.number().int().positive(),

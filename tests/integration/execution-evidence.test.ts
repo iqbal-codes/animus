@@ -218,7 +218,7 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
       mergeBaseSha: run.base_sha,
       testedIdentity: run.head_sha,
       gateProfile: "standalone",
-      gateProfileVersion: 1,
+      gateProfileVersion: 2,
       producer: { id: "operator", role: "builder" },
       error: null,
     });
@@ -662,6 +662,7 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
     expect(plan.authority).toBe("admitted");
     git(checkoutPath, "branch", "factory/spec-100-integration", "main");
     register("gate-1", "automated_gate");
+    register("reviewer-1", "peer_reviewer");
 
     const service = makeDispatch();
     const runA = await service.dispatch(projectId, {
@@ -696,6 +697,13 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
       status: "passed",
       producer: { id: "gate-1", role: "automated_gate" },
       checks: [{ name: "unit", command: "bun test", result: "PASS" }],
+    });
+    // The child gate profile also requires an independent standards/contract review.
+    observations.recordRunObservation(projectId, runB.id, {
+      stage: "independent_review",
+      status: "passed",
+      producer: { id: "reviewer-1", role: "peer_reviewer" },
+      checks: [{ name: "standards", command: "review diff", result: "PASS" }],
     });
 
     const findingA = observations.listFindings(projectId, { runId: runA.id })[0]!;

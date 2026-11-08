@@ -85,6 +85,9 @@ import {
   publicationStatusSchema,
   publicationStatusListSchema,
   publicationEvidenceBindingRequestSchema,
+  integrationStatusSchema,
+  integrationStatusListSchema,
+  integrationLandSubmissionSchema,
   landingGuardResultSchema,
   landingSubmissionSchema,
   landingExecutionResultSchema,
@@ -198,6 +201,9 @@ import {
   type BranchIntegrationResult,
   type PublicationStatus,
   type PublicationStatusList,
+  type IntegrationStatus,
+  type IntegrationStatusList,
+  type IntegrationLandSubmission,
 } from "@animus/contracts/operator";
 
 export {
@@ -1146,6 +1152,39 @@ export function createFactoryClient(options: {
             `${scopedBase}/publication/targets/${encodeURIComponent(targetId)}/evidence/${encodeURIComponent(artifactId)}/bind`,
             parsed.data,
             publicationStatusSchema,
+          );
+        },
+        async integrationStatus(runId: string): Promise<IntegrationStatus> {
+          return getJson(
+            `${scopedBase}/integration/runs/${encodeURIComponent(runId)}`,
+            integrationStatusSchema,
+          );
+        },
+        async integrations(opts?: {
+          workId?: string;
+          deliveryId?: string;
+          planId?: string;
+        }): Promise<IntegrationStatusList> {
+          const params = new URLSearchParams();
+          if (opts?.workId) params.set("work_id", opts.workId);
+          if (opts?.deliveryId) params.set("delivery_id", opts.deliveryId);
+          if (opts?.planId) params.set("plan_id", opts.planId);
+          const suffix = params.toString();
+          return getJson(
+            `${scopedBase}/integration${suffix ? `?${suffix}` : ""}`,
+            integrationStatusListSchema,
+          );
+        },
+        async landChild(
+          runId: string,
+          submission: IntegrationLandSubmission = {},
+        ): Promise<IntegrationStatus> {
+          const parsed = integrationLandSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/integration/runs/${encodeURIComponent(runId)}/land`,
+            parsed.data,
+            integrationStatusSchema,
           );
         },
       };

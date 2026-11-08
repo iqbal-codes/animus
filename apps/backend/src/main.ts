@@ -48,8 +48,13 @@ import { ProjectOnboardingService } from "./registry/onboarding";
 import { RegisteredProjectMonitor } from "./monitor/service";
 import { loadMonitorRuntime, type MonitorRuntime } from "./monitor/runtime";
 import { SpecCoordinatorService, handleProjectCoordinationRoute } from "./coordination";
-import { EvidenceService, handleProjectEvidenceRoute } from "./evidence";
+import {
+  EvidenceService,
+  ExecutionObservationService,
+  handleProjectEvidenceRoute,
+} from "./evidence";
 import { PublicationService, handleProjectPublicationRoute } from "./publication";
+import { ChildIntegrationService, handleProjectIntegrationRoute } from "./integration";
 import { HarnessService, handleHarnessRoute } from "./harness";
 import {
   validateCsrfProtection,
@@ -270,13 +275,16 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     } catch {}
   });
 
+  const observationService =
+    options?.dispatch?.observations ?? new ExecutionObservationService(registryService.getDb());
+
   const dispatchService = new DispatchService(registryService.getDb(), {
     ...options?.dispatch,
     plans: planService,
     ledger: commandService.ledger,
     brakes: commandService.brakes,
+    observations: observationService,
   });
-
   // Preserve interrupted/unknown ownership on startup instead of freeing claims by lease age.
   void Promise.resolve().then(() => {
     try {
@@ -303,6 +311,13 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     registryService.getDb(),
     registryService.getForge(),
   );
+
+  const integrationService = new ChildIntegrationService(registryService.getDb(), {
+    observations: observationService,
+    publication: publicationService,
+    forge: registryService.getForge(),
+    gitRunner: options?.dispatch?.gitRunner,
+  });
 
   const monitorRuntime =
     options?.monitorRuntime ?? (await loadMonitorRuntime({ forge: options?.forge }));
@@ -831,6 +846,17 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
           publicationService,
         );
         if (publicationRes) return publicationRes;
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
+      if (scopedAction === "integration") {
+        const integrationRes = await handleProjectIntegrationRoute(
+          request,
+          projectId,
+          parts,
+          integrationService,
+        );
+        if (integrationRes) return integrationRes;
         return Response.json({ error: "not_found" }, { status: 404 });
       }
 

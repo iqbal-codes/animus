@@ -274,3 +274,79 @@ test("portable client reads lap evidence and reports cleanly", async () => {
   expect(await client.evidence("run-1234")).toEqual(evidenceData);
   expect(await client.report("run-1234")).toBe(reportText);
 });
+
+test("portable client exposes child integration status and landing through the project scope", async () => {
+  const integration = {
+    runId: "run-1",
+    projectId: "proj-1",
+    deliveryId: "del-1",
+    planId: "plan-1",
+    workId: "work-1",
+    issueNumber: 714,
+    gateProfile: "child" as const,
+    mergePolicy: "auto_after_gates" as const,
+    targetBranch: "factory/spec-714-integration",
+    state: "integrated" as const,
+    blockers: [],
+    acceptance: {
+      runId: "run-1",
+      projectId: "proj-1",
+      deliveryId: "del-1",
+      gateProfile: "child" as const,
+      candidateHeadSha: "d".repeat(40),
+      targetTipSha: "e".repeat(40),
+      mergeBaseSha: "c".repeat(40),
+      integrationLineage: "lineage@factory/spec-714-integration",
+      authorized: true,
+      reasons: [],
+      builderObservationId: "obs-1",
+      independentObservationId: "obs-2",
+      openBlockingFindingIds: [],
+      verifiedArtifactIds: [],
+    },
+    publication: null,
+    requiredChecks: [
+      { name: "ci/verify", required: true, status: "completed", conclusion: "success" },
+    ],
+    integration: {
+      id: "integ-1",
+      projectId: "proj-1",
+      deliveryId: "del-1",
+      planId: "plan-1",
+      workId: "work-1",
+      runId: "run-1",
+      issueNumber: 714,
+      sourceBranch: "factory/spec-714/ticket-714",
+      targetBranch: "factory/spec-714-integration",
+      candidateHeadSha: "d".repeat(40),
+      baseSha: "c".repeat(40),
+      targetTipBeforeSha: "c".repeat(40),
+      targetTipAfterSha: "e".repeat(40),
+      mergeSha: "e".repeat(40),
+      remotePullRequestNumber: 9,
+      remotePullRequestUrl: "https://github.com/owner/repo/pull/9",
+      evidenceIdentity: "lineage#head#lap1",
+      integratedAt: 1,
+    },
+    events: [],
+  };
+  const calls: string[] = [];
+  const client = createFactoryClient({
+    baseUrl: "http://localhost:1234",
+    fetch: async (input, init) => {
+      calls.push(`${init?.method ?? "GET"} ${String(input)}`);
+      if (String(input).endsWith("/integration")) return Response.json([integration]);
+      return Response.json(integration);
+    },
+  });
+
+  const scoped = client.forProject("proj-1");
+  expect(await scoped.integrationStatus("run-1")).toEqual(integration);
+  expect(await scoped.integrations()).toEqual([integration]);
+  expect(await scoped.landChild("run-1", { actor: "operator" })).toEqual(integration);
+  expect(calls).toEqual([
+    "GET http://localhost:1234/api/v1/projects/proj-1/integration/runs/run-1",
+    "GET http://localhost:1234/api/v1/projects/proj-1/integration",
+    "POST http://localhost:1234/api/v1/projects/proj-1/integration/runs/run-1/land",
+  ]);
+});

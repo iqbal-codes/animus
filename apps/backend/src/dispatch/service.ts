@@ -1645,7 +1645,7 @@ export class DispatchService {
           "Requested work is not part of this frozen plan",
         );
       }
-      this.assertExplicitMemberAvailable(project.id, member);
+      this.assertExplicitMemberAvailable(project, member, this.targetBranch(plan, manifest));
       return member;
     }
 
@@ -1665,7 +1665,11 @@ export class DispatchService {
         activeBlocked = true;
         continue;
       }
-      if (this.hasSucceededRun(project.id, member.work_id)) continue;
+      if (this.hasSucceededRun(project.id, member.work_id)) {
+        if (!this.staleSucceededRun(project, member.work_id, this.targetBranch(plan, manifest))) {
+          continue;
+        }
+      }
       const skip = this.memberEligibilitySkip(project.id, plan.id, deliveryId, member);
       if (skip) {
         skipped.push(skip);
@@ -1758,13 +1762,18 @@ export class DispatchService {
     return null;
   }
 
-  private assertExplicitMemberAvailable(projectId: string, member: PlanMember): void {
-    if (this.hasActiveRun(projectId, member.work_id)) {
+  private assertExplicitMemberAvailable(
+    project: ProjectRow,
+    member: PlanMember,
+    targetBranch: string,
+  ): void {
+    if (this.hasActiveRun(project.id, member.work_id)) {
       throw new DispatchError("claim_conflict", `Work ${member.work_id} already has an active run`);
     }
     if (
-      this.hasSucceededRun(projectId, member.work_id) &&
-      !this.hasOpenFinding(projectId, member.work_id)
+      this.hasSucceededRun(project.id, member.work_id) &&
+      !this.hasOpenFinding(project.id, member.work_id) &&
+      !this.staleSucceededRun(project, member.work_id, targetBranch)
     ) {
       throw new DispatchError(
         "already_succeeded",
@@ -2006,6 +2015,38 @@ export class DispatchService {
   }
 
   /**
+   * A succeeded run that is not on the frozen target lineage is stale when the
+   * target has advanced since it was built. Such work must re-enter a new bounded
+   * builder lap instead of being merged or treated as permanently complete.
+   */
+  private staleSucceededRun(project: ProjectRow, workId: string, targetBranch: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT head_sha, base_sha FROM dispatch_runs
+          WHERE project_id = ? AND work_id = ? AND state = 'succeeded' AND head_sha IS NOT NULL
+          ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+      )
+      .get(project.id, workId) as { head_sha: string; base_sha: string } | undefined;
+    if (!row) return false;
+    try {
+      this.gitRunner(["merge-base", "--is-ancestor", row.head_sha, targetBranch], {
+        cwd: project.checkout_path,
+      });
+      return false;
+    } catch {
+      // Not included on the frozen target lineage; only a moved target is stale.
+    }
+    try {
+      const tip = this.gitRunner(["rev-parse", "--verify", targetBranch], {
+        cwd: project.checkout_path,
+      });
+      return tip !== row.base_sha;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * An open finding for the ticket means its last builder/fix cycle did not close
    * the defect, so an explicit re-dispatch starts the next ticket lap. Whether and
    * how many laps may be granted is #156's budget policy.
@@ -2094,7 +2135,11 @@ export class DispatchService {
     }
     if (
       this.hasSucceededRun(project.id, currentMember.work_id) &&
-      !(explicit && this.hasOpenFinding(project.id, currentMember.work_id))
+      !(
+        explicit &&
+        (this.hasOpenFinding(project.id, currentMember.work_id) ||
+          this.staleSucceededRun(project, currentMember.work_id, targetBranch))
+      )
     ) {
       throw new DispatchError("already_succeeded", "Work already succeeded");
     }
