@@ -18,6 +18,7 @@ import { CommandService } from "../../../apps/backend/src/command";
 import type {
   ControlAction,
   DispatchRunDetail,
+  DeliveryGateStatus,
   ExecutionObservationRecord,
   FactoryFindingRecord,
   PlanDispatchRun,
@@ -733,7 +734,7 @@ export async function runPlanCommand(
   try {
     if (!opts.projectId) {
       throw new Error(
-        "Usage: factory plan <list|get|import|approve|revoke|dispatch|runs|run|detail|evidence|findings|grants|grant|hold|resume|stop|takeover|reconcile|publication|audit|publish|bind-evidence> --project <project-id>",
+        "Usage: factory plan <list|get|import|approve|revoke|dispatch|runs|run|detail|evidence|findings|grants|grant|hold|resume|stop|takeover|reconcile|publication|audit|publish|bind-evidence|gate|verify-merge> --project <project-id>",
       );
     }
     const scoped = createRegistrationClient(opts).forProject(opts.projectId);
@@ -922,6 +923,20 @@ export async function runPlanCommand(
       return 0;
     }
 
+    if (sub === "gate" || sub === "verify-merge") {
+      const runId = opts.positionals[2];
+      if (!runId) {
+        throw new Error(`Usage: factory plan ${sub} <run-id> --project <project-id>`);
+      }
+      const status =
+        sub === "verify-merge"
+          ? await scoped.verifyDeliveryMerge(runId, opts.actor ?? "operator")
+          : await scoped.deliveryGate(runId);
+      if (opts.json) console.log(JSON.stringify(status, null, 2));
+      else printDeliveryGate(status);
+      return 0;
+    }
+
     if (sub === "bind-evidence") {
       const targetId = opts.positionals[2];
       const artifactId = opts.positionals[3];
@@ -1031,7 +1046,7 @@ export async function runPlanCommand(
     }
 
     throw new Error(
-      `Unknown plan subcommand: ${sub}. Expected list, get, import, approve, revoke, dispatch, runs, run, detail, evidence, findings, grants, grant, hold, resume, stop, takeover, reconcile, publication, audit, publish, bind-evidence.`,
+      `Unknown plan subcommand: ${sub}. Expected list, get, import, approve, revoke, dispatch, runs, run, detail, evidence, findings, grants, grant, hold, resume, stop, takeover, reconcile, publication, audit, publish, bind-evidence, gate, verify-merge.`,
     );
   } catch (err: any) {
     const msg = err?.message ?? String(err);
@@ -1198,8 +1213,36 @@ function printPublication(status: PublicationStatus): void {
   }
 }
 
-function printPlan(plan: PlanRecord): void {
-  console.log(`Plan ${plan.id} (${plan.kind})`);
+function printDeliveryGate(status: DeliveryGateStatus): void {
+  console.log(`Delivery gate ${status.runId} — #${status.issueNumber} (${status.gateProfile})`);
+  console.log(
+    `  State:      ${status.state}${status.manualMergeRequired ? " · manual merge required" : ""}`,
+  );
+  console.log(
+    `  Candidate:  ${status.candidateHeadSha ?? "none"}  source=${status.sourceBranch}  target=${status.targetBranch}`,
+  );
+  console.log(
+    `  Publication: ${status.publication.state ?? "none"} audit=${status.publication.auditComplete ? "complete" : "incomplete"}${
+      status.publication.prNumber
+        ? ` PR #${status.publication.prNumber} ${status.publication.url ?? ""} (${status.publication.remoteState ?? "unknown"}${status.publication.draft ? ", draft" : ""})`
+        : ""
+    }`,
+  );
+  console.log(
+    `  Merge:      ${status.merge.state}${status.merge.verified ? ` verified at ${status.merge.verification?.verifiedAt}` : ""}${status.merge.remoteTargetTipSha ? ` target-tip=${status.merge.remoteTargetTipSha}` : ""}`,
+  );
+  if (status.merge.detail) console.log(`  Merge note: ${status.merge.detail}`);
+  console.log(`  Stages (${status.stages.length}):`);
+  for (const stage of status.stages) {
+    console.log(`    ${stage.status.padEnd(12)} ${stage.name}: ${stage.detail}`);
+  }
+  if (status.reasons.length > 0) {
+    console.log(`  Blockers (${status.reasons.length}):`);
+    for (const reason of status.reasons) console.log(`    - ${reason}`);
+  }
+}
+
+function printPlan(plan: PlanRecord): void {  console.log(`Plan ${plan.id} (${plan.kind})`);
   console.log(`  Authority:  ${plan.authority}`);
   console.log(`  Dispatch:   ${plan.dispatchable ? "eligible" : "held"}`);
   console.log(`  Root:       #${plan.members.find((m) => m.work_id === plan.root_work_id)?.issue_number ?? "?"}`);

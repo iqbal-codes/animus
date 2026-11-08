@@ -85,6 +85,7 @@ import {
   publicationStatusSchema,
   publicationStatusListSchema,
   publicationEvidenceBindingRequestSchema,
+  deliveryGateStatusSchema,
   landingGuardResultSchema,
   landingSubmissionSchema,
   landingExecutionResultSchema,
@@ -198,6 +199,7 @@ import {
   type BranchIntegrationResult,
   type PublicationStatus,
   type PublicationStatusList,
+  type DeliveryGateStatus,
 } from "@animus/contracts/operator";
 
 export {
@@ -233,6 +235,7 @@ export {
   publicationStatusSchema,
   publicationStatusListSchema,
   publicationEvidenceBindingRequestSchema,
+  deliveryGateStatusSchema,
   planListSchema,
   planRecordSchema,
   planImportSubmissionSchema,
@@ -1146,6 +1149,19 @@ export function createFactoryClient(options: {
             `${scopedBase}/publication/targets/${encodeURIComponent(targetId)}/evidence/${encodeURIComponent(artifactId)}/bind`,
             parsed.data,
             publicationStatusSchema,
+          );
+        },
+        async deliveryGate(runId: string): Promise<DeliveryGateStatus> {
+          return getJson(
+            `${scopedBase}/delivery/runs/${encodeURIComponent(runId)}`,
+            deliveryGateStatusSchema,
+          );
+        },
+        async verifyDeliveryMerge(runId: string, actor = "operator"): Promise<DeliveryGateStatus> {
+          return postJson(
+            `${scopedBase}/delivery/runs/${encodeURIComponent(runId)}/verify-merge`,
+            { actor },
+            deliveryGateStatusSchema,
           );
         },
       };

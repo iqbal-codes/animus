@@ -218,7 +218,7 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
       mergeBaseSha: run.base_sha,
       testedIdentity: run.head_sha,
       gateProfile: "standalone",
-      gateProfileVersion: 1,
+      gateProfileVersion: 2,
       producer: { id: "operator", role: "builder" },
       error: null,
     });

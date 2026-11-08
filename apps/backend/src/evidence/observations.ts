@@ -84,6 +84,8 @@ interface CheckRow {
   name: string;
   command: string;
   result: "PASS" | "FAIL" | "BLOCKED" | "NOT_RUN";
+  kind: "contract" | "acceptance" | "review" | "regression" | "remote_ci";
+  criterion_key: string | null;
   duration_ms: number | null;
   detail: string | null;
   artifact_path: string | null;
@@ -368,9 +370,9 @@ export class ExecutionObservationService {
         this.db
           .prepare(
             `INSERT INTO execution_checks
-               (id, observation_id, project_id, name, command, result, duration_ms, detail,
-                artifact_path, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               (id, observation_id, project_id, name, command, result, kind, criterion_key,
+                duration_ms, detail, artifact_path, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             `chk_${randomUUID()}`,
@@ -379,6 +381,8 @@ export class ExecutionObservationService {
             check.name,
             check.command,
             check.result,
+            check.kind,
+            check.criterionKey ?? null,
             check.durationMs ?? null,
             check.detail ?? null,
             check.artifactPath === undefined
@@ -1527,6 +1531,8 @@ export class ExecutionObservationService {
         name: check.name,
         command: check.command,
         result: check.result,
+        kind: check.kind,
+        criterionKey: check.criterion_key,
         durationMs: check.duration_ms,
         detail: check.detail,
         artifactPath: check.artifact_path,

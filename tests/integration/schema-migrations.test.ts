@@ -17,6 +17,7 @@ const DISPATCH_V4 = "delivery_dispatch_ownership";
 const EVIDENCE_V5 = "execution_observations_findings_artifacts";
 const BUDGET_V6 = "execution_budgets_and_controls";
 const PUBLICATION_V7 = "publication_audit_outgoing_intents";
+const DELIVERY_V9 = "standalone_delivery_gate_and_merge_verification";
 
 const ALL_MIGRATIONS = [
   { version: 1, name: WORK_V1 },
@@ -26,6 +27,7 @@ const ALL_MIGRATIONS = [
   { version: 5, name: EVIDENCE_V5 },
   { version: 6, name: BUDGET_V6 },
   { version: 7, name: PUBLICATION_V7 },
+  { version: 9, name: DELIVERY_V9 },
 ];
 
 function tableExists(db: DatabaseSync, table: string): boolean {
@@ -141,9 +143,16 @@ describe("coherent schema migration registry", () => {
         "publication_intents",
         "publication_evidence_bindings",
         "publication_summaries",
+        "delivery_merge_verifications",
       ]) {
         expect(tableExists(db, table)).toBe(true);
       }
+      const checkColumns = db.prepare("PRAGMA table_info(execution_checks)").all() as Array<{
+        name: string;
+      }>;
+      expect(checkColumns.map((column) => column.name)).toEqual(
+        expect.arrayContaining(["kind", "criterion_key"]),
+      );
     } finally {
       db.close();
     }
@@ -152,7 +161,7 @@ describe("coherent schema migration registry", () => {
     const reopened = initializeDatabase(path);
     try {
       expect(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({
-        count: 7,
+        count: 8,
       });
     } finally {
       reopened.close();

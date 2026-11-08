@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
+  DeliveryGateStatus,
   DispatchRunDetail,
   PlanDispatchRun,
   PlanDispatchRunList,
@@ -71,6 +72,11 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
   const [auditLoading, setAuditLoading] = useState<string | null>(null);
   const [auditError, setAuditError] = useState<Record<string, string>>({});
   const [publishing, setPublishing] = useState<string | null>(null);
+  const [gateExpanded, setGateExpanded] = useState<Record<string, boolean>>({});
+  const [gates, setGates] = useState<Record<string, DeliveryGateStatus>>({});
+  const [gateLoading, setGateLoading] = useState<string | null>(null);
+  const [gateError, setGateError] = useState<Record<string, string>>({});
+  const [gateBusy, setGateBusy] = useState<string | null>(null);
   const [details, setDetails] = useState<Record<string, DispatchRunDetail>>({});
   const [detailExpanded, setDetailExpanded] = useState<Record<string, boolean>>({});
   const [detailLoading, setDetailLoading] = useState<string | null>(null);
@@ -237,6 +243,57 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
       }));
     } finally {
       setPublishing(null);
+    }
+  };
+
+  const loadGate = useCallback(
+    async (runId: string) => {
+      const scoped = factory.forProject(projectId);
+      if (typeof scoped.deliveryGate !== "function") return;
+      setGateLoading(runId);
+      setGateError((current) => {
+        const copy = { ...current };
+        delete copy[runId];
+        return copy;
+      });
+      try {
+        const status = await scoped.deliveryGate(runId);
+        setGates((current) => ({ ...current, [runId]: status }));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setGateError((current) => ({ ...current, [runId]: message }));
+      } finally {
+        setGateLoading((current) => (current === runId ? null : current));
+      }
+    },
+    [factory, projectId],
+  );
+
+  const toggleGate = async (runId: string) => {
+    const next = !gateExpanded[runId];
+    setGateExpanded((current) => ({ ...current, [runId]: next }));
+    // The remote PR state changes outside this process, so reopening the panel
+    // always re-reads the gate instead of trusting a stale cached projection.
+    if (next) await loadGate(runId);
+  };
+
+  const verifyMerge = async (runId: string) => {
+    const scoped = factory.forProject(projectId);
+    if (typeof scoped.verifyDeliveryMerge !== "function") return;
+    setGateBusy(runId);
+    setGateError((current) => {
+      const copy = { ...current };
+      delete copy[runId];
+      return copy;
+    });
+    try {
+      const status = await scoped.verifyDeliveryMerge(runId, "operator");
+      setGates((current) => ({ ...current, [runId]: status }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setGateError((current) => ({ ...current, [runId]: message }));
+    } finally {
+      setGateBusy(null);
     }
   };
 
@@ -507,6 +564,16 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
                       variant="outline"
                       size="sm"
                       className="min-h-11 sm:min-h-8"
+                      aria-expanded={Boolean(gateExpanded[run.id])}
+                      aria-controls={`run-gate-${run.id}`}
+                      onClick={() => void toggleGate(run.id)}
+                    >
+                      {gateExpanded[run.id] ? "Hide gate" : "Delivery gate"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="min-h-11 sm:min-h-8"
                       aria-expanded={Boolean(detailExpanded[run.id])}
                       aria-controls={`run-budget-${run.id}`}
                       onClick={() => void toggleDetail(run.id)}
@@ -578,6 +645,29 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
                         status={audit[run.id]!}
                         publishing={publishing === run.id}
                         onRetry={() => void publishAudit(run.id)}
+                      />
+                    ) : null}
+                  </div>
+                )}
+                {run && gateExpanded[run.id] && (
+                  <div
+                    id={`run-gate-${run.id}`}
+                    data-testid={`run-gate-${run.id}`}
+                    className="w-full"
+                  >
+                    {gateLoading === run.id ? (
+                      <p role="status" className="text-xs text-text-secondary">
+                        Loading delivery gate…
+                      </p>
+                    ) : gateError[run.id] ? (
+                      <p role="alert" className="text-xs text-[var(--destructive)]">
+                        Delivery gate unavailable: {gateError[run.id]}
+                      </p>
+                    ) : gates[run.id] ? (
+                      <DeliveryGatePanel
+                        status={gates[run.id]!}
+                        verifying={gateBusy === run.id}
+                        onVerify={() => void verifyMerge(run.id)}
                       />
                     ) : null}
                   </div>
@@ -876,6 +966,127 @@ function RunEvidencePanel({ report }: { report: RunEvidenceReport }) {
           ))}
         </ul>
       )}
+    </section>
+  );
+}
+
+const DELIVERY_GATE_TONE: Record<
+  DeliveryGateStatus["state"],
+  "default" | "success" | "warning" | "error" | "accent"
+> = {
+  blocked: "warning",
+  correction_required: "error",
+  awaiting_publication: "warning",
+  ready_for_operator_review: "accent",
+  awaiting_manual_merge: "accent",
+  awaiting_merge_verification: "warning",
+  closed_unmerged: "error",
+  invalidated: "error",
+  remote_unavailable: "error",
+  delivered: "success",
+};
+
+const DELIVERY_STAGE_TONE: Record<
+  DeliveryGateStatus["stages"][number]["status"],
+  "default" | "success" | "warning" | "error" | "accent"
+> = {
+  passed: "success",
+  failed: "error",
+  inconclusive: "warning",
+  running: "accent",
+  missing: "warning",
+  stale: "error",
+  not_applicable: "default",
+};
+
+/** Full-delivery gate plus verified remote merge state for standalone tickets. */
+function DeliveryGatePanel({
+  status,
+  verifying,
+  onVerify,
+}: {
+  status: DeliveryGateStatus;
+  verifying: boolean;
+  onVerify: () => void;
+}) {
+  const canVerify =
+    status.merge.state === "unverified" || status.state === "awaiting_merge_verification";
+  return (
+    <section
+      aria-label="Full delivery gate and merge verification"
+      className="mt-2 min-w-0 space-y-2 overflow-hidden rounded-[10px] border border-[var(--border-subtle)] bg-background/40 p-3"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="text-xs font-medium text-foreground">Delivery gate</h3>
+        <Badge variant={DELIVERY_GATE_TONE[status.state]}>{status.state}</Badge>
+        <Badge variant={status.manualMergeRequired ? "warning" : "default"}>
+          merge {status.mergePolicy}
+        </Badge>
+        <span className="break-all font-mono text-[10px] text-text-secondary">
+          {status.gateProfile} v{status.gateProfileVersion} · {status.sourceBranch} →{" "}
+          {status.targetBranch} · candidate {status.candidateHeadSha ?? "none"}
+        </span>
+      </div>
+
+      <p className="break-all font-mono text-[10px] text-text-secondary">
+        publication {status.publication.state ?? "none"} · audit{" "}
+        {status.publication.auditComplete ? "complete" : "incomplete"}
+        {status.publication.prNumber
+          ? ` · PR #${status.publication.prNumber} ${status.publication.remoteState ?? "unknown"}${status.publication.draft ? " draft" : ""}`
+          : " · no PR"}
+      </p>
+      <p className="break-all font-mono text-[10px] text-text-secondary">
+        merge {status.merge.state}
+        {status.merge.verification ? ` · verified ${status.merge.verification.verifiedAt}` : ""}
+        {status.merge.remoteTargetTipSha ? ` · target-tip ${status.merge.remoteTargetTipSha}` : ""}
+      </p>
+      {status.merge.detail && (
+        <p className="text-[11px] text-text-secondary">{status.merge.detail}</p>
+      )}
+
+      {status.state === "ready_for_operator_review" || status.state === "awaiting_manual_merge" ? (
+        <p className="text-[11px] text-text-secondary">
+          Operator review required: merge PR #{status.publication.prNumber ?? "?"} manually in
+          GitHub. This gate never merges to the delivery branch.
+        </p>
+      ) : null}
+
+      {canVerify && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="min-h-11 sm:min-h-8"
+          disabled={verifying}
+          onClick={onVerify}
+        >
+          {verifying ? "Verifying…" : "Verify merge"}
+        </Button>
+      )}
+
+      {status.reasons.length > 0 && (
+        <ul
+          aria-label="Delivery gate blockers"
+          className="list-disc pl-5 text-[11px] text-[var(--error)]"
+        >
+          {status.reasons.map((reason) => (
+            <li key={reason}>{reason}</li>
+          ))}
+        </ul>
+      )}
+
+      <ul aria-label="Delivery gate stages" className="min-w-0 space-y-1">
+        {status.stages.map((stage) => (
+          <li
+            key={stage.name}
+            data-testid={`delivery-stage-${stage.name}`}
+            className="flex min-w-0 flex-wrap items-center gap-2"
+          >
+            <Badge variant={DELIVERY_STAGE_TONE[stage.status]}>{stage.status}</Badge>
+            <span className="text-[11px] text-foreground">{stage.name}</span>
+            <span className="break-all text-[10px] text-text-secondary">{stage.detail}</span>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }

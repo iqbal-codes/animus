@@ -50,6 +50,7 @@ import { loadMonitorRuntime, type MonitorRuntime } from "./monitor/runtime";
 import { SpecCoordinatorService, handleProjectCoordinationRoute } from "./coordination";
 import { EvidenceService, handleProjectEvidenceRoute } from "./evidence";
 import { PublicationService, handleProjectPublicationRoute } from "./publication";
+import { DeliveryGateService, handleProjectDeliveryRoute } from "./delivery";
 import { HarnessService, handleHarnessRoute } from "./harness";
 import {
   validateCsrfProtection,
@@ -99,6 +100,7 @@ export interface BackendApp {
   monitor: RegisteredProjectMonitor;
   db: DatabaseSync;
   publication: PublicationService;
+  delivery: DeliveryGateService;
   stop(): Promise<void>;
 }
 
@@ -303,6 +305,12 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     registryService.getDb(),
     registryService.getForge(),
   );
+
+  const deliveryService = new DeliveryGateService(registryService.getDb(), {
+    observations: evidenceService.observations,
+    publication: publicationService,
+    forge: registryService.getForge(),
+  });
 
   const monitorRuntime =
     options?.monitorRuntime ?? (await loadMonitorRuntime({ forge: options?.forge }));
@@ -834,6 +842,17 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
         return Response.json({ error: "not_found" }, { status: 404 });
       }
 
+      if (scopedAction === "delivery") {
+        const deliveryRes = await handleProjectDeliveryRoute(
+          request,
+          projectId,
+          parts,
+          deliveryService,
+        );
+        if (deliveryRes) return deliveryRes;
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
       if (scopedAction === "laps") {
         return handleLapsRoute(request, parts.slice(1), routeContext, projectId);
       }
@@ -908,6 +927,7 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
 
   return {
     publication: publicationService,
+    delivery: deliveryService,
     fetch: appFetch,
     websocket,
     monitor,

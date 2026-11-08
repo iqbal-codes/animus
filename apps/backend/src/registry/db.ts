@@ -14,6 +14,7 @@ import { WORK_MIGRATIONS } from "../work/db";
 import { BUDGET_MIGRATIONS } from "../work/budget-schema";
 import { DRAFT_MIGRATIONS } from "../draft/db";
 import { DISPATCH_MIGRATIONS } from "../dispatch/db";
+import { DELIVERY_MIGRATIONS } from "../delivery/schema";
 import { applyMigrations, type Migration } from "./migrations";
 
 /**
@@ -23,9 +24,10 @@ import { applyMigrations, type Migration } from "./migrations";
  * Work identity (#152) owns version 1, prepared plan admission (#153) owns
  * version 2, local draft authoring (#161) owns version 3, delivery dispatch
  * ownership (#154) owns version 4, execution evidence (#155) owns version 5,
- * bounded attempt budgets/operator controls (#156) owns version 6, and PR
- * publication audit (#157) owns version 7. A future lane appends the next
- * version instead of claiming an existing one.
+ * bounded attempt budgets/operator controls (#156) owns version 6, PR
+ * publication audit (#157) owns version 7, child gate profiles (#158) reserve
+ * version 8, and standalone full-delivery gates (#159) own version 9. A future
+ * lane appends the next version instead of claiming an existing one.
  */
 export const SCHEMA_MIGRATIONS: Migration[] = [
   ...WORK_MIGRATIONS,
@@ -34,6 +36,7 @@ export const SCHEMA_MIGRATIONS: Migration[] = [
   ...EVIDENCE_MIGRATIONS,
   ...BUDGET_MIGRATIONS,
   ...PUBLICATION_MIGRATIONS,
+  ...DELIVERY_MIGRATIONS,
 ];
 
 export function resolveStateDir(): string {
