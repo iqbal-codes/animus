@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
+  DispatchRunDetail,
   PlanDispatchRun,
   PlanDispatchRunList,
   PlanList,
@@ -24,6 +25,13 @@ const RUN_TONE: Record<
   interrupted: "warning",
   reconciled: "default",
 };
+
+function createGrantIdempotencyKey(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `grant-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 export function runsByPlan(runs: PlanDispatchRunList): Map<string, PlanDispatchRun[]> {
   const grouped = new Map<string, PlanDispatchRun[]>();
@@ -63,6 +71,16 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
   const [auditLoading, setAuditLoading] = useState<string | null>(null);
   const [auditError, setAuditError] = useState<Record<string, string>>({});
   const [publishing, setPublishing] = useState<string | null>(null);
+  const [details, setDetails] = useState<Record<string, DispatchRunDetail>>({});
+  const [detailExpanded, setDetailExpanded] = useState<Record<string, boolean>>({});
+  const [detailLoading, setDetailLoading] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<Record<string, string>>({});
+  const [controlBusy, setControlBusy] = useState<string | null>(null);
+  const [controlNotice, setControlNotice] = useState<Record<string, string>>({});
+  const [grantAmount, setGrantAmount] = useState<Record<string, string>>({});
+  const [grantReason, setGrantReason] = useState<Record<string, string>>({});
+  const grantKeys = useRef<Record<string, string>>({});
+  const detailInFlight = useRef<Set<string>>(new Set());
 
   const loadProject = useCallback(
     async (id: string) => {
@@ -126,6 +144,10 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
   const refresh = async () => {
     await loadProjects();
     if (projectId) await loadProject(projectId);
+    // Retry durability detail after an earlier read failure so Dispatch is not
+    // stranded in the fail-closed unknown state until a full page reload.
+    setDetails({});
+    setDetailError({});
   };
 
   const dispatch = async (planId: string) => {
@@ -218,6 +240,125 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
     }
   };
 
+  const loadDetail = useCallback(
+    async (runId: string) => {
+      if (detailInFlight.current.has(runId)) return;
+      const scoped = factory.forProject(projectId);
+      if (typeof scoped.dispatchRunDetail !== "function") return;
+      detailInFlight.current.add(runId);
+      setDetailLoading(runId);
+      setDetailError((current) => {
+        const copy = { ...current };
+        delete copy[runId];
+        return copy;
+      });
+      try {
+        const detail = await scoped.dispatchRunDetail(runId);
+        setDetails((current) => ({ ...current, [runId]: detail }));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setDetailError((current) => ({ ...current, [runId]: message }));
+      } finally {
+        detailInFlight.current.delete(runId);
+        setDetailLoading((current) => (current === runId ? null : current));
+      }
+    },
+    [factory, projectId],
+  );
+
+  const toggleDetail = async (runId: string) => {
+    const next = !detailExpanded[runId];
+    setDetailExpanded((current) => ({ ...current, [runId]: next }));
+    if (next && !details[runId]) await loadDetail(runId);
+  };
+
+  // Load the selected run's durable budget/control state before the operator opens
+  // the panel, so Dispatch is never falsely enabled for exhausted or held work.
+  useEffect(() => {
+    if (!projectId) return;
+    const grouped = runsByPlan(runs);
+    for (const plan of plans) {
+      if (plan.authority !== "admitted") continue;
+      const planRuns = grouped.get(plan.id) ?? [];
+      const selected = selectedRuns[plan.id] ?? planRuns[0]?.id;
+      if (!selected) continue;
+      if (details[selected] || detailError[selected]) continue;
+      if (detailInFlight.current.has(selected)) continue;
+      void loadDetail(selected);
+    }
+  }, [projectId, plans, runs, selectedRuns, details, detailError, loadDetail]);
+
+  const runControl = async (runId: string, action: "hold" | "resume" | "stop" | "takeover") => {
+    setControlBusy(runId);
+    setControlNotice((current) => {
+      const copy = { ...current };
+      delete copy[runId];
+      return copy;
+    });
+    setError(null);
+    try {
+      const result = await factory.forProject(projectId).controlDispatchRun(runId, {
+        action,
+        actor: "operator",
+        reason: `operator ${action}`,
+      });
+      setControlNotice((current) => ({
+        ...current,
+        [runId]: `${action}: ${result.control.status} (${result.detail})`,
+      }));
+      await loadProject(projectId);
+      await loadDetail(runId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setControlBusy(null);
+    }
+  };
+
+  const grantAttempt = async (runId: string) => {
+    const amount = Number(grantAmount[runId] ?? "1");
+    const reason = (grantReason[runId] ?? "").trim();
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
+      setError("Grant amount must be a positive integer");
+      return;
+    }
+    if (!reason) {
+      setError("A budget grant requires a reason");
+      return;
+    }
+    // One stable key per submission: a retry after an ambiguous response replays the
+    // same grant instead of adding allowance twice.
+    const idempotencyKey = grantKeys.current[runId] ?? createGrantIdempotencyKey();
+    grantKeys.current[runId] = idempotencyKey;
+    setControlBusy(runId);
+    setControlNotice((current) => {
+      const copy = { ...current };
+      delete copy[runId];
+      return copy;
+    });
+    setError(null);
+    try {
+      const result = await factory.forProject(projectId).grantDispatchBudget(runId, {
+        amount,
+        reason,
+        actor: "operator",
+        idempotency_key: idempotencyKey,
+      });
+      delete grantKeys.current[runId];
+      setControlNotice((current) => ({
+        ...current,
+        [runId]: `grant +${result.grant.amount}${result.replayed ? " (replayed)" : ""} · ${result.budget.status}`,
+      }));
+      setGrantReason((current) => ({ ...current, [runId]: "" }));
+      await loadProject(projectId);
+      await loadDetail(runId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setControlBusy(null);
+    }
+  };
+
   const admitted = plans.filter((plan) => plan.authority === "admitted");
   const grouped = runsByPlan(runs);
 
@@ -287,6 +428,17 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
             const selectedRunId = selectedRuns[plan.id] ?? planRuns[0]?.id;
             const run = planRuns.find((candidate) => candidate.id === selectedRunId) ?? planRuns[0];
             const busy = busyPlanId === plan.id;
+            const selectedDetail = run ? details[run.id] : undefined;
+            const blockedByBudget = selectedDetail?.budget?.status === "exhausted";
+            const blockedByControl =
+              selectedDetail?.control !== null &&
+              selectedDetail?.control !== undefined &&
+              selectedDetail.control.status !== "active";
+            // An unknown budget/control state is not proof of eligibility: fail closed
+            // until the selected run's durable detail is available.
+            const detailUnknown = Boolean(run) && !selectedDetail;
+            const dispatchDisabled =
+              busy || plan.hold_count > 0 || blockedByBudget || blockedByControl || detailUnknown;
             return (
               <div
                 key={plan.id}
@@ -351,6 +503,19 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
                     >
                       {auditExpanded[run.id] ? "Hide audit" : "View audit"}
                     </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="min-h-11 sm:min-h-8"
+                      aria-expanded={Boolean(detailExpanded[run.id])}
+                      aria-controls={`run-budget-${run.id}`}
+                      onClick={() => void toggleDetail(run.id)}
+                    >
+                      {detailExpanded[run.id] ? "Hide budget" : "Budget & controls"}
+                    </Button>
+                    {details[run.id]?.budget?.status === "exhausted" && (
+                      <Badge variant="error">Needs owner</Badge>
+                    )}
                   </>
                 )}
                 <Button
@@ -358,11 +523,19 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
                   size="sm"
                   className="min-h-11 sm:min-h-8"
                   onClick={() => void dispatch(plan.id)}
-                  disabled={busy || plan.hold_count > 0}
+                  disabled={dispatchDisabled}
                   title={
-                    plan.hold_count > 0
-                      ? "Plan has holds; resolve them before dispatching"
-                      : "Dispatch this frozen plan"
+                    detailUnknown
+                      ? detailError[run?.id ?? ""]
+                        ? "Attempt budget and control detail is unavailable; refresh before dispatching"
+                        : "Checking attempt budget and operator controls…"
+                      : blockedByBudget
+                        ? "Ticket budget is exhausted; grant an explicit additional attempt"
+                        : blockedByControl
+                          ? "Work is held or stopping; resume it before dispatching"
+                          : plan.hold_count > 0
+                            ? "Plan has holds; resolve them before dispatching"
+                            : "Dispatch this frozen plan"
                   }
                 >
                   {busy ? "Dispatching…" : "Dispatch"}
@@ -405,6 +578,41 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
                         status={audit[run.id]!}
                         publishing={publishing === run.id}
                         onRetry={() => void publishAudit(run.id)}
+                      />
+                    ) : null}
+                  </div>
+                )}
+                {run && detailExpanded[run.id] && (
+                  <div
+                    id={`run-budget-${run.id}`}
+                    data-testid={`run-budget-${run.id}`}
+                    className="w-full"
+                  >
+                    {detailLoading === run.id ? (
+                      <p role="status" className="text-xs text-text-secondary">
+                        Loading attempt budget and process state…
+                      </p>
+                    ) : detailError[run.id] ? (
+                      <p role="alert" className="text-xs text-[var(--destructive)]">
+                        Budget unavailable: {detailError[run.id]}
+                      </p>
+                    ) : details[run.id] ? (
+                      <RunBudgetPanel
+                        detail={details[run.id]!}
+                        busy={controlBusy === run.id}
+                        notice={controlNotice[run.id] ?? null}
+                        amount={grantAmount[run.id] ?? "1"}
+                        reason={grantReason[run.id] ?? ""}
+                        onAmount={(value) => {
+                          delete grantKeys.current[run.id];
+                          setGrantAmount((current) => ({ ...current, [run.id]: value }));
+                        }}
+                        onReason={(value) => {
+                          delete grantKeys.current[run.id];
+                          setGrantReason((current) => ({ ...current, [run.id]: value }));
+                        }}
+                        onControl={(action) => void runControl(run.id, action)}
+                        onGrant={() => void grantAttempt(run.id)}
                       />
                     ) : null}
                   </div>
@@ -667,6 +875,211 @@ function RunEvidencePanel({ report }: { report: RunEvidenceReport }) {
             </li>
           ))}
         </ul>
+      )}
+    </section>
+  );
+}
+
+const CONTROL_ACTIONS = ["hold", "resume", "stop", "takeover"] as const;
+
+/** Durable attempt budget, grant history, retained workspace and process state. */
+function RunBudgetPanel({
+  detail,
+  busy,
+  notice,
+  amount,
+  reason,
+  onAmount,
+  onReason,
+  onControl,
+  onGrant,
+}: {
+  detail: DispatchRunDetail;
+  busy: boolean;
+  notice: string | null;
+  amount: string;
+  reason: string;
+  onAmount: (value: string) => void;
+  onReason: (value: string) => void;
+  onControl: (action: (typeof CONTROL_ACTIONS)[number]) => void;
+  onGrant: () => void;
+}) {
+  const { run, budget, control, grants, attempts, process, acceptanceCriteria, openFindings } =
+    detail;
+  return (
+    <section
+      aria-label="Attempt budget and operator controls"
+      className="mt-2 min-w-0 space-y-2 overflow-hidden rounded-[10px] border border-[var(--border-subtle)] bg-background/40 p-3"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="text-xs font-medium text-foreground">Attempt budget</h3>
+        {budget ? (
+          <Badge variant={budget.status === "exhausted" ? "error" : "success"}>
+            {budget.status === "exhausted" ? "Needs owner" : "Active"}
+          </Badge>
+        ) : (
+          <Badge variant="default">Not allocated</Badge>
+        )}
+        <span className="break-all font-mono text-[10px] text-text-secondary">
+          #{run.issue_number} lap {run.lap} ·{" "}
+          {budget
+            ? `${budget.consumedAttempts}/${budget.allowedAttempts} used · ${budget.remainingAttempts} remaining`
+            : "no budget"}
+        </span>
+      </div>
+
+      {budget?.status === "exhausted" && (
+        <p role="alert" className="text-[11px] text-[var(--error)]">
+          Needs owner: {budget.lastRejection ?? "budget exhausted"}. Grant an explicit additional
+          attempt before dispatching again.
+        </p>
+      )}
+
+      {budget && (
+        <ul aria-label="Budget details" className="space-y-0.5 text-[11px] text-text-secondary">
+          <li>
+            base {budget.baseLimit} · granted {budget.grantedAttempts} · consumed{" "}
+            {budget.consumedAttempts}
+          </li>
+          {budget.retainedWorktreePath && (
+            <li className="break-all">
+              retained worktree {budget.retainedWorktreePath} · branch {budget.retainedBranch}
+            </li>
+          )}
+          {control && (
+            <li>
+              control {control.status}
+              {control.reason ? ` · ${control.reason}` : ""}
+            </li>
+          )}
+          <li>
+            process owner {process.ownerPid ?? "none"} {process.ownerAlive ? "alive" : "dead"} ·
+            worker {process.workerPid ?? "none"} {process.workerAlive ? "alive" : "dead"} · lock{" "}
+            {process.worktreeLockPid ?? "none"} {process.worktreeLockAlive ? "alive" : "dead"}
+          </li>
+        </ul>
+      )}
+
+      <div role="group" aria-label="Run controls" className="flex flex-wrap gap-2">
+        {CONTROL_ACTIONS.map((action) => (
+          <Button
+            key={action}
+            variant="outline"
+            size="sm"
+            className="min-h-11 sm:min-h-8"
+            disabled={busy}
+            onClick={() => onControl(action)}
+          >
+            {action[0]!.toUpperCase() + action.slice(1)}
+          </Button>
+        ))}
+      </div>
+
+      <form
+        className="flex flex-wrap items-end gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onGrant();
+        }}
+      >
+        <label className="flex flex-col gap-1 text-[11px] text-text-secondary">
+          <span>Attempts</span>
+          <input
+            aria-label="Additional attempts"
+            type="number"
+            min={1}
+            step={1}
+            value={amount}
+            onChange={(event) => onAmount(event.target.value)}
+            className="h-11 w-20 rounded-full border border-[var(--border)] bg-background px-3 text-xs text-foreground sm:h-8"
+          />
+        </label>
+        <label className="flex min-w-0 flex-1 flex-col gap-1 text-[11px] text-text-secondary">
+          <span>Grant reason</span>
+          <input
+            aria-label="Grant reason"
+            type="text"
+            value={reason}
+            onChange={(event) => onReason(event.target.value)}
+            placeholder="Why the operator allows another attempt"
+            className="h-11 min-w-0 rounded-full border border-[var(--border)] bg-background px-3 text-xs text-foreground sm:h-8"
+          />
+        </label>
+        <Button
+          type="submit"
+          variant="secondary"
+          size="sm"
+          className="min-h-11 sm:min-h-8"
+          disabled={busy}
+        >
+          {busy ? "Applying…" : "Grant attempt"}
+        </Button>
+      </form>
+
+      {notice && (
+        <p role="status" className="text-[11px] text-text-secondary">
+          {notice}
+        </p>
+      )}
+
+      {attempts.length > 0 && (
+        <div>
+          <h4 className="text-[11px] font-medium text-foreground">Prior attempts</h4>
+          <ol aria-label="Prior attempts" className="mt-1 space-y-0.5">
+            {attempts.map((attempt) => (
+              <li key={attempt.runId} className="break-all text-[10px] text-text-secondary">
+                lap {attempt.lap} · {attempt.state} · #{attempt.issueNumber} · gen{" "}
+                {attempt.ownershipGeneration} · head {attempt.headSha ?? "none"}
+                {attempt.error ? ` · ${attempt.error}` : ""}
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      {acceptanceCriteria.length > 0 && (
+        <div>
+          <h4 className="text-[11px] font-medium text-foreground">
+            Unresolved acceptance criteria
+          </h4>
+          <ul aria-label="Acceptance criteria" className="mt-1 space-y-0.5">
+            {acceptanceCriteria.map((criterion) => (
+              <li key={criterion.acKey} className="break-all text-[10px] text-text-secondary">
+                {criterion.acKey}
+                {criterion.openFindingIds.length > 0
+                  ? ` · open findings ${criterion.openFindingIds.length}`
+                  : ""}{" "}
+                · {criterion.text}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {openFindings.length > 0 && (
+        <div>
+          <h4 className="text-[11px] font-medium text-foreground">Open findings</h4>
+          <ul aria-label="Open findings" className="mt-1 space-y-0.5">
+            {openFindings.map((finding) => (
+              <li key={finding.id} className="break-all text-[10px] text-text-secondary">
+                {finding.severity} · {finding.acKey ?? "no AC"} · {finding.summary}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {grants.length > 0 && (
+        <div>
+          <h4 className="text-[11px] font-medium text-foreground">Grant history</h4>
+          <ul aria-label="Grant history" className="mt-1 space-y-0.5">
+            {grants.map((grant) => (
+              <li key={grant.id} className="break-all text-[10px] text-text-secondary">
+                +{grant.amount} by {grant.actor} · {grant.reason} · {grant.idempotencyKey}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
     </section>
   );

@@ -798,6 +798,114 @@ export const planDispatchReconciliationSchema = z.object({
 });
 export type PlanDispatchReconciliation = z.infer<typeof planDispatchReconciliationSchema>;
 
+export const executionBudgetStatusSchema = z.object({
+  scopeId: z.string().min(1),
+  projectId: z.string().min(1),
+  deliveryId: z.string().min(1),
+  planId: z.string().min(1),
+  workId: z.string().min(1),
+  gateProfile: planGateProfileSchema,
+  baseLimit: z.number().int().positive(),
+  grantedAttempts: z.number().int().nonnegative(),
+  consumedAttempts: z.number().int().nonnegative(),
+  allowedAttempts: z.number().int().positive(),
+  remainingAttempts: z.number().int().nonnegative(),
+  status: z.enum(["active", "exhausted"]),
+  exhaustedAt: z.number().int().nonnegative().nullable(),
+  lastRejection: z.string().nullable(),
+  retainedWorktreePath: z.string().min(1).nullable(),
+  retainedBranch: z.string().min(1).nullable(),
+  retainedRunId: z.string().min(1).nullable(),
+  retainedHeadSha: z.string().min(1).nullable(),
+});
+export type ExecutionBudgetStatus = z.infer<typeof executionBudgetStatusSchema>;
+
+export const budgetGrantRecordSchema = z.object({
+  id: z.string().min(1),
+  projectId: z.string().min(1),
+  scopeId: z.string().min(1),
+  deliveryId: z.string().min(1),
+  workId: z.string().min(1),
+  gateProfile: planGateProfileSchema,
+  amount: z.number().int().positive(),
+  reason: z.string().min(1),
+  actor: z.string().min(1),
+  commandRequestId: z.string().min(1),
+  idempotencyKey: z.string().min(1),
+  createdAt: z.number().int().nonnegative(),
+});
+export type BudgetGrantRecord = z.infer<typeof budgetGrantRecordSchema>;
+export const budgetGrantListSchema = z.array(budgetGrantRecordSchema);
+export type BudgetGrantList = z.infer<typeof budgetGrantListSchema>;
+
+export const budgetGrantSubmissionSchema = z
+  .object({
+    amount: z.number().int().positive().max(1000),
+    reason: z.string().min(1).max(2000),
+    actor: z.string().min(1).max(200),
+    idempotency_key: z.string().min(1).max(200).optional(),
+  })
+  .strict();
+export type BudgetGrantSubmission = z.infer<typeof budgetGrantSubmissionSchema>;
+
+export const budgetGrantResultSchema = z.object({
+  grant: budgetGrantRecordSchema,
+  budget: executionBudgetStatusSchema,
+  replayed: z.boolean(),
+  commandRequestId: z.string().min(1),
+});
+export type BudgetGrantResult = z.infer<typeof budgetGrantResultSchema>;
+
+export const executionControlActionSchema = z.enum(["hold", "resume", "stop", "takeover"]);
+export type ExecutionControlAction = z.infer<typeof executionControlActionSchema>;
+
+export const executionControlStatusSchema = z.enum(["active", "held", "stopping", "stopped"]);
+export type ExecutionControlStatus = z.infer<typeof executionControlStatusSchema>;
+
+export const executionControlSubmissionSchema = z
+  .object({
+    action: executionControlActionSchema,
+    actor: z.string().min(1).max(200),
+    reason: z.string().min(1).max(2000).optional(),
+    signal: z.enum(["SIGTERM", "SIGKILL"]).optional(),
+    expected_ownership_generation: z.number().int().positive().optional(),
+  })
+  .strict();
+export type ExecutionControlSubmission = z.infer<typeof executionControlSubmissionSchema>;
+
+export const executionControlStateSchema = z.object({
+  status: executionControlStatusSchema,
+  reason: z.string().nullable(),
+  actor: z.string().nullable(),
+  commandRequestId: z.string().nullable(),
+  stopSignal: z.string().nullable(),
+  stopRequestedAt: z.number().int().nonnegative().nullable(),
+  stoppedAt: z.number().int().nonnegative().nullable(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type ExecutionControlState = z.infer<typeof executionControlStateSchema>;
+
+export const executionProcessStateSchema = z.object({
+  ownerPid: z.number().int().positive().nullable(),
+  ownerAlive: z.boolean(),
+  workerPid: z.number().int().positive().nullable(),
+  workerPgid: z.number().int().positive().nullable(),
+  workerAlive: z.boolean(),
+  worktreeLockPid: z.number().int().positive().nullable(),
+  worktreeLockAlive: z.boolean(),
+});
+export type ExecutionProcessState = z.infer<typeof executionProcessStateSchema>;
+
+export const executionControlResultSchema = z.object({
+  run: planDispatchRunSchema,
+  control: executionControlStateSchema,
+  budget: executionBudgetStatusSchema.nullable(),
+  confirmed: z.boolean(),
+  commandRequestId: z.string().min(1),
+  detail: z.string(),
+});
+export type ExecutionControlResult = z.infer<typeof executionControlResultSchema>;
+
 export const evaluatedIssueSchema = z.object({
   number: z.number().int().positive(),
   title: z.string(),
@@ -1864,6 +1972,38 @@ export const publicationEvidenceBindingRequestSchema = z
 export type PublicationEvidenceBindingRequest = z.infer<
   typeof publicationEvidenceBindingRequestSchema
 >;
+export const dispatchAttemptSchema = z.object({
+  runId: z.string().min(1),
+  lap: z.number().int().positive(),
+  ownershipGeneration: z.number().int().positive(),
+  state: dispatchRunStateSchema,
+  issueNumber: z.number().int().positive(),
+  headSha: z.string().min(1).nullable(),
+  error: z.string().nullable(),
+  createdAt: z.number().int().nonnegative(),
+  finishedAt: z.number().int().nonnegative().nullable(),
+});
+export type DispatchAttempt = z.infer<typeof dispatchAttemptSchema>;
+
+export const dispatchAcceptanceCriterionSchema = z.object({
+  acKey: z.string().min(1),
+  text: z.string(),
+  openFindingIds: z.array(z.string().min(1)),
+});
+export type DispatchAcceptanceCriterion = z.infer<typeof dispatchAcceptanceCriterionSchema>;
+
+export const dispatchRunDetailSchema = z.object({
+  run: planDispatchRunSchema,
+  budget: executionBudgetStatusSchema.nullable(),
+  control: executionControlStateSchema.nullable(),
+  grants: budgetGrantListSchema,
+  attempts: z.array(dispatchAttemptSchema),
+  process: executionProcessStateSchema,
+  acceptanceCriteria: z.array(dispatchAcceptanceCriterionSchema),
+  openFindings: z.array(factoryFindingRecordSchema),
+  acceptance: acceptanceDecisionSchema,
+});
+export type DispatchRunDetail = z.infer<typeof dispatchRunDetailSchema>;
 
 export const findingFixSubmissionSchema = z
   .object({

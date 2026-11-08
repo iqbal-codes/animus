@@ -25,6 +25,12 @@ import {
   planDispatchRunSchema,
   planDispatchRunListSchema,
   planDispatchReconciliationSchema,
+  dispatchRunDetailSchema,
+  budgetGrantListSchema,
+  budgetGrantResultSchema,
+  budgetGrantSubmissionSchema,
+  executionControlResultSchema,
+  executionControlSubmissionSchema,
   controlStateSchema,
   controlSubmissionSchema,
   lapEvidenceSchema,
@@ -151,6 +157,12 @@ import {
   type PlanDispatchRunList,
   type PlanDispatchReconciliation,
   type PlanDispatchReconcileSubmission,
+  type DispatchRunDetail,
+  type BudgetGrantList,
+  type BudgetGrantResult,
+  type BudgetGrantSubmission,
+  type ExecutionControlSubmission,
+  type ExecutionControlResult,
   type ControlState,
   type ControlAction,
   type OperatorErrorCode,
@@ -234,6 +246,12 @@ export {
   type PlanDispatchRunList,
   type PlanDispatchReconciliation,
   type PlanDispatchReconcileSubmission,
+  type DispatchRunDetail,
+  type BudgetGrantList,
+  type BudgetGrantResult,
+  type BudgetGrantSubmission,
+  type ExecutionControlSubmission,
+  type ExecutionControlResult,
   type Project,
   type ProjectList,
   type ProjectRegistration,
@@ -757,6 +775,46 @@ export function createFactoryClient(options: {
         },
         async reconcileDispatch(): Promise<PlanDispatchReconciliation> {
           return postJson(`${scopedBase}/dispatch/reconcile`, {}, planDispatchReconciliationSchema);
+        },
+        async dispatchRunDetail(runId: string): Promise<DispatchRunDetail> {
+          return getJson(
+            `${scopedBase}/dispatch/runs/${encodeURIComponent(runId)}/detail`,
+            dispatchRunDetailSchema,
+          );
+        },
+        async grantDispatchBudget(
+          runId: string,
+          submission: BudgetGrantSubmission,
+        ): Promise<BudgetGrantResult> {
+          const parsed = budgetGrantSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/dispatch/runs/${encodeURIComponent(runId)}/grant`,
+            parsed.data,
+            budgetGrantResultSchema,
+          );
+        },
+        async dispatchGrants(opts?: { runId?: string; workId?: string }): Promise<BudgetGrantList> {
+          const params = new URLSearchParams();
+          if (opts?.runId) params.set("run_id", opts.runId);
+          if (opts?.workId) params.set("work_id", opts.workId);
+          const suffix = params.toString();
+          return getJson(
+            `${scopedBase}/dispatch/grants${suffix ? `?${suffix}` : ""}`,
+            budgetGrantListSchema,
+          );
+        },
+        async controlDispatchRun(
+          runId: string,
+          submission: ExecutionControlSubmission,
+        ): Promise<ExecutionControlResult> {
+          const parsed = executionControlSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/dispatch/runs/${encodeURIComponent(runId)}/control`,
+            parsed.data,
+            executionControlResultSchema,
+          );
         },
         async laps(): Promise<LapList> {
           return getJson(`${scopedBase}/laps`, lapListSchema);

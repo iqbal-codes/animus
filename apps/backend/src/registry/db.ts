@@ -11,6 +11,7 @@ import { applyEvidenceMigrations } from "../evidence/db";
 import { EVIDENCE_MIGRATIONS } from "../evidence/schema";
 import { PUBLICATION_MIGRATIONS } from "../publication/schema";
 import { WORK_MIGRATIONS } from "../work/db";
+import { BUDGET_MIGRATIONS } from "../work/budget-schema";
 import { DRAFT_MIGRATIONS } from "../draft/db";
 import { DISPATCH_MIGRATIONS } from "../dispatch/db";
 import { applyMigrations, type Migration } from "./migrations";
@@ -22,15 +23,16 @@ import { applyMigrations, type Migration } from "./migrations";
  * Work identity (#152) owns version 1, prepared plan admission (#153) owns
  * version 2, local draft authoring (#161) owns version 3, delivery dispatch
  * ownership (#154) owns version 4, execution evidence (#155) owns version 5,
- * and PR publication audit (#157) owns version 7. Version 6 stays reserved for
- * lap budgets (#156); a future lane appends the next version instead of
- * claiming an existing one.
+ * bounded attempt budgets/operator controls (#156) owns version 6, and PR
+ * publication audit (#157) owns version 7. A future lane appends the next
+ * version instead of claiming an existing one.
  */
 export const SCHEMA_MIGRATIONS: Migration[] = [
   ...WORK_MIGRATIONS,
   ...DRAFT_MIGRATIONS,
   ...DISPATCH_MIGRATIONS,
   ...EVIDENCE_MIGRATIONS,
+  ...BUDGET_MIGRATIONS,
   ...PUBLICATION_MIGRATIONS,
 ];
 

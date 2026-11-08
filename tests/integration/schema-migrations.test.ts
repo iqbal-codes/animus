@@ -15,6 +15,7 @@ const PLAN_V2 = "prepared_plan_admission";
 const DRAFT_V3 = "project_work_drafts_and_decisions";
 const DISPATCH_V4 = "delivery_dispatch_ownership";
 const EVIDENCE_V5 = "execution_observations_findings_artifacts";
+const BUDGET_V6 = "execution_budgets_and_controls";
 const PUBLICATION_V7 = "publication_audit_outgoing_intents";
 
 const ALL_MIGRATIONS = [
@@ -23,6 +24,7 @@ const ALL_MIGRATIONS = [
   { version: 3, name: DRAFT_V3 },
   { version: 4, name: DISPATCH_V4 },
   { version: 5, name: EVIDENCE_V5 },
+  { version: 6, name: BUDGET_V6 },
   { version: 7, name: PUBLICATION_V7 },
 ];
 
@@ -130,6 +132,9 @@ describe("coherent schema migration registry", () => {
         expect(tableExists(db, table)).toBe(true);
       }
       for (const table of [
+        "execution_budget_scopes",
+        "execution_budget_grants",
+        "execution_controls",
         "publication_targets",
         "publication_pull_requests",
         "publication_events",
@@ -147,7 +152,7 @@ describe("coherent schema migration registry", () => {
     const reopened = initializeDatabase(path);
     try {
       expect(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({
-        count: 6,
+        count: 7,
       });
     } finally {
       reopened.close();
@@ -229,6 +234,80 @@ describe("coherent schema migration registry", () => {
       expect(tableExists(upgraded, "deliveries")).toBe(true);
       expect(tableExists(upgraded, "dispatch_runs")).toBe(true);
       expect(tableExists(upgraded, "execution_observations")).toBe(true);
+    } finally {
+      upgraded.close();
+    }
+  });
+
+  test("AC-migration: upgrading from an already-applied v5 database applies budget v6 and preserves v5 data", () => {
+    const legacy = new DatabaseSync(path);
+    legacy.exec("PRAGMA foreign_keys = ON;");
+    createLegacyMigrationTable(legacy);
+    applyMigrations(legacy, SCHEMA_MIGRATIONS.slice(0, 5));
+    seedProject(legacy);
+    seedDelivery(legacy);
+    legacy
+      .prepare(
+        `INSERT INTO execution_producers
+           (project_id, producer_id, role, producer_name, credential_hash, created_at, revoked_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run("proj_1", "producer_v5", "automated_gate", "Gate", "c".repeat(64), 1, null);
+    legacy
+      .prepare(
+        `INSERT INTO execution_observations
+           (id, project_id, delivery_id, run_id, lap, attempt_key, stage, status,
+            candidate_head_sha, target_tip_sha, merge_base_sha, tested_identity,
+            integration_lineage, producer_id, producer_role, producer_name, gate_profile,
+            gate_profile_version, error, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        "obs_v5",
+        "proj_1",
+        "delivery_1",
+        "run_1",
+        1,
+        "stage:technical_checks",
+        "technical_checks",
+        "passed",
+        "d".repeat(40),
+        "e".repeat(40),
+        "e".repeat(40),
+        "d".repeat(40),
+        "lineage",
+        "producer_v5",
+        "automated_gate",
+        "Gate",
+        "standalone",
+        1,
+        null,
+        1,
+      );
+    expect(tableExists(legacy, "execution_observations")).toBe(true);
+    expect(tableExists(legacy, "execution_budget_scopes")).toBe(false);
+    legacy.close();
+
+    const upgraded = initializeDatabase(path);
+    try {
+      expect(
+        upgraded.prepare("SELECT version, name FROM schema_migrations ORDER BY version").all(),
+      ).toEqual(ALL_MIGRATIONS);
+      // Existing delivery and evidence identities survive the v6 schema install.
+      expect(upgraded.prepare("SELECT id FROM deliveries").all()).toEqual([{ id: "delivery_1" }]);
+      expect(upgraded.prepare("SELECT id FROM execution_observations").all()).toEqual([
+        { id: "obs_v5" },
+      ]);
+      for (const table of [
+        "execution_budget_scopes",
+        "execution_budget_grants",
+        "execution_controls",
+      ]) {
+        expect(tableExists(upgraded, table)).toBe(true);
+      }
+      expect(
+        upgraded.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version = 6").get(),
+      ).toEqual({ count: 1 });
     } finally {
       upgraded.close();
     }

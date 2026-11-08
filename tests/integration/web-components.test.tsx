@@ -705,4 +705,251 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
     fireEvent.click(screen.getByRole("button", { name: "View evidence" }));
     await waitFor(() => expect(requests).toEqual(["run-new", "run-old"]));
   });
+
+  test("DispatchControl exposes attempt budget, retained work, grants and controls", async () => {
+    const plan = {
+      id: "plan-1",
+      project_id: "proj-1",
+      kind: "standalone" as const,
+      root_work_id: "work-1",
+      root_issue_number: 714,
+      root_title: "Standalone delivery",
+      graph_hash: "a".repeat(64),
+      authority: "admitted" as const,
+      member_count: 1,
+      ticket_count: 1,
+      hold_count: 0,
+      accepted_revision_id: "rev-1",
+      created_at: 1,
+      updated_at: 1,
+    };
+    const run = {
+      id: "run-1",
+      project_id: "proj-1",
+      delivery_id: "del-1",
+      plan_id: "plan-1",
+      work_id: "work-1",
+      revision_id: "rev-1",
+      content_hash: "b".repeat(64),
+      issue_number: 714,
+      role: "ticket" as const,
+      gate_profile: "standalone" as const,
+      merge_policy: "manual" as const,
+      target_branch: "main",
+      ownership_generation: 3,
+      lap: 3,
+      state: "failed" as const,
+      actor: "operator",
+      command_request_id: "cmd-3",
+      branch: "factory/standalone-714",
+      worktree_path: "/tmp/worktree",
+      base_sha: "c".repeat(40),
+      owner_pid: 1,
+      owner_token: "token",
+      lease_expires_at: null,
+      head_sha: null,
+      error: "runner rejected",
+      launched_at: 1,
+      finished_at: 3,
+      created_at: 3,
+      updated_at: 3,
+    };
+    const detail = {
+      run,
+      budget: {
+        scopeId: "budget-1",
+        projectId: "proj-1",
+        deliveryId: "del-1",
+        planId: "plan-1",
+        workId: "work-1",
+        gateProfile: "standalone" as const,
+        baseLimit: 3,
+        grantedAttempts: 0,
+        consumedAttempts: 3,
+        allowedAttempts: 3,
+        remainingAttempts: 0,
+        status: "exhausted" as const,
+        exhaustedAt: 3,
+        lastRejection: "runner rejected",
+        retainedWorktreePath: "/tmp/worktree",
+        retainedBranch: "factory/standalone-714",
+        retainedRunId: "run-1",
+        retainedHeadSha: null,
+      },
+      control: null,
+      grants: [
+        {
+          id: "grant-1",
+          projectId: "proj-1",
+          scopeId: "budget-1",
+          deliveryId: "del-1",
+          workId: "work-1",
+          gateProfile: "standalone" as const,
+          amount: 1,
+          reason: "operator allows one more",
+          actor: "operator",
+          commandRequestId: "cmd-grant",
+          idempotencyKey: "grant-key-1",
+          createdAt: 4,
+        },
+      ],
+      attempts: [
+        {
+          runId: "run-1",
+          lap: 3,
+          ownershipGeneration: 3,
+          state: "failed" as const,
+          issueNumber: 714,
+          headSha: null,
+          error: "runner rejected",
+          createdAt: 3,
+          finishedAt: 3,
+        },
+      ],
+      process: {
+        ownerPid: 1,
+        ownerAlive: false,
+        workerPid: null,
+        workerPgid: null,
+        workerAlive: false,
+        worktreeLockPid: null,
+        worktreeLockAlive: false,
+      },
+      acceptanceCriteria: [
+        { acKey: "AC1", text: "prepared criterion", openFindingIds: ["find-1"] },
+      ],
+      openFindings: [
+        {
+          id: "find-1",
+          projectId: "proj-1",
+          deliveryId: "del-1",
+          runId: "run-1",
+          workId: "work-1",
+          issueNumber: 714,
+          acKey: "AC1",
+          severity: "blocking" as const,
+          fileContext: "apps/backend/src/example.ts:42",
+          summary: "unresolved defect",
+          originObservationId: "obs-1",
+          status: "open" as const,
+          createdAt: 3,
+          resolvedAt: null,
+          events: [],
+        },
+      ],
+      acceptance: {
+        runId: "run-1",
+        projectId: "proj-1",
+        deliveryId: "del-1",
+        gateProfile: "standalone" as const,
+        candidateHeadSha: null,
+        targetTipSha: "c".repeat(40),
+        mergeBaseSha: null,
+        integrationLineage: "a".repeat(64) + "@main",
+        authorized: false,
+        reasons: ["budget_exhausted", "run_not_succeeded"],
+        builderObservationId: "obs-0",
+        independentObservationId: null,
+        openBlockingFindingIds: ["find-1"],
+        verifiedArtifactIds: [],
+      },
+    };
+    const grants: Array<{
+      amount: number;
+      reason: string;
+      actor: string;
+      idempotency_key?: string;
+    }> = [];
+    const controls: string[] = [];
+    let grantAttempts = 0;
+    const factory = {
+      projects: async () => [mockProjects[0]!],
+      forProject: () => ({
+        plans: async () => [plan],
+        dispatchRuns: async () => [run],
+        dispatchPlan: async () => {
+          throw new Error("must not dispatch");
+        },
+        dispatchRunDetail: async () => detail,
+        grantDispatchBudget: async (_runId: string, submission: any) => {
+          grants.push(submission);
+          grantAttempts += 1;
+          if (grantAttempts === 1) throw new Error("ambiguous network response");
+          return {
+            grant: { ...detail.grants[0]!, amount: submission.amount, reason: submission.reason },
+            budget: {
+              ...detail.budget,
+              status: "active",
+              grantedAttempts: 1,
+              allowedAttempts: 4,
+              remainingAttempts: 1,
+            },
+            replayed: false,
+            commandRequestId: "cmd-grant-2",
+          };
+        },
+        controlDispatchRun: async (_runId: string, submission: any) => {
+          controls.push(submission.action);
+          return {
+            run,
+            control: {
+              status: "held",
+              reason: submission.reason,
+              actor: submission.actor,
+              commandRequestId: "cmd-control",
+              stopSignal: null,
+              stopRequestedAt: null,
+              stoppedAt: null,
+              updatedAt: 5,
+            },
+            budget: detail.budget,
+            confirmed: true,
+            commandRequestId: "cmd-control",
+            detail: "held",
+          };
+        },
+      }),
+    } as any;
+
+    render(<DispatchControl factory={factory} />);
+    const dispatchButton = (await screen.findByRole("button", {
+      name: "Dispatch",
+    })) as HTMLButtonElement;
+    await waitFor(() => expect(dispatchButton.disabled).toBe(true));
+    expect(dispatchButton.getAttribute("title")).toContain("exhausted");
+    // The selected run detail is loaded before the panel is opened.
+    expect(screen.queryByTestId("run-budget-run-1")).toBeNull();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Budget & controls" }));
+    const panel = await screen.findByTestId("run-budget-run-1");
+    expect(panel.textContent).toContain("Needs owner");
+    expect(panel.textContent).toContain("3/3 used");
+    expect(panel.textContent).toContain("/tmp/worktree");
+    expect(panel.textContent).toContain("unresolved defect");
+    expect(panel.textContent).toContain("operator allows one more");
+    expect(panel.textContent).toContain("lap 3 · failed");
+
+    fireEvent.change(screen.getByLabelText("Additional attempts"), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("Grant reason"), {
+      target: { value: "unblock after diagnosis" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Grant attempt" }));
+    await waitFor(() => expect(grants).toHaveLength(1));
+    expect(grants[0]).toMatchObject({
+      amount: 2,
+      reason: "unblock after diagnosis",
+      actor: "operator",
+    });
+    expect(typeof grants[0]!.idempotency_key).toBe("string");
+    await waitFor(() => expect(screen.getByText("ambiguous network response")).toBeTruthy());
+
+    // A retry after an ambiguous response reuses the same submission key.
+    fireEvent.click(screen.getByRole("button", { name: "Grant attempt" }));
+    await waitFor(() => expect(grants).toHaveLength(2));
+    expect(grants[1]!.idempotency_key).toBe(grants[0]!.idempotency_key);
+    await waitFor(() => expect(screen.getByText(/grant \+2/)).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: "Hold" }));
+    await waitFor(() => expect(controls).toEqual(["hold"]));
+  });
 });

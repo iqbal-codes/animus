@@ -56,6 +56,24 @@ SIGTERM/SIGINT ownership with the backend. Nested Git and agent processes still 
 bounded owned-process cleanup, but cannot terminate the backend with the standalone
 loop's signal exit code. Standalone loop commands retain their signal handlers.
 
+## Operator authentication and actor attribution
+
+The backend is a single-operator local service. With remote access disabled it accepts
+loopback requests; when `FACTORY_REMOTE_ACCESS=true` it requires the configured 32+ character
+operator token on every request. Authentication proves that a request comes from the trusted
+operator boundary. It does not establish per-user identity or a role hierarchy.
+
+Command bodies carry an `actor` label that is recorded in the command ledger, findings,
+grants and control records for audit attribution. That label is caller-supplied descriptive
+text, not an authenticated principal and not an authorization decision. No caller-supplied
+role is used to grant permission. Authorization remains the shared operator boundary: do not
+treat `actor` as an ACL subject, and do not add per-user authentication without a separate
+trusted identity design.
+
+Dispatch controls and budget grants authorize through the same boundary. Their durable
+identity checks (`owner_token`, `ownership_generation` and the recorded process start
+identity) protect process ownership and PID reuse; they are not user authentication.
+
 ## HTTP contract
 
 | Request | Status | Content type | Response body |

@@ -22,9 +22,33 @@ import { resolveAnimusStateDir } from "@animus/contracts/paths";
 export interface DispatchWorkerOwner {
   run_id: string;
   owner_token: string;
+  ownership_generation: number;
   pid: number;
   pgid: number;
+  /** OS-reported process start identity used to defeat same-record PID reuse. */
+  process_start: string | null;
   recorded_at: string;
+}
+
+/**
+ * Returns the OS process start identity for a live pid, or null when it cannot
+ * be read. PID reuse changes this value, so a recorded value that no longer
+ * matches the pid proves the record is stale and must never be signalled.
+ */
+export function processStartIdentity(pid: number): string | null {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+  for (const field of ["lstart=", "start="]) {
+    try {
+      const value = execFileSync("ps", ["-o", field, "-p", String(pid)], {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+      })
+        .replace(/\s+/g, " ")
+        .trim();
+      if (value !== "") return value;
+    } catch {}
+  }
+  return null;
 }
 
 const OWNERS_DIR = "dispatch/owners";
@@ -34,7 +58,10 @@ export function resolveWorkerOwnerPath(runId: string, customStateDir?: string): 
 }
 
 export function writeWorkerOwner(
-  owner: Omit<DispatchWorkerOwner, "recorded_at"> & { recorded_at?: string },
+  owner: Omit<DispatchWorkerOwner, "recorded_at" | "process_start"> & {
+    recorded_at?: string;
+    process_start?: string | null;
+  },
   customStateDir?: string,
 ): DispatchWorkerOwner {
   const path = resolveWorkerOwnerPath(owner.run_id, customStateDir);
@@ -42,8 +69,11 @@ export function writeWorkerOwner(
   const record: DispatchWorkerOwner = {
     run_id: owner.run_id,
     owner_token: owner.owner_token,
+    ownership_generation: owner.ownership_generation,
     pid: owner.pid,
     pgid: owner.pgid,
+    process_start:
+      owner.process_start === undefined ? processStartIdentity(owner.pid) : owner.process_start,
     recorded_at: owner.recorded_at ?? new Date().toISOString(),
   };
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
@@ -65,16 +95,25 @@ export function readWorkerOwner(
     if (
       typeof record.run_id !== "string" ||
       typeof record.owner_token !== "string" ||
+      !Number.isSafeInteger(record.ownership_generation) ||
+      (record.ownership_generation as number) <= 0 ||
       !Number.isSafeInteger(record.pid) ||
-      !Number.isSafeInteger(record.pgid)
+      (record.pid as number) <= 0 ||
+      !Number.isSafeInteger(record.pgid) ||
+      (record.pgid as number) <= 0
     ) {
       return null;
     }
     return {
       run_id: record.run_id,
       owner_token: record.owner_token,
+      ownership_generation: record.ownership_generation as number,
       pid: record.pid as number,
       pgid: record.pgid as number,
+      process_start:
+        typeof record.process_start === "string" && record.process_start !== ""
+          ? record.process_start
+          : null,
       recorded_at: typeof record.recorded_at === "string" ? record.recorded_at : "",
     };
   } catch {

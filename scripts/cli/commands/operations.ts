@@ -17,6 +17,7 @@ import {
 import { CommandService } from "../../../apps/backend/src/command";
 import type {
   ControlAction,
+  DispatchRunDetail,
   ExecutionObservationRecord,
   FactoryFindingRecord,
   PlanDispatchRun,
@@ -722,6 +723,9 @@ export async function runPlanCommand(
     expectedSequence?: string;
     url?: string;
     reconcile?: boolean;
+    amount?: string;
+    idempotencyKey?: string;
+    signal?: string;
     json?: boolean;
   },
 ): Promise<number> {
@@ -729,7 +733,7 @@ export async function runPlanCommand(
   try {
     if (!opts.projectId) {
       throw new Error(
-        "Usage: factory plan <list|get|import|approve|revoke|dispatch|runs|run|evidence|findings|reconcile|publication|audit|publish|bind-evidence> --project <project-id>",
+        "Usage: factory plan <list|get|import|approve|revoke|dispatch|runs|run|detail|evidence|findings|grants|grant|hold|resume|stop|takeover|reconcile|publication|audit|publish|bind-evidence> --project <project-id>",
       );
     }
     const scoped = createRegistrationClient(opts).forProject(opts.projectId);
@@ -952,8 +956,82 @@ export async function runPlanCommand(
       return 0;
     }
 
+    if (sub === "detail") {
+      const runId = opts.positionals[2];
+      if (!runId) throw new Error("Usage: factory plan detail <run-id> --project <project-id>");
+      const detail = await scoped.dispatchRunDetail(runId);
+      if (opts.json) console.log(JSON.stringify(detail, null, 2));
+      else printRunDetail(detail);
+      return 0;
+    }
+
+    if (sub === "grants") {
+      const runId = opts.positionals[2];
+      const grants = await scoped.dispatchGrants(runId ? { runId } : undefined);
+      if (opts.json) {
+        console.log(JSON.stringify(grants, null, 2));
+      } else if (grants.length === 0) {
+        console.log("No budget grants.");
+      } else {
+        console.log(`Budget grants (${grants.length}):`);
+        for (const grant of grants) printGrant(grant, "  ");
+      }
+      return 0;
+    }
+
+    if (sub === "grant") {
+      const runId = opts.positionals[2];
+      if (!runId) {
+        throw new Error(
+          "Usage: factory plan grant <run-id> --amount <n> --reason <text> [--actor <name>] [--idempotency-key <key>]",
+        );
+      }
+      const amount = opts.amount ? Number(opts.amount) : NaN;
+      if (!Number.isSafeInteger(amount) || amount <= 0) {
+        throw new Error(`--amount must be a positive integer, got: ${opts.amount ?? "(missing)"}`);
+      }
+      if (!opts.reason) throw new Error("A budget grant requires --reason");
+      const result = await scoped.grantDispatchBudget(runId, {
+        amount,
+        reason: opts.reason,
+        actor: opts.actor ?? "operator",
+        ...(opts.idempotencyKey ? { idempotency_key: opts.idempotencyKey } : {}),
+      });
+      if (opts.json) console.log(JSON.stringify(result, null, 2));
+      else {
+        console.log(
+          `Grant ${result.grant.id} +${result.grant.amount} (${result.replayed ? "replayed" : "new"}) `,
+        );
+        printBudget(result.budget, "  ");
+      }
+      return 0;
+    }
+
+    if (["hold", "resume", "stop", "takeover"].includes(sub)) {
+      const runId = opts.positionals[2];
+      if (!runId) {
+        throw new Error(
+          `Usage: factory plan ${sub} <run-id> --project <project-id> [--reason <text>] [--actor <name>] [--signal SIGTERM|SIGKILL]`,
+        );
+      }
+      const result = await scoped.controlDispatchRun(runId, {
+        action: sub as "hold" | "resume" | "stop" | "takeover",
+        actor: opts.actor ?? "operator",
+        ...(opts.reason ? { reason: opts.reason } : {}),
+        ...(opts.signal ? { signal: opts.signal as "SIGTERM" | "SIGKILL" } : {}),
+      });
+      if (opts.json) console.log(JSON.stringify(result, null, 2));
+      else {
+        console.log(`Control ${sub} -> ${result.control.status} (${result.detail})`);
+        console.log(`  confirmed=${result.confirmed} command=${result.commandRequestId}`);
+        printRun(result.run, "  ");
+        if (result.budget) printBudget(result.budget, "  ");
+      }
+      return 0;
+    }
+
     throw new Error(
-      `Unknown plan subcommand: ${sub}. Expected list, get, import, approve, revoke, dispatch, runs, run, evidence, findings, reconcile, publication, audit, publish, bind-evidence.`,
+      `Unknown plan subcommand: ${sub}. Expected list, get, import, approve, revoke, dispatch, runs, run, detail, evidence, findings, grants, grant, hold, resume, stop, takeover, reconcile, publication, audit, publish, bind-evidence.`,
     );
   } catch (err: any) {
     const msg = err?.message ?? String(err);
@@ -965,7 +1043,7 @@ export async function runPlanCommand(
 
 function printRun(run: PlanDispatchRun, indent = ""): void {
   console.log(
-    `${indent}${run.id}  #${run.issue_number}  ${run.gate_profile}  ${run.state}  gen=${run.ownership_generation}`,
+    `${indent}${run.id}  #${run.issue_number}  ${run.gate_profile}  ${run.state}  lap=${run.lap}  gen=${run.ownership_generation}`,
   );
   console.log(
     `${indent}  Plan:      ${run.plan_id}  delivery=${run.delivery_id}`,
@@ -979,6 +1057,59 @@ function printRun(run: PlanDispatchRun, indent = ""): void {
   console.log(`${indent}  Worktree:  ${run.worktree_path}  branch=${run.branch}`);
   if (run.head_sha) console.log(`${indent}  Head:      ${run.head_sha}`);
   if (run.error) console.log(`${indent}  Error:     ${run.error}`);
+}
+
+function printRunDetail(detail: DispatchRunDetail): void {
+  printRun(detail.run);
+  printBudget(detail.budget, "  ");
+  const control = detail.control;
+  console.log(
+    `  Control:   ${control ? `${control.status} (${control.reason ?? "no reason"}, by ${control.actor ?? "unknown"})` : "none"}`,
+  );
+  console.log(
+    `  Process:   owner_pid=${detail.process.ownerPid ?? "none"} alive=${detail.process.ownerAlive} worker=${detail.process.workerPid ?? "none"}/${detail.process.workerPgid ?? "none"} alive=${detail.process.workerAlive} lock=${detail.process.worktreeLockPid ?? "none"} alive=${detail.process.worktreeLockAlive}`,
+  );
+  console.log(`  Attempts (${detail.attempts.length}):`);
+  for (const attempt of detail.attempts) {
+    console.log(
+      `    lap ${attempt.lap} ${attempt.state} #${attempt.issueNumber} gen=${attempt.ownershipGeneration} head=${attempt.headSha ?? "none"}${attempt.error ? ` error=${attempt.error}` : ""}`,
+    );
+  }
+  console.log(`  Acceptance criteria (${detail.acceptanceCriteria.length}):`);
+  for (const criterion of detail.acceptanceCriteria) {
+    console.log(
+      `    ${criterion.acKey}${criterion.openFindingIds.length > 0 ? ` OPEN findings=${criterion.openFindingIds.length}` : ""}: ${criterion.text}`,
+    );
+  }
+  console.log(`  Open findings (${detail.openFindings.length}):`);
+  for (const finding of detail.openFindings) printFinding(finding, "    ");
+  console.log(
+    `  Acceptance: ${detail.acceptance.authorized ? "AUTHORIZED" : "BLOCKED"}${detail.acceptance.reasons.length > 0 ? ` (${detail.acceptance.reasons.join(", ")})` : ""}`,
+  );
+  if (detail.grants.length > 0) {
+    console.log(`  Grants (${detail.grants.length}):`);
+    for (const grant of detail.grants) printGrant(grant, "    ");
+  }
+}
+
+function printBudget(budget: DispatchRunDetail["budget"], indent: string): void {
+  if (!budget) {
+    console.log(`${indent}Budget:    none (no attempt allocated yet)`);
+    return;
+  }
+  console.log(
+    `${indent}Budget:    ${budget.status.toUpperCase()} laps ${budget.consumedAttempts}/${budget.allowedAttempts} (base=${budget.baseLimit}, granted=${budget.grantedAttempts}, remaining=${budget.remainingAttempts})`,
+  );
+  if (budget.lastRejection) console.log(`${indent}  Last rejection: ${budget.lastRejection}`);
+  if (budget.retainedWorktreePath) {
+    console.log(`${indent}  Retained:  ${budget.retainedWorktreePath} branch=${budget.retainedBranch}`);
+  }
+}
+
+function printGrant(grant: DispatchRunDetail["grants"][number], indent: string): void {
+  console.log(
+    `${indent}${grant.id} +${grant.amount} by ${grant.actor} (${grant.reason}) key=${grant.idempotencyKey} cmd=${grant.commandRequestId}`,
+  );
 }
 
 function printEvidence(report: RunEvidenceReport): void {

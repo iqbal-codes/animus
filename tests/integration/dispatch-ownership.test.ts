@@ -748,6 +748,7 @@ describe("local dispatch ownership and frozen execution", () => {
       writeWorkerOwner({
         run_id: interruptedId,
         owner_token: "dead-token",
+        ownership_generation: 2,
         pid: writerPid,
         pgid: writerPid,
       });

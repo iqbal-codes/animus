@@ -66,6 +66,9 @@ export interface ParsedCliArgs {
     kind?: string;
     url?: string;
     reconcile?: boolean;
+    amount?: string;
+    "idempotency-key"?: string;
+    signal?: string;
   };
 }
 
@@ -136,6 +139,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       kind: { type: "string" },
       url: { type: "string" },
       reconcile: { type: "boolean", default: false },
+      amount: { type: "string" },
+      "idempotency-key": { type: "string" },
+      signal: { type: "string" },
     },
   });
 

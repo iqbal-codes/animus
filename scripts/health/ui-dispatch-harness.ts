@@ -63,6 +63,7 @@ const forge = new SyntheticForgeAdapter(
 for (const [number, title] of [
   [500, "Verify local dispatch from the operator console"],
   [501, "Verify an honest launch failure"],
+  [502, "Verify bounded attempt escalation"],
 ] as const) {
   forge.addIssue("owner/repo", {
     number,
@@ -80,7 +81,7 @@ const app = await createBackendApp({
   webDir: fileURLToPath(new URL("../../apps/web/dist", import.meta.url)),
   dispatch: {
     runner: async (context) => {
-      if (context.issue_number === 501)
+      if (context.issue_number === 501 || context.issue_number === 502)
         return { success: false, error: "Offline process transport refused" };
       writeFileSync(join(context.worktree_path, "dispatch.txt"), "verified local dispatch\n");
       git(["add", "dispatch.txt"], context.worktree_path);
@@ -95,7 +96,7 @@ const project = await new ProjectRegistryService(app.db, forge).registerProject(
   checkout_path: checkout,
 });
 const plans = new Map<number, string>();
-for (const number of [500, 501]) {
+for (const number of [500, 501, 502]) {
   const response = await app.fetch(
     new Request(`http://127.0.0.1/api/v1/projects/${project.id}/plans/import`, {
       method: "POST",
@@ -242,6 +243,45 @@ const seededPublication = (await publishResponse.json()) as {
 if (!seededPublication.auditComplete || seededPublication.pullRequests.length !== 1) {
   throw new Error(`Seed publication is not complete: ${JSON.stringify(seededPublication)}`);
 }
+// Exhaust a second ticket, grant one explicit attempt, reject it, then hold the work.
+// This is real backend state so the operator surface renders Needs owner, retained
+// workspace, prior attempts, grant history and control state without fixtures.
+async function dispatchAttempt(planId: string): Promise<number> {
+  const response = await app.fetch(
+    new Request(`http://127.0.0.1/api/v1/projects/${project.id}/dispatch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ plan_id: planId, actor: "operator" }),
+    }),
+  );
+  return response.status;
+}
+const exhaustPlanId = plans.get(502)!;
+for (let attempt = 1; attempt <= 3; attempt += 1) {
+  const status = await dispatchAttempt(exhaustPlanId);
+  if (status !== 502) throw new Error(`Expected rejected dispatch ${attempt}, got ${status}`);
+}
+const exhaustedRunsResponse = await app.fetch(
+  new Request(
+    `http://127.0.0.1/api/v1/projects/${project.id}/dispatch/runs?plan_id=${encodeURIComponent(exhaustPlanId)}`,
+  ),
+);
+const exhaustedRuns = (await exhaustedRunsResponse.json()) as Array<{ id: string }>;
+const exhaustedRunId = exhaustedRuns[0]?.id;
+if (!exhaustedRunId) throw new Error("Exhausted run was not persisted");
+await postJson(`/dispatch/runs/${encodeURIComponent(exhaustedRunId)}/grant`, {
+  amount: 1,
+  reason: "operator reviewed the failure and allows one more attempt",
+  actor: "operator",
+  idempotency_key: "ui-grant-1",
+});
+const fourthStatus = await dispatchAttempt(exhaustPlanId);
+if (fourthStatus !== 502) throw new Error(`Expected rejected granted attempt, got ${fourthStatus}`);
+await postJson(`/dispatch/runs/${encodeURIComponent(exhaustedRunId)}/control`, {
+  action: "hold",
+  actor: "operator",
+  reason: "await operator review of exhausted budget",
+});
 
 const server = Bun.serve({
   hostname: "127.0.0.1",
@@ -255,6 +295,8 @@ console.log(
     project_id: project.id,
     run_id: seedRun.id,
     publication: seededPublication,
+    plan_ids: Object.fromEntries(plans),
+    exhausted_run_id: exhaustedRunId,
     root,
   }),
 );
