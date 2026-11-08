@@ -2663,3 +2663,91 @@ export const webhookAckSchema = z.object({
   pending_wake: z.boolean().optional(),
 });
 export type WebhookAck = z.infer<typeof webhookAckSchema>;
+
+// ---------------------------------------------------------------------------
+// Final-spec delivery coordination (one manifest-bound final integration PR)
+// ---------------------------------------------------------------------------
+
+export const finalDeliveryStateSchema = z.enum([
+  "waiting_children",
+  "blocked",
+  "verifying",
+  "needs_owner",
+  "awaiting_manual_merge",
+  "awaiting_merge_verification",
+  "remote_unavailable",
+  "delivered",
+]);
+export type FinalDeliveryState = z.infer<typeof finalDeliveryStateSchema>;
+
+export const finalDeliveryChildSchema = z.object({
+  workId: z.string().min(1),
+  issueNumber: z.number().int().positive(),
+  title: z.string(),
+  gateProfile: planGateProfileSchema,
+  integrated: z.boolean(),
+  candidateHeadSha: z.string().min(1).nullable(),
+  mergeSha: z.string().min(1).nullable(),
+  targetBranch: z.string().min(1).nullable(),
+  pullRequestNumber: z.number().int().positive().nullable(),
+  pullRequestUrl: z.string().min(1).nullable(),
+  reasons: z.array(z.string()),
+});
+export type FinalDeliveryChild = z.infer<typeof finalDeliveryChildSchema>;
+
+export const finalDeliveryPullRequestSchema = z.object({
+  number: z.number().int().positive(),
+  url: z.string().min(1).nullable(),
+  headBranch: z.string().min(1),
+  baseBranch: z.string().min(1),
+  headRefOid: z.string().min(1).nullable(),
+  state: z.enum(["open", "closed", "merged", "superseded"]),
+  draft: z.boolean(),
+  mergeCommitOid: z.string().min(1).nullable(),
+});
+export type FinalDeliveryPullRequest = z.infer<typeof finalDeliveryPullRequestSchema>;
+
+export const finalDeliveryStatusSchema = z.object({
+  projectId: z.string().min(1),
+  planId: z.string().min(1),
+  deliveryId: z.string().min(1).nullable(),
+  kind: z.literal("spec"),
+  graphHash: z.string().min(1),
+  manifestId: z.string().min(1).nullable(),
+  integrationBranch: z.string().min(1),
+  deliveryBranch: z.string().min(1),
+  state: finalDeliveryStateSchema,
+  requiredCount: z.number().int().nonnegative(),
+  integratedCount: z.number().int().nonnegative(),
+  delivered: z.boolean(),
+  candidateHeadSha: z.string().min(1).nullable(),
+  targetTipSha: z.string().min(1).nullable(),
+  runId: z.string().min(1).nullable(),
+  reasons: z.array(z.string()),
+  children: z.array(finalDeliveryChildSchema),
+  gate: deliveryGateStatusSchema.nullable(),
+  budget: executionBudgetStatusSchema.nullable(),
+  grants: budgetGrantListSchema,
+  pullRequest: finalDeliveryPullRequestSchema.nullable(),
+  merge: deliveryGateMergeSchema.nullable(),
+  haltReason: z.string().nullable(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type FinalDeliveryStatus = z.infer<typeof finalDeliveryStatusSchema>;
+export const finalDeliveryStatusListSchema = z.array(finalDeliveryStatusSchema);
+export type FinalDeliveryStatusList = z.infer<typeof finalDeliveryStatusListSchema>;
+
+export const finalDeliveryAdvanceSubmissionSchema = z
+  .object({
+    actor: z.string().min(1).max(200).optional(),
+    reason: z.string().min(1).max(2000).optional(),
+  })
+  .strict();
+export type FinalDeliveryAdvanceSubmission = z.infer<typeof finalDeliveryAdvanceSubmissionSchema>;
+
+export const finalDeliveryVerifySubmissionSchema = z
+  .object({
+    actor: z.string().min(1).max(200).optional(),
+  })
+  .strict();
+export type FinalDeliveryVerifySubmission = z.infer<typeof finalDeliveryVerifySubmissionSchema>;

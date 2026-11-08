@@ -92,6 +92,25 @@ export interface DeliveryRuntimeEngine {
   maxContinuations?: number;
 }
 
+export interface DeliveryRuntimeCorrectionRequest {
+  projectId: string;
+  runId: string;
+  deliveryId: string;
+  planId: string;
+  workId: string;
+  actor: string;
+  findings: DeliveryRuntimeFinding[];
+}
+
+/**
+ * A final-spec repair cycle is not a child dispatch: it re-materializes the
+ * combined candidate after a bounded repair. The final coordinator owns that
+ * transition while this runtime keeps the same verification/correction loop.
+ */
+export interface DeliveryRuntimeCorrection {
+  dispatch(request: DeliveryRuntimeCorrectionRequest): Promise<{ id: string } | null>;
+}
+
 export interface DeliveryRuntimeOptions {
   gate: DeliveryGateService;
   observations: ExecutionObservationService;
@@ -106,6 +125,8 @@ export interface DeliveryRuntimeOptions {
   executor?: DeliveryRuntimeRoleExecutor;
   /** Declared ordinary regression commands. Production reads harness/harness.config.json. */
   regressionChecks?: string[];
+  /** Replacement for the child-profile correction dispatch (final-spec repair). */
+  correction?: DeliveryRuntimeCorrection;
   maxCorrections?: number;
   clock?: () => number;
 }
@@ -377,9 +398,20 @@ export class DeliveryRuntimeCoordinator {
   private async dispatchCorrection(
     run: RuntimeRunRow,
     findings: DeliveryRuntimeFinding[],
-  ): Promise<PlanDispatchRun | null> {
+  ): Promise<{ id: string } | null> {
     try {
-      const correction = await this.options.dispatch.dispatch(run.project_id, {
+      if (this.options.correction) {
+        return await this.options.correction.dispatch({
+          projectId: run.project_id,
+          runId: run.id,
+          deliveryId: run.delivery_id,
+          planId: run.plan_id,
+          workId: run.work_id,
+          actor: "delivery-runtime",
+          findings,
+        });
+      }
+      const correction: PlanDispatchRun = await this.options.dispatch.dispatch(run.project_id, {
         plan_id: run.plan_id,
         work_id: run.work_id,
         actor: "delivery-runtime",

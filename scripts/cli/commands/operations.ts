@@ -30,6 +30,7 @@ import type {
   Project,
   PublicationStatus,
   IntegrationStatus,
+  FinalDeliveryStatus,
   RunEvidenceReport,
   WorkRecord,
 } from "@animus/contracts/operator";
@@ -836,7 +837,7 @@ export async function runPlanCommand(
   try {
     if (!opts.projectId) {
       throw new Error(
-        "Usage: factory plan <list|get|import|approve|revoke|dispatch|runs|run|detail|evidence|findings|grants|grant|hold|resume|stop|takeover|reconcile|publication|audit|publish|bind-evidence|integration|integrations|land|gate|verify-merge> --project <project-id>",
+        "Usage: factory plan <list|get|import|approve|revoke|dispatch|runs|run|detail|evidence|findings|grants|grant|hold|resume|stop|takeover|reconcile|publication|audit|publish|bind-evidence|integration|integrations|land|gate|verify-merge|final|final-advance|final-verify> --project <project-id>",
       );
     }
     const scoped = createRegistrationClient(opts).forProject(opts.projectId);
@@ -1039,6 +1040,25 @@ export async function runPlanCommand(
       return 0;
     }
 
+    if (sub === "final" || sub === "final-advance" || sub === "final-verify") {
+      const planId = opts.positionals[2];
+      if (!planId) {
+        throw new Error(`Usage: factory plan ${sub} <plan-id> --project <project-id>`);
+      }
+      const status =
+        sub === "final-advance"
+          ? await scoped.advanceFinalDelivery(
+              planId,
+              opts.actor ? { actor: opts.actor } : {},
+            )
+          : sub === "final-verify"
+            ? await scoped.verifyFinalMerge(planId, opts.actor ?? "operator")
+            : await scoped.finalDelivery(planId);
+      if (opts.json) console.log(JSON.stringify(status, null, 2));
+      else printFinalDelivery(status);
+      return 0;
+    }
+
     if (sub === "bind-evidence") {
       const targetId = opts.positionals[2];
       const artifactId = opts.positionals[3];
@@ -1184,7 +1204,7 @@ export async function runPlanCommand(
     }
 
     throw new Error(
-      `Unknown plan subcommand: ${sub}. Expected list, get, import, approve, revoke, dispatch, runs, run, detail, evidence, findings, grants, grant, hold, resume, stop, takeover, reconcile, publication, audit, publish, bind-evidence, integration, integrations, land, gate, verify-merge.`,
+      `Unknown plan subcommand: ${sub}. Expected list, get, import, approve, revoke, dispatch, runs, run, detail, evidence, findings, grants, grant, hold, resume, stop, takeover, reconcile, publication, audit, publish, bind-evidence, integration, integrations, land, gate, verify-merge, final, final-advance, final-verify.`,
     );
   } catch (err: any) {
     const msg = err?.message ?? String(err);
@@ -1417,6 +1437,45 @@ function printDeliveryGate(status: DeliveryGateStatus): void {
     console.log(`  Blockers (${status.reasons.length}):`);
     for (const reason of status.reasons) console.log(`    - ${reason}`);
   }
+}
+
+function printFinalDelivery(status: FinalDeliveryStatus): void {
+  console.log(`Final delivery ${status.planId} — spec graph ${status.graphHash.slice(0, 12)}`);
+  console.log(`  State:      ${status.state}${status.delivered ? " · delivered" : ""}`);
+  console.log(`  Children:   ${status.integratedCount}/${status.requiredCount} integrated`);
+  console.log(`  Branch:     ${status.integrationBranch} -> ${status.deliveryBranch}`);
+  console.log(
+    `  Candidate:  ${status.candidateHeadSha ?? "none"}  tested-target=${status.targetTipSha ?? "none"}`,
+  );
+  if (status.runId) console.log(`  Final run:  ${status.runId}`);
+  if (status.pullRequest) {
+    console.log(
+      `  Pull request: #${status.pullRequest.number} ${status.pullRequest.url ?? ""} (${status.pullRequest.state}${status.pullRequest.draft ? ", draft" : ""}) ${status.pullRequest.headBranch}->${status.pullRequest.baseBranch}`,
+    );
+  }
+  if (status.merge) {
+    console.log(
+      `  Merge:      ${status.merge.state}${status.merge.verified ? " verified" : ""}${status.merge.remoteTargetTipSha ? ` target-tip=${status.merge.remoteTargetTipSha}` : ""}`,
+    );
+  }
+  if (status.budget) {
+    console.log(
+      `  Budget:     ${status.budget.consumedAttempts}/${status.budget.allowedAttempts} final attempts (${status.budget.status})`,
+    );
+  }
+  if (status.children.length > 0) {
+    console.log("  Children:");
+    for (const child of status.children) {
+      console.log(
+        `    #${child.issueNumber} ${child.integrated ? "integrated" : "pending"}${child.candidateHeadSha ? ` candidate=${child.candidateHeadSha.slice(0, 8)} merge=${child.mergeSha?.slice(0, 8) ?? "-"}` : ""}${child.reasons.length > 0 ? ` — ${child.reasons.join(", ")}` : ""}`,
+      );
+    }
+  }
+  if (status.reasons.length > 0) {
+    console.log(`  Reasons (${status.reasons.length}):`);
+    for (const reason of status.reasons) console.log(`    - ${reason}`);
+  }
+  if (status.haltReason) console.log(`  Needs owner: ${status.haltReason}`);
 }
 
 function printPlan(plan: PlanRecord): void {  console.log(`Plan ${plan.id} (${plan.kind})`);

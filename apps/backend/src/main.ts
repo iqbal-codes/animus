@@ -62,6 +62,7 @@ import {
   DeliveryRuntimeCoordinator,
   handleProjectDeliveryRoute,
 } from "./delivery";
+import { FinalDeliveryService, handleProjectFinalRoute } from "./final";
 import { HarnessService, handleHarnessRoute } from "./harness";
 import {
   validateCsrfProtection,
@@ -114,6 +115,7 @@ export interface BackendApp {
   publication: PublicationService;
   draftPublication: DraftPublicationService;
   delivery: DeliveryGateService;
+  final: FinalDeliveryService;
   stop(): Promise<void>;
 }
 
@@ -341,6 +343,17 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     forge: registryService.getForge(),
   });
 
+  const finalRuntimeRef: { current: DeliveryRuntimeCoordinator | null } = { current: null };
+  const finalService = new FinalDeliveryService(registryService.getDb(), {
+    plans: planService,
+    dispatch: dispatchService,
+    observations: evidenceService.observations,
+    publication: publicationService,
+    gate: deliveryService,
+    budget: new ExecutionBudgetService(registryService.getDb()),
+    runtime: () => finalRuntimeRef.current!,
+  });
+
   const deliveryRuntime =
     options?.deliveryRuntime ??
     new DeliveryRuntimeCoordinator(registryService.getDb(), {
@@ -349,7 +362,11 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
       dispatch: dispatchService,
       budget: new ExecutionBudgetService(registryService.getDb()),
       publication: publicationService,
+      correction: {
+        dispatch: (request) => finalService.dispatchCorrection(request),
+      },
     });
+  finalRuntimeRef.current = deliveryRuntime;
 
   const monitorRuntime =
     options?.monitorRuntime ?? (await loadMonitorRuntime({ forge: options?.forge }));
@@ -371,6 +388,7 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
         dispatch: dispatchService,
         actor: "monitor",
         deliveryRuntime,
+        finalDeliveryRuntime: finalService,
       }),
   });
 
@@ -915,6 +933,12 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
         return Response.json({ error: "not_found" }, { status: 404 });
       }
 
+      if (scopedAction === "final") {
+        const finalRes = await handleProjectFinalRoute(request, projectId, parts, finalService);
+        if (finalRes) return finalRes;
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
       if (scopedAction === "laps") {
         return handleLapsRoute(request, parts.slice(1), routeContext, projectId);
       }
@@ -991,6 +1015,7 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     publication: publicationService,
     draftPublication: draftPublicationService,
     delivery: deliveryService,
+    final: finalService,
     fetch: appFetch,
     websocket,
     monitor,

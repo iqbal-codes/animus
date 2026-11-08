@@ -92,6 +92,10 @@ import {
   draftPublicationListSchema,
   draftPublicationSubmissionSchema,
   deliveryGateStatusSchema,
+  finalDeliveryStatusSchema,
+  finalDeliveryStatusListSchema,
+  finalDeliveryAdvanceSubmissionSchema,
+  finalDeliveryVerifySubmissionSchema,
   landingGuardResultSchema,
   landingSubmissionSchema,
   landingExecutionResultSchema,
@@ -211,6 +215,9 @@ import {
   type IntegrationStatus,
   type IntegrationStatusList,
   type IntegrationLandSubmission,
+  type FinalDeliveryStatus,
+  type FinalDeliveryStatusList,
+  type FinalDeliveryAdvanceSubmission,
 } from "@animus/contracts/operator";
 
 export {
@@ -1236,6 +1243,36 @@ export function createFactoryClient(options: {
             `${scopedBase}/delivery/runs/${encodeURIComponent(runId)}/verify-merge`,
             { actor },
             deliveryGateStatusSchema,
+          );
+        },
+        async finalDeliveries(): Promise<FinalDeliveryStatusList> {
+          return getJson(`${scopedBase}/final`, finalDeliveryStatusListSchema);
+        },
+        async finalDelivery(planId: string): Promise<FinalDeliveryStatus> {
+          return getJson(
+            `${scopedBase}/final/${encodeURIComponent(planId)}`,
+            finalDeliveryStatusSchema,
+          );
+        },
+        async advanceFinalDelivery(
+          planId: string,
+          submission: FinalDeliveryAdvanceSubmission = {},
+        ): Promise<FinalDeliveryStatus> {
+          const parsed = finalDeliveryAdvanceSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/final/${encodeURIComponent(planId)}/advance`,
+            parsed.data,
+            finalDeliveryStatusSchema,
+          );
+        },
+        async verifyFinalMerge(planId: string, actor = "operator"): Promise<FinalDeliveryStatus> {
+          const parsed = finalDeliveryVerifySubmissionSchema.safeParse({ actor });
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/final/${encodeURIComponent(planId)}/verify-merge`,
+            parsed.data,
+            finalDeliveryStatusSchema,
           );
         },
       };
