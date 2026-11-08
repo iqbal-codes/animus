@@ -32,6 +32,7 @@ import {
 } from "@animus/contracts/operator";
 import { resolveAnimusStateDir } from "@animus/contracts/paths";
 import { enqueuePublicationEvent, ensurePublicationTarget } from "../publication/outbox";
+import { sanitizePublicationText } from "../publication/service";
 import { ExecutionBudgetService } from "../work/budget";
 import { ArtifactPathError, normalizeArtifactRelativePath } from "./artifact-path";
 import { EvidenceError } from "./errors";
@@ -159,6 +160,18 @@ const REQUIRED_STAGES: Record<PlanGateProfile, readonly ExecutionStage[]> = {
  * present (for example `final_acceptance` on a standalone run) is additionally
  * treated as authorizing and re-verified when the gate consumes it.
  */
+const INLINE_ARTIFACT_MAX_CHARS = 8_000;
+
+function longestBacktickRun(value: string): number {
+  let longest = 0;
+  let current = 0;
+  for (const char of value) {
+    current = char === "`" ? current + 1 : 0;
+    if (current > longest) longest = current;
+  }
+  return longest;
+}
+
 const AUTHORIZING_INDEPENDENT_STAGES: Record<PlanGateProfile, readonly ExecutionStage[]> = {
   child: ["technical_checks"],
   standalone: ["independent_review", "final_acceptance"],
@@ -171,6 +184,12 @@ export interface ExecutionObservationServiceOptions {
   clock?: () => number;
   gitRunner?: (cmd: string[], cwd: string) => string;
   budget?: ExecutionBudgetService;
+  /**
+   * Largest child evidence artifact that may be published as bounded inline PR
+   * audit text. Larger artifacts keep their immutable local hash but stay
+   * incomplete until an operator supplies hosted access.
+   */
+  inlineArtifactMaxBytes?: number;
 }
 
 export interface ObservationQuery {
@@ -218,6 +237,7 @@ export class ExecutionObservationService {
   private readonly clock: () => number;
   private readonly gitRunner: (cmd: string[], cwd: string) => string;
   private readonly budget: ExecutionBudgetService;
+  private readonly inlineArtifactMaxBytes: number;
 
   constructor(
     private readonly db: DatabaseSync,
@@ -226,6 +246,7 @@ export class ExecutionObservationService {
     this.artifactRoot = options.artifactRoot ?? join(resolveAnimusStateDir(), "artifacts");
     this.clock = options.clock ?? (() => Date.now());
     this.budget = options.budget ?? new ExecutionBudgetService(db);
+    this.inlineArtifactMaxBytes = options.inlineArtifactMaxBytes ?? 131_072;
     this.gitRunner =
       options.gitRunner ??
       ((cmd, cwd) =>
@@ -500,6 +521,10 @@ export class ExecutionObservationService {
         });
       }
 
+      const observationArtifacts = this.db
+        .prepare("SELECT * FROM execution_artifacts WHERE observation_id = ? ORDER BY rowid ASC")
+        .all(observationId) as unknown as ArtifactRow[];
+
       for (const path of checkPaths) {
         const present = this.db
           .prepare(
@@ -518,7 +543,7 @@ export class ExecutionObservationService {
 
       const observation = this.getObservation(projectId, observationId);
       if (options.publishVerificationEvent !== false) {
-        this.queueObservationAudit(run, observation, record, findingIds, now);
+        this.queueObservationAudit(run, observation, record, findingIds, observationArtifacts, now);
       }
 
       // A rejected observation on the final allowed lap is an immediate Needs
@@ -531,11 +556,52 @@ export class ExecutionObservationService {
     }, "observation");
   }
 
+  /**
+   * Render a bounded, sanitized inline copy of a child evidence artifact. The
+   * marker binds the published excerpt to the immutable local artifact identity,
+   * full-file digest and size so the PR reader can verify what was inlined. An
+   * artifact above the inline bound keeps its local hash but is never advertised
+   * as complete public proof.
+   */
+  private renderInlineArtifactEvidence(
+    projectId: string,
+    artifact: ArtifactRow,
+  ): { marker: string; block: string } | null {
+    if (artifact.size_bytes > this.inlineArtifactMaxBytes) return null;
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(this.resolveArtifactAbsolute(projectId, artifact.relative_path));
+    } catch {
+      return null;
+    }
+    if (bytes.byteLength > this.inlineArtifactMaxBytes) return null;
+    const sanitized = sanitizePublicationText(bytes.toString("utf-8"));
+    const truncated = sanitized.length > INLINE_ARTIFACT_MAX_CHARS;
+    const excerpt = truncated
+      ? `${sanitized.slice(0, INLINE_ARTIFACT_MAX_CHARS)}\n...[truncated]`
+      : sanitized;
+    const inlineSha = createHash("sha256").update(excerpt).digest("hex");
+    const marker = `<!-- animus-inline-artifact artifact=${artifact.id} sha256=${artifact.digest_sha256} size=${artifact.size_bytes} media=${artifact.media_type} path=${artifact.relative_path} inline_sha256=${inlineSha} truncated=${truncated ? 1 : 0} -->`;
+    const fence = "`".repeat(Math.max(3, longestBacktickRun(excerpt) + 1));
+    const block = [
+      marker,
+      `<details><summary>${artifact.name} — bounded inline evidence (full artifact ${artifact.size_bytes}B, sha256 ${artifact.digest_sha256.slice(0, 16)}…)</summary>`,
+      "",
+      `${fence}text`,
+      excerpt,
+      fence,
+      "",
+      "</details>",
+    ].join("\n");
+    return { marker, block };
+  }
+
   private queueObservationAudit(
     run: RunRow,
     observation: ExecutionObservationRecord,
     record: ExecutionObservationSubmission,
     findingIds: string[],
+    observationArtifacts: ArtifactRow[],
     now: number,
   ): void {
     if (record.status === "running") return;
@@ -567,9 +633,15 @@ export class ExecutionObservationService {
       (finding) =>
         `- [${finding.severity}] ${finding.acKey ? `${finding.acKey} ` : ""}${finding.fileContext}: ${finding.summary}`,
     );
-    const artifactLines = record.artifacts.map(
-      (artifact) => `- ${artifact.name} (${artifact.relativePath}, ${artifact.mediaType})`,
+    const artifactLines = observationArtifacts.map(
+      (artifact) => `- ${artifact.name} (${artifact.relative_path}, ${artifact.media_type})`,
     );
+    const inlineEvidence =
+      run.gate_profile === "child"
+        ? observationArtifacts
+            .map((artifact) => this.renderInlineArtifactEvidence(run.project_id, artifact))
+            .filter((evidence): evidence is { marker: string; block: string } => evidence !== null)
+        : [];
     const body = [
       `**Stage:** ${record.stage} · **Status:** ${record.status} · **Lap:** ${observation.lap}`,
       `**Producer:** ${record.producer.id} (${record.producer.role})`,
@@ -577,6 +649,14 @@ export class ExecutionObservationService {
       ...(checkLines.length > 0 ? ["", "**Checks:**", ...checkLines] : []),
       ...(findingLines.length > 0 ? ["", "**Findings:**", ...findingLines] : []),
       ...(artifactLines.length > 0 ? ["", "**Artifacts:**", ...artifactLines] : []),
+      ...(inlineEvidence.length > 0
+        ? [
+            "",
+            "**Bounded inline evidence** (full immutable artifact hash recorded locally; content sanitized and bounded for PR review):",
+            "",
+            ...inlineEvidence.map((evidence) => evidence.block),
+          ]
+        : []),
       ...(observation.error ? ["", `**Error:** ${observation.error}`] : []),
     ].join("\n");
     const title =

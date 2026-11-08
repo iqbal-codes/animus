@@ -12,6 +12,7 @@ export type LocalDispatchSkipReason =
   | "pause_brake_set"
   | "capacity_full"
   | "launch_failed"
+  | "delivery_already_claimed"
   | "dry_run";
 
 export interface LocalDispatchTickResult {
@@ -89,17 +90,33 @@ const RESUMABLE_DELIVERY_ACTIONS = new Set([
  * `already_succeeded` forever and the candidate never gets its child PR, review,
  * required CI read-back or verified integration.
  */
+function deliveryClaimDetail(delivery: unknown): string | null {
+  if (!delivery || typeof delivery !== "object") return null;
+  const record = delivery as { action?: unknown; reasons?: unknown };
+  if (record.action !== "already_claimed") return null;
+  const reasons = Array.isArray(record.reasons)
+    ? record.reasons.filter((reason): reason is string => typeof reason === "string")
+    : [];
+  return reasons.length > 0 ? reasons.join(", ") : "delivery_stage_already_claimed";
+}
+
+interface ResumeDeliveryResult {
+  tick: LocalDispatchTickResult | null;
+  claimed: string | null;
+}
+
 async function resumeDelivery(
   options: LocalDispatchTickOptions,
   projectId: string,
   planId: string,
-): Promise<LocalDispatchTickResult | null> {
-  if (!options.deliveryRuntime) return null;
+): Promise<ResumeDeliveryResult> {
+  if (!options.deliveryRuntime) return { tick: null, claimed: null };
   const runs = options.dispatch.listRuns(projectId, { plan_id: planId });
   const activeWorks = new Set(
     runs.filter((run) => ACTIVE_RUN_STATES.has(run.state)).map((run) => run.work_id),
   );
   const seenWorks = new Set<string>();
+  let claimed: string | null = null;
   for (const run of runs) {
     // listRuns is newest-first: only the latest attempt for each work item counts.
     if (seenWorks.has(run.work_id)) continue;
@@ -110,6 +127,13 @@ async function resumeDelivery(
     if (run.gate_profile === "final") continue;
     try {
       const delivery = await options.deliveryRuntime.process(projectId, run.id);
+      const claim = deliveryClaimDetail(delivery);
+      if (claim !== null) {
+        // A supported competing tick owns this run/stage. It is not a verification
+        // failure; keep looking for genuinely independent work in this plan.
+        claimed = claim;
+        continue;
+      }
       if (
         delivery &&
         typeof delivery === "object" &&
@@ -117,22 +141,38 @@ async function resumeDelivery(
         RESUMABLE_DELIVERY_ACTIONS.has(String((delivery as { action: unknown }).action))
       ) {
         return {
-          action: "launched",
-          reason: "launch_successful",
+          tick: {
+            action: "launched",
+            reason: "launch_successful",
+            projectId,
+            planId,
+            runId: run.id,
+            issueNumber: run.issue_number,
+            delivery,
+          },
+          claimed,
+        };
+      }
+    } catch (error) {
+      // Unexpected delivery failures are not claim conflicts. Surface them instead
+      // of silently swallowing the reason and pretending the run was unavailable.
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        tick: {
+          action: "skipped",
+          reason: "launch_failed",
           projectId,
           planId,
           runId: run.id,
           issueNumber: run.issue_number,
-          delivery,
-        };
-      }
-    } catch {
-      // A held installation, Stop control or transient transport failure leaves the
-      // run durable and readable; later ticks can resume it without a new lap.
-      continue;
+          error: message,
+          delivery: { action: "failed", reasons: [message] },
+        },
+        claimed,
+      };
     }
   }
-  return null;
+  return { tick: null, claimed };
 }
 
 /**
@@ -155,6 +195,7 @@ export async function runLocalDispatchTick(
   }
 
   let sawAdmittedPlan = false;
+  let claimedDetail: string | null = null;
 
   for (const project of projects) {
     const summaries = options.plans
@@ -182,7 +223,8 @@ export async function runLocalDispatchTick(
       }
 
       const resumed = await resumeDelivery(options, project.id, plan.id);
-      if (resumed) return resumed;
+      if (resumed.claimed) claimedDetail = resumed.claimed;
+      if (resumed.tick) return resumed.tick;
 
       try {
         const run = await options.dispatch.dispatch(project.id, {
@@ -259,6 +301,13 @@ export async function runLocalDispatchTick(
     }
   }
 
+  if (claimedDetail !== null) {
+    return {
+      action: "skipped",
+      reason: "delivery_already_claimed",
+      detail: claimedDetail,
+    };
+  }
   return {
     action: "skipped",
     reason: sawAdmittedPlan ? "no_eligible_work" : "no_admitted_plans",

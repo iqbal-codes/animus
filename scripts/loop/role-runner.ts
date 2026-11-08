@@ -234,6 +234,7 @@ export async function runBoundedRole(opts: BoundedRoleOptions): Promise<BoundedR
       const previous = existsSync(checkpointPath)
         ? readFileSync(checkpointPath, "utf8")
         : `# Interrupted ${role} checkpoint`;
+      await mkdir(handoffDir, { recursive: true });
       await writeFile(checkpointPath, previous + facts);
       await writeFile(
         join(handoffDir, `${role}-attempt-${attempt}-checkpoint.md`),

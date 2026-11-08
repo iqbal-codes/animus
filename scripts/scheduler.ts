@@ -156,6 +156,7 @@ function toSchedulerTick(local: LocalDispatchTickResult): SchedulerTickResult {
     pause_brake_set: "pause_brake_set",
     capacity_full: "capacity_full",
     launch_failed: "launch_failed",
+    delivery_already_claimed: "delivery_already_claimed",
   };
   return {
     action: "skipped",

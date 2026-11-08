@@ -380,11 +380,12 @@ describe("project work identity and immutable revisions", () => {
       { version: 12, name: "final_spec_delivery_coordination" },
       { version: 13, name: "restore_terminal_intent_disposition" },
       { version: 15, name: "authority_cutover" },
+      { version: 16, name: "delivery_role_claims" },
     ]);
     db.close();
     db = initializeDatabase(dbPath);
     expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({
-      count: 14,
+      count: 15,
     });
   });
 

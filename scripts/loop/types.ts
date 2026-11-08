@@ -63,6 +63,8 @@ export type AgentTransport = (request: {
   appendSystemPrompts?: string[];
   timeoutMs: number;
   env?: Record<string, string>;
+  /** Observer for the detached child pid (equal to its process group id). */
+  onSpawn?: (pid: number) => void;
 }) => Promise<ProcessResult>;
 
 export type PiTransport = AgentTransport;

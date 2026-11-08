@@ -481,30 +481,48 @@ export class PublicationService {
     }
     await this.retireSupersededPullRequests(this.loadTarget(target.project_id, target.id));
     if (!pr) {
+      // A verified merge makes the child PR inactive. Its bound audit history is
+      // still the truthful surface for post-merge verdicts (for example the
+      // integration event), so publish pending events to that exact bound PR
+      // instead of dropping them as permanently queued.
+      const merged = this.mergedBoundPullRequest(target);
+      if (merged) await this.reconcileEventsAndSummary(target, merged);
       this.refreshTargetState(target.id);
       return;
     }
 
-    const remote = await this.observeActivePullRequest(target, pr);
-    if (!remote) {
+    const observed = await this.observeActivePullRequest(target, pr);
+    if (!observed) {
+      const merged = this.mergedBoundPullRequest(target);
+      if (merged) await this.reconcileEventsAndSummary(target, merged);
       this.refreshTargetState(target.id);
       return;
     }
-    if (remote !== pr) pr = remote;
+    pr = observed;
 
-    // Publish consequential events first so the mutable summary reflects their
-    // accepted state instead of freezing a pre-publication snapshot.
-    const pendingEvents = this.db
+    await this.reconcileEventsAndSummary(target, pr);
+  }
+
+  private mergedBoundPullRequest(target: TargetRow): PullRequestRow | null {
+    const row = this.db
       .prepare(
-        `SELECT * FROM publication_intents
-          WHERE target_id = ? AND kind = 'publish_event' AND state NOT IN ('accepted', 'abandoned')
-          ORDER BY created_at ASC, id ASC`,
+        `SELECT * FROM publication_pull_requests
+          WHERE target_id = ? AND state = 'merged'
+            AND candidate_head_sha = ? AND head_branch = ? AND base_branch = ?
+          ORDER BY updated_at DESC LIMIT 1`,
       )
-      .all(target.id) as unknown as IntentRow[];
-    for (const intent of pendingEvents) {
-      await this.executeEventIntent(this.loadTarget(target.project_id, target.id), pr, intent);
-    }
+      .get(target.id, target.candidate_head_sha, target.source_branch, target.target_branch);
+    return row === undefined ? null : (row as unknown as PullRequestRow);
+  }
 
+  /**
+   * Publish consequential events first, then the mutable summary that reflects
+   * their accepted state. This runs for the active PR and for a bound merged PR
+   * so post-merge verdicts do not leave a stale summary or a permanently queued
+   * audit event.
+   */
+  private async reconcileEventsAndSummary(target: TargetRow, pr: PullRequestRow): Promise<void> {
+    await this.publishPendingEvents(target, pr);
     const current = this.loadTarget(target.project_id, target.id);
     const projection = this.renderSummary(
       current,
@@ -517,6 +535,19 @@ export class PublicationService {
     const summaryIntent = this.ensureSummaryIntent(current, projection.hash);
     if (summaryIntent) {
       await this.executeSummaryIntent(current, pr, summaryIntent);
+    }
+  }
+
+  private async publishPendingEvents(target: TargetRow, pr: PullRequestRow): Promise<void> {
+    const pendingEvents = this.db
+      .prepare(
+        `SELECT * FROM publication_intents
+          WHERE target_id = ? AND kind = 'publish_event' AND state NOT IN ('accepted', 'abandoned')
+          ORDER BY created_at ASC, id ASC`,
+      )
+      .all(target.id) as unknown as IntentRow[];
+    for (const intent of pendingEvents) {
+      await this.executeEventIntent(this.loadTarget(target.project_id, target.id), pr, intent);
     }
   }
 
@@ -1387,13 +1418,53 @@ export class PublicationService {
     let unsafe = 0;
     for (const artifact of this.listTargetArtifacts(target)) {
       const binding = evidence.find((item) => item.artifactId === artifact.id);
-      if (!binding || binding.status !== "supplied_unverified" || !binding.hostedUrl) {
-        pending += 1;
+      if (binding?.status === "supplied_unverified" && binding.hostedUrl) {
+        if (!validateHostedAssetUrl(binding.hostedUrl).ok) unsafe += 1;
         continue;
       }
-      if (!validateHostedAssetUrl(binding.hostedUrl).ok) unsafe += 1;
+      // Child evidence may be published as bounded inline audit text through the
+      // supported comment outbox. The marker binds the accepted comment to the
+      // immutable local artifact identity and full-file digest; it is not a
+      // fabricated hosted URL and it does not waive standalone/final binding.
+      if (target.gate_profile === "child" && this.inlineArtifactEvent(target, artifact)) {
+        continue;
+      }
+      pending += 1;
     }
     return { pending, unsafe };
+  }
+
+  /**
+   * Returns the accepted audit event that carries the bounded inline copy of an
+   * artifact. Requires the exact artifact id, full-file digest and the inline
+   * excerpt digest marker on the event bound to the artifact's own immutable
+   * observation, so earlier-lap artifacts stay complete after a correction
+   * replaces the target candidate.
+   */
+  private inlineArtifactEvent(
+    target: TargetRow,
+    artifact: ArtifactRow,
+  ): { id: string; sequence: number } | null {
+    const needle = `<!-- animus-inline-artifact artifact=${artifact.id} sha256=${artifact.digest_sha256} `;
+    const rows = this.db
+      .prepare(
+        `SELECT e.id, e.sequence, e.body
+           FROM publication_events e
+           JOIN publication_intents i
+             ON i.target_id = e.target_id AND i.operation_key = 'event:' || e.id
+          WHERE e.target_id = ? AND e.observation_id = ?
+            AND i.state = 'accepted'
+          ORDER BY e.sequence ASC`,
+      )
+      .all(target.id, artifact.observation_id) as Array<{
+      id: string;
+      sequence: number;
+      body: string;
+    }>;
+    const row = rows.find(
+      (candidate) => candidate.body.includes(needle) && candidate.body.includes("inline_sha256="),
+    );
+    return row ? { id: row.id, sequence: row.sequence } : null;
   }
 
   private activePullRequest(target: TargetRow): PullRequestRow | null {
@@ -1814,10 +1885,14 @@ export class PublicationService {
       for (const artifact of artifacts) {
         const binding = evidence.find((item) => item.artifactId === artifact.id);
         const hostedCheck = binding?.hostedUrl ? validateHostedAssetUrl(binding.hostedUrl) : null;
+        const inline =
+          target.gate_profile === "child" ? this.inlineArtifactEvent(target, artifact) : null;
         const access =
           binding?.hostedUrl && hostedCheck?.ok
             ? `[supplied by operator](<${binding.hostedUrl}>) *(supplied unverified)*`
-            : "manual upload pending";
+            : inline
+              ? `inline in audit event #${inline.sequence} (sha256 verified)`
+              : "manual upload pending";
         lines.push(
           `| ${escapeMarkdownTableCell(artifact.name)} | ${escapeMarkdownTableCell(artifact.media_type)} | ${artifact.size_bytes}B | \`${artifact.digest_sha256.slice(0, 16)}…\` | ${access} |`,
         );

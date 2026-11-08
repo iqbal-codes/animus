@@ -30,6 +30,11 @@ import type { ExecutionBudgetService } from "../work/budget";
 import type { PublicationService } from "../publication";
 import type { ChildIntegrationService } from "../integration";
 import { DeliveryGateService } from "./service";
+import {
+  DeliveryRoleClaimService,
+  type DeliveryClaimStage,
+  type DeliveryRoleClaim,
+} from "./claims";
 
 export interface DeliveryRuntimeRoleRequest {
   projectId: string;
@@ -47,6 +52,8 @@ export interface DeliveryRuntimeRoleRequest {
   acceptanceCriteria: string[];
   findings: DeliveryRuntimeFinding[];
   runDirectory: string;
+  /** Observer for the spawned bounded role process group (claim fencing). */
+  onSpawn?: (pid: number) => void;
 }
 
 export interface DeliveryRuntimeFinding {
@@ -134,6 +141,8 @@ export interface DeliveryRuntimeOptions {
   technicalChecks?: string[];
   /** Replacement for the child-profile correction dispatch (final-spec repair). */
   correction?: DeliveryRuntimeCorrection;
+  /** Durable run/stage ownership shared by every supported tick. */
+  claims?: DeliveryRoleClaimService;
   maxCorrections?: number;
   clock?: () => number;
 }
@@ -147,6 +156,7 @@ export interface DeliveryRuntimeResult {
     | "findings_resolved"
     | "correction_dispatched"
     | "published"
+    | "already_claimed"
     | "stopped"
     | "failed";
   state: DeliveryGateState | null;
@@ -175,6 +185,39 @@ interface RuntimeRunRow {
   contract_body: string | null;
 }
 
+type ClaimedStageOutcome =
+  | {
+      status: "recorded";
+      stage: DeliveryClaimStage;
+      observationId: string;
+      result: DeliveryRuntimeRoleResult;
+    }
+  | {
+      status: "already_running";
+      stage: DeliveryClaimStage;
+      reason: "already_running" | "owner_unverified";
+    }
+  | { status: "terminal"; stage: DeliveryClaimStage; observationId: string | null }
+  | { status: "stale"; stage: DeliveryClaimStage }
+  | { status: "stopped"; stage: DeliveryClaimStage }
+  | { status: "unavailable"; stage: DeliveryClaimStage; reason: string };
+
+interface RawCommandRun {
+  command: string;
+  exitCode: number;
+  timedOut: boolean;
+  stdout: string;
+  stderr: string;
+}
+
+const MAX_RAW_STREAM_CHARS = 200_000;
+
+function boundRawStream(value: string): string {
+  if (value.length <= MAX_RAW_STREAM_CHARS) return value;
+  const omitted = value.length - MAX_RAW_STREAM_CHARS;
+  return `${value.slice(0, MAX_RAW_STREAM_CHARS)}\n...[truncated ${omitted} chars]`;
+}
+
 const REVIEW_ROLE: ProducerRole = "peer_reviewer";
 const ACCEPTANCE_ROLE: ProducerRole = "independent_evaluator";
 const GATE_ROLE: ProducerRole = "automated_gate";
@@ -194,6 +237,7 @@ export class DeliveryRuntimeCoordinator {
   private readonly executor: DeliveryRuntimeRoleExecutor;
   private readonly artifactRoot: string;
   private readonly maxCorrections: number;
+  private readonly claims: DeliveryRoleClaimService;
 
   /** Fail closed before any reviewer/QA transport, evidence write or publication. */
   private assertInstallationReady(): void {
@@ -207,6 +251,7 @@ export class DeliveryRuntimeCoordinator {
     this.executor = options.executor ?? createDeliveryRoleExecutor(options.engine ?? {});
     this.artifactRoot = options.artifactRoot ?? join(resolveAnimusStateDir(), "artifacts");
     this.maxCorrections = options.maxCorrections ?? 2;
+    this.claims = options.claims ?? new DeliveryRoleClaimService(db);
   }
 
   /**
@@ -313,12 +358,22 @@ export class DeliveryRuntimeCoordinator {
 
       if (!bothPassed) {
         if (!reviewPassed) {
-          const result = await this.runRole(run, "independent_review");
-          await this.recordRoleResult(run, "independent_review", result);
+          const outcome = await this.runClaimedStage(run, "independent_review", (claim) =>
+            this.runRole(run, "independent_review", claim),
+          );
+          const terminal = this.claimOutcomeResult(run, outcome, reasons, gate.state);
+          if (terminal) return terminal;
+          if (outcome.status !== "recorded") continue;
+          reasons.push(`independent_review:${outcome.result.status}`);
         }
         if (!acceptancePassed) {
-          const result = await this.runAcceptance(run);
-          await this.recordRoleResult(run, "final_acceptance", result);
+          const outcome = await this.runClaimedStage(run, "final_acceptance", (claim) =>
+            this.runAcceptance(run, claim),
+          );
+          const terminal = this.claimOutcomeResult(run, outcome, reasons, gate.state);
+          if (terminal) return terminal;
+          if (outcome.status !== "recorded") continue;
+          reasons.push(`final_acceptance:${outcome.result.status}`);
         }
         const refreshed = await this.options.gate.getGate(projectId, run.id);
         if (refreshed.state === "ready_for_operator_review") {
@@ -334,6 +389,16 @@ export class DeliveryRuntimeCoordinator {
         continue;
       }
 
+      this.assertInstallationReady();
+      if (this.isStopped(run)) {
+        return {
+          projectId,
+          runId: run.id,
+          action: "stopped",
+          state: gate.state,
+          reasons: [...reasons, "stopped_before_publication"],
+        };
+      }
       await this.publishIfNeeded(run);
       const finalGate = await this.options.gate.getGate(projectId, run.id);
       return {
@@ -457,34 +522,39 @@ export class DeliveryRuntimeCoordinator {
       }
 
       if (!technicalPassed) {
-        const result = await this.runTechnicalChecks(run);
-        if (result === null) {
-          // No declared technical/contract configuration: hold truthfully instead of
-          // inventing a pass or signing the builder's own claim.
-          return {
-            projectId,
-            runId: run.id,
-            action: "failed",
-            state: null,
-            reasons: [...reasons, "technical_checks_unavailable"],
-          };
-        }
-        await this.recordRoleResult(run, "technical_checks", result, { finalizedArtifact: false });
-        reasons.push(`technical_checks:${result.status}`);
+        const outcome = await this.runClaimedStage(run, "technical_checks", (claim) =>
+          this.runTechnicalChecks(run, claim),
+        );
+        const terminal = this.claimOutcomeResult(run, outcome, reasons, null);
+        if (terminal) return terminal;
+        if (outcome.status !== "recorded") continue;
+        reasons.push(`technical_checks:${outcome.result.status}`);
         continue;
       }
       if (!reviewPassed) {
-        const result = await this.runRole(run, "independent_review");
-        await this.recordRoleResult(run, "independent_review", result, {
-          finalizedArtifact: false,
-        });
-        reasons.push(`independent_review:${result.status}`);
+        const outcome = await this.runClaimedStage(run, "independent_review", (claim) =>
+          this.runRole(run, "independent_review", claim),
+        );
+        const terminal = this.claimOutcomeResult(run, outcome, reasons, null);
+        if (terminal) return terminal;
+        if (outcome.status !== "recorded") continue;
+        reasons.push(`independent_review:${outcome.result.status}`);
         continue;
       }
 
       // Both child-profile stages passed for this candidate. Publish the child PR,
       // read required remote CI and merge only when the fresh target/lineage proof
       // succeeds. Conflicts, drift, missing/failed CI and unverified merges hold.
+      this.assertInstallationReady();
+      if (this.isStopped(run)) {
+        return {
+          projectId,
+          runId: run.id,
+          action: "stopped",
+          state: null,
+          reasons: [...reasons, "stopped_before_integration"],
+        };
+      }
       const landed = await this.options.integration.land(projectId, run.id, {
         actor: "delivery-runtime",
       });
@@ -517,6 +587,126 @@ export class DeliveryRuntimeCoordinator {
       state: null,
       reasons: [...reasons, "correction_budget_exhausted"],
     };
+  }
+
+  /**
+   * Execute one delivery stage under a durable run/stage/lap claim. The claim is
+   * written before the external role transport or check process starts, so a
+   * second supported tick observes it and returns without executing. The result
+   * observation is fenced by the claim's unique attempt key; the claim is
+   * completed only after the observation is durable.
+   */
+  private async runClaimedStage(
+    run: RuntimeRunRow,
+    stage: DeliveryClaimStage,
+    execute: (claim: DeliveryRoleClaim) => Promise<DeliveryRuntimeRoleResult | null>,
+  ): Promise<ClaimedStageOutcome> {
+    const acquired = this.claims.acquire({
+      projectId: run.project_id,
+      deliveryId: run.delivery_id,
+      runId: run.id,
+      lap: run.lap,
+      stage,
+      candidateHeadSha: run.head_sha ?? run.base_sha,
+    });
+    if (acquired.status === "already_running") {
+      return { status: "already_running", stage, reason: acquired.reason };
+    }
+    if (acquired.status === "terminal") {
+      return {
+        status: "terminal",
+        stage,
+        observationId: acquired.claim.resultObservationId,
+      };
+    }
+
+    const claim = acquired.claim;
+    const stopHeartbeat = this.claims.startHeartbeat(claim);
+    try {
+      // Revalidate the gate inputs before the external effect, not only at entry.
+      this.assertInstallationReady();
+      if (this.isStopped(run)) {
+        this.claims.interrupt(claim, "stopped_before_stage_effect");
+        return { status: "stopped", stage };
+      }
+      const result = await execute(claim);
+      if (result === null) {
+        this.claims.interrupt(claim, "stage_prerequisite_unavailable");
+        return { status: "unavailable", stage, reason: "stage_prerequisite_unavailable" };
+      }
+      // A role may run for a long time: revalidate the fence and control state
+      // before recording or releasing anything.
+      this.assertInstallationReady();
+      const stillOwned = this.claims.isCurrent(claim);
+      const recorded = await this.recordRoleResult(run, stage, result, {
+        attemptKey: claim.attemptKey,
+      });
+      this.claims.complete(
+        claim,
+        result.status === "passed" ? "completed" : "failed",
+        recorded.observationId,
+        result.status === "passed" ? null : result.summary || `${stage} ${result.status}`,
+      );
+      if (!stillOwned) {
+        // A stale owner's result is still persisted (so a late failure revokes an
+        // older pass), but this tick must not advance publication/merge.
+        return { status: "stale", stage };
+      }
+      if (this.isStopped(run)) {
+        return { status: "stopped", stage };
+      }
+      return { status: "recorded", stage, observationId: recorded.observationId, result };
+    } catch (error) {
+      this.claims.interrupt(claim, error instanceof Error ? error.message : String(error));
+      throw error;
+    } finally {
+      stopHeartbeat();
+    }
+  }
+
+  private claimOutcomeResult(
+    run: RuntimeRunRow,
+    outcome: ClaimedStageOutcome,
+    reasons: string[],
+    state: DeliveryGateState | null,
+  ): DeliveryRuntimeResult | null {
+    switch (outcome.status) {
+      case "recorded":
+      case "terminal":
+        return null;
+      case "already_running":
+        return {
+          projectId: run.project_id,
+          runId: run.id,
+          action: "already_claimed",
+          state,
+          reasons: [...reasons, `stage_claimed:${outcome.stage}:${outcome.reason}`],
+        };
+      case "stale":
+        return {
+          projectId: run.project_id,
+          runId: run.id,
+          action: "skipped",
+          state,
+          reasons: [...reasons, `stage_claim_stale:${outcome.stage}`],
+        };
+      case "stopped":
+        return {
+          projectId: run.project_id,
+          runId: run.id,
+          action: "stopped",
+          state,
+          reasons: [...reasons, `stopped_during_stage:${outcome.stage}`],
+        };
+      case "unavailable":
+        return {
+          projectId: run.project_id,
+          runId: run.id,
+          action: "failed",
+          state,
+          reasons: [...reasons, `${outcome.stage}_unavailable`],
+        };
+    }
   }
 
   private failingStageFindings(run: RuntimeRunRow): DeliveryRuntimeFinding[] {
@@ -643,17 +833,21 @@ export class DeliveryRuntimeCoordinator {
   private async runRole(
     run: RuntimeRunRow,
     stage: "independent_review",
+    claim?: DeliveryRoleClaim,
   ): Promise<DeliveryRuntimeRoleResult> {
     this.assertInstallationReady();
-    const request = this.roleRequest(run, stage);
+    const request = this.roleRequest(run, stage, claim);
     return this.executor(request);
   }
 
-  private async runAcceptance(run: RuntimeRunRow): Promise<DeliveryRuntimeRoleResult> {
+  private async runAcceptance(
+    run: RuntimeRunRow,
+    claim?: DeliveryRoleClaim,
+  ): Promise<DeliveryRuntimeRoleResult> {
     this.assertInstallationReady();
-    const request = this.roleRequest(run, "final_acceptance");
+    const request = this.roleRequest(run, "final_acceptance", claim);
     const result = await this.executor(request);
-    const regression = await this.runRegressionChecks(run);
+    const regression = await this.runRegressionChecks(run, claim);
     const checks = [...result.checks, regression.check];
     const findings = [...result.findings];
     if (regression.check.result === "FAIL") {
@@ -670,13 +864,18 @@ export class DeliveryRuntimeCoordinator {
       status,
       checks,
       findings: status === "passed" ? [] : findings,
-      rawReport: { report: result.rawReport, regression },
+      rawReport: { report: result.rawReport, regression: regression.raw },
     };
   }
 
   private async runRegressionChecks(
     run: RuntimeRunRow,
-  ): Promise<{ check: DeliveryRuntimeCheck; detail: string }> {
+    claim?: DeliveryRoleClaim,
+  ): Promise<{
+    check: DeliveryRuntimeCheck;
+    detail: string;
+    raw: { commands: string[]; runs: RawCommandRun[] };
+  }> {
     this.assertInstallationReady();
     let commands = this.options.regressionChecks;
     if (!commands) {
@@ -693,18 +892,19 @@ export class DeliveryRuntimeCoordinator {
             detail,
           },
           detail,
+          raw: { commands: [], runs: [] },
         };
       }
     }
     const failures: string[] = [];
+    const runs: RawCommandRun[] = [];
     const worktreePath = this.worktreePath(run);
     for (const command of commands) {
-      const result = await processRun(["sh", "-c", command], worktreePath, 30_000, undefined, {
-        manageSignals: false,
-      });
-      if (result.exitCode !== 0 || result.timedOut) {
+      const executed = await this.runCheckCommand(command, worktreePath, claim);
+      runs.push(executed);
+      if (executed.exitCode !== 0 || executed.timedOut) {
         failures.push(
-          `${command} (exit ${result.exitCode}${result.timedOut ? ", timed out" : ""})`,
+          `${command} (exit ${executed.exitCode}${executed.timedOut ? ", timed out" : ""})`,
         );
       }
     }
@@ -717,15 +917,22 @@ export class DeliveryRuntimeCoordinator {
         ...(failures.length > 0 ? { detail: failures.join("; ") } : {}),
       },
       detail: failures.join("; "),
+      raw: { commands, runs },
     };
   }
 
   /**
    * Execute the repository's declared technical/contract checks against the real
    * candidate worktree. Exit status is the only pass signal; a missing declaration
-   * returns null so the caller holds instead of inventing a pass.
+   * returns null so the caller holds instead of inventing a pass. Each configured
+   * command gets a deterministic ordinal+kind check identity so two commands (or two
+   * intentionally identical commands) remain distinct rows under the observation's
+   * `UNIQUE(observation_id, name)` key instead of aborting the whole observation.
    */
-  private async runTechnicalChecks(run: RuntimeRunRow): Promise<DeliveryRuntimeRoleResult | null> {
+  private async runTechnicalChecks(
+    run: RuntimeRunRow,
+    claim?: DeliveryRoleClaim,
+  ): Promise<DeliveryRuntimeRoleResult | null> {
     this.assertInstallationReady();
     let commands = this.options.technicalChecks;
     if (!commands) {
@@ -740,21 +947,22 @@ export class DeliveryRuntimeCoordinator {
     const worktreePath = this.worktreePath(run);
     const checks: DeliveryRuntimeCheck[] = [];
     const failures: string[] = [];
-    for (const command of commands) {
-      const result = await processRun(["sh", "-c", command], worktreePath, 30_000, undefined, {
-        manageSignals: false,
-      });
-      const passed = result.exitCode === 0 && !result.timedOut;
+    const runs: RawCommandRun[] = [];
+    for (let index = 0; index < commands.length; index += 1) {
+      const command = commands[index]!;
+      const executed = await this.runCheckCommand(command, worktreePath, claim);
+      runs.push(executed);
+      const passed = executed.exitCode === 0 && !executed.timedOut;
       const detail = passed
         ? undefined
-        : `exit ${result.exitCode}${result.timedOut ? ", timed out" : ""}`;
-      checks.push({
-        name: "declared technical/contract check",
+        : `exit ${executed.exitCode}${executed.timedOut ? ", timed out" : ""}`;
+      checks[index] = {
+        name: `declared technical/contract check #${index + 1}`,
         command,
         result: passed ? "PASS" : "FAIL",
         kind: "contract",
         ...(detail ? { detail } : {}),
-      });
+      };
       if (!passed) {
         failures.push(`${command} (${detail})`);
       }
@@ -775,7 +983,31 @@ export class DeliveryRuntimeCoordinator {
                 summary: `Declared technical/contract checks failed: ${failures.join("; ")}`,
               },
             ],
-      rawReport: { commands, checks },
+      rawReport: { commands, checks, runs },
+    };
+  }
+
+  private async runCheckCommand(
+    command: string,
+    cwd: string,
+    claim?: DeliveryRoleClaim,
+  ): Promise<RawCommandRun> {
+    const result = await processRun(["sh", "-c", command], cwd, 30_000, undefined, {
+      manageSignals: false,
+      ...(claim
+        ? {
+            onSpawn: (pid: number) => {
+              this.claims.recordRoleProcess(claim, pid, pid);
+            },
+          }
+        : {}),
+    });
+    return {
+      command,
+      exitCode: result.exitCode,
+      timedOut: Boolean(result.timedOut),
+      stdout: boundRawStream(result.stdout),
+      stderr: boundRawStream(result.stderr),
     };
   }
 
@@ -783,8 +1015,8 @@ export class DeliveryRuntimeCoordinator {
     run: RuntimeRunRow,
     stage: "technical_checks" | "independent_review" | "final_acceptance",
     result: DeliveryRuntimeRoleResult,
-    options: { finalizedArtifact?: boolean } = {},
-  ): Promise<DeliveryRuntimeFinding[]> {
+    options: { finalizedArtifact?: boolean; attemptKey?: string } = {},
+  ): Promise<{ observationId: string }> {
     this.assertInstallationReady();
     const producer = this.ensureProducer(
       run,
@@ -861,15 +1093,13 @@ export class DeliveryRuntimeCoordinator {
           ]
         : [],
     };
-    this.options.observations.recordRunObservation(run.project_id, run.id, submission);
-    return (submission.findings ?? []).map((finding, index) => ({
-      id: `pending-${index}`,
-      severity: finding.severity,
-      acKey: finding.acKey ?? null,
-      fileContext: finding.fileContext,
-      summary: finding.summary,
-      actor: run.actor,
-    }));
+    const observation = this.options.observations.recordRunObservation(
+      run.project_id,
+      run.id,
+      submission,
+      options.attemptKey ? { attemptKey: options.attemptKey } : {},
+    );
+    return { observationId: observation.id };
   }
 
   private ensureProducer(
@@ -886,6 +1116,7 @@ export class DeliveryRuntimeCoordinator {
   private roleRequest(
     run: RuntimeRunRow,
     stage: "independent_review" | "final_acceptance",
+    claim?: DeliveryRoleClaim,
   ): DeliveryRuntimeRoleRequest {
     return {
       projectId: run.project_id,
@@ -903,6 +1134,13 @@ export class DeliveryRuntimeCoordinator {
       acceptanceCriteria: this.acceptanceCriteria(run),
       findings: this.openBlockingFindings(run),
       runDirectory: join(this.artifactRoot, run.project_id, "runtime", run.id),
+      ...(claim
+        ? {
+            onSpawn: (pid: number) => {
+              this.claims.recordRoleProcess(claim, pid, pid);
+            },
+          }
+        : {}),
     };
   }
 
@@ -952,14 +1190,18 @@ export class DeliveryRuntimeCoordinator {
 export function createDeliveryRoleExecutor(
   engine: DeliveryRuntimeEngine,
 ): DeliveryRuntimeRoleExecutor {
-  const transport: AgentTransport =
+  const baseTransport: AgentTransport =
     engine.transport ??
     ((request) =>
       processRun(request.argv, request.cwd, request.timeoutMs, request.env, {
         manageSignals: false,
+        ...(request.onSpawn ? { onSpawn: request.onSpawn } : {}),
       }));
 
   return async (request) => {
+    const transport: AgentTransport = request.onSpawn
+      ? (transportRequest) => baseTransport({ ...transportRequest, onSpawn: request.onSpawn })
+      : baseTransport;
     const role: LoopRole = request.stage === "independent_review" ? "reviewer" : "qa";
     const provider = engine.provider ?? resolveProviderForRole(request.projectRoot, role);
     const model = engine.model ?? resolveModelForRole(request.projectRoot, role) ?? "small";
@@ -988,10 +1230,16 @@ export function createDeliveryRoleExecutor(
       candidate: request.candidateHeadSha,
       optionsOverride: { requiredAcIds: request.acceptanceCriteria },
     });
+    const rawReport = {
+      report: result.report,
+      rawStdout: boundRawStream(result.rawStdout),
+      artifact: result.artifact,
+      head: result.head,
+    };
     if (request.stage === "independent_review") {
-      return reviewResult(result.report);
+      return { ...reviewResult(result.report), rawReport };
     }
-    return acceptanceResult(request, result.report);
+    return { ...acceptanceResult(request, result.report), rawReport };
   };
 }
 

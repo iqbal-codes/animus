@@ -7,6 +7,7 @@ import { ExecutionBudgetService } from "./work/budget";
 import { PublicationService } from "./publication";
 import {
   DeliveryGateService,
+  DeliveryRoleClaimService,
   DeliveryRuntimeCoordinator,
   type DeliveryRuntimeEngine,
 } from "./delivery";
@@ -26,6 +27,8 @@ export interface LocalExecutionRuntimeOptions {
   regressionChecks?: string[];
   technicalChecks?: string[];
   maxCorrections?: number;
+  /** Durable run/stage claim shared by every supported tick. */
+  claims?: DeliveryRoleClaimService;
   gitRunner?: (cmd: string[], options: { cwd: string }) => string;
   /** Test/embedding override; production uses the coordinator built here. */
   deliveryRuntime?: DeliveryRuntimeCoordinator;
@@ -79,11 +82,13 @@ export function createLocalExecutionRuntime(
       : {}),
   });
 
+  const claims = options.claims ?? new DeliveryRoleClaimService(options.db);
   const delivery =
     options.deliveryRuntime ??
     new DeliveryRuntimeCoordinator(options.db, {
       gate,
       observations,
+      claims,
       dispatch: options.dispatch,
       budget,
       publication,

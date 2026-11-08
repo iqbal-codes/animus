@@ -20,6 +20,7 @@ import { DELIVERY_MIGRATIONS } from "../delivery/schema";
 import { RESTORE_MIGRATIONS } from "../restore/schema";
 import { CUTOVER_MIGRATIONS } from "../cutover/schema";
 import { FINAL_DELIVERY_MIGRATIONS } from "../final/schema";
+import { DELIVERY_CLAIM_MIGRATIONS } from "../delivery/claim-schema";
 import { applyMigrations, type Migration } from "./migrations";
 
 /**
@@ -34,8 +35,10 @@ import { applyMigrations, type Migration } from "./migrations";
  * owns version 8, standalone full-delivery gates (#159) own version 9,
  * approved-draft issue publication (#162) owns version 10, workspace
  * backup/restore (#164) owns versions 11 and 13, and final-spec delivery
- * coordination (#160) owns version 12. A future lane appends the next version
- * instead of claiming an existing one.
+ * coordination (#160) owns version 12, the authority cutover (#165) owns
+ * version 15, and the final-spec-review remediation owns version 16 for the
+ * durable delivery-role claim. Version 14 stays unassigned; a future lane
+ * appends the next version instead of claiming an existing one.
  */
 export const SCHEMA_MIGRATIONS: Migration[] = [
   ...WORK_MIGRATIONS,
@@ -51,6 +54,7 @@ export const SCHEMA_MIGRATIONS: Migration[] = [
   ...FINAL_DELIVERY_MIGRATIONS,
   ...RESTORE_MIGRATIONS.filter((migration) => migration.version > 12),
   ...CUTOVER_MIGRATIONS,
+  ...DELIVERY_CLAIM_MIGRATIONS,
 ];
 
 export function resolveStateDir(): string {

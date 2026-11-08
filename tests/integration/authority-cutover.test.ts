@@ -277,7 +277,7 @@ describe("authority cutover (#165)", () => {
 
     expect(first.stateDigest).toBe(second.stateDigest);
     expect(first.identityDigest).toBe(second.identityDigest);
-    expect(first.schemaVersion).toBe(15);
+    expect(first.schemaVersion).toBe(16);
     expect(first.artifacts.count).toBe(1);
     expect(first.held).toEqual([]);
     const tableNames = first.tables.map((table) => table.table);
