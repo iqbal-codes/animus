@@ -24,6 +24,7 @@ import { extractValidDiffLines } from "../../../../scripts/loop/pr-publication";
 import { validateHostedAssetUrl } from "../../../../scripts/loop/evidence-manager";
 import { processRun } from "../../../../scripts/loop/process";
 import type { ForgeAdapter, ForgePullRequest } from "../registry/forge";
+import { assertInstallationNotHeld } from "../restore/hold";
 import { PublicationError } from "./errors";
 
 interface TargetRow {
@@ -359,6 +360,7 @@ export class PublicationService {
 
   async publish(projectId: string, targetId: string): Promise<PublicationStatus> {
     return this.serialize(targetId, async () => {
+      this.assertInstallationReady();
       const target = this.loadTarget(projectId, targetId);
       if (target.state !== "no_candidate") {
         await this.reconcileTarget(target);
@@ -432,6 +434,23 @@ export class PublicationService {
       )
       .run(`pub_bind_${targetId}_${artifactId}`, targetId, projectId, artifactId, hostedUrl, now);
     return this.getStatus(projectId, targetId);
+  }
+
+  /**
+   * A restored installation disables every publication path until an operator
+   * records explicit ownership/external reconciliation. Local reads stay usable.
+   */
+  private assertInstallationReady(): void {
+    try {
+      assertInstallationNotHeld(this.db);
+    } catch (error) {
+      throw new PublicationError(
+        "publication_installation_held",
+        error instanceof Error
+          ? error.message
+          : "Restored installation is held pending reconciliation",
+      );
+    }
   }
 
   private async reconcileTarget(target: TargetRow): Promise<void> {

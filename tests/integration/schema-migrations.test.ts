@@ -19,6 +19,7 @@ const BUDGET_V6 = "execution_budgets_and_controls";
 const PUBLICATION_V7 = "publication_audit_outgoing_intents";
 const INTEGRATION_V8 = "child_gate_integration";
 const DRAFT_PUBLICATION_V10 = "approved_draft_issue_publication";
+const RESTORE_V11 = "workspace_backup_restore";
 
 const ALL_MIGRATIONS = [
   { version: 1, name: WORK_V1 },
@@ -31,6 +32,7 @@ const ALL_MIGRATIONS = [
   { version: 8, name: INTEGRATION_V8 },
   // Version 9 (#159) is reserved for its lane.
   { version: 10, name: DRAFT_PUBLICATION_V10 },
+  { version: 11, name: RESTORE_V11 },
 ];
 
 function tableExists(db: DatabaseSync, table: string): boolean {
@@ -162,7 +164,7 @@ describe("coherent schema migration registry", () => {
     const reopened = initializeDatabase(path);
     try {
       expect(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({
-        count: 9,
+        count: ALL_MIGRATIONS.length,
       });
     } finally {
       reopened.close();

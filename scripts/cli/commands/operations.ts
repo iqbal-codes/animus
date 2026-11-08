@@ -6,7 +6,12 @@ import { IntakeService } from "../../../apps/backend/src/intake";
 import { initializeDatabase } from "../../../apps/backend/src/registry";
 import { ProjectRegistryService } from "../../../apps/backend/src/registry/service";
 import { BrakeService } from "../../../apps/backend/src/command/brakes";
-import { resolveAnimusStateDir, resolveProjectWorkspace, evaluateWorkspacePreflight, resolveTriageStateRoot } from "../../../packages/contracts/src/paths";
+import {
+  resolveAnimusStateDir,
+  resolveProjectWorkspace,
+  evaluateWorkspacePreflight,
+  resolveTriageStateRoot,
+} from "../../../packages/contracts/src/paths";
 import type { RunTriagePassOptions, TriagePassResult } from "../../loop/triage";
 import {
   createRegistrationClient,
@@ -254,13 +259,7 @@ async function handleIntakeTriage(opts: IntakeCommandOptions): Promise<number> {
         ? "invalid_work_window_timezone"
         : "invalid_schedule_config";
       if (opts.json) {
-        console.log(
-          JSON.stringify(
-            { ok: false, action: "skipped", reason, error },
-            null,
-            2,
-          ),
-        );
+        console.log(JSON.stringify({ ok: false, action: "skipped", reason, error }, null, 2));
       } else {
         console.error(`Error: ${error}`);
       }
@@ -285,13 +284,7 @@ async function handleIntakeTriage(opts: IntakeCommandOptions): Promise<number> {
       }
 
       if (opts.json) {
-        console.log(
-          JSON.stringify(
-            { ok: false, action: "skipped", reason, error },
-            null,
-            2,
-          ),
-        );
+        console.log(JSON.stringify({ ok: false, action: "skipped", reason, error }, null, 2));
       } else {
         console.error(`Error: ${error}`);
       }
@@ -559,8 +552,7 @@ export async function runDraftCommand(
 
     if (sub === "refine") {
       const workId = opts.positionals[2];
-      if (!workId)
-        throw new Error("Usage: factory draft refine <work-id> --project <project-id>");
+      if (!workId) throw new Error("Usage: factory draft refine <work-id> --project <project-id>");
       const record = await scoped.refineDraft({
         work_id: workId,
         answers: parseDraftAnswers(opts.answers),
@@ -688,7 +680,9 @@ function printDraft(record: DraftRecord): void {
   );
   console.log(`  Source:      ${record.source_provenance.source_url}`);
   console.log(`  Source hash: ${record.source_content_hash}`);
-  console.log(`  Revision:    ${record.latest_revision.revision_number} (${record.latest_revision.id})`);
+  console.log(
+    `  Revision:    ${record.latest_revision.revision_number} (${record.latest_revision.id})`,
+  );
   console.log(`  Kind:        ${record.latest_revision.kind}`);
   console.log(`  Publishable: ${record.authorization.can_publish}`);
   console.log(`  Dispatch:    requires publication, read-back and execution admission`);
@@ -898,9 +892,7 @@ export async function runPlanCommand(
           `Usage: factory plan ${sub} <plan-id> --project <project-id> [--reason <text>] [--expected-sequence <n>]`,
         );
       }
-      const expectedSequence = opts.expectedSequence
-        ? Number(opts.expectedSequence)
-        : undefined;
+      const expectedSequence = opts.expectedSequence ? Number(opts.expectedSequence) : undefined;
       if (
         expectedSequence !== undefined &&
         (!Number.isSafeInteger(expectedSequence) || expectedSequence <= 0)
@@ -1004,10 +996,9 @@ export async function runPlanCommand(
       if (!runId) {
         throw new Error(`Usage: factory plan ${sub} <run-id> --project <project-id>`);
       }
-      const status =
-        opts.reconcile
-          ? await scoped.publishPublication(runId)
-          : await scoped.publication(runId);
+      const status = opts.reconcile
+        ? await scoped.publishPublication(runId)
+        : await scoped.publication(runId);
       if (opts.json) console.log(JSON.stringify(status, null, 2));
       else printPublication(status);
       return 0;
@@ -1183,12 +1174,8 @@ function printRun(run: PlanDispatchRun, indent = ""): void {
   console.log(
     `${indent}${run.id}  #${run.issue_number}  ${run.gate_profile}  ${run.state}  lap=${run.lap}  gen=${run.ownership_generation}`,
   );
-  console.log(
-    `${indent}  Plan:      ${run.plan_id}  delivery=${run.delivery_id}`,
-  );
-  console.log(
-    `${indent}  Revision:  ${run.revision_id} (${run.content_hash})`,
-  );
+  console.log(`${indent}  Plan:      ${run.plan_id}  delivery=${run.delivery_id}`);
+  console.log(`${indent}  Revision:  ${run.revision_id} (${run.content_hash})`);
   console.log(
     `${indent}  Owner:     ${run.owner_pid ?? "none"}  target=${run.target_branch}  merge=${run.merge_policy}`,
   );
@@ -1240,7 +1227,9 @@ function printBudget(budget: DispatchRunDetail["budget"], indent: string): void 
   );
   if (budget.lastRejection) console.log(`${indent}  Last rejection: ${budget.lastRejection}`);
   if (budget.retainedWorktreePath) {
-    console.log(`${indent}  Retained:  ${budget.retainedWorktreePath} branch=${budget.retainedBranch}`);
+    console.log(
+      `${indent}  Retained:  ${budget.retainedWorktreePath} branch=${budget.retainedBranch}`,
+    );
   }
 }
 
@@ -1354,7 +1343,8 @@ function printPublication(status: PublicationStatus): void {
     `  Audit:      ${status.publishedEventCount} published / ${status.queuedEventCount} queued; failed=${status.failedIntentCount} unknown=${status.unknownIntentCount}`,
   );
   if (target.lastError) console.log(`  Last error: ${target.lastError}`);
-  if (status.remoteStale) console.log("  REMOTE:     PR head/base no longer matches the candidate; evidence is stale");
+  if (status.remoteStale)
+    console.log("  REMOTE:     PR head/base no longer matches the candidate; evidence is stale");
   if (status.events.length > 0) {
     console.log(`  Events (${status.events.length}):`);
     for (const event of status.events) {
@@ -1379,7 +1369,9 @@ function printPlan(plan: PlanRecord): void {
   console.log(`Plan ${plan.id} (${plan.kind})`);
   console.log(`  Authority:  ${plan.authority}`);
   console.log(`  Dispatch:   ${plan.dispatchable ? "eligible" : "held"}`);
-  console.log(`  Root:       #${plan.members.find((m) => m.work_id === plan.root_work_id)?.issue_number ?? "?"}`);
+  console.log(
+    `  Root:       #${plan.members.find((m) => m.work_id === plan.root_work_id)?.issue_number ?? "?"}`,
+  );
   console.log(`  Graph:      ${plan.graph_hash}`);
   console.log(`  Delivery:   ${plan.delivery_branch}`);
   console.log(`  Integration:${plan.integration_branch ? ` ${plan.integration_branch}` : " none"}`);
@@ -1512,6 +1504,139 @@ export async function runProjectCommand(
     );
   } catch (err: unknown) {
     const msg = registrationErrorMessage(err);
+    if (opts.json) console.log(JSON.stringify({ ok: false, error: msg }));
+    else console.error(`Error: ${msg}`);
+    return 1;
+  }
+}
+
+export async function runBackupCommand(
+  opts: FactoryConnectionOptions & {
+    subcommand?: string;
+    positionals: string[];
+    destination?: string;
+    targetStateDir?: string;
+    targetHome?: string;
+    reason?: string;
+    actor?: string;
+    json?: boolean;
+  },
+): Promise<number> {
+  const sub = opts.subcommand ?? "status";
+  try {
+    const client = createRegistrationClient(opts);
+
+    if (sub === "status") {
+      const status = await client.backupStatus();
+      if (opts.json) {
+        console.log(JSON.stringify(status, null, 2));
+      } else if (!status.lastBackup) {
+        console.log("No completed workspace backup recorded.");
+        console.log(`Credentials in backup: no. ${status.credentials.note}`);
+      } else {
+        console.log(`Last backup: ${status.lastBackup.destinationPath}`);
+        console.log(`  Status:       ${status.lastBackup.status}`);
+        console.log(`  Restorable:   ${status.restorable ? "yes" : "no"}`);
+        console.log(`  Created:      ${new Date(status.lastBackup.createdAt).toISOString()}`);
+        console.log(`  Schema:       v${status.lastBackup.schemaVersion}`);
+        console.log(`  Artifacts:    ${status.artifactCount}`);
+        console.log(`  DB SHA-256:   ${status.lastBackup.databaseSha256}`);
+        if (status.reasons.length > 0) {
+          console.log(`  Problems:     ${status.reasons.join(", ")}`);
+        }
+        console.log(`  Credentials:  not included. ${status.credentials.note}`);
+        console.log(`  Limitation:   ${status.sameDiskWarning}`);
+      }
+      return 0;
+    }
+
+    if (sub === "create") {
+      const destination = opts.destination ?? opts.positionals[2];
+      if (!destination) {
+        throw new Error("Usage: animus backup create <destination> [--actor <name>]");
+      }
+      const result = await client.createWorkspaceBackup({
+        destinationPath: destination,
+        ...(opts.actor ? { actor: opts.actor } : {}),
+      });
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(`Verified workspace backup written to ${result.destinationPath}`);
+        console.log(`  Schema v${result.schemaVersion}; ${result.artifactCount} artifact(s)`);
+        console.log(`  Manifest SHA-256: ${result.manifestHash}`);
+        console.log(`  Database SHA-256: ${result.databaseSha256}`);
+        console.log("  Credentials are not included; reconfigure them in a restored home.");
+      }
+      return 0;
+    }
+
+    if (sub === "restore") {
+      const source = opts.positionals[2];
+      const targetStateDir = opts.targetStateDir;
+      if (!source || !targetStateDir) {
+        throw new Error(
+          "Usage: animus backup restore <source> --target-state-dir <path> [--target-home <path>] [--actor <name>]",
+        );
+      }
+      const result = await client.restoreWorkspace({
+        sourcePath: source,
+        targetStateDir,
+        ...(opts.targetHome ? { targetHome: opts.targetHome } : {}),
+        ...(opts.actor ? { actor: opts.actor } : {}),
+      });
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        const report = result.operation.report as Record<string, unknown>;
+        console.log(`Restored workspace into ${result.operation.targetStateDir}`);
+        console.log(`  Held:                 ${result.installation.held ? "yes" : "no"}`);
+        console.log(`  Interrupted runs:     ${report.interruptedRunCount ?? 0}`);
+        console.log(`  Held controls:        ${report.heldControlCount ?? 0}`);
+        console.log(`  Pending publications: ${report.pendingPublicationIntentCount ?? 0}`);
+        console.log("  Dispatch and publication are disabled until explicit reconciliation.");
+        console.log("  Live processes and uncommitted worktree edits are not resumed.");
+      }
+      return 0;
+    }
+
+    if (sub === "restores") {
+      const status = await client.restoreStatus(opts.targetStateDir);
+      if (opts.json) {
+        console.log(JSON.stringify(status, null, 2));
+      } else if (!status.installation.held) {
+        console.log("No held restored installation.");
+      } else {
+        console.log("Restored installation is HELD pending reconciliation.");
+        console.log(`  Restored at:          ${status.installation.restoredAt ?? "unknown"}`);
+        console.log(`  Interrupted runs:     ${status.heldRunCount}`);
+        console.log(`  Pending publications: ${status.pendingPublicationIntentCount}`);
+      }
+      return 0;
+    }
+
+    if (sub === "reconcile") {
+      const status = await client.reconcileRestore(
+        {
+          actor: opts.actor ?? "operator",
+          reason: opts.reason ?? "Operator reconciled ownership and pending external effects",
+        },
+        opts.targetStateDir,
+      );
+      if (opts.json) {
+        console.log(JSON.stringify(status, null, 2));
+      } else {
+        console.log("Restored installation reconciliation recorded.");
+        console.log(`  Held: ${status.installation.held ? "yes" : "no"}`);
+      }
+      return 0;
+    }
+
+    throw new Error(
+      `Unknown backup subcommand: ${sub}. Expected status, create, restore, restores, or reconcile.`,
+    );
+  } catch (err: any) {
+    const msg = err?.message ?? String(err);
     if (opts.json) console.log(JSON.stringify({ ok: false, error: msg }));
     else console.error(`Error: ${msg}`);
     return 1;

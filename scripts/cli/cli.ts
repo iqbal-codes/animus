@@ -8,6 +8,7 @@ import { runServeCommand, runStandaloneBackend, runStatusCommand } from "./comma
 import { runEngineCommand, runLapCommand } from "./commands/engine";
 import { runDoctorCommand } from "./commands/doctor";
 import {
+  runBackupCommand,
   runCommandLedgerCli,
   runControlCommand,
   runIntakeCommand,
@@ -333,6 +334,21 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         name: values.name,
         path: values.path,
         repo: values.repo,
+        factoryUrl: values["factory-url"],
+        factoryToken: values["factory-token"],
+        json: values.json,
+      });
+
+    case "backup":
+    case "backups":
+      return await runBackupCommand({
+        subcommand,
+        positionals,
+        destination: values.destination,
+        targetStateDir: values["target-state-dir"],
+        targetHome: values["target-home"],
+        reason: values.reason,
+        actor: values.actor,
         factoryUrl: values["factory-url"],
         factoryToken: values["factory-token"],
         json: values.json,

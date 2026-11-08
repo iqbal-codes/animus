@@ -16,6 +16,7 @@ import { WORK_MIGRATIONS } from "../work/db";
 import { BUDGET_MIGRATIONS } from "../work/budget-schema";
 import { DRAFT_MIGRATIONS } from "../draft/db";
 import { DISPATCH_MIGRATIONS } from "../dispatch/db";
+import { RESTORE_MIGRATIONS } from "../restore/schema";
 import { applyMigrations, type Migration } from "./migrations";
 
 /**
@@ -28,8 +29,9 @@ import { applyMigrations, type Migration } from "./migrations";
  * bounded attempt budgets/operator controls (#156) owns version 6, PR
  * publication audit (#157) owns version 7, and child gate integration (#158)
  * owns version 8. Version 9 (#159 final delivery) remains reserved for its
- * lane. Approved-draft issue publication (#162) owns version 10. A future lane
- * appends the next version instead of claiming an existing one.
+ * lane. Approved-draft issue publication (#162) owns version 10, and workspace
+ * backup/restore (#164) owns version 11. A future lane appends the next version
+ * instead of claiming an existing one.
  */
 export const SCHEMA_MIGRATIONS: Migration[] = [
   ...WORK_MIGRATIONS,
@@ -40,6 +42,7 @@ export const SCHEMA_MIGRATIONS: Migration[] = [
   ...PUBLICATION_MIGRATIONS,
   ...INTEGRATION_MIGRATIONS,
   ...DRAFT_PUBLICATION_MIGRATIONS,
+  ...RESTORE_MIGRATIONS,
 ];
 
 export function resolveStateDir(): string {
