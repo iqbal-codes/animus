@@ -2,8 +2,9 @@ import type { Migration } from "../registry/migrations";
 
 /**
  * Workspace backup/restore (#164) owns version 11 in the one ordered registry.
- * Versions 8-10 are reserved for the concurrent delivery lanes, so this module
- * appends 11 rather than claiming one of those numbers inside feature code.
+ * Child gate integration (#158) owns 8, final delivery (#159) keeps 9 reserved,
+ * and approved-draft issue publication (#162) owns 10. This module appends 11
+ * rather than claiming one of those numbers inside feature code.
  */
 export const RESTORE_MIGRATIONS: Migration[] = [
   {
