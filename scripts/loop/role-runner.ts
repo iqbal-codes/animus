@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { git, inspectLocalLoop } from "./worktree";
 import { buildProviderArgv, supportsSessionResume } from "./providers";
@@ -193,7 +193,7 @@ export async function runBoundedRole(opts: BoundedRoleOptions): Promise<BoundedR
 
     const finishedAt = Date.now();
     const artifact = join(runDirectory, `${role}-attempt-${attempt}.json`);
-    await Bun.write(
+    await writeFile(
       artifact,
       JSON.stringify({ ...result, attempt, softDeadline, hardDeadline, finishedAt }),
     );
@@ -234,8 +234,8 @@ export async function runBoundedRole(opts: BoundedRoleOptions): Promise<BoundedR
       const previous = existsSync(checkpointPath)
         ? readFileSync(checkpointPath, "utf8")
         : `# Interrupted ${role} checkpoint`;
-      await Bun.write(checkpointPath, previous + facts);
-      await Bun.write(
+      await writeFile(checkpointPath, previous + facts);
+      await writeFile(
         join(handoffDir, `${role}-attempt-${attempt}-checkpoint.md`),
         previous + facts,
       );

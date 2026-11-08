@@ -23,6 +23,11 @@ export interface LocalDispatchTickResult {
   issueNumber?: number;
   detail?: string;
   error?: string;
+  delivery?: unknown;
+}
+
+export interface LocalDispatchDeliveryRuntime {
+  process(projectId: string, runId: string): Promise<unknown>;
 }
 
 export interface LocalDispatchTickOptions {
@@ -34,6 +39,8 @@ export interface LocalDispatchTickOptions {
   dryRun?: boolean;
   /** Restrict the tick to one project (the monitor ticks per project). */
   projectId?: string;
+  /** Normal delivery runtime: independent QA/review and bounded correction after a standalone/final build. */
+  deliveryRuntime?: LocalDispatchDeliveryRuntime;
 }
 
 function planSkipReason(error: DispatchError): LocalDispatchSkipReason | "continue" {
@@ -114,6 +121,20 @@ export async function runLocalDispatchTick(
           actor: options.actor ?? "scheduler",
           scheduled: true,
         });
+        let delivery: unknown;
+        if (
+          options.deliveryRuntime &&
+          (run.gate_profile === "standalone" || run.gate_profile === "final")
+        ) {
+          try {
+            delivery = await options.deliveryRuntime.process(project.id, run.id);
+          } catch (error) {
+            delivery = {
+              action: "failed",
+              reasons: [error instanceof Error ? error.message : String(error)],
+            };
+          }
+        }
         return {
           action: "launched",
           reason: "launch_successful",
@@ -121,6 +142,7 @@ export async function runLocalDispatchTick(
           planId: plan.id,
           runId: run.id,
           issueNumber: run.issue_number,
+          ...(delivery !== undefined ? { delivery } : {}),
         };
       } catch (error) {
         if (!(error instanceof DispatchError)) {

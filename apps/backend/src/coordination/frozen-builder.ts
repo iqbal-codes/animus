@@ -22,6 +22,7 @@ export interface FrozenBuilderOptions {
   issueNumber: number;
   specIssueNumber: number;
   contractBody: string;
+  findings?: Array<{ summary: string; fileContext: string; acKey?: string }>;
   runId: string;
   runDirectory: string;
   /** External model/process transport. Production defaults to the owned process runner. */
@@ -60,6 +61,19 @@ function builderPrompt(options: FrozenBuilderOptions): string {
     "",
     options.contractBody.trim(),
     "",
+    ...(options.findings && options.findings.length > 0
+      ? [
+          "## Blocking findings from the previous lap",
+          "",
+          "Correct every finding below with a fresh commit; do not re-litigate the contract.",
+          "",
+          ...options.findings.map(
+            (finding) =>
+              `- ${finding.acKey ? `[${finding.acKey}] ` : ""}${finding.fileContext}: ${finding.summary}`,
+          ),
+          "",
+        ]
+      : []),
     "## Execution rules",
     "",
     "- Work only inside this worktree and on the branch above.",

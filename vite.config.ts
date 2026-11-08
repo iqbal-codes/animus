@@ -67,6 +67,26 @@ export default defineConfig({
         },
       },
       {
+        // Delivery runtime reuses the existing bounded role runner and process
+        // transport instead of forking a second execution engine.
+        files: ["apps/backend/src/delivery/runtime.ts"],
+        rules: {
+          "no-restricted-imports": [
+            "error",
+            {
+              patterns: [
+                "@animus/backend",
+                "@animus/backend/*",
+                "@animus/engine-host",
+                "@animus/engine-host/*",
+                "**/apps/**",
+                "**/packages/**",
+              ],
+            },
+          ],
+        },
+      },
+      {
         // Publication reuses the existing evidence-body/PR-reporting helpers
         // instead of forking a second reporting convention.
         files: ["apps/backend/src/publication/**/*.{ts,tsx,js,jsx}"],

@@ -113,6 +113,12 @@ export class DispatchError extends Error {
   }
 }
 
+export interface DispatchFinding {
+  summary: string;
+  fileContext: string;
+  acKey?: string;
+}
+
 export interface DispatchRunnerContext {
   run_id: string;
   command_request_id: string;
@@ -133,6 +139,7 @@ export interface DispatchRunnerContext {
   target_branch: string;
   contract: FrozenContract;
   contract_body: string;
+  findings: DispatchFinding[];
 }
 
 export interface DispatchRunResult {
@@ -231,7 +238,10 @@ interface ClaimedRun {
   context: Omit<DispatchRunnerContext, "contract" | "contract_body">;
 }
 
-type DispatchSubmission = PlanDispatchSubmission & { scheduled?: boolean };
+type DispatchSubmission = PlanDispatchSubmission & {
+  scheduled?: boolean;
+  findings?: DispatchFinding[];
+};
 
 const ACTIVE_STATES = ["claimed", "dispatched", "running", "interrupted"] as const;
 const ACTIVE_SQL = "('claimed', 'dispatched', 'running', 'interrupted')";
@@ -276,6 +286,7 @@ function createDefaultRunner(engine: DispatchEngineOptions = {}): DispatchRunner
       issueNumber: context.issue_number,
       specIssueNumber: context.spec_issue_number,
       contractBody: context.contract_body,
+      findings: context.findings,
       runId: context.run_id,
       runDirectory: join(resolveAnimusStateDir(), "dispatch", context.run_id),
       transport: engine.transport,
@@ -449,6 +460,7 @@ export class DispatchService {
         scheduled: Boolean(submission.scheduled),
         explicit: Boolean(submission.work_id || submission.issue_number),
         runId: `run_${randomUUID()}`,
+        findings: submission.findings ?? [],
       });
     } catch (error) {
       if (error instanceof DispatchError) {
@@ -1380,6 +1392,7 @@ export class DispatchService {
     scheduled?: boolean;
     explicit?: boolean;
     runId: string;
+    findings?: DispatchFinding[];
   }): ClaimedRun {
     const {
       project,
@@ -1395,6 +1408,7 @@ export class DispatchService {
       scheduled,
       explicit,
       runId,
+      findings,
     } = input;
     const manifestRow = this.db
       .prepare("SELECT id FROM plan_manifests WHERE plan_id = ? AND graph_hash = ?")
@@ -1611,6 +1625,7 @@ export class DispatchService {
           worktree_path: run.worktree_path,
           base_sha: run.base_sha,
           target_branch: targetBranch,
+          findings: findings ?? [],
         },
       };
     } catch (error) {

@@ -152,6 +152,18 @@ const REQUIRED_STAGES: Record<PlanGateProfile, readonly ExecutionStage[]> = {
   final: ["final_acceptance"],
 };
 
+/**
+ * Independent stages that can authorize a delivery gate for each profile. The
+ * required stage above decides acceptance on its own; any other stage that is
+ * present (for example `final_acceptance` on a standalone run) is additionally
+ * treated as authorizing and re-verified when the gate consumes it.
+ */
+const AUTHORIZING_INDEPENDENT_STAGES: Record<PlanGateProfile, readonly ExecutionStage[]> = {
+  child: ["technical_checks"],
+  standalone: ["independent_review", "final_acceptance"],
+  final: ["independent_review", "final_acceptance"],
+};
+
 export interface ExecutionObservationServiceOptions {
   /** Root holding project-scoped finalized artifacts. Defaults to `<animus state>/artifacts`. */
   artifactRoot?: string;
@@ -302,6 +314,38 @@ export class ExecutionObservationService {
 
   private hashCredential(credential: string): string {
     return createHash("sha256").update(credential).digest("hex");
+  }
+
+  /**
+   * Host-boundary enrolment for runtime producers. Reuses an existing identity so
+   * a process restart does not lose the ability to record stage evidence, and
+   * refuses a role change for an already enrolled producer.
+   */
+  ensureTrustedProducer(projectId: string, input: ProducerRegistrationInput): ProducerIdentity {
+    const producerId = input.id.trim();
+    const existing = this.db
+      .prepare(
+        `SELECT role, producer_name FROM execution_producers
+         WHERE project_id = ? AND producer_id = ? AND revoked_at IS NULL`,
+      )
+      .get(projectId, producerId) as
+      | { role: ProducerRole; producer_name: string | null }
+      | undefined;
+    if (existing) {
+      if (existing.role !== input.role) {
+        throw new EvidenceError(
+          "producer_exists",
+          `Producer '${producerId}' is already enrolled with role '${existing.role}'`,
+          { producerId },
+        );
+      }
+      return {
+        id: producerId,
+        role: existing.role,
+        ...(existing.producer_name ? { name: existing.producer_name } : {}),
+      };
+    }
+    return this.registerTrustedProducer(projectId, input).producer;
   }
 
   // -------------------------------------------------------------------------
@@ -848,7 +892,7 @@ export class ExecutionObservationService {
         `SELECT o.* FROM execution_observations o
          JOIN dispatch_runs r ON r.id = o.run_id AND r.project_id = o.project_id
          WHERE ${clauses.join(" AND ")}
-         ORDER BY o.created_at ASC, o.id ASC`,
+         ORDER BY o.created_at ASC, o.rowid ASC`,
       )
       .all(...(params as never[])) as unknown as ObservationRow[];
     return rows.map((row) => this.mapObservation(row));
@@ -983,22 +1027,38 @@ export class ExecutionObservationService {
     const builderIdentity = builderObservation?.producer.id ?? run.actor;
     const builderIdentities = this.builderIdentities(projectId, run.delivery_id);
     const requiredStages = REQUIRED_STAGES[run.gate_profile];
+    const independentStages = Array.from(
+      new Set([...requiredStages, ...AUTHORIZING_INDEPENDENT_STAGES[run.gate_profile]]),
+    );
+    const latestByStage = new Map<ExecutionStage, ExecutionObservationRecord | null>();
+    for (const stage of independentStages) {
+      latestByStage.set(stage, this.latestObservation(projectId, run.id, stage));
+    }
     const independentObservations: Array<ExecutionObservationRecord | null> = [];
-    for (const requiredStage of requiredStages) {
-      const independentObservation = this.latestObservation(projectId, run.id, requiredStage);
-      independentObservations.push(independentObservation ?? null);
-      if (!independentObservation) {
-        reasons.push(`required_stage_missing:${requiredStage}`);
-      } else if (
-        independentObservation.producer.role === "builder" ||
-        builderIdentities.has(independentObservation.producer.id) ||
-        independentObservation.producer.id === builderIdentity
+    for (const stage of independentStages) {
+      const observation = latestByStage.get(stage) ?? null;
+      if (requiredStages.includes(stage)) independentObservations.push(observation);
+      if (!observation) {
+        if (requiredStages.includes(stage)) reasons.push(`required_stage_missing:${stage}`);
+        continue;
+      }
+      if (
+        observation.producer.role === "builder" ||
+        builderIdentities.has(observation.producer.id) ||
+        observation.producer.id === builderIdentity
       ) {
-        reasons.push(`self_certified_stage:${requiredStage}`);
-      } else if (independentObservation.status !== "passed") {
-        reasons.push(`required_stage_not_passed:${requiredStage}:${independentObservation.status}`);
+        reasons.push(`self_certified_stage:${stage}`);
+        continue;
+      }
+      if (observation.status !== "passed") {
+        reasons.push(`required_stage_not_passed:${stage}:${observation.status}`);
       }
     }
+
+    const authorizingObservations = [
+      builderObservation,
+      ...independentStages.map((stage) => latestByStage.get(stage) ?? null),
+    ].filter((observation): observation is ExecutionObservationRecord => observation !== null);
 
     const targetTipSha = this.currentTargetTip(run, reasons);
     const mergeBaseSha =
@@ -1012,8 +1072,7 @@ export class ExecutionObservationService {
       reasons.push("candidate_missing");
     }
 
-    for (const observation of [builderObservation, ...independentObservations]) {
-      if (!observation) continue;
+    for (const observation of authorizingObservations) {
       if (observation.gateProfileVersion !== GATE_PROFILE_VERSION) {
         reasons.push("gate_profile_version_stale");
       }
@@ -1032,8 +1091,7 @@ export class ExecutionObservationService {
     }
 
     const verifiedArtifactIds: string[] = [];
-    for (const observation of [builderObservation, ...independentObservations]) {
-      if (!observation) continue;
+    for (const observation of authorizingObservations) {
       for (const artifact of observation.artifacts) {
         const outcome = this.verifyArtifact(projectId, artifact);
         if (outcome === null) {
@@ -1229,7 +1287,7 @@ export class ExecutionObservationService {
     return row?.actor ?? "builder";
   }
 
-  private latestObservation(
+  latestObservation(
     projectId: string,
     runId: string,
     stage: ExecutionStage,

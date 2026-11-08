@@ -23,6 +23,7 @@ import { configuration, hostOrigin, type Configuration } from "./config";
 import { readExecutionAuthority } from "@animus/contracts/execution-authority";
 import { IntakeService, handleProjectIntakeRoute } from "./intake";
 import { WorkService, handleProjectWorkRoute } from "./work";
+import { ExecutionBudgetService } from "./work/budget";
 import { PlanService, handleProjectPlanRoute } from "./plans";
 import {
   DispatchService,
@@ -56,7 +57,11 @@ import {
 import { PublicationService, handleProjectPublicationRoute } from "./publication";
 import { ChildIntegrationService, handleProjectIntegrationRoute } from "./integration";
 import { DraftPublicationService, handleProjectDraftPublicationRoute } from "./publication";
-import { DeliveryGateService, handleProjectDeliveryRoute } from "./delivery";
+import {
+  DeliveryGateService,
+  DeliveryRuntimeCoordinator,
+  handleProjectDeliveryRoute,
+} from "./delivery";
 import { HarnessService, handleHarnessRoute } from "./harness";
 import {
   validateCsrfProtection,
@@ -94,6 +99,7 @@ export interface BackendAppOptions {
   forge?: ForgeAdapter;
   dispatch?: Omit<DispatchServiceOptions, "plans" | "ledger" | "brakes">;
   draftPlanner?: DraftPlanner;
+  deliveryRuntime?: DeliveryRuntimeCoordinator;
 }
 
 export interface BackendApp {
@@ -335,6 +341,16 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     forge: registryService.getForge(),
   });
 
+  const deliveryRuntime =
+    options?.deliveryRuntime ??
+    new DeliveryRuntimeCoordinator(registryService.getDb(), {
+      gate: deliveryService,
+      observations: evidenceService.observations,
+      dispatch: dispatchService,
+      budget: new ExecutionBudgetService(registryService.getDb()),
+      publication: publicationService,
+    });
+
   const monitorRuntime =
     options?.monitorRuntime ?? (await loadMonitorRuntime({ forge: options?.forge }));
   const monitorInterval =
@@ -354,6 +370,7 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
         plans: planService,
         dispatch: dispatchService,
         actor: "monitor",
+        deliveryRuntime,
       }),
   });
 

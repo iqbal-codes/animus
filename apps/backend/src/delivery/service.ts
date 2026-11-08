@@ -19,6 +19,7 @@ import {
   type PlanGateProfile,
 } from "@animus/contracts/operator";
 import type { ForgeAdapter, ForgePullRequest } from "../registry/forge";
+import { readRequiredChecks } from "../registry/required-checks";
 import type { ExecutionObservationService } from "../evidence";
 import {
   defaultGitRemote,
@@ -66,6 +67,19 @@ interface VerificationRow {
   merge_commit_sha: string | null;
   verified_at: number;
   verified_by: string;
+}
+
+interface RemoteMergeProof {
+  ok: boolean;
+  mergeCommitSha: string | null;
+  detail: string;
+  reason?: string;
+}
+
+interface RemoteCiCheck {
+  status: DeliveryGateStageStatus;
+  detail: string;
+  reasons: string[];
 }
 
 export interface DeliveryGateServiceOptions {
@@ -148,19 +162,59 @@ export class DeliveryGateService {
     const targetId = evaluated.publication.targetId;
     const pullRequestId = evaluated.publication.pullRequestId;
     const prNumber = evaluated.publication.prNumber;
-    const remoteTargetTipSha = evaluated.merge.remoteTargetTipSha;
-    if (!targetId || !pullRequestId || !prNumber || !remoteTargetTipSha) {
+    if (!targetId || !pullRequestId || !prNumber) {
       throw new DeliveryError(
         "delivery_merge_not_verified",
         "The remote merge lacks the exact target/PR/lineage binding required for delivery",
         { state: evaluated.state },
       );
     }
-    const headRefOid = evaluated.publication.headRefOid;
-    if (!evaluated.candidateHeadSha || !headRefOid) {
+    if (!evaluated.candidateHeadSha) {
       throw new DeliveryError(
         "delivery_merge_not_verified",
         "The remote merge lacks a verified candidate head",
+      );
+    }
+
+    // Re-read and re-prove the remote merge at write time. A transport-reported
+    // mergeCommitOid is never stored unless it is a real commit on the target
+    // lineage whose first parent is the tested target tip.
+    const run = this.loadRun(projectId, runId);
+    const acceptance = this.options.observations.evaluateAcceptance(projectId, runId);
+    const forge = this.options.forge;
+    if (typeof forge.getPullRequest !== "function") {
+      throw new DeliveryError(
+        "delivery_remote_unreadable",
+        "The forge transport cannot read the remote pull request",
+      );
+    }
+    const remote = await forge.getPullRequest(run.repo_name, prNumber);
+    if (!remote) {
+      throw new DeliveryError(
+        "delivery_merge_not_verified",
+        "The remote pull request is no longer readable",
+      );
+    }
+    if (String(remote.state).toUpperCase() !== "MERGED") {
+      throw new DeliveryError(
+        "delivery_gate_unsatisfied",
+        "The remote pull request is not merged",
+        { state: String(remote.state) },
+      );
+    }
+    const remoteTargetTipSha = await this.fetchRemoteTargetTip(run);
+    const proof = this.verifyRemoteMerge(run, acceptance, remote, remoteTargetTipSha);
+    if (!proof.ok || !remoteTargetTipSha) {
+      throw new DeliveryError("delivery_merge_not_verified", proof.detail, {
+        reason: proof.reason ?? "merge_commit_unverified",
+      });
+    }
+    const headRefOid = remote.headRefOid ?? evaluated.publication.headRefOid;
+    if (!headRefOid || headRefOid !== run.head_sha) {
+      throw new DeliveryError(
+        "delivery_merge_not_verified",
+        "The remote merge head does not match the tested candidate",
+        { remoteHeadRefOid: headRefOid, candidateHeadSha: run.head_sha },
       );
     }
 
@@ -195,7 +249,7 @@ export class DeliveryGateService {
           evaluated.candidateHeadSha,
           headRefOid,
           remoteTargetTipSha,
-          evaluated.publication.mergeCommitOid,
+          proof.mergeCommitSha,
           verifiedAt,
           actor,
         );
@@ -222,11 +276,8 @@ export class DeliveryGateService {
       );
     }
     const acceptance = this.options.observations.evaluateAcceptance(projectId, runId);
-    const observations = this.options.observations.listObservations(projectId, { runId });
-    const latest = (stage: ExecutionStage): ExecutionObservationRecord | null => {
-      const matches = observations.filter((observation) => observation.stage === stage);
-      return matches.length > 0 ? matches[matches.length - 1]! : null;
-    };
+    const latest = (stage: ExecutionStage): ExecutionObservationRecord | null =>
+      this.options.observations.latestObservation(projectId, runId, stage);
     const builder = latest("builder_execution");
     const review = latest("independent_review");
     const finalAcceptance = latest("final_acceptance");
@@ -300,14 +351,9 @@ export class DeliveryGateService {
       [review, finalAcceptance],
       "regression",
     );
-    const remoteCiStage = this.requiredKindStage(
-      "remote_ci",
-      [review, finalAcceptance],
-      "remote_ci",
-    );
     const reviewStage = this.requiredKindStage("review", [review], "review");
-    stages.push(regressionStage, remoteCiStage, reviewStage);
-    for (const stage of [regressionStage, remoteCiStage, reviewStage]) {
+    stages.push(regressionStage, reviewStage);
+    for (const stage of [regressionStage, reviewStage]) {
       if (stage.status === "passed") continue;
       blockedReasons.add(stage.detail);
       reasons.add(stage.detail);
@@ -390,32 +436,63 @@ export class DeliveryGateService {
     const publicationComplete =
       publication.state === "published" ||
       (publication.auditComplete && publication.remoteState === "merged");
+    const remoteStateUpper = String(remote?.state ?? "").toUpperCase();
+
+    // Required remote CI is authoritative: read the target branch's branch-protection
+    // contexts and the check runs reported for this exact PR head. A producer-asserted
+    // `remote_ci` observation alone is never sufficient.
+    const remoteCi = await this.readRemoteCi(run, remote, publication);
+    const remoteCiStage: DeliveryGateStage = {
+      name: "remote_ci",
+      status: remoteCi.status,
+      detail: remoteCi.detail,
+      observationId: null,
+    };
+    stages.push(remoteCiStage);
+    for (const reason of remoteCi.reasons) {
+      blockedReasons.add(reason);
+      reasons.add(reason);
+    }
 
     let remoteTargetTipSha: string | null = null;
-    let lineageIncluded = false;
-    let lineageDetail: string | null = null;
-    if (remote && run.head_sha && String(remote.state).toUpperCase() === "MERGED") {
+    let targetTipUnavailable = false;
+    let mergeProof: RemoteMergeProof | null = null;
+    if (remote && remoteStateUpper !== "CLOSED") {
       remoteTargetTipSha = await this.fetchRemoteTargetTip(run);
       if (!remoteTargetTipSha) {
-        lineageDetail = "remote target tip is unreadable";
-      } else {
-        lineageIncluded = this.isAncestor(run, run.head_sha, remoteTargetTipSha);
-        lineageDetail = lineageIncluded
-          ? `candidate ${run.head_sha} is in remote ${run.target_branch} ${remoteTargetTipSha}`
-          : `candidate ${run.head_sha} is not in remote ${run.target_branch} ${remoteTargetTipSha}`;
+        targetTipUnavailable = true;
+        reasons.add("remote_target_unavailable");
       }
     }
+    if (
+      remote &&
+      remoteStateUpper !== "MERGED" &&
+      remoteStateUpper !== "CLOSED" &&
+      remoteTargetTipSha &&
+      acceptance.targetTipSha &&
+      remoteTargetTipSha !== acceptance.targetTipSha
+    ) {
+      staleReasons.add("stale_target_tip");
+      reasons.add("stale_target_tip");
+    }
+    if (remote && remoteStateUpper === "MERGED" && run.head_sha) {
+      mergeProof = this.verifyRemoteMerge(run, acceptance, remote, remoteTargetTipSha);
+    }
+
     const lineageStage: DeliveryGateStage = {
       name: "target_lineage",
       status:
-        String(remote?.state ?? "").toUpperCase() !== "MERGED"
+        remoteStateUpper !== "MERGED"
           ? "not_applicable"
-          : lineageIncluded
+          : mergeProof?.ok
             ? "passed"
             : remoteTargetTipSha
               ? "failed"
               : "missing",
-      detail: lineageDetail ?? "no merged remote target lineage to verify yet",
+      detail:
+        remoteStateUpper !== "MERGED"
+          ? "no merged remote target lineage to verify yet"
+          : (mergeProof?.detail ?? "remote target tip is unreadable"),
       observationId: null,
     };
     stages.push(lineageStage);
@@ -428,7 +505,9 @@ export class DeliveryGateService {
       reasons.add(remoteError);
     } else if (remoteDrift.length > 0) {
       state = "invalidated";
-    } else if (remote && String(remote.state).toUpperCase() === "CLOSED") {
+    } else if (targetTipUnavailable) {
+      state = "remote_unavailable";
+    } else if (remoteStateUpper === "CLOSED") {
       state = "closed_unmerged";
       reasons.add("remote_pull_request_closed_unmerged");
     } else if (staleReasons.size > 0) {
@@ -440,13 +519,13 @@ export class DeliveryGateService {
     } else if (!publicationComplete) {
       state = "awaiting_publication";
       reasons.add("publication_not_complete");
-    } else if (remote && String(remote.state).toUpperCase() === "MERGED") {
-      if (lineageIncluded) {
+    } else if (remoteStateUpper === "MERGED") {
+      if (mergeProof?.ok) {
         state = "awaiting_merge_verification";
         reasons.add("merge_verification_required");
       } else {
         state = "invalidated";
-        reasons.add("target_lineage_not_verified");
+        reasons.add(mergeProof?.reason ?? "target_lineage_not_verified");
       }
     } else if (!remote) {
       state = "blocked";
@@ -473,13 +552,13 @@ export class DeliveryGateService {
           remoteTargetTipSha: existing.remoteTargetTipSha,
           detail: `verified merge of PR #${existing.prNumber} into ${existing.targetBranch}`,
         }
-      : remote?.state?.toUpperCase() === "MERGED"
+      : remoteStateUpper === "MERGED"
         ? {
             state: "unverified",
             verified: false,
             verification: null,
             remoteTargetTipSha,
-            detail: lineageDetail ?? "remote merged; target lineage has not been verified",
+            detail: mergeProof?.detail ?? "remote merged; target lineage has not been verified",
           }
         : remote?.state?.toUpperCase() === "CLOSED"
           ? {
@@ -828,6 +907,179 @@ export class DeliveryGateService {
       verifiedAt: row.verified_at,
       verifiedBy: row.verified_by,
     });
+  }
+
+  private async readRemoteCi(
+    run: RunRow,
+    remote: ForgePullRequest | null,
+    publication: DeliveryGatePublication,
+  ): Promise<RemoteCiCheck> {
+    if (!publication.targetId || !publication.prNumber || !remote) {
+      return {
+        status: "not_applicable",
+        detail: "no published remote pull request to verify yet",
+        reasons: [],
+      };
+    }
+    const readback = await readRequiredChecks(
+      this.options.forge,
+      run.repo_name,
+      run.target_branch,
+      run.head_sha,
+    );
+    if (readback.blockers.length === 0) {
+      return {
+        status: "passed",
+        detail:
+          readback.required.length === 0
+            ? `no required remote checks configured for ${run.target_branch}`
+            : `required remote checks passed for ${run.head_sha}`,
+        reasons: [],
+      };
+    }
+    const reasons = new Set<string>();
+    for (const blocker of readback.blockers) {
+      reasons.add(
+        blocker.code === "unreadable" ? "remote_ci_unreadable" : `remote_ci_${blocker.code}`,
+      );
+    }
+    return {
+      status: "failed",
+      detail: readback.blockers
+        .map((blocker) =>
+          blocker.name
+            ? `remote_ci_${blocker.code}:${blocker.name}${
+                blocker.code === "pending"
+                  ? `:${blocker.status}`
+                  : blocker.code === "failed"
+                    ? `:${blocker.conclusion ?? "unknown"}`
+                    : ""
+              }`
+            : `remote_ci_${blocker.code}: ${blocker.message}`,
+        )
+        .join(", "),
+      reasons: [...reasons],
+    };
+  }
+
+  private verifyRemoteMerge(
+    run: RunRow,
+    acceptance: AcceptanceDecision,
+    remote: ForgePullRequest,
+    remoteTargetTipSha: string | null,
+  ): RemoteMergeProof {
+    const candidate = run.head_sha;
+    const testedTip = acceptance.targetTipSha;
+    if (!candidate) {
+      return {
+        ok: false,
+        mergeCommitSha: null,
+        reason: "candidate_missing",
+        detail: "the run has no recorded candidate head",
+      };
+    }
+    if (!remoteTargetTipSha) {
+      return {
+        ok: false,
+        mergeCommitSha: null,
+        reason: "remote_target_unavailable",
+        detail: "the remote target tip is unreadable",
+      };
+    }
+    if (!testedTip) {
+      return {
+        ok: false,
+        mergeCommitSha: null,
+        reason: "stale_target_tip",
+        detail: "the acceptance observation has no tested target tip",
+      };
+    }
+    if (!this.isAncestor(run, candidate, remoteTargetTipSha)) {
+      return {
+        ok: false,
+        mergeCommitSha: null,
+        reason: "target_lineage_not_verified",
+        detail: `candidate ${candidate} is not in remote ${run.target_branch} ${remoteTargetTipSha}`,
+      };
+    }
+
+    const reported = remote.mergeCommitOid ?? null;
+    if (
+      reported &&
+      this.commitExists(run, reported) &&
+      this.isAncestor(run, reported, remoteTargetTipSha)
+    ) {
+      const parents = this.commitParents(run, reported);
+      const [firstParent, secondParent] = parents;
+      if (firstParent !== testedTip) {
+        return {
+          ok: false,
+          mergeCommitSha: null,
+          reason: "merge_base_mismatch",
+          detail: `merge commit ${reported} first parent ${firstParent ?? "(none)"} is not the tested target tip ${testedTip}`,
+        };
+      }
+      if (secondParent !== candidate) {
+        return {
+          ok: false,
+          mergeCommitSha: null,
+          reason: "merge_candidate_mismatch",
+          detail: `merge commit ${reported} second parent ${secondParent ?? "(none)"} is not the candidate ${candidate}`,
+        };
+      }
+      return {
+        ok: true,
+        mergeCommitSha: reported,
+        detail: `merge commit ${reported} is on remote ${run.target_branch} ${remoteTargetTipSha} and merged candidate ${candidate} onto tested tip ${testedTip}`,
+      };
+    }
+
+    // Fast-forward: the candidate itself is the remote target tip. There is no
+    // merge commit to store, but its first parent must be the tested target tip.
+    if (remoteTargetTipSha === candidate) {
+      const parents = this.commitParents(run, candidate);
+      const firstParent = parents[0];
+      if (firstParent !== testedTip) {
+        return {
+          ok: false,
+          mergeCommitSha: null,
+          reason: "merge_base_mismatch",
+          detail: `fast-forward candidate parent ${firstParent ?? "(none)"} is not the tested target tip ${testedTip}`,
+        };
+      }
+      return {
+        ok: true,
+        mergeCommitSha: null,
+        detail: `candidate ${candidate} fast-forwarded onto tested target tip ${testedTip}`,
+      };
+    }
+
+    return {
+      ok: false,
+      mergeCommitSha: null,
+      reason: "merge_commit_unverified",
+      detail: reported
+        ? `reported merge commit ${reported} is not a verified commit on remote ${run.target_branch} ${remoteTargetTipSha}`
+        : `remote ${run.target_branch} advanced to ${remoteTargetTipSha} without a verifiable merge commit`,
+    };
+  }
+
+  private commitExists(run: RunRow, sha: string): boolean {
+    try {
+      this.gitRunner(["cat-file", "-e", `${sha}^{commit}`], run.checkout_path);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private commitParents(run: RunRow, sha: string): string[] {
+    const line = this.gitRunner(
+      ["rev-list", "--parents", "-n", "1", sha],
+      run.checkout_path,
+    ).trim();
+    const parts = line.split(/\s+/).filter(Boolean);
+    return parts.slice(1);
   }
 
   private async fetchRemoteTargetTip(run: RunRow): Promise<string | null> {

@@ -129,6 +129,13 @@ export interface ForgeLabel {
   description: string;
 }
 
+/** Result of reading a remote PR head's required CI checks. */
+export interface ForgeCheckRun {
+  name: string;
+  status: string;
+  conclusion: string | null;
+}
+
 export interface ForgeAdapter {
   listLabels?(repo: string): Promise<ForgeLabel[]>;
   createLabel?(repo: string, label: ForgeLabel): Promise<void>;
@@ -1215,38 +1222,6 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
       );
     }
   }
-
-  async mergePullRequest(
-    repo: string,
-    prNumber: number,
-    input?: MergePullRequestInput,
-  ): Promise<MergePullRequestResult> {
-    const cleanRepo = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
-    const [owner, name] = cleanRepo.split("/");
-    if (!owner || !name) throw new Error(`Invalid repository '${repo}'`);
-    const args = [
-      "api",
-      `repos/${owner}/${name}/pulls/${prNumber}/merge`,
-      "--method",
-      "PUT",
-      "-f",
-      `merge_method=${input?.mergeMethod ?? "merge"}`,
-    ];
-    if (input?.expectedHeadSha) args.push("-f", `sha=${input.expectedHeadSha}`);
-    try {
-      const output = await this.runner(["gh", ...args]);
-      const parsed = JSON.parse(output || "{}");
-      return {
-        merged: Boolean(parsed.merged),
-        ...(typeof parsed.sha === "string" ? { sha: parsed.sha } : {}),
-        ...(typeof parsed.message === "string" ? { message: parsed.message } : {}),
-      };
-    } catch (error: any) {
-      throw new Error(
-        `Failed to merge pull request ${prNumber} for ${cleanRepo}: ${error?.message || String(error)}`,
-      );
-    }
-  }
 }
 
 export interface SyntheticForgeOptions {
@@ -1306,6 +1281,7 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
   public failNextMerge = false;
   public failNextRequiredChecks = false;
   public failNextCheckRuns = false;
+  private mergeRemote?: (repo: string, pr: ForgePullRequest) => { sha: string } | null;
 
   constructor(
     initialRepos?: Record<string, number>,
@@ -1733,7 +1709,7 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
       this.failNextMerge = false;
       throw new Error("Synthetic forge pull request merge failed");
     }
-    const remote = this.options.mergeRemote?.(repo, { ...pr }) ?? null;
+    const remote = (this.mergeRemote ?? this.options.mergeRemote)?.(repo, { ...pr }) ?? null;
     if (!remote) {
       // The legacy landing-guard path injects no git transport. This synthetic
       // acknowledgement is never accepted by the child integration service, which
@@ -1768,6 +1744,9 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
     }));
   }
 
+  setMergeRemote(fn: (repo: string, pr: ForgePullRequest) => { sha: string } | null): void {
+    this.mergeRemote = fn;
+  }
   setRequiredStatusChecks(repo: string, branch: string, names: string[]): void {
     const key = repo.toLowerCase();
     let byBranch = this.requiredChecksByBranch.get(key);

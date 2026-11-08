@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import {
   initializeDatabase,
   ProjectRegistryService,
@@ -257,6 +257,48 @@ describe("standalone full-delivery gate and verified merge", () => {
     recordFinalAcceptance(runId);
   }
 
+  let cloneCounter = 0;
+
+  function cloneOrigin(label: string): string {
+    const dir = join(root, `${label}-${cloneCounter++}`);
+    execFileSync("git", ["clone", "-q", bareOrigin, dir]);
+    execFileSync("git", ["-C", dir, "config", "user.email", "test@example.com"]);
+    execFileSync("git", ["-C", dir, "config", "user.name", "Test"]);
+    return dir;
+  }
+
+  function advanceRemoteMain(label = "advance"): string {
+    const dir = cloneOrigin(label);
+    git(dir, "checkout", "-q", "main");
+    git(dir, "commit", "--allow-empty", "-q", "-m", `remote advance ${label}`);
+    git(dir, "push", "-q", "origin", "main");
+    return git(dir, "rev-parse", "HEAD");
+  }
+
+  function mergePrIntoRemoteMain(
+    pr: { headBranch?: string | null; baseBranch?: string | null },
+    label = "merge",
+  ): string {
+    const head = pr.headBranch!;
+    const base = pr.baseBranch!;
+    const dir = cloneOrigin(label);
+    git(dir, "checkout", "-q", base);
+    git(dir, "fetch", "-q", "origin", `${head}:refs/remotes/origin/${head}`);
+    git(dir, "merge", "--no-ff", `origin/${head}`, "-m", `merge ${head}`);
+    git(dir, "push", "-q", "origin", base);
+    return git(dir, "rev-parse", "HEAD");
+  }
+
+  function artifactRootForTest(): string {
+    return join(root, "animus-home", "state", "artifacts", projectId);
+  }
+
+  function writeArtifact(relativePath: string, content: string): void {
+    const absolute = join(artifactRootForTest(), relativePath);
+    mkdirSync(dirname(absolute), { recursive: true });
+    writeFileSync(absolute, content);
+  }
+
   beforeEach(async () => {
     root = mkdtempSync(join(tmpdir(), "animus-standalone-delivery-"));
     process.env.ANIMUS_HOME = join(root, "animus-home");
@@ -498,7 +540,7 @@ describe("standalone full-delivery gate and verified merge", () => {
       targetBranch: "main",
       candidateHeadSha: run.head_sha,
       remoteTargetTipSha: run.head_sha,
-      mergeCommitSha: `merged_sha_${pr.number}`,
+      mergeCommitSha: null,
       verifiedBy: "operator",
     });
     expect(
@@ -519,5 +561,310 @@ describe("standalone full-delivery gate and verified merge", () => {
         )
         .get(projectId, run.id),
     ).toEqual({ count: 1 });
+  });
+
+  test("B1: remote target advancement invalidates readiness before merge", async () => {
+    const { run } = await dispatchStandalone(1650);
+    register("reviewer-1", "peer_reviewer");
+    register("final-1", "independent_evaluator");
+    fullGate(run.id);
+    await publication.publishByRun(projectId, run.id);
+
+    const ready = await delivery.getGate(projectId, run.id);
+    expect(ready.state).toBe("ready_for_operator_review");
+    const testedTip = ready.acceptance.targetTipSha;
+
+    const advanced = advanceRemoteMain("pre-merge");
+    expect(advanced).not.toBe(testedTip);
+
+    const stale = await delivery.getGate(projectId, run.id);
+    expect(stale.state).toBe("invalidated");
+    expect(stale.reasons).toContain("stale_target_tip");
+  });
+
+  test("B1: a merge onto an advanced target never delivers stale tested evidence", async () => {
+    const { run } = await dispatchStandalone(1651);
+    register("reviewer-1", "peer_reviewer");
+    register("final-1", "independent_evaluator");
+    fullGate(run.id);
+    const published = await publication.publishByRun(projectId, run.id);
+    const pr = published.pullRequests[0]!;
+
+    advanceRemoteMain("advanced-before-merge");
+    const mergeSha = mergePrIntoRemoteMain(pr, "stale-merge");
+    forge.setMergeRemote(() => ({ sha: mergeSha }));
+    await forge.updatePullRequest(REPO, pr.number!, { draft: false });
+    await forge.mergePullRequest(REPO, pr.number!);
+
+    const gate = await delivery.getGate(projectId, run.id);
+    expect(gate.state).toBe("invalidated");
+    expect(gate.merge.verified).toBe(false);
+    expect(gate.reasons.join(",")).toMatch(/stale_target_tip|merge_base_mismatch/);
+    await expect(delivery.verifyMerge(projectId, run.id)).rejects.toMatchObject({
+      code: "delivery_gate_unsatisfied",
+    });
+  });
+
+  test("B1: an ordinary merge onto the tested target tip is verified only with real lineage proof", async () => {
+    const { run } = await dispatchStandalone(1652);
+    register("reviewer-1", "peer_reviewer");
+    register("final-1", "independent_evaluator");
+    fullGate(run.id);
+    const published = await publication.publishByRun(projectId, run.id);
+    const pr = published.pullRequests[0]!;
+
+    const mergeSha = mergePrIntoRemoteMain(pr, "ordinary-merge");
+    forge.setMergeRemote(() => ({ sha: mergeSha }));
+    await forge.updatePullRequest(REPO, pr.number!, { draft: false });
+    await forge.mergePullRequest(REPO, pr.number!);
+
+    const awaiting = await delivery.getGate(projectId, run.id);
+    expect(awaiting.state).toBe("awaiting_merge_verification");
+    expect(awaiting.merge.remoteTargetTipSha).toBe(mergeSha);
+
+    const delivered = await delivery.verifyMerge(projectId, run.id, "operator");
+    expect(delivered.state).toBe("delivered");
+    expect(delivered.merge.verification?.mergeCommitSha).toBe(mergeSha);
+    expect(delivered.merge.verification?.remoteTargetTipSha).toBe(mergeSha);
+  });
+
+  test("B2: required remote CI is read from branch protection for the PR head and cannot be producer-asserted", async () => {
+    const { run } = await dispatchStandalone(1653);
+    register("reviewer-1", "peer_reviewer");
+    register("final-1", "independent_evaluator");
+    fullGate(run.id);
+    await publication.publishByRun(projectId, run.id);
+
+    forge.setRequiredStatusChecks(REPO, "main", ["ci/build"]);
+
+    const missing = await delivery.getGate(projectId, run.id);
+    expect(missing.state).toBe("blocked");
+    expect(missing.stages.find((stage) => stage.name === "remote_ci")?.status).toBe("failed");
+    expect(missing.reasons).toContain("remote_ci_missing");
+
+    forge.setCheckRuns(REPO, run.head_sha!, [
+      { name: "ci/build", status: "in_progress", conclusion: null },
+    ]);
+    const pending = await delivery.getGate(projectId, run.id);
+    expect(pending.state).toBe("blocked");
+    expect(pending.reasons).toContain("remote_ci_pending");
+
+    forge.setCheckRuns(REPO, run.head_sha!, [
+      { name: "ci/build", status: "completed", conclusion: "failure" },
+    ]);
+    const failed = await delivery.getGate(projectId, run.id);
+    expect(failed.state).toBe("blocked");
+    expect(failed.reasons).toContain("remote_ci_failed");
+
+    forge.setCheckRuns(REPO, run.head_sha!, [
+      { name: "ci/build", status: "completed", conclusion: "success" },
+    ]);
+    const passing = await delivery.getGate(projectId, run.id);
+    expect(passing.state).toBe("ready_for_operator_review");
+    expect(passing.stages.find((stage) => stage.name === "remote_ci")?.status).toBe("passed");
+
+    forge.failNextCheckRuns = true;
+    const unreadable = await delivery.getGate(projectId, run.id);
+    expect(unreadable.state).toBe("blocked");
+    expect(unreadable.reasons).toContain("remote_ci_unreadable");
+  });
+
+  test("B3: every authorizing observation re-verifies artifact presence, size and hash", async () => {
+    const { run } = await dispatchStandalone(1654);
+    register("reviewer-1", "peer_reviewer");
+    register("final-1", "independent_evaluator");
+
+    writeArtifact("checks/review.json", '{"review":"passed"}\n');
+    writeArtifact("checks/qa.json", '{"qa":"passed"}\n');
+
+    observations.recordRunObservation(projectId, run.id, {
+      stage: "independent_review",
+      status: "passed",
+      producer: { id: "reviewer-1", role: "peer_reviewer" },
+      checks: [
+        {
+          name: "standards review",
+          command: "review diff",
+          result: "PASS",
+          kind: "review",
+          artifactPath: "checks/review.json",
+        },
+      ],
+      artifacts: [
+        {
+          ownerType: "observation",
+          name: "review-report",
+          relativePath: "checks/review.json",
+          mediaType: "application/json",
+        },
+      ],
+    });
+    observations.recordRunObservation(projectId, run.id, {
+      stage: "final_acceptance",
+      status: "passed",
+      producer: { id: "final-1", role: "independent_evaluator" },
+      checks: [
+        {
+          name: "AC1 black-box",
+          command: "acceptance AC1",
+          result: "PASS",
+          kind: "acceptance",
+          criterionKey: "AC1",
+        },
+        {
+          name: "AC2 black-box",
+          command: "acceptance AC2",
+          result: "PASS",
+          kind: "acceptance",
+          criterionKey: "AC2",
+        },
+        {
+          name: "regression suite",
+          command: "bun test targeted",
+          result: "PASS",
+          kind: "regression",
+          artifactPath: "checks/qa.json",
+        },
+      ],
+      artifacts: [
+        {
+          ownerType: "observation",
+          name: "qa-report",
+          relativePath: "checks/qa.json",
+          mediaType: "application/json",
+        },
+      ],
+    });
+    await publication.publishByRun(projectId, run.id);
+    const status = publication.getStatusByRun(projectId, run.id);
+    for (const observation of observations.listObservations(projectId, { runId: run.id })) {
+      for (const artifact of observation.artifacts) {
+        publication.bindEvidence(
+          projectId,
+          status.target.id,
+          artifact.id,
+          `https://github.com/user-attachments/assets/${artifact.id}`,
+        );
+      }
+    }
+    await publication.publishByRun(projectId, run.id);
+
+    expect((await delivery.getGate(projectId, run.id)).state).toBe("ready_for_operator_review");
+
+    rmSync(join(artifactRootForTest(), "checks/review.json"));
+    const missingReview = await delivery.getGate(projectId, run.id);
+    expect(missingReview.state).toBe("blocked");
+    expect(missingReview.reasons).toContain("artifact_missing:checks/review.json");
+
+    writeArtifact("checks/review.json", '{"review":"fail3d"}\n');
+    const corruptReview = await delivery.getGate(projectId, run.id);
+    expect(corruptReview.state).toBe("blocked");
+    expect(corruptReview.reasons).toContain("artifact_digest_mismatch:checks/review.json");
+
+    rmSync(join(artifactRootForTest(), "checks/qa.json"));
+    const missingFinal = await delivery.getGate(projectId, run.id);
+    expect(missingFinal.state).toBe("blocked");
+    expect(missingFinal.reasons).toContain("artifact_missing:checks/qa.json");
+  });
+
+  test("B3: final acceptance cannot be certified by the builder identity", async () => {
+    const { run } = await dispatchStandalone(1655);
+    register("reviewer-1", "peer_reviewer");
+    recordReview(run.id);
+    const lineage = (
+      db
+        .prepare("SELECT graph_hash FROM deliveries WHERE project_id = ? AND id = ?")
+        .get(projectId, run.delivery_id) as { graph_hash: string }
+    ).graph_hash;
+    // Bypass the writer-level guard deliberately: the gate must defend in depth
+    // against an authorizing observation recorded with the builder identity.
+    db.prepare(
+      `INSERT INTO execution_observations
+         (id, project_id, delivery_id, run_id, lap, attempt_key, stage, status, candidate_head_sha,
+          target_tip_sha, merge_base_sha, tested_identity, integration_lineage, producer_id,
+          producer_role, producer_name, gate_profile, gate_profile_version, error, created_at)
+       VALUES (?, ?, ?, ?, ?, 'stage:final_acceptance', 'final_acceptance', 'passed', ?, ?, ?, ?, ?, ?, 'independent_evaluator', NULL, ?, 2, NULL, ?)`,
+    ).run(
+      "obs_builder_final_n2",
+      projectId,
+      run.delivery_id,
+      run.id,
+      run.lap,
+      run.head_sha,
+      run.base_sha,
+      run.base_sha,
+      run.head_sha,
+      `${lineage}@main`,
+      "operator",
+      run.gate_profile,
+      Date.now(),
+    );
+    const gate = await delivery.getGate(projectId, run.id);
+    expect(gate.state).toBe("correction_required");
+    expect(gate.reasons).toContain("self_certified_stage:final_acceptance");
+  });
+
+  test("N2: the gate and acceptance use one canonical latest-observation ordering", async () => {
+    const { run } = await dispatchStandalone(1656);
+    const lineage = (
+      db
+        .prepare("SELECT graph_hash FROM deliveries WHERE project_id = ? AND id = ?")
+        .get(projectId, run.delivery_id) as { graph_hash: string }
+    ).graph_hash;
+    const sameTime = 5_000_000;
+    const insert = db.prepare(
+      `INSERT INTO execution_observations
+         (id, project_id, delivery_id, run_id, lap, attempt_key, stage, status, candidate_head_sha,
+          target_tip_sha, merge_base_sha, tested_identity, integration_lineage, producer_id,
+          producer_role, producer_name, gate_profile, gate_profile_version, error, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'independent_review', ?, ?, ?, ?, ?, ?, ?, 'peer_reviewer', NULL, ?, 2, NULL, ?)`,
+    );
+    // Insertion order is zzz then aaa with an identical timestamp. Only insertion
+    // (rowid) order can say which one is actually latest.
+    insert.run(
+      "obs_zzz_n2",
+      projectId,
+      run.delivery_id,
+      run.id,
+      run.lap,
+      "n2-passed",
+      "passed",
+      run.head_sha,
+      run.base_sha,
+      run.base_sha,
+      run.head_sha,
+      `${lineage}@main`,
+      "n2-reviewer",
+      run.gate_profile,
+      sameTime,
+    );
+    insert.run(
+      "obs_aaa_n2",
+      projectId,
+      run.delivery_id,
+      run.id,
+      run.lap,
+      "n2-failed",
+      "failed",
+      run.head_sha,
+      run.base_sha,
+      run.base_sha,
+      run.head_sha,
+      `${lineage}@main`,
+      "n2-reviewer",
+      run.gate_profile,
+      sameTime,
+    );
+
+    const reviews = observations
+      .listObservations(projectId, { runId: run.id })
+      .filter((observation) => observation.stage === "independent_review");
+    expect(reviews.at(-1)?.id).toBe("obs_aaa_n2");
+
+    const acceptance = observations.evaluateAcceptance(projectId, run.id);
+    expect(acceptance.independentObservationId).toBe("obs_aaa_n2");
+
+    const gate = await delivery.getGate(projectId, run.id);
+    expect(gate.stages.find((stage) => stage.name === "independent_review")?.status).toBe("failed");
   });
 });

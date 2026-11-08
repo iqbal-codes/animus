@@ -17,7 +17,8 @@ import { acquireCrossProcessIntegrationLock } from "../coordination/integration"
 import type { ExecutionObservationService } from "../evidence/observations";
 import { enqueuePublicationEvent } from "../publication/outbox";
 import type { PublicationService } from "../publication/service";
-import type { ForgeAdapter, ForgeCheckRun, ForgePullRequest } from "../registry/forge";
+import type { ForgeAdapter, ForgePullRequest } from "../registry/forge";
+import { readRequiredChecks } from "../registry/required-checks";
 import { IntegrationError, type IntegrationErrorCode } from "./errors";
 
 const execFileAsync = promisify(execFile);
@@ -1067,77 +1068,42 @@ export class ChildIntegrationService {
   }
 
   private async requiredChecks(run: RunRow): Promise<CheckResult> {
-    const forge = this.forge;
-    if (!forge.getRequiredStatusChecks || !forge.listCheckRuns) {
-      return { checks: [], blockers: [] };
-    }
-    let required: string[];
-    let runs: ForgeCheckRun[];
-    try {
-      required = await forge.getRequiredStatusChecks(run.repo_name, run.target_branch);
-    } catch (error) {
+    const readback = await readRequiredChecks(
+      this.forge,
+      run.repo_name,
+      run.target_branch,
+      run.head_sha,
+    );
+    const checks: RequiredCheck[] = readback.checks.map((check) => ({
+      name: check.name,
+      required: true,
+      status: check.status,
+      conclusion: check.conclusion,
+    }));
+    const blockers: IntegrationBlocker[] = readback.blockers.map((blocker) => {
+      if (blocker.code === "unreadable") {
+        return { code: "integration_remote_unreadable", message: blocker.message };
+      }
+      const code =
+        blocker.code === "missing"
+          ? "integration_ci_missing"
+          : blocker.code === "pending"
+            ? "integration_ci_pending"
+            : "integration_ci_failed";
       return {
-        checks: [],
-        blockers: [
-          {
-            code: "integration_remote_unreadable",
-            message: `Could not read required checks for ${run.target_branch}: ${this.message(error)}`,
-          },
-        ],
+        code,
+        message: blocker.message,
+        ...(blocker.name
+          ? {
+              details: {
+                check: blocker.name,
+                status: blocker.status,
+                conclusion: blocker.conclusion,
+              },
+            }
+          : {}),
       };
-    }
-    if (required.length === 0) {
-      return { checks: [], blockers: [] };
-    }
-    try {
-      runs = await forge.listCheckRuns(run.repo_name, run.head_sha!);
-    } catch (error) {
-      return {
-        checks: [],
-        blockers: [
-          {
-            code: "integration_remote_unreadable",
-            message: `Could not read check runs for ${run.head_sha}: ${this.message(error)}`,
-          },
-        ],
-      };
-    }
-
-    const checks: RequiredCheck[] = [];
-    const blockers: IntegrationBlocker[] = [];
-    for (const name of required) {
-      const matches = runs.filter((item) => item.name === name);
-      const latest = matches.length > 0 ? matches[matches.length - 1]! : null;
-      checks.push({
-        name,
-        required: true,
-        status: latest?.status ?? "missing",
-        conclusion: latest?.conclusion ?? null,
-      });
-      if (!latest) {
-        blockers.push({
-          code: "integration_ci_missing",
-          message: `Required check '${name}' has not reported for candidate ${run.head_sha}`,
-        });
-        continue;
-      }
-      if (latest.status !== "completed") {
-        blockers.push({
-          code: "integration_ci_pending",
-          message: `Required check '${name}' is still ${latest.status}`,
-          details: { check: name, status: latest.status },
-        });
-        continue;
-      }
-      const conclusion = (latest.conclusion ?? "").toLowerCase();
-      if (!["success", "neutral", "skipped"].includes(conclusion)) {
-        blockers.push({
-          code: "integration_ci_failed",
-          message: `Required check '${name}' concluded ${latest.conclusion ?? "unknown"}`,
-          details: { check: name, conclusion: latest.conclusion },
-        });
-      }
-    }
+    });
     return { checks, blockers };
   }
 

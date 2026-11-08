@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { git, inspectLocalLoop, findExistingWorktreeForBranch, acquireIssueLock, prepareLoopWorktree, assertCandidate as assertCandidateInWorktree, DEFAULT_PROTECTED_PATHS } from "./worktree";
+import { git, inspectLocalLoop, findExistingWorktreeForBranch, acquireIssueLock, prepareLoopWorktree, assertCandidate as assertCandidateInWorktree, DEFAULT_PROTECTED_PATHS, readHarnessChecks } from "./worktree";
 import { computeExternalBlastRadius } from "./blast-radius";
 import { extractRequiredAcIds, validateIssue, formatEscalationHandoff, annotateDiffWithLineNumbers, assembleRolePromptContext } from "./prompt-context";
 import { processRun } from "./process";
@@ -40,25 +40,6 @@ import type { PrCheckItem, PrCiAssessment } from "./ci";
 function parsePartOf(text: string): number | null {
   const match = text.match(/Part of #(\d+)/i);
   return match ? Number.parseInt(match[1]!, 10) : null;
-}
-
-function readHarnessChecks(root: string): { checks: string[]; protectedPaths: string[] } {
-  const harnessPath = join(root, "harness/harness.config.json");
-  if (!existsSync(harnessPath)) {
-    throw new Error(`Harness config not found at ${harnessPath}`);
-  }
-  const raw = JSON.parse(readFileSync(harnessPath, "utf8"));
-  const checks = [raw.static, raw.unit].filter(
-    (c): c is string => typeof c === "string" && c.trim().length > 0,
-  );
-  if (checks.length === 0) {
-    throw new Error("No declared ordinary project checks in harness/harness.config.json");
-  }
-  const protectedPaths =
-    typeof raw.protected_paths === "string"
-      ? raw.protected_paths.split(",").map((p: string) => p.trim()).filter(Boolean)
-      : [...DEFAULT_PROTECTED_PATHS];
-  return { checks, protectedPaths };
 }
 
 async function findExistingRunForWorktree(
