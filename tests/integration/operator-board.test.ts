@@ -464,4 +464,22 @@ describe("operator board projection", () => {
     expect(dependent.stageLabel).toBe("Blocked by dependency");
     expect(dependent.detail).toContain("#1891");
   });
+
+  test("AC4: board and detail reads remain usable while the installation is held", async () => {
+    await fixture.importSpec(1970, [{ issue: 1971, coverage: "AC1" }], ["AC1"]);
+    fixture.db
+      .prepare(
+        `INSERT INTO installation_holds
+           (id, status, reason, source_restore_id, restored_at, reconciled_at, reconciled_by, reconciliation_report)
+         VALUES ('installation', 'held', 'restored installation pending reconciliation', 'restore_test', ?, NULL, NULL, NULL)
+         ON CONFLICT(id) DO UPDATE SET status = 'held', reason = excluded.reason`,
+      )
+      .run(Date.now());
+
+    const board = await fixture.fetchBoard();
+    expect(board.counts).toMatchObject({ specs: 1, tickets: 1 });
+    const child = cardFor(board, 1971);
+    const detail = await fixture.fetchWork(child.workId);
+    expect(detail.contract.title).toBe("Issue 1971");
+  });
 });
