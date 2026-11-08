@@ -1,4 +1,5 @@
 import { join, resolve } from "node:path";
+import { readExecutionAuthority } from "@animus/contracts/execution-authority";
 import { resolveProjectWorkspace } from "../../../packages/contracts/src/paths";
 import { githubJson, issueSpecification, readIssueContract } from "../../loop";
 import { inspectLocalLoop, runAnimusLoop } from "../../animus-loop";
@@ -6,7 +7,6 @@ import { findRun, watchRun } from "../../loop-watch";
 import { fetchGithubBacklog, logTickResult, toSchedulerTick } from "../../scheduler";
 import {
   DispatchService,
-  readExecutionAuthority,
   runLocalDispatchTick,
   type DispatchEngineOptions,
 } from "../../../apps/backend/src/dispatch";
@@ -50,6 +50,9 @@ export async function runLoopCliCommand(opts: {
 
   try {
     if (sub === "run") {
+      if (readExecutionAuthority().authority === "local") {
+        throw new Error("execution_authority_moved: use animus plan dispatch with an admitted plan");
+      }
       const rawIssue = opts.issue ?? opts.positionals[2];
       if (!rawIssue || !/^[1-9]\d*$/.test(rawIssue)) {
         throw new Error(

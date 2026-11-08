@@ -144,75 +144,91 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  test("DispatchControl launches an admitted plan through the backend client", async () => {
-    const submissions: Array<{ plan_id: string; actor?: string }> = [];
-    const plan = {
-      id: "plan-1",
-      project_id: "proj-1",
-      kind: "standalone" as const,
-      root_work_id: "work-1",
-      root_issue_number: 714,
-      root_title: "Standalone delivery",
-      graph_hash: "a".repeat(64),
-      authority: "admitted" as const,
-      member_count: 1,
-      ticket_count: 1,
-      hold_count: 0,
-      accepted_revision_id: "rev-1",
-      created_at: 1,
-      updated_at: 1,
-    };
-    const factory = {
-      projects: async () => mockProjects,
-      forProject: () => ({
-        plans: async () => [plan],
-        dispatchRuns: async () => [],
-        dispatchPlan: async (submission: { plan_id: string; actor?: string }) => {
-          submissions.push(submission);
-          return {
-            id: "run-1",
-            project_id: "proj-1",
-            delivery_id: "del-1",
-            plan_id: "plan-1",
-            work_id: "work-1",
-            revision_id: "rev-1",
-            content_hash: "b".repeat(64),
-            issue_number: 714,
-            role: "ticket" as const,
-            gate_profile: "standalone" as const,
-            merge_policy: "manual" as const,
-            target_branch: "main",
-            ownership_generation: 1,
-            state: "succeeded" as const,
-            actor: "operator",
-            command_request_id: "cmd-1",
-            branch: "factory/standalone-714",
-            worktree_path: "/tmp/worktree",
-            base_sha: "c".repeat(40),
-            owner_pid: 1,
-            owner_token: "token",
-            lease_expires_at: null,
-            head_sha: "d".repeat(40),
-            error: null,
-            launched_at: 1,
-            finished_at: 1,
-            created_at: 1,
-            updated_at: 1,
-          };
-        },
-      }),
-    } as any;
+  test.each([false, true])(
+    "DispatchControl refreshes persisted runs after dispatch (failure=%s)",
+    async (failed) => {
+      const submissions: Array<{ plan_id: string; actor?: string }> = [];
+      const runs: unknown[] = [];
+      const plan = {
+        id: "plan-1",
+        project_id: "proj-1",
+        kind: "standalone" as const,
+        root_work_id: "work-1",
+        root_issue_number: 714,
+        root_title: "Standalone delivery",
+        graph_hash: "a".repeat(64),
+        authority: "admitted" as const,
+        member_count: 1,
+        ticket_count: 1,
+        hold_count: 0,
+        accepted_revision_id: "rev-1",
+        created_at: 1,
+        updated_at: 1,
+      };
+      const factory = {
+        projects: async () => mockProjects,
+        forProject: () => ({
+          plans: async () => [plan],
+          dispatchRuns: async () => runs,
+          dispatchPlan: async (submission: { plan_id: string; actor?: string }) => {
+            submissions.push(submission);
+            const run = {
+              id: "run-1",
+              project_id: "proj-1",
+              delivery_id: "del-1",
+              plan_id: "plan-1",
+              work_id: "work-1",
+              revision_id: "rev-1",
+              content_hash: "b".repeat(64),
+              issue_number: 714,
+              role: "ticket" as const,
+              gate_profile: "standalone" as const,
+              merge_policy: "manual" as const,
+              target_branch: "main",
+              ownership_generation: 1,
+              state: failed ? ("failed" as const) : ("succeeded" as const),
+              actor: "operator",
+              command_request_id: "cmd-1",
+              branch: "factory/standalone-714",
+              worktree_path: "/tmp/worktree",
+              base_sha: "c".repeat(40),
+              owner_pid: 1,
+              owner_token: "token",
+              lease_expires_at: null,
+              head_sha: "d".repeat(40),
+              error: null,
+              launched_at: 1,
+              finished_at: 1,
+              created_at: 1,
+              updated_at: 1,
+            };
+            runs.push(run);
+            if (failed) throw new Error("dispatch_failed");
+            return run;
+          },
+        }),
+      } as any;
 
-    render(<DispatchControl factory={factory} />);
+      render(<DispatchControl factory={factory} />);
 
-    const planRow = await screen.findByTestId("dispatch-plan-plan-1");
-    expect(planRow.textContent).toContain("Standalone delivery");
-    fireEvent.click(screen.getByRole("button", { name: "Dispatch" }));
+      const planRow = await screen.findByTestId("dispatch-plan-plan-1");
+      expect(planRow.textContent).toContain("Standalone delivery");
+      fireEvent.click(screen.getByRole("button", { name: "Dispatch" }));
 
-    await waitFor(() => expect(submissions).toHaveLength(1));
-    expect(submissions[0]).toEqual({ plan_id: "plan-1", actor: "operator" });
-    await waitFor(() => expect(screen.getByText(/Run run-1 started for #714/)).toBeTruthy());
-  });
+      await waitFor(() => expect(submissions).toHaveLength(1));
+      expect(submissions[0]).toEqual({ plan_id: "plan-1", actor: "operator" });
+      if (failed) {
+        await waitFor(() => expect(screen.getByRole("alert").textContent).toBe("dispatch_failed"));
+        expect(screen.queryByRole("status")).toBeNull();
+      } else {
+        await waitFor(() => expect(screen.getByText(/Run run-1 started for #714/)).toBeTruthy());
+      }
+      await waitFor(() =>
+        expect(screen.getByText("Profile: standalone · Merge: manual · Target: main")).toBeTruthy(),
+      );
+      expect(screen.getByText(failed ? "failed" : "succeeded")).toBeTruthy();
+    },
+  );
 
   test("DispatchControl shows an honest empty state when no plan is admitted", async () => {
     const factory = {

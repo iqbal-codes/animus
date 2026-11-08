@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { readExecutionAuthority } from "@animus/contracts/execution-authority";
 import { createHash, randomUUID } from "node:crypto";
 import type {
   Diagnostics,
@@ -311,6 +312,9 @@ export function readLapReport(repoRoot: string, lapId: string): string {
 }
 
 export function launchNativeLap(repoRoot: string, specification: string): LaunchAck {
+  if (readExecutionAuthority().authority === "local") {
+    throw new Error("execution_authority_moved: use animus plan dispatch with an admitted plan");
+  }
   const preflight = evaluateWorkspacePreflight(repoRoot, { mode: "launch" });
   if (preflight.brakes.halted || preflight.brakes.paused) {
     throw new Error("launch_brake_set");

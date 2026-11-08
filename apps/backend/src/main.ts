@@ -20,13 +20,13 @@ import {
   type OperatorErrorCode,
 } from "@animus/contracts/operator";
 import { configuration, hostOrigin, type Configuration } from "./config";
+import { readExecutionAuthority } from "@animus/contracts/execution-authority";
 import { IntakeService, handleProjectIntakeRoute } from "./intake";
 import { WorkService, handleProjectWorkRoute } from "./work";
 import { PlanService, handleProjectPlanRoute } from "./plans";
 import {
   DispatchService,
   handleProjectDispatchRoute,
-  readExecutionAuthority,
   runLocalDispatchTick,
   type DispatchServiceOptions,
 } from "./dispatch";

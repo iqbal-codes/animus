@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createFactoryClient } from "@animus/client";
 import { createBackendApp, type BackendApp } from "../../apps/backend/src/main";
 import { ProjectRegistryService, SyntheticForgeAdapter } from "../../apps/backend/src/registry";
-import { writeExecutionAuthority } from "../../apps/backend/src/dispatch";
+import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
 import { runPlanCommand } from "../../scripts/cli/commands/operations";
 
 const REPO = "owner/repo";

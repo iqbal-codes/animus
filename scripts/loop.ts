@@ -1,4 +1,5 @@
 import { parseArgs } from "node:util";
+import { readExecutionAuthority } from "@animus/contracts/execution-authority";
 import { join, resolve } from "node:path";
 import { inspectLocalLoop, runAnimusLoop, type LocalIssue } from "./animus-loop";
 import { getMergedIssueNumbers, resolveProjectWorkspace } from "../packages/contracts/src/paths";
@@ -90,6 +91,9 @@ export function readIssueContract(
 
 if (import.meta.main) {
   try {
+    if (readExecutionAuthority().authority === "local") {
+      throw new Error("execution_authority_moved: use animus plan dispatch with an admitted plan");
+    }
     const { issue, dryRun, push } = parseIssueArgs(process.argv.slice(2));
     const root = resolve(import.meta.dir, "..");
     const repository = githubJson(["repo", "view", "--json", "nameWithOwner"], root) as {

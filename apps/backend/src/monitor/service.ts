@@ -14,7 +14,7 @@ import {
 } from "@animus/contracts/paths";
 import type { MonitorRuntime } from "./runtime";
 import type { LocalDispatchTickResult } from "../dispatch/scheduler";
-import type { ExecutionAuthority } from "../dispatch/authority";
+import type { ExecutionAuthority } from "@animus/contracts/execution-authority";
 
 export class RegisteredProjectMonitor {
   private timer: ReturnType<typeof setTimeout> | null = null;

@@ -124,6 +124,13 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setError(message);
+      try {
+        await loadProject(projectId);
+      } catch (refreshError) {
+        setError(
+          `${message}; run refresh failed: ${refreshError instanceof Error ? refreshError.message : String(refreshError)}`,
+        );
+      }
     } finally {
       setBusyPlanId(null);
     }
@@ -148,7 +155,7 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
             aria-label="Project"
             value={projectId}
             onChange={(event) => setProjectId(event.target.value)}
-            className="h-8 rounded-full border border-[var(--border)] bg-background px-3 text-xs text-foreground"
+            className="h-11 rounded-full border border-[var(--border)] bg-background px-3 text-xs text-foreground sm:h-8"
           >
             {projects.length === 0 && <option value="">No active projects</option>}
             {projects.map((project) => (
@@ -164,6 +171,7 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
         <Button
           variant="outline"
           size="sm"
+          className="min-h-11 sm:min-h-8"
           onClick={() => void refresh()}
           disabled={loading}
           aria-label="Refresh admitted plans"
@@ -186,9 +194,9 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
 
       <div className="mt-3 space-y-2">
         {loading && admitted.length === 0 ? (
-          <p className="text-xs text-text-muted">Loading admitted plans…</p>
+          <p className="text-xs text-text-secondary">Loading admitted plans…</p>
         ) : admitted.length === 0 ? (
-          <p data-testid="dispatch-empty" className="text-xs text-text-muted">
+          <p data-testid="dispatch-empty" className="text-xs text-text-secondary">
             No admitted plans for this project. Import and approve a plan before dispatching.
           </p>
         ) : (
@@ -205,14 +213,23 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
                   #{plan.root_issue_number}
                 </span>
                 <span className="text-xs text-foreground">{plan.root_title || plan.id}</span>
-                <span className="text-[11px] text-text-muted">
+                <span className="text-[11px] text-text-secondary">
                   {plan.kind} · tickets {plan.ticket_count} · holds {plan.hold_count}
                 </span>
                 <span className="flex-1" />
-                {run && <Badge variant={RUN_TONE[run.state]}>{run.state}</Badge>}
+                {run && (
+                  <>
+                    <span className="break-words text-xs text-text-secondary">
+                      Profile: {run.gate_profile} · Merge: {run.merge_policy} · Target:{" "}
+                      {run.target_branch}
+                    </span>
+                    <Badge variant={RUN_TONE[run.state]}>{run.state}</Badge>
+                  </>
+                )}
                 <Button
                   variant="secondary"
                   size="sm"
+                  className="min-h-11 sm:min-h-8"
                   onClick={() => void dispatch(plan.id)}
                   disabled={busy || plan.hold_count > 0}
                   title={

@@ -11,6 +11,7 @@ import {
 } from "./loop/scheduler";
 import { readIssueContract } from "./loop";
 import { runAnimusLoop } from "./animus-loop";
+import { readExecutionAuthority } from "@animus/contracts/execution-authority";
 import { resolveProjectWorkspace } from "../packages/contracts/src/paths";
 import { parseDependencies, isActiveClaim } from "../apps/backend/src/intake/parser";
 import { initializeDatabase, ProjectRegistryService } from "../apps/backend/src/registry";
@@ -19,7 +20,6 @@ import { CommandLedger } from "../apps/backend/src/command/ledger";
 import { BrakeService } from "../apps/backend/src/command/brakes";
 import {
   DispatchService,
-  readExecutionAuthority,
   runLocalDispatchTick,
   type LocalDispatchTickResult,
 } from "../apps/backend/src/dispatch";

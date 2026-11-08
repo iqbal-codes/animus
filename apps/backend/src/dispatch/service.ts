@@ -37,7 +37,10 @@ import {
   resolveWorkerOwnerPath,
   writeWorkerOwner,
 } from "./ownership";
-import { readExecutionAuthority, type ExecutionAuthority } from "./authority";
+import {
+  readExecutionAuthority,
+  type ExecutionAuthority,
+} from "@animus/contracts/execution-authority";
 import {
   allocateWorktree,
   type WorktreeAllocation,

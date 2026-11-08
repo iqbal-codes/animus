@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { resolveAnimusStateDir } from "@animus/contracts/paths";
+import { resolveAnimusStateDir } from "./paths";
 
 /**
  * Execution authority marker shared by the scheduler, monitor, CLI and #165 cutover.

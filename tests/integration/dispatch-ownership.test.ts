@@ -17,13 +17,13 @@ import {
   SyntheticForgeAdapter,
 } from "../../apps/backend/src/registry";
 import { PlanService } from "../../apps/backend/src/plans";
+import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
 import { CommandLedger } from "../../apps/backend/src/command/ledger";
 import { BrakeService } from "../../apps/backend/src/command/brakes";
 import {
   DispatchService,
   runLocalDispatchTick,
   resolveWorkerOwnerPath,
-  writeExecutionAuthority,
   writeWorkerOwner,
   type DispatchRunner,
 } from "../../apps/backend/src/dispatch";

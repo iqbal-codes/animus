@@ -6,6 +6,7 @@
     "./operator": "./src/operator.ts",
     "./host": "./src/host.ts",
     "./paths": "./src/paths.ts",
+    "./execution-authority": "./src/execution-authority.ts",
     "./sanitizer": "./src/sanitizer.ts"
   },
   "dependencies": {

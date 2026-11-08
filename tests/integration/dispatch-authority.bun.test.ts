@@ -5,9 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBackendApp, type BackendApp } from "../../apps/backend/src/main";
 import { ProjectRegistryService, SyntheticForgeAdapter } from "../../apps/backend/src/registry";
-import { readExecutionAuthority, writeExecutionAuthority } from "../../apps/backend/src/dispatch";
+import {
+  readExecutionAuthority,
+  writeExecutionAuthority,
+} from "@animus/contracts/execution-authority";
 import { loadMonitorRuntime } from "../../apps/backend/src/monitor/runtime";
-import { runSchedulerCliCommand } from "../../scripts/cli/commands/loop";
+import { runLoopCliCommand, runSchedulerCliCommand } from "../../scripts/cli/commands/loop";
+import { runLapCommand } from "../../scripts/cli/commands/engine";
+import { launchNativeLap } from "../../apps/engine-host/src/native";
 import type { AgentTransport } from "../../scripts/loop/types";
 
 const REPO = "owner/repo";
@@ -246,6 +251,63 @@ describe("dispatch execution authority cutover gate", () => {
     } finally {
       (Bun as any).spawnSync = originalSpawnSync;
     }
+  });
+
+  test("local authority refuses every legacy direct launch before forge or process access", async () => {
+    writeExecutionAuthority("local");
+    const originalSpawn = Bun.spawnSync;
+    const originalError = console.error;
+    const originalLog = console.log;
+    const attempted: unknown[] = [];
+    const messages: string[] = [];
+    (Bun as any).spawnSync = (...args: unknown[]) => {
+      attempted.push(args);
+      throw new Error("legacy launch must refuse before spawning");
+    };
+    console.error = (...args: unknown[]) => messages.push(args.map(String).join(" "));
+    console.log = (...args: unknown[]) => messages.push(args.map(String).join(" "));
+    try {
+      expect(
+        await runLoopCliCommand({
+          subcommand: "run",
+          positionals: [],
+          repoRoot: checkoutPath,
+          issue: "999",
+          dryRun: true,
+        }),
+      ).toBe(1);
+      for (const subcommand of ["run", "launch"]) {
+        expect(
+          await runLapCommand({
+            subcommand,
+            positionals: ["lap", subcommand, "unpublished scope"],
+            repoRoot: checkoutPath,
+            json: true,
+          }),
+        ).toBe(1);
+      }
+      expect(() => launchNativeLap(checkoutPath, "unpublished scope")).toThrow(
+        "execution_authority_moved",
+      );
+      expect(attempted).toHaveLength(0);
+      expect(messages.every((message) => message.includes("execution_authority_moved"))).toBe(true);
+    } finally {
+      (Bun as any).spawnSync = originalSpawn;
+      console.error = originalError;
+      console.log = originalLog;
+    }
+  });
+
+  test("the standalone loop entry refuses local authority before invoking gh", () => {
+    writeExecutionAuthority("local");
+    const entry = join(import.meta.dir, "../../scripts/loop.ts");
+    const result = Bun.spawnSync([process.execPath, entry, "--issue", "999", "--dry-run"], {
+      env: { ...process.env, PATH: "/nonexistent" },
+      timeout: 30_000,
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain("execution_authority_moved");
+    expect(result.stderr.toString()).not.toContain("GitHub lookup failed");
   });
 
   test("the real default engine runs a bounded builder on the frozen contract and records a verified SHA", async () => {

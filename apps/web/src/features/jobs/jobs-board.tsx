@@ -72,14 +72,14 @@ export function JobsBoard({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-[26px] pt-7 pb-5">
-      <div className="flex shrink-0 items-stretch gap-3 px-7">
+      <div className="grid shrink-0 grid-cols-2 items-stretch gap-3 px-7 sm:grid-cols-5">
         {board.kpis.map((kpi) => (
           <KpiCard key={kpi.label} kpi={kpi} />
         ))}
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-4">
-        <div className="flex h-8 shrink-0 items-center gap-3 px-7">
+        <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-3 px-7">
           <h2 className="text-sm leading-[1.45] font-medium text-foreground">All jobs</h2>
           <span className="text-xs leading-[1.45] text-text-muted">{board.totalJobs}</span>
           <span className="flex-1" />
