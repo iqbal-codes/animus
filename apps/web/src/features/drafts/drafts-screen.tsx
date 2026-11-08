@@ -313,14 +313,14 @@ export function DraftsScreen() {
                         {summary.statusLabel}
                       </span>
                       <span className="flex-1" />
-                      <span className="text-[11px] leading-[1.4] text-text-muted">
+                      <span className="text-[11px] leading-[1.4] text-text-secondary">
                         rev {summary.revisionNumber}
                       </span>
                     </span>
                     <span className="line-clamp-2 text-sm leading-[1.4] text-foreground">
                       {summary.title}
                     </span>
-                    <span className="text-[11px] leading-[1.4] text-text-muted">
+                    <span className="text-[11px] leading-[1.4] text-text-secondary">
                       {summary.repoName} · {summary.kind}
                     </span>
                   </button>
