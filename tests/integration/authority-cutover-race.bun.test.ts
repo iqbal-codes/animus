@@ -324,6 +324,136 @@ writeFileSync(out, JSON.stringify({ ok, error, code, mode }));
     );
   }, 120_000);
 
+  test("abort vs activate with a seeded dead operation lock never wedges marker/row", async () => {
+    const REPEATS = 3;
+    const serviceModule = join(REPO_ROOT, "apps/backend/src/cutover/service.ts");
+    const backupModule = join(REPO_ROOT, "apps/backend/src/restore/service.ts");
+    const dbModule = join(REPO_ROOT, "apps/backend/src/registry/db.ts");
+    const script = writeChildScript(
+      "abort-activate-dead-owner",
+      `
+import { writeFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { initializeDatabase } from "${dbModule}";
+import { BackupRestoreService } from "${backupModule}";
+import { AuthorityCutoverService } from "${serviceModule}";
+const stateDir = process.env.ANIMUS_STATE_DIR!;
+const home = process.env.ANIMUS_HOME!;
+const barrier = process.env.BARRIER!;
+const out = process.env.OUT!;
+const mode = process.env.MODE!;
+const db = initializeDatabase(join(stateDir, "console.db"));
+const backup = new BackupRestoreService(db, { stateDir });
+const cutover = new AuthorityCutoverService(db, { stateDir, home, backup });
+while (!existsSync(barrier)) await Bun.sleep(2);
+let ok = false;
+let error = null;
+let code = null;
+try {
+  if (mode === "activate") {
+    await cutover.activate({
+      actor: "operator",
+      cutoverId: process.env.CUTOVER!,
+      inventorySha256: process.env.INVENTORY!,
+      backupManifestSha256: process.env.MANIFEST!,
+    });
+  } else {
+    await cutover.abort({ actor: "operator", reason: "race abort", cutoverId: process.env.CUTOVER! });
+  }
+  ok = true;
+} catch (err) {
+  error = err instanceof Error ? err.message : String(err);
+  code = err && typeof err === "object" && "code" in err ? String(err.code) : null;
+}
+db.close();
+writeFileSync(out, JSON.stringify({ ok, error, code, mode }));
+`,
+    );
+
+    const outcomes: string[] = [];
+    for (let round = 0; round < REPEATS; round += 1) {
+      const { iterRoot, iterHome, iterStateDir, iterDb, iterCutover } = isolatedCutover(
+        `abort-activate-dead-${round}`,
+      );
+      try {
+        const staged = await iterCutover.stage({ actor: "operator" });
+        expect(staged.operation.status).toBe("staged");
+        const operation = staged.operation;
+        // Simulate a crashed prior holder: both contenders must reclaim it under
+        // the serialized guard before they can run the operation transition.
+        writeFileSync(
+          join(iterStateDir, ".authority-cutover.lock"),
+          JSON.stringify({
+            pid: 999_999_999,
+            ownerToken: `dead-op-${round}`,
+            createdAt: "2020-01-01T00:00:00.000Z",
+          }),
+        );
+        const barrier = join(iterRoot, "go");
+        const specs: Array<{ mode: string; out: string; env: Record<string, string> }> = [
+          {
+            mode: "activate",
+            out: join(iterRoot, "activate-result.json"),
+            env: {
+              INVENTORY: operation.inventorySha256!,
+              MANIFEST: operation.backupManifestSha256!,
+            },
+          },
+          { mode: "abort", out: join(iterRoot, "abort-result.json"), env: {} },
+        ];
+        const children = specs.map((spec) => ({
+          ...spec,
+          child: spawnChild(script, {
+            ANIMUS_HOME: iterHome,
+            ANIMUS_STATE_DIR: iterStateDir,
+            BARRIER: barrier,
+            OUT: spec.out,
+            MODE: spec.mode,
+            CUTOVER: operation.id,
+            ...spec.env,
+          }),
+        }));
+
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
+        writeFileSync(barrier, "1");
+        for (const { child } of children) await child.exited;
+
+        const results = children.map(
+          ({ out }) => JSON.parse(readFileSync(out, "utf-8")) as ChildResult,
+        );
+        expect(results.filter((result) => result.ok)).toHaveLength(1);
+        expect(results.filter((result) => !result.ok)).toHaveLength(1);
+
+        const marker = readExecutionAuthority(iterStateDir);
+        const row = iterDb
+          .prepare("SELECT status FROM authority_cutover_operations WHERE id = ?")
+          .get(operation.id) as { status: string };
+        const winner = results.find((result) => result.ok)!;
+        const loser = results.find((result) => !result.ok)!;
+        expect(loser.code).not.toBe("cutover_lock_ambiguous");
+        expect(isCorruptLockError(loser)).toBe(false);
+
+        // The unrecoverable wedge is a legacy marker paired with an activated row.
+        expect(marker.authority === "legacy" && row.status === "activated").toBe(false);
+        if (winner.mode === "activate") {
+          expect(marker.authority).toBe("local");
+          expect(row.status).toBe("activated");
+        } else {
+          expect(marker.authority).toBe("legacy");
+          expect(row.status).toBe("aborted");
+        }
+        expect(evaluateBackendAuthority(iterDb).settled).toBe(true);
+        outcomes.push(winner.mode ?? "unknown");
+      } finally {
+        iterDb.close();
+      }
+    }
+    expect(outcomes).toHaveLength(REPEATS);
+    console.log(
+      JSON.stringify({ test: "abort-activate-dead-owner", repeats: REPEATS, winners: outcomes }),
+    );
+  }, 120_000);
+
   test("a local marker written before the DB commit is fenced until reconciled", async () => {
     const staged = await cutover.stage({ actor: "operator" });
     const operation = staged.operation;
