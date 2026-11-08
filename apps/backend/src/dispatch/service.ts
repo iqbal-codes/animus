@@ -174,6 +174,7 @@ interface DispatchRunRow {
   merge_policy: "auto_after_gates" | "manual";
   target_branch: string;
   ownership_generation: number;
+  lap: number;
   state: PlanDispatchRun["state"];
   actor: string;
   command_request_id: string;
@@ -389,6 +390,7 @@ export class DispatchService {
         requestId,
         actor: submission.actor ?? "operator",
         scheduled: Boolean(submission.scheduled),
+        explicit: Boolean(submission.work_id || submission.issue_number),
         runId: `run_${randomUUID()}`,
       });
     } catch (error) {
@@ -702,6 +704,7 @@ export class DispatchService {
     requestId: string;
     actor: string;
     scheduled?: boolean;
+    explicit?: boolean;
     runId: string;
   }): ClaimedRun {
     const {
@@ -716,6 +719,7 @@ export class DispatchService {
       requestId,
       actor,
       scheduled,
+      explicit,
       runId,
     } = input;
     const manifestRow = this.db
@@ -738,6 +742,7 @@ export class DispatchService {
         member,
         targetBranch,
         scheduled: Boolean(scheduled),
+        explicit: Boolean(explicit),
       });
 
       let delivery = this.db
@@ -806,6 +811,16 @@ export class DispatchService {
         )
         .get(delivery.id) as { generation: number };
       const generation = generationRow.generation + 1;
+      // The execution lap is allocated per ticket (work item), transactionally in
+      // this same serialized claim. A resumed/reconciled run keeps its row and lap;
+      // only a new builder/fix cycle consumes the next ticket lap. Budget enforcement
+      // (limit, grants, exhaustion) belongs to #156.
+      const lapRow = this.db
+        .prepare(
+          "SELECT COALESCE(MAX(lap), 0) AS lap FROM dispatch_runs WHERE delivery_id = ? AND work_id = ?",
+        )
+        .get(delivery.id, member.work_id) as { lap: number };
+      const lap = lapRow.lap + 1;
       const worktreePath = join(
         getProjectWorktreesDir(project.checkout_path),
         "dispatch",
@@ -820,10 +835,10 @@ export class DispatchService {
           `INSERT INTO dispatch_runs
              (id, project_id, delivery_id, plan_id, work_id, revision_id, content_hash,
               issue_number, role, gate_profile, merge_policy, target_branch,
-              ownership_generation, state, actor, command_request_id, branch, worktree_path,
+              ownership_generation, lap, state, actor, command_request_id, branch, worktree_path,
               base_sha, owner_pid, owner_token, lease_expires_at, head_sha, error,
               launched_at, finished_at, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'claimed', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'claimed', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)`,
         )
         .run(
           runId,
@@ -839,6 +854,7 @@ export class DispatchService {
           mergePolicy,
           targetBranch,
           generation,
+          lap,
           actor,
           requestId,
           branch,
@@ -961,7 +977,10 @@ export class DispatchService {
     if (this.hasActiveRun(projectId, member.work_id)) {
       throw new DispatchError("claim_conflict", `Work ${member.work_id} already has an active run`);
     }
-    if (this.hasSucceededRun(projectId, member.work_id)) {
+    if (
+      this.hasSucceededRun(projectId, member.work_id) &&
+      !this.hasOpenFinding(projectId, member.work_id)
+    ) {
       throw new DispatchError(
         "already_succeeded",
         `Work ${member.work_id} already succeeded and awaits downstream integration`,
@@ -1064,6 +1083,20 @@ export class DispatchService {
     return Boolean(row);
   }
 
+  /**
+   * An open finding for the ticket means its last builder/fix cycle did not close
+   * the defect, so an explicit re-dispatch starts the next ticket lap. Whether and
+   * how many laps may be granted is #156's budget policy.
+   */
+  private hasOpenFinding(projectId: string, workId: string): boolean {
+    const row = this.db
+      .prepare(
+        "SELECT 1 AS present FROM factory_findings WHERE project_id = ? AND work_id = ? AND status = 'open' LIMIT 1",
+      )
+      .get(projectId, workId);
+    return Boolean(row);
+  }
+
   private countActiveRuns(projectId: string): number {
     const row = this.db
       .prepare(
@@ -1080,8 +1113,9 @@ export class DispatchService {
     member: PlanMember;
     targetBranch: string;
     scheduled: boolean;
+    explicit: boolean;
   }): void {
-    const { project, plan, manifest, member, targetBranch, scheduled } = input;
+    const { project, plan, manifest, member, targetBranch, scheduled, explicit } = input;
 
     let currentPlan: PlanRecord;
     try {
@@ -1135,7 +1169,10 @@ export class DispatchService {
     if (this.hasActiveRun(project.id, currentMember.work_id)) {
       throw new DispatchError("claim_conflict", "Work already has an active run");
     }
-    if (this.hasSucceededRun(project.id, currentMember.work_id)) {
+    if (
+      this.hasSucceededRun(project.id, currentMember.work_id) &&
+      !(explicit && this.hasOpenFinding(project.id, currentMember.work_id))
+    ) {
       throw new DispatchError("already_succeeded", "Work already succeeded");
     }
 
@@ -1504,6 +1541,7 @@ export class DispatchService {
       merge_policy: row.merge_policy,
       target_branch: row.target_branch,
       ownership_generation: row.ownership_generation,
+      lap: row.lap,
       state: row.state,
       actor: row.actor,
       command_request_id: row.command_request_id,

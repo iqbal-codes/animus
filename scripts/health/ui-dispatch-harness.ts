@@ -86,6 +86,9 @@ for (const number of [500, 501]) {
 
 // Seed a real candidate-bound evidence trail for the successful delivery so the
 // operator surface renders actual checks, findings, artifacts and acceptance.
+// Producer credentials are minted by the trusted host boundary; the observation,
+// fix and recheck writes then go through the public HTTP route exactly as an
+// independent reviewer/gate client would.
 const dispatchResponse = await app.fetch(
   new Request(`http://127.0.0.1/api/v1/projects/${project.id}/dispatch`, {
     method: "POST",
@@ -95,14 +98,42 @@ const dispatchResponse = await app.fetch(
 );
 if (!dispatchResponse.ok) throw new Error(`Seed dispatch failed: ${await dispatchResponse.text()}`);
 const seedRun = (await dispatchResponse.json()) as { id: string };
-const evidence = new ExecutionObservationService(app.db);
+const producers = new ExecutionObservationService(app.db);
+const gateCredential = producers.registerTrustedProducer(project.id, {
+  id: "gate-1",
+  role: "automated_gate",
+});
+const fixerCredential = producers.registerTrustedProducer(project.id, {
+  id: "operator",
+  role: "peer_reviewer",
+});
+const reviewerCredential = producers.registerTrustedProducer(project.id, {
+  id: "reviewer-2",
+  role: "peer_reviewer",
+});
+
+async function postJson(path: string, body: unknown): Promise<Record<string, unknown>> {
+  const response = await app.fetch(
+    new Request(`http://127.0.0.1/api/v1/projects/${project.id}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+  if (!response.ok) {
+    throw new Error(`Seed write ${path} failed: ${response.status} ${await response.text()}`);
+  }
+  return (await response.json()) as Record<string, unknown>;
+}
+
 const artifactDir = join(root, "home", "state", "artifacts", project.id, "checks");
 mkdirSync(artifactDir, { recursive: true });
 writeFileSync(join(artifactDir, "report.log"), "independent review passed\n");
-evidence.recordRunObservation(project.id, seedRun.id, {
+await postJson("/evidence/observations", {
+  run_id: seedRun.id,
+  producer_credential: gateCredential.credential,
   stage: "technical_checks",
   status: "failed",
-  producer: { id: "gate-1", role: "automated_gate" },
   checks: [{ name: "unit", command: "bun test", result: "FAIL", detail: "1 failing" }],
   findings: [
     {
@@ -113,10 +144,22 @@ evidence.recordRunObservation(project.id, seedRun.id, {
     },
   ],
 });
-const [seedFinding] = evidence.listFindings(project.id, { runId: seedRun.id });
-evidence.recordFindingFix(project.id, seedFinding!.id, { actor: "operator" });
-evidence.recordFindingRecheck(project.id, seedFinding!.id, {
-  producer: { id: "reviewer-2", role: "peer_reviewer" },
+const findingsResponse = await app.fetch(
+  new Request(
+    `http://127.0.0.1/api/v1/projects/${project.id}/evidence/findings?run_id=${encodeURIComponent(seedRun.id)}`,
+  ),
+);
+if (!findingsResponse.ok)
+  throw new Error(`Seed findings read failed: ${await findingsResponse.text()}`);
+const seedFindings = (await findingsResponse.json()) as Array<{ id: string }>;
+const seedFinding = seedFindings[0];
+if (!seedFinding) throw new Error("Seed finding was not persisted");
+await postJson(`/evidence/findings/${encodeURIComponent(seedFinding.id)}/fix`, {
+  producer_credential: fixerCredential.credential,
+  detail: "builder claims fixed",
+});
+await postJson(`/evidence/findings/${encodeURIComponent(seedFinding.id)}/recheck`, {
+  producer_credential: reviewerCredential.credential,
   status: "passed",
   checks: [
     { name: "unit", command: "bun test", result: "PASS", artifactPath: "checks/report.log" },
@@ -130,6 +173,7 @@ evidence.recordFindingRecheck(project.id, seedFinding!.id, {
     },
   ],
 });
+
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,

@@ -69,8 +69,8 @@ import {
   acceptanceDecisionSchema,
   factoryFindingRecordSchema,
   findingListSchema,
-  findingFixSubmissionSchema,
-  findingRecheckSubmissionSchema,
+  findingFixRequestSchema,
+  findingRecheckRequestSchema,
   landingGuardResultSchema,
   landingSubmissionSchema,
   landingExecutionResultSchema,
@@ -97,8 +97,8 @@ import {
   type RunEvidenceReport,
   type AcceptanceDecision,
   type FactoryFindingRecord,
-  type FindingFixSubmission,
-  type FindingRecheckSubmissionInput,
+  type FindingFixRequest,
+  type FindingRecheckRequestInput,
   type LandingGuardResult,
   type LandingSubmission,
   type LandingExecutionResult,
@@ -945,9 +945,9 @@ export function createFactoryClient(options: {
         },
         async submitFindingFix(
           id: string,
-          submission: FindingFixSubmission,
+          submission: FindingFixRequest,
         ): Promise<FactoryFindingRecord> {
-          const parsed = findingFixSubmissionSchema.safeParse(submission);
+          const parsed = findingFixRequestSchema.safeParse(submission);
           if (!parsed.success) throw new FactoryClientError("invalid_payload");
           return postJson(
             `${scopedBase}/evidence/findings/${encodeURIComponent(id)}/fix`,
@@ -957,9 +957,9 @@ export function createFactoryClient(options: {
         },
         async recheckFinding(
           id: string,
-          submission: FindingRecheckSubmissionInput,
+          submission: FindingRecheckRequestInput,
         ): Promise<FactoryFindingRecord> {
-          const parsed = findingRecheckSubmissionSchema.safeParse(submission);
+          const parsed = findingRecheckRequestSchema.safeParse(submission);
           if (!parsed.success) throw new FactoryClientError("invalid_payload");
           return postJson(
             `${scopedBase}/evidence/findings/${encodeURIComponent(id)}/recheck`,

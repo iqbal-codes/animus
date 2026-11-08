@@ -105,6 +105,10 @@ export const operatorErrorSchema = z.object({
     "stale_candidate_evidence",
     "acceptance_blocked",
     "invalid_stage_producer",
+    "unauthorized_producer",
+    "producer_exists",
+    "stage_writer_restricted",
+    "builder_claim_mismatch",
     "run_not_found",
   ]),
 });
@@ -447,6 +451,7 @@ export const planDispatchRunSchema = z.object({
   merge_policy: dispatchMergePolicySchema,
   target_branch: z.string().min(1),
   ownership_generation: z.number().int().positive(),
+  lap: z.number().int().positive(),
   state: dispatchRunStateSchema,
   actor: z.string().min(1),
   command_request_id: z.string().min(1),
@@ -1261,9 +1266,19 @@ export type ExecutionObservationSubmissionInput = z.input<
   typeof executionObservationSubmissionSchema
 >;
 
-export const executionObservationRequestSchema = executionObservationSubmissionSchema.extend({
-  run_id: z.string().min(1),
-});
+// Public HTTP writer: identity is proven by a durable credential minted by the
+// trusted backend boundary, never by caller-supplied producer strings.
+export const executionObservationRequestSchema = z
+  .object({
+    run_id: z.string().min(1),
+    producer_credential: z.string().min(1).max(500),
+    stage: executionStageSchema,
+    status: executionObservationStatusSchema,
+    checks: z.array(executionCheckSubmissionSchema).default([]),
+    findings: z.array(findingSubmissionSchema).default([]),
+    artifacts: z.array(artifactSubmissionSchema).default([]),
+  })
+  .strict();
 export type ExecutionObservationRequest = z.infer<typeof executionObservationRequestSchema>;
 export type ExecutionObservationRequestInput = z.input<typeof executionObservationRequestSchema>;
 
@@ -1342,6 +1357,7 @@ export const executionObservationRecordSchema = z.object({
   deliveryId: z.string().min(1),
   runId: z.string().min(1),
   lap: z.number().int().positive(),
+  attemptKey: z.string().min(1),
   stage: executionStageSchema,
   status: executionObservationStatusSchema,
   candidateHeadSha: z.string().min(1),
@@ -1392,6 +1408,14 @@ export const findingFixSubmissionSchema = z
   .strict();
 export type FindingFixSubmission = z.infer<typeof findingFixSubmissionSchema>;
 
+export const findingFixRequestSchema = z
+  .object({
+    producer_credential: z.string().min(1).max(500),
+    detail: z.string().max(8000).optional(),
+  })
+  .strict();
+export type FindingFixRequest = z.infer<typeof findingFixRequestSchema>;
+
 export const findingRecheckSubmissionSchema = z
   .object({
     producer: producerIdentitySchema,
@@ -1405,6 +1429,20 @@ export const findingRecheckSubmissionSchema = z
   .strict();
 export type FindingRecheckSubmission = z.infer<typeof findingRecheckSubmissionSchema>;
 export type FindingRecheckSubmissionInput = z.input<typeof findingRecheckSubmissionSchema>;
+
+export const findingRecheckRequestSchema = z
+  .object({
+    producer_credential: z.string().min(1).max(500),
+    status: z.enum(["passed", "failed", "inconclusive"]),
+    stage: executionStageSchema.optional(),
+    runId: z.string().min(1).optional(),
+    checks: z.array(executionCheckSubmissionSchema).default([]),
+    artifacts: z.array(artifactSubmissionSchema).default([]),
+    detail: z.string().max(8000).optional(),
+  })
+  .strict();
+export type FindingRecheckRequest = z.infer<typeof findingRecheckRequestSchema>;
+export type FindingRecheckRequestInput = z.input<typeof findingRecheckRequestSchema>;
 
 export const observationListSchema = z.array(executionObservationRecordSchema);
 export const findingListSchema = z.array(factoryFindingRecordSchema);

@@ -23,8 +23,13 @@ function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
 }
 
-function ticketBody(): string {
-  return [
+function ticketBody(
+  options: { partOf?: number; coverage?: string; dependsOn?: number[] } = {},
+): string {
+  const lines: string[] = [];
+  if (options.partOf) lines.push(`Part of #${options.partOf}`, "");
+  if (options.coverage) lines.push(`Source acceptance coverage: ${options.coverage}`, "");
+  lines.push(
     "## Source and problem",
     "",
     "Prepared ticket source.",
@@ -45,7 +50,34 @@ function ticketBody(): string {
     "",
     "Prepared ticket boundary.",
     "",
-    "Depends on: None",
+    options.dependsOn && options.dependsOn.length > 0
+      ? `Depends on: ${options.dependsOn.map((n) => `#${n}`).join(", ")}`
+      : "Depends on: None",
+  );
+  return lines.join("\n");
+}
+
+function specBody(criteria: string[]): string {
+  return [
+    "## Source and problem",
+    "",
+    "Prepared specification source.",
+    "",
+    "## Outcome",
+    "",
+    "Prepared specification outcome.",
+    "",
+    "## Invariants",
+    "",
+    "- Planning record, never dispatched directly.",
+    "",
+    "## Acceptance criteria",
+    "",
+    ...criteria.map((criterion, index) => `- [ ] AC${index + 1} — ${criterion}`),
+    "",
+    "## Boundary",
+    "",
+    "Prepared specification boundary.",
   ].join("\n");
 }
 
@@ -97,15 +129,26 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
     } as ConstructorParameters<typeof DispatchService>[1]);
   }
 
-  function addIssue(number: number) {
+  function addIssue(
+    number: number,
+    body: string = ticketBody(),
+    labels: string[] = ["ready-for-agent"],
+  ) {
     forge.addIssue(REPO, {
       number,
       title: `Issue ${number}`,
-      body: ticketBody(),
+      body,
       state: "OPEN",
-      labels: [{ name: "ready-for-agent" }],
+      labels: labels.map((name) => ({ name })),
       comments: [],
     });
+  }
+
+  function register(
+    id: string,
+    role: "peer_reviewer" | "independent_evaluator" | "automated_gate" | "builder",
+  ) {
+    return observations.registerTrustedProducer(projectId, { id, role });
   }
 
   async function dispatchStandalone(issueNumber: number) {
@@ -195,6 +238,9 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
 
   test("AC2: findings keep original evidence across laps; fix cannot resolve; failed recheck preserves; authorized pass resolves", async () => {
     const { run } = await dispatchStandalone(701);
+    register("gate-1", "automated_gate");
+    register("reviewer-1", "peer_reviewer");
+    register("reviewer-2", "peer_reviewer");
 
     const gate = { id: "gate-1", role: "automated_gate" as const };
     const failed = observations.recordRunObservation(projectId, run.id, {
@@ -306,6 +352,7 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
 
   test("AC3: stale target tip, forged ownership and self-certified review cannot authorize acceptance", async () => {
     const { run } = await dispatchStandalone(702);
+    register("reviewer-1", "peer_reviewer");
 
     observations.recordRunObservation(projectId, run.id, {
       stage: "independent_review",
@@ -370,6 +417,8 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
 
   test("AC4/AC5: missing, unsafe and atomic violations leave no partial observation rows", async () => {
     const { run } = await dispatchStandalone(703);
+    register("gate-1", "automated_gate");
+    register("gate-2", "automated_gate");
     const before = countObservations();
 
     // A check that cites an unfinalized artifact cannot be recorded.
@@ -424,6 +473,25 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
     ).toThrowError(/finding index/i);
     expect(countObservations()).toBe(before);
 
+    // A finding cannot be scoped to a different ticket than the run's own work item.
+    expect(() =>
+      observations.recordRunObservation(projectId, run.id, {
+        stage: "technical_checks",
+        status: "failed",
+        producer: { id: "gate-1", role: "automated_gate" },
+        checks: [{ name: "unit", command: "bun test", result: "FAIL" }],
+        findings: [
+          {
+            severity: "blocking",
+            workId: "work-other-ticket",
+            fileContext: "apps/backend/src/example.ts",
+            summary: "cross-ticket finding",
+          },
+        ],
+      }),
+    ).toThrowError(/own work item/i);
+    expect(countObservations()).toBe(before);
+
     // A real database constraint failure rolls back the observation, checks and findings.
     writeArtifact("checks/atomic.log");
     expect(() =>
@@ -435,7 +503,6 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
         findings: [
           {
             severity: "blocking",
-            workId: "work-does-not-exist",
             fileContext: "apps/backend/src/example.ts",
             summary: "forced constraint failure",
           },
@@ -444,6 +511,13 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
           {
             ownerType: "observation",
             name: "atomic",
+            relativePath: "checks/atomic.log",
+            mediaType: "text/plain",
+          },
+          // The second identical owner/path violates a real UNIQUE constraint.
+          {
+            ownerType: "observation",
+            name: "atomic-duplicate",
             relativePath: "checks/atomic.log",
             mediaType: "text/plain",
           },
@@ -465,8 +539,10 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
     expect(artifacts.count).toBe(0);
   });
 
-  test("AC2/AC5: a later candidate appends evidence without rewriting the prior failed result", async () => {
-    const { run } = await dispatchStandalone(704);
+  test("AC2/AC5: a real fix lap appends evidence without rewriting the prior failed result", async () => {
+    const { plan, run } = await dispatchStandalone(704);
+    register("gate-1", "automated_gate");
+    register("reviewer-3", "peer_reviewer");
 
     const failed = observations.recordRunObservation(projectId, run.id, {
       stage: "technical_checks",
@@ -482,66 +558,34 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
         },
       ],
     });
+    const crossLapFinding = observations.listFindings(projectId, { runId: run.id })[0]!;
+    expect(crossLapFinding.status).toBe("open");
 
-    // A new candidate head on the dispatched branch is a genuinely different identity.
-    const newHead = commitInWorktree(run.worktree_path, "impl-2.txt");
-    const nextRunId = "run_candidate_two";
-    const now = Date.now();
-    db.prepare(
-      `INSERT INTO dispatch_runs (
-        id, project_id, delivery_id, plan_id, work_id, revision_id, content_hash, issue_number,
-        role, gate_profile, merge_policy, target_branch, ownership_generation, state, actor,
-        command_request_id, branch, worktree_path, base_sha, owner_pid, owner_token,
-        lease_expires_at, head_sha, error, launched_at, finished_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 2, 'succeeded', 'operator', ?, ?, ?, ?, 4242, 'token-2',
-        ?, ?, NULL, ?, ?, ?, ?)`,
-    ).run(
-      nextRunId,
-      projectId,
-      run.delivery_id,
-      run.plan_id,
-      run.work_id,
-      run.revision_id,
-      run.content_hash,
-      run.issue_number,
-      run.role,
-      run.gate_profile,
-      run.merge_policy,
-      run.target_branch,
-      "cmd_candidate_two",
-      run.branch,
-      run.worktree_path,
-      run.base_sha,
-      now + 60_000,
-      newHead,
-      now,
-      now,
-      now,
-      now,
-    );
-
-    observations.recordRunObservation(projectId, nextRunId, {
-      stage: "builder_execution",
-      status: "passed",
-      producer: { id: "operator", role: "builder" },
-      checks: [{ name: "builder_commit", command: "git rev-parse HEAD", result: "PASS" }],
+    // A real re-dispatch after the open finding starts the next builder/fix lap for
+    // this ticket; it is not a manually fabricated dispatch row.
+    const secondRun = await makeDispatch().dispatch(projectId, {
+      plan_id: plan.id,
+      work_id: run.work_id,
+      actor: "operator",
     });
+    expect(secondRun.work_id).toBe(run.work_id);
+    expect(secondRun.lap).toBe(2);
+    expect(observations.listObservations(projectId, { runId: secondRun.id })[0]!.lap).toBe(2);
 
     const firstRunEvidence = observations.listObservations(projectId, { runId: run.id });
     expect(firstRunEvidence.find((item) => item.id === failed.id)).toMatchObject({
       status: "failed",
       candidateHeadSha: run.head_sha,
+      lap: 1,
     });
-    expect(firstRunEvidence.some((item) => item.candidateHeadSha === newHead)).toBe(false);
-    const secondRunEvidence = observations.listObservations(projectId, { runId: nextRunId });
-    expect(secondRunEvidence.map((item) => item.candidateHeadSha)).toEqual([newHead]);
-    const crossLapFinding = observations.listFindings(projectId, { runId: run.id })[0]!;
-    expect(crossLapFinding.status).toBe("open");
+    expect(
+      observations.getRunEvidence(projectId, secondRun.id).findings.map((f) => f.id),
+    ).toContain(crossLapFinding.id);
 
     // The finding persists into the next lap; an authorized recheck against the new
     // candidate resolves it and the later run's detail still shows that history.
     const resolvedOnNextLap = observations.recordFindingRecheck(projectId, crossLapFinding.id, {
-      runId: nextRunId,
+      runId: secondRun.id,
       producer: { id: "reviewer-3", role: "peer_reviewer" },
       status: "passed",
       checks: [{ name: "unit", command: "bun test", result: "PASS" }],
@@ -551,8 +595,7 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
       action: "recheck_passed",
       actor: "reviewer-3",
     });
-    const nextEvidence = observations.getRunEvidence(projectId, nextRunId);
-    expect(nextEvidence.findings.map((finding) => finding.id)).toContain(crossLapFinding.id);
+    const nextEvidence = observations.getRunEvidence(projectId, secondRun.id);
     expect(
       nextEvidence.findings.find((finding) => finding.id === crossLapFinding.id)!.events.at(-1)!
         .action,
@@ -563,8 +606,257 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
     );
   });
 
+  test("B1/AC1: a newer inconclusive or failed stage result revokes an earlier pass", async () => {
+    const { run } = await dispatchStandalone(706);
+    register("reviewer-1", "peer_reviewer");
+    register("reviewer-2", "peer_reviewer");
+
+    observations.recordRunObservation(projectId, run.id, {
+      stage: "independent_review",
+      status: "passed",
+      producer: { id: "reviewer-1", role: "peer_reviewer" },
+      checks: [{ name: "standards", command: "review", result: "PASS" }],
+    });
+    expect(observations.evaluateAcceptance(projectId, run.id).authorized).toBe(true);
+
+    observations.recordRunObservation(projectId, run.id, {
+      stage: "independent_review",
+      status: "inconclusive",
+      producer: { id: "reviewer-2", role: "peer_reviewer" },
+      checks: [{ name: "standards", command: "review", result: "BLOCKED" }],
+    });
+    const afterInconclusive = observations.evaluateAcceptance(projectId, run.id);
+    expect(afterInconclusive.authorized).toBe(false);
+    expect(afterInconclusive.reasons).toContain(
+      "required_stage_not_passed:independent_review:inconclusive",
+    );
+    // History is retained rather than rewritten.
+    expect(
+      observations
+        .listObservations(projectId, { runId: run.id })
+        .filter((item) => item.stage === "independent_review"),
+    ).toHaveLength(2);
+
+    // The same rule applies to the builder stage: a newer non-pass dominates an older pass.
+    observations.recordRunObservation(
+      projectId,
+      run.id,
+      {
+        stage: "builder_execution",
+        status: "failed",
+        producer: { id: "operator", role: "builder" },
+        checks: [{ name: "builder_commit", command: "git rev-parse HEAD", result: "FAIL" }],
+      },
+      { attemptKey: "builder-late-attempt" },
+    );
+    expect(observations.evaluateAcceptance(projectId, run.id).reasons).toContain(
+      "builder_result_not_passed:failed",
+    );
+  });
+
+  test("B2/AC2/AC3: sibling tickets in one spec delivery never share findings or acceptance", async () => {
+    addIssue(100, specBody(["parent first", "parent second"]), ["ready-for-agent", "spec"]);
+    addIssue(101, ticketBody({ partOf: 100, coverage: "AC1" }));
+    addIssue(102, ticketBody({ partOf: 100, coverage: "AC2" }));
+    const plan = await plans.importPlan(projectId, { issue_number: 100, kind: "spec" });
+    expect(plan.authority).toBe("admitted");
+    git(checkoutPath, "branch", "factory/spec-100-integration", "main");
+    register("gate-1", "automated_gate");
+
+    const service = makeDispatch();
+    const runA = await service.dispatch(projectId, {
+      plan_id: plan.id,
+      issue_number: 101,
+      actor: "operator",
+    });
+    const runB = await service.dispatch(projectId, {
+      plan_id: plan.id,
+      issue_number: 102,
+      actor: "operator",
+    });
+    expect(runA.issue_number).not.toBe(runB.issue_number);
+    expect(runA.delivery_id).toBe(runB.delivery_id);
+
+    observations.recordRunObservation(projectId, runA.id, {
+      stage: "technical_checks",
+      status: "failed",
+      producer: { id: "gate-1", role: "automated_gate" },
+      checks: [{ name: "unit", command: "bun test", result: "FAIL" }],
+      findings: [
+        {
+          severity: "blocking",
+          acKey: "AC1",
+          fileContext: "src/a.ts",
+          summary: "ticket A defect",
+        },
+      ],
+    });
+    observations.recordRunObservation(projectId, runB.id, {
+      stage: "technical_checks",
+      status: "passed",
+      producer: { id: "gate-1", role: "automated_gate" },
+      checks: [{ name: "unit", command: "bun test", result: "PASS" }],
+    });
+
+    const findingA = observations.listFindings(projectId, { runId: runA.id })[0]!;
+    const evidenceA = observations.getRunEvidence(projectId, runA.id);
+    const evidenceB = observations.getRunEvidence(projectId, runB.id);
+    expect(evidenceB.findings).toHaveLength(0);
+    expect(evidenceB.acceptance.authorized).toBe(true);
+    expect(evidenceA.findings.map((finding) => finding.id)).toEqual([findingA.id]);
+    expect(evidenceA.acceptance.authorized).toBe(false);
+    expect(evidenceA.acceptance.reasons).toContain("open_blocking_findings");
+
+    // A sibling ticket cannot recheck (or inherit) another ticket's finding.
+    expect(() =>
+      observations.recordFindingRecheck(projectId, findingA.id, {
+        runId: runB.id,
+        producer: { id: "gate-1", role: "automated_gate" },
+        status: "passed",
+        checks: [{ name: "unit", command: "bun test", result: "PASS" }],
+      }),
+    ).toThrowError(/own work item/i);
+  });
+
+  test("B3/AC1: laps are per-ticket builder cycles, distinct from delivery ownership generations", async () => {
+    addIssue(200, specBody(["parent first", "parent second"]), ["ready-for-agent", "spec"]);
+    addIssue(201, ticketBody({ partOf: 200, coverage: "AC1" }));
+    addIssue(202, ticketBody({ partOf: 200, coverage: "AC2" }));
+    const plan = await plans.importPlan(projectId, { issue_number: 200, kind: "spec" });
+    git(checkoutPath, "branch", "factory/spec-200-integration", "main");
+    register("gate-1", "automated_gate");
+
+    const service = makeDispatch();
+    const runA = await service.dispatch(projectId, {
+      plan_id: plan.id,
+      issue_number: 201,
+      actor: "operator",
+    });
+    const runB = await service.dispatch(projectId, {
+      plan_id: plan.id,
+      issue_number: 202,
+      actor: "operator",
+    });
+
+    // Ownership generation fences the whole delivery; lap is the ticket's own cycle.
+    expect(runA.ownership_generation).toBe(1);
+    expect(runB.ownership_generation).toBe(2);
+    expect(runA.lap).toBe(1);
+    expect(runB.lap).toBe(1);
+    expect(observations.listObservations(projectId, { runId: runA.id })[0]!.lap).toBe(1);
+    expect(observations.listObservations(projectId, { runId: runB.id })[0]!.lap).toBe(1);
+
+    observations.recordRunObservation(projectId, runA.id, {
+      stage: "technical_checks",
+      status: "failed",
+      producer: { id: "gate-1", role: "automated_gate" },
+      checks: [{ name: "unit", command: "bun test", result: "FAIL" }],
+      findings: [{ severity: "blocking", fileContext: "src/a.ts", summary: "fix the ticket" }],
+    });
+    const nextA = await service.dispatch(projectId, {
+      plan_id: plan.id,
+      issue_number: 201,
+      actor: "operator",
+    });
+    expect(nextA.lap).toBe(2);
+    expect(nextA.ownership_generation).toBeGreaterThan(runB.ownership_generation);
+    expect(observations.listObservations(projectId, { runId: nextA.id })[0]!.lap).toBe(2);
+    // Ticket B's first cycle stays lap 1; sibling laps never advance it.
+    expect(observations.listObservations(projectId, { runId: runB.id })[0]!.lap).toBe(1);
+  });
+
+  test("B4/AC3: producer identity is a durable trusted registration, not a caller string", async () => {
+    const { run } = await dispatchStandalone(708);
+
+    // A fresh, unregistered reviewer id is not an identity.
+    expect(() =>
+      observations.recordRunObservation(projectId, run.id, {
+        stage: "independent_review",
+        status: "passed",
+        producer: { id: "forged-reviewer", role: "peer_reviewer" },
+        checks: [{ name: "standards", command: "review", result: "PASS" }],
+      }),
+    ).toThrowError(/registered trusted identity/i);
+
+    // The builder result is bound to the durable dispatch actor/claim.
+    expect(() =>
+      observations.recordRunObservation(projectId, run.id, {
+        stage: "builder_execution",
+        status: "passed",
+        producer: { id: "someone-else", role: "builder" },
+        checks: [{ name: "builder_commit", command: "git rev-parse HEAD", result: "PASS" }],
+      }),
+    ).toThrowError(/durable dispatch actor/i);
+
+    // Credentials are one-time secrets over a durable registered identity.
+    const registered = observations.registerTrustedProducer(projectId, {
+      id: "reviewer-1",
+      role: "peer_reviewer",
+      name: "Reviewer One",
+    });
+    expect(observations.authenticateProducer(projectId, registered.credential)).toMatchObject({
+      id: "reviewer-1",
+      role: "peer_reviewer",
+      name: "Reviewer One",
+    });
+    expect(() =>
+      observations.authenticateProducer(projectId, "prd_forged_credential"),
+    ).toThrowError(/credential is not registered/i);
+    expect(() =>
+      observations.registerTrustedProducer(projectId, { id: "reviewer-1", role: "peer_reviewer" }),
+    ).toThrowError(/already registered/i);
+
+    observations.recordRunObservation(projectId, run.id, {
+      stage: "independent_review",
+      status: "passed",
+      producer: { id: "reviewer-1", role: "peer_reviewer" },
+      checks: [{ name: "standards", command: "review", result: "PASS" }],
+    });
+    expect(observations.evaluateAcceptance(projectId, run.id).authorized).toBe(true);
+  });
+
+  test("AC2: one reviewer can recheck multiple findings in the same lap with distinct attempts", async () => {
+    const { run } = await dispatchStandalone(709);
+    register("gate-1", "automated_gate");
+    register("reviewer-1", "peer_reviewer");
+
+    observations.recordRunObservation(projectId, run.id, {
+      stage: "technical_checks",
+      status: "failed",
+      producer: { id: "gate-1", role: "automated_gate" },
+      checks: [{ name: "unit", command: "bun test", result: "FAIL" }],
+      findings: [
+        { severity: "blocking", acKey: "AC1", fileContext: "src/a.ts", summary: "first" },
+        { severity: "blocking", acKey: "AC2", fileContext: "src/b.ts", summary: "second" },
+      ],
+    });
+    const findings = observations.listFindings(projectId, { runId: run.id });
+    expect(findings).toHaveLength(2);
+
+    const first = observations.recordFindingRecheck(projectId, findings[0]!.id, {
+      producer: { id: "reviewer-1", role: "peer_reviewer" },
+      status: "passed",
+      checks: [{ name: "unit", command: "bun test", result: "PASS" }],
+    });
+    const second = observations.recordFindingRecheck(projectId, findings[1]!.id, {
+      producer: { id: "reviewer-1", role: "peer_reviewer" },
+      status: "passed",
+      checks: [{ name: "unit", command: "bun test", result: "PASS" }],
+    });
+    expect(first.status).toBe("resolved");
+    expect(second.status).toBe("resolved");
+    const rechecks = observations
+      .listObservations(projectId, { runId: run.id })
+      .filter((observation) => observation.stage === "independent_review");
+    expect(rechecks).toHaveLength(2);
+    expect(new Set(rechecks.map((observation) => observation.attemptKey)).size).toBe(2);
+    expect(observations.evaluateAcceptance(projectId, run.id).authorized).toBe(true);
+  });
+
   test("AC4: artifact ownership is typed and re-verified on disk", async () => {
     const { run } = await dispatchStandalone(705);
+    register("gate-1", "automated_gate");
+    register("gate-2", "automated_gate");
     writeArtifact("checks/a.log", "a\n");
     writeArtifact("checks/b.log", "b\n");
 

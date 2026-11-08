@@ -320,6 +320,47 @@ const MIGRATIONS: WorkMigration[] = [
     version: 5,
     name: "execution_observations_findings_artifacts",
     up(db) {
+      // The execution lap is per ticket (builder/fix cycle), independent of the
+      // delivery-wide ownership generation used for claim fencing. v4 is preserved
+      // as shipped; v5 adds the per-work lap ordinal transactionally allocated at claim.
+      db.exec(`
+        ALTER TABLE dispatch_runs ADD COLUMN lap INTEGER NOT NULL DEFAULT 1 CHECK(lap > 0);
+      `);
+      db.exec(`
+        UPDATE dispatch_runs
+        SET lap = (
+          SELECT COUNT(*)
+          FROM dispatch_runs AS prior
+          WHERE prior.delivery_id = dispatch_runs.delivery_id
+            AND prior.work_id = dispatch_runs.work_id
+            AND (
+              prior.created_at < dispatch_runs.created_at
+              OR (prior.created_at = dispatch_runs.created_at AND prior.id <= dispatch_runs.id)
+            )
+        );
+      `);
+      db.exec(`
+        CREATE UNIQUE INDEX uq_dispatch_runs_work_lap
+        ON dispatch_runs(delivery_id, work_id, lap);
+      `);
+
+      // Durable trusted producer identities. Credentials are minted only by the
+      // trusted backend/host boundary (never by the public evidence route); the
+      // stored value is a one-way hash so a leaked database cannot impersonate.
+      db.exec(`
+        CREATE TABLE execution_producers (
+          project_id TEXT NOT NULL REFERENCES projects(id),
+          producer_id TEXT NOT NULL CHECK(length(producer_id) > 0),
+          role TEXT NOT NULL CHECK(role IN ('independent_evaluator', 'peer_reviewer', 'automated_gate', 'builder')),
+          producer_name TEXT,
+          credential_hash TEXT NOT NULL CHECK(length(credential_hash) = 64),
+          created_at INTEGER NOT NULL,
+          revoked_at INTEGER,
+          PRIMARY KEY(project_id, producer_id),
+          UNIQUE(credential_hash)
+        );
+      `);
+
       // Candidate-bound stage observations. Rows are append-only: a new lap or a new
       // candidate appends a new row instead of rewriting earlier failures.
       db.exec(`
@@ -329,6 +370,7 @@ const MIGRATIONS: WorkMigration[] = [
           delivery_id TEXT NOT NULL,
           run_id TEXT NOT NULL,
           lap INTEGER NOT NULL CHECK(lap > 0),
+          attempt_key TEXT NOT NULL CHECK(length(attempt_key) > 0),
           stage TEXT NOT NULL CHECK(stage IN ('builder_execution', 'technical_checks', 'independent_review', 'final_acceptance')),
           status TEXT NOT NULL CHECK(status IN ('running', 'passed', 'failed', 'inconclusive', 'interrupted')),
           candidate_head_sha TEXT NOT NULL CHECK(length(candidate_head_sha) > 0),
@@ -344,7 +386,7 @@ const MIGRATIONS: WorkMigration[] = [
           error TEXT,
           created_at INTEGER NOT NULL,
           UNIQUE(id, project_id),
-          UNIQUE(run_id, stage, lap, producer_id),
+          UNIQUE(run_id, stage, lap, producer_id, attempt_key),
           FOREIGN KEY(delivery_id, project_id) REFERENCES deliveries(id, project_id),
           FOREIGN KEY(run_id, project_id) REFERENCES dispatch_runs(id, project_id)
         );

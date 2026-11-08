@@ -186,6 +186,7 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
               merge_policy: "manual" as const,
               target_branch: "main",
               ownership_generation: 1,
+              lap: 1,
               state: failed ? ("failed" as const) : ("succeeded" as const),
               actor: "operator",
               command_request_id: "cmd-1",
@@ -278,6 +279,7 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
       merge_policy: "manual" as const,
       target_branch: "main",
       ownership_generation: 1,
+      lap: 1,
       state: "succeeded" as const,
       actor: "operator",
       command_request_id: "cmd-1",
@@ -445,5 +447,112 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
     fireEvent.click(screen.getByRole("button", { name: "View evidence" }));
     expect(await screen.findByTestId("run-evidence-run-1")).toBeTruthy();
     expect(evidenceRequests).toEqual(["run-1"]);
+  });
+
+  test("DispatchControl lets operators select a ticket/run/candidate history", async () => {
+    const plan = {
+      id: "plan-1",
+      project_id: "proj-1",
+      kind: "standalone" as const,
+      root_work_id: "work-1",
+      root_issue_number: 714,
+      root_title: "Standalone delivery",
+      graph_hash: "a".repeat(64),
+      authority: "admitted" as const,
+      member_count: 1,
+      ticket_count: 1,
+      hold_count: 0,
+      accepted_revision_id: "rev-1",
+      created_at: 1,
+      updated_at: 1,
+    };
+    const baseRun = {
+      project_id: "proj-1",
+      delivery_id: "del-1",
+      plan_id: "plan-1",
+      work_id: "work-1",
+      revision_id: "rev-1",
+      content_hash: "b".repeat(64),
+      role: "ticket" as const,
+      gate_profile: "standalone" as const,
+      merge_policy: "manual" as const,
+      target_branch: "main",
+      actor: "operator",
+      command_request_id: "cmd-1",
+      branch: "factory/standalone-714",
+      worktree_path: "/tmp/worktree",
+      base_sha: "c".repeat(40),
+      owner_pid: 1,
+      owner_token: "token",
+      lease_expires_at: null,
+      error: null,
+      launched_at: 1,
+      finished_at: 1,
+      updated_at: 1,
+    };
+    const older = {
+      ...baseRun,
+      id: "run-old",
+      issue_number: 714,
+      ownership_generation: 1,
+      lap: 1,
+      state: "failed" as const,
+      head_sha: "d".repeat(40),
+      created_at: 1,
+    };
+    const newer = {
+      ...baseRun,
+      id: "run-new",
+      issue_number: 715,
+      ownership_generation: 2,
+      lap: 2,
+      state: "succeeded" as const,
+      head_sha: "e".repeat(40),
+      created_at: 2,
+    };
+    const requests: string[] = [];
+    const acceptance = {
+      runId: "run-new",
+      projectId: "proj-1",
+      deliveryId: "del-1",
+      gateProfile: "standalone",
+      candidateHeadSha: "e".repeat(40),
+      targetTipSha: "c".repeat(40),
+      mergeBaseSha: "c".repeat(40),
+      integrationLineage: "a".repeat(64) + "@main",
+      authorized: false,
+      reasons: ["run_not_succeeded"],
+      builderObservationId: null,
+      independentObservationId: null,
+      openBlockingFindingIds: [],
+      verifiedArtifactIds: [],
+    };
+    const factory = {
+      projects: async () => [mockProjects[0]!],
+      forProject: () => ({
+        plans: async () => [plan],
+        dispatchRuns: async () => [newer, older],
+        dispatchPlan: async () => {
+          throw new Error("must not dispatch");
+        },
+        runEvidence: async (runId: string) => {
+          requests.push(runId);
+          return { observations: [], findings: [], acceptance: { ...acceptance, runId } };
+        },
+      }),
+    } as any;
+
+    render(<DispatchControl factory={factory} />);
+    const history = await screen.findByLabelText("Run history for #714");
+    expect(history.textContent).toContain("#715 · lap 2");
+    expect(history.textContent).toContain("#714 · lap 1");
+
+    fireEvent.click(screen.getByRole("button", { name: "View evidence" }));
+    await waitFor(() => expect(requests).toEqual(["run-new"]));
+    fireEvent.click(screen.getByRole("button", { name: "Hide evidence" }));
+
+    fireEvent.change(history, { target: { value: "run-old" } });
+    fireEvent.click(screen.getByRole("button", { name: "View evidence" }));
+    await waitFor(() => expect(requests).toEqual(["run-new", "run-old"]));
   });
 });

@@ -24,13 +24,19 @@ const RUN_TONE: Record<
   reconciled: "default",
 };
 
-export function latestRunByPlan(runs: PlanDispatchRunList): Map<string, PlanDispatchRun> {
-  const latest = new Map<string, PlanDispatchRun>();
+export function runsByPlan(runs: PlanDispatchRunList): Map<string, PlanDispatchRun[]> {
+  const grouped = new Map<string, PlanDispatchRun[]>();
   for (const run of runs) {
-    const current = latest.get(run.plan_id);
-    if (!current || run.created_at > current.created_at) latest.set(run.plan_id, run);
+    const list = grouped.get(run.plan_id) ?? [];
+    list.push(run);
+    grouped.set(run.plan_id, list);
   }
-  return latest;
+  for (const list of grouped.values()) {
+    list.sort(
+      (left, right) => right.created_at - left.created_at || right.id.localeCompare(left.id),
+    );
+  }
+  return grouped;
 }
 
 /**
@@ -50,6 +56,7 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
   const [evidence, setEvidence] = useState<Record<string, RunEvidenceReport>>({});
   const [evidenceLoading, setEvidenceLoading] = useState<string | null>(null);
   const [evidenceError, setEvidenceError] = useState<Record<string, string>>({});
+  const [selectedRuns, setSelectedRuns] = useState<Record<string, string>>({});
 
   const loadProject = useCallback(
     async (id: string) => {
@@ -163,7 +170,7 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
   };
 
   const admitted = plans.filter((plan) => plan.authority === "admitted");
-  const latest = latestRunByPlan(runs);
+  const grouped = runsByPlan(runs);
 
   return (
     <section
@@ -227,7 +234,9 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
           </p>
         ) : (
           admitted.map((plan) => {
-            const run = latest.get(plan.id);
+            const planRuns = grouped.get(plan.id) ?? [];
+            const selectedRunId = selectedRuns[plan.id] ?? planRuns[0]?.id;
+            const run = planRuns.find((candidate) => candidate.id === selectedRunId) ?? planRuns[0];
             const busy = busyPlanId === plan.id;
             return (
               <div
@@ -243,6 +252,29 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
                   {plan.kind} · tickets {plan.ticket_count} · holds {plan.hold_count}
                 </span>
                 <span className="flex-1" />
+                {planRuns.length > 0 && run && (
+                  <label className="flex min-w-0 items-center gap-2 text-[11px] text-text-secondary">
+                    <span className="sr-only">
+                      Run history for #{plan.root_issue_number}: ticket, lap and candidate
+                    </span>
+                    <select
+                      aria-label={`Run history for #${plan.root_issue_number}`}
+                      value={run.id}
+                      onChange={(event) => {
+                        const id = event.target.value;
+                        setSelectedRuns((current) => ({ ...current, [plan.id]: id }));
+                      }}
+                      className="h-11 max-w-full rounded-full border border-[var(--border)] bg-background px-3 text-xs text-foreground sm:h-8"
+                    >
+                      {planRuns.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          #{item.issue_number} · lap {item.lap} · candidate{" "}
+                          {item.head_sha ? item.head_sha.slice(0, 7) : "none"} · {item.state}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
                 {run && (
                   <>
                     <span className="break-words text-xs text-text-secondary">

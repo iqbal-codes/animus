@@ -415,10 +415,10 @@ describe("local dispatch ownership and frozen execution", () => {
     db.prepare(
       `INSERT INTO dispatch_runs (
         id, project_id, delivery_id, plan_id, work_id, revision_id, content_hash, issue_number,
-        role, gate_profile, merge_policy, target_branch, ownership_generation, state, actor,
+        role, gate_profile, merge_policy, target_branch, ownership_generation, lap, state, actor,
         command_request_id, branch, worktree_path, base_sha, owner_pid, owner_token,
         lease_expires_at, head_sha, error, launched_at, finished_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, ?, ?)`,
     ).run(
       interruptedId,
       projectId,
@@ -432,6 +432,7 @@ describe("local dispatch ownership and frozen execution", () => {
       firstRun.gate_profile,
       firstRun.merge_policy,
       firstRun.target_branch,
+      2,
       2,
       "crashed-host",
       "cmd_interrupted",
@@ -703,10 +704,10 @@ describe("local dispatch ownership and frozen execution", () => {
     db.prepare(
       `INSERT INTO dispatch_runs (
         id, project_id, delivery_id, plan_id, work_id, revision_id, content_hash, issue_number,
-        role, gate_profile, merge_policy, target_branch, ownership_generation, state, actor,
+        role, gate_profile, merge_policy, target_branch, ownership_generation, lap, state, actor,
         command_request_id, branch, worktree_path, base_sha, owner_pid, owner_token,
         lease_expires_at, head_sha, error, launched_at, finished_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, ?, ?)`,
     ).run(
       interruptedId,
       projectId,
@@ -720,6 +721,7 @@ describe("local dispatch ownership and frozen execution", () => {
       failedRun.gate_profile,
       failedRun.merge_policy,
       failedRun.target_branch,
+      2,
       2,
       "crashed-host",
       "cmd_live_writer",
@@ -986,10 +988,10 @@ describe("local dispatch ownership and frozen execution", () => {
     db.prepare(
       `INSERT INTO dispatch_runs (
         id, project_id, delivery_id, plan_id, work_id, revision_id, content_hash, issue_number,
-        role, gate_profile, merge_policy, target_branch, ownership_generation, state, actor,
+        role, gate_profile, merge_policy, target_branch, ownership_generation, lap, state, actor,
         command_request_id, branch, worktree_path, base_sha, owner_pid, owner_token,
         lease_expires_at, head_sha, error, launched_at, finished_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, ?, ?)`,
     ).run(
       interruptedId,
       projectId,
@@ -1003,6 +1005,7 @@ describe("local dispatch ownership and frozen execution", () => {
       failedRun.gate_profile,
       failedRun.merge_policy,
       failedRun.target_branch,
+      2,
       2,
       "crashed-host",
       "cmd_remote_effect",

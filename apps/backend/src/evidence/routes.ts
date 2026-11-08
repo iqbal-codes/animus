@@ -17,8 +17,8 @@ import {
   observationListSchema,
   findingListSchema,
   factoryFindingRecordSchema,
-  findingFixSubmissionSchema,
-  findingRecheckSubmissionSchema,
+  findingFixRequestSchema,
+  findingRecheckRequestSchema,
   acceptanceDecisionSchema,
   runEvidenceReportSchema,
 } from "@animus/contracts/operator";
@@ -65,8 +65,15 @@ export async function handleProjectEvidenceRoute(
         if (!parsed.success) {
           return Response.json({ error: "invalid_payload" }, { status: 400 });
         }
-        const { run_id, ...submission } = parsed.data;
-        const record = service.observations.recordRunObservation(projectId, run_id, submission);
+        const { run_id, producer_credential, ...submission } = parsed.data;
+        if (submission.stage === "builder_execution") {
+          return Response.json({ error: "stage_writer_restricted" }, { status: 422 });
+        }
+        const producer = service.observations.authenticateProducer(projectId, producer_credential);
+        const record = service.observations.recordRunObservation(projectId, run_id, {
+          ...submission,
+          producer,
+        });
         return Response.json(executionObservationRecordSchema.parse(record), { status: 201 });
       }
       if (request.method === "GET") {
@@ -102,23 +109,34 @@ export async function handleProjectEvidenceRoute(
           return Response.json({ error: "invalid_payload" }, { status: 400 });
         }
         if (operation === "fix") {
-          const parsed = findingFixSubmissionSchema.safeParse(body);
+          const parsed = findingFixRequestSchema.safeParse(body);
           if (!parsed.success) {
             return Response.json({ error: "invalid_payload" }, { status: 400 });
           }
-          const finding = service.observations.recordFindingFix(projectId, findingId, parsed.data);
+          const producer = service.observations.authenticateProducer(
+            projectId,
+            parsed.data.producer_credential,
+          );
+          const finding = service.observations.recordFindingFix(projectId, findingId, {
+            actor: producer.id,
+            ...(parsed.data.detail !== undefined ? { detail: parsed.data.detail } : {}),
+          });
           return Response.json(factoryFindingRecordSchema.parse(finding));
         }
         if (operation === "recheck") {
-          const parsed = findingRecheckSubmissionSchema.safeParse(body);
+          const parsed = findingRecheckRequestSchema.safeParse(body);
           if (!parsed.success) {
             return Response.json({ error: "invalid_payload" }, { status: 400 });
           }
-          const finding = service.observations.recordFindingRecheck(
+          const { producer_credential, ...submission } = parsed.data;
+          const producer = service.observations.authenticateProducer(
             projectId,
-            findingId,
-            parsed.data,
+            producer_credential,
           );
+          const finding = service.observations.recordFindingRecheck(projectId, findingId, {
+            ...submission,
+            producer,
+          });
           return Response.json(factoryFindingRecordSchema.parse(finding));
         }
         return Response.json({ error: "not_found" }, { status: 404 });
@@ -432,6 +450,10 @@ ${verif.review ? verif.review.summary : "No review conducted."}`;
         artifact_unsafe_path: 422,
         forged_ownership: 422,
         self_certification_rejected: 422,
+        unauthorized_producer: 403,
+        producer_exists: 409,
+        stage_writer_restricted: 422,
+        builder_claim_mismatch: 422,
         stale_candidate_evidence: 422,
         acceptance_blocked: 422,
         invalid_stage_producer: 422,

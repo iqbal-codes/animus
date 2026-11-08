@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFactoryClient } from "@animus/client";
 import { createBackendApp, type BackendApp } from "../../apps/backend/src/main";
+import { ExecutionObservationService } from "../../apps/backend/src/evidence";
 import { ProjectRegistryService, SyntheticForgeAdapter } from "../../apps/backend/src/registry";
 import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
 import { runPlanCommand } from "../../scripts/cli/commands/operations";
@@ -157,6 +158,24 @@ describe("candidate-bound evidence through backend HTTP, client and CLI", () => 
     const run = await scoped.dispatchPlan({ plan_id: plan.id, actor: "operator" });
     expect(run.state).toBe("succeeded");
 
+    const producers = new ExecutionObservationService(app.db);
+    const gate = producers.registerTrustedProducer(projectId, {
+      id: "gate-1",
+      role: "automated_gate",
+    });
+    const fixer = producers.registerTrustedProducer(projectId, {
+      id: "operator",
+      role: "peer_reviewer",
+    });
+    const reviewer1 = producers.registerTrustedProducer(projectId, {
+      id: "reviewer-1",
+      role: "peer_reviewer",
+    });
+    const reviewer2 = producers.registerTrustedProducer(projectId, {
+      id: "reviewer-2",
+      role: "peer_reviewer",
+    });
+
     // The dispatcher's own builder observation is durable and visible.
     const builderObservations = await scoped.observations({ runId: run.id });
     expect(builderObservations).toHaveLength(1);
@@ -166,9 +185,9 @@ describe("candidate-bound evidence through backend HTTP, client and CLI", () => 
     // A failing technical stage creates a persistent finding.
     const failed = await scoped.recordObservation({
       run_id: run.id,
+      producer_credential: gate.credential,
       stage: "technical_checks",
       status: "failed",
-      producer: { id: "gate-1", role: "automated_gate" },
       checks: [{ name: "unit", command: "bun test", result: "FAIL", detail: "1 failing" }],
       findings: [
         {
@@ -184,10 +203,11 @@ describe("candidate-bound evidence through backend HTTP, client and CLI", () => 
     expect(finding!.originObservationId).toBe(failed.id);
 
     const afterFix = await scoped.submitFindingFix(finding!.id, {
-      actor: "operator",
+      producer_credential: fixer.credential,
       detail: "builder claims fixed",
     });
     expect(afterFix.status).toBe("open");
+    expect(afterFix.events.at(-1)).toMatchObject({ actor: "operator", actorRole: "builder" });
 
     // Builder identity cannot self-resolve the finding.
     const selfResolve = await app.fetch(
@@ -197,7 +217,7 @@ describe("candidate-bound evidence through backend HTTP, client and CLI", () => 
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            producer: { id: "operator", role: "peer_reviewer" },
+            producer_credential: fixer.credential,
             status: "passed",
             checks: [{ name: "unit", command: "bun test", result: "PASS" }],
           }),
@@ -210,7 +230,7 @@ describe("candidate-bound evidence through backend HTTP, client and CLI", () => 
     );
 
     const failedRecheck = await scoped.recheckFinding(finding!.id, {
-      producer: { id: "reviewer-1", role: "peer_reviewer" },
+      producer_credential: reviewer1.credential,
       status: "failed",
       checks: [{ name: "unit", command: "bun test", result: "FAIL" }],
     });
@@ -220,7 +240,7 @@ describe("candidate-bound evidence through backend HTTP, client and CLI", () => 
     mkdirSync(join(artifactRoot(), "checks"), { recursive: true });
     writeFileSync(join(artifactRoot(), "checks/http.log"), "independent review passed\n");
     const resolved = await scoped.recheckFinding(finding!.id, {
-      producer: { id: "reviewer-2", role: "peer_reviewer" },
+      producer_credential: reviewer2.credential,
       status: "passed",
       checks: [
         {
@@ -328,15 +348,21 @@ describe("candidate-bound evidence through backend HTTP, client and CLI", () => 
       checkout_path: otherCheckout,
     });
 
+    const producers = new ExecutionObservationService(app.db);
+    const gateOther = producers.registerTrustedProducer(other.id, {
+      id: "gate-1",
+      role: "automated_gate",
+    });
+
     const forged = await app.fetch(
       new Request(`http://127.0.0.1/api/v1/projects/${other.id}/evidence/observations`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           run_id: run.id,
+          producer_credential: gateOther.credential,
           stage: "technical_checks",
           status: "passed",
-          producer: { id: "gate-1", role: "automated_gate" },
           checks: [{ name: "unit", command: "bun test", result: "PASS" }],
         }),
       }),
@@ -344,7 +370,8 @@ describe("candidate-bound evidence through backend HTTP, client and CLI", () => 
     expect(forged.status).toBe(422);
     expect(((await forged.json()) as { error: string }).error).toBe("forged_ownership");
 
-    const wrongRole = await app.fetch(
+    // A caller-supplied producer string is not accepted by the public writer at all.
+    const forgedIdentity = await app.fetch(
       new Request(`http://127.0.0.1/api/v1/projects/${projectId}/evidence/observations`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -352,7 +379,46 @@ describe("candidate-bound evidence through backend HTTP, client and CLI", () => 
           run_id: run.id,
           stage: "independent_review",
           status: "passed",
-          producer: { id: "someone", role: "builder" },
+          producer: { id: "reviewer-1", role: "peer_reviewer" },
+          checks: [{ name: "review", command: "review", result: "PASS" }],
+        }),
+      }),
+    );
+    expect(forgedIdentity.status).toBe(400);
+    expect(((await forgedIdentity.json()) as { error: string }).error).toBe("invalid_payload");
+
+    const unknownCredential = await app.fetch(
+      new Request(`http://127.0.0.1/api/v1/projects/${projectId}/evidence/observations`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          run_id: run.id,
+          producer_credential: "prd_fresh_unregistered",
+          stage: "independent_review",
+          status: "passed",
+          checks: [{ name: "review", command: "review", result: "PASS" }],
+        }),
+      }),
+    );
+    expect(unknownCredential.status).toBe(403);
+    expect(((await unknownCredential.json()) as { error: string }).error).toBe(
+      "unauthorized_producer",
+    );
+
+    // A builder's scoped credential cannot mint an independent reviewer stage.
+    const builder = producers.registerTrustedProducer(projectId, {
+      id: "builder-1",
+      role: "builder",
+    });
+    const wrongRole = await app.fetch(
+      new Request(`http://127.0.0.1/api/v1/projects/${projectId}/evidence/observations`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          run_id: run.id,
+          producer_credential: builder.credential,
+          stage: "independent_review",
+          status: "passed",
           checks: [{ name: "review", command: "review", result: "PASS" }],
         }),
       }),
@@ -360,6 +426,29 @@ describe("candidate-bound evidence through backend HTTP, client and CLI", () => 
     expect(wrongRole.status).toBe(422);
     expect(((await wrongRole.json()) as { error: string }).error).toBe("invalid_stage_producer");
 
+    // Builder evidence is only written by the trusted dispatch finalize.
+    const builderWriter = await app.fetch(
+      new Request(`http://127.0.0.1/api/v1/projects/${projectId}/evidence/observations`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          run_id: run.id,
+          producer_credential: builder.credential,
+          stage: "builder_execution",
+          status: "passed",
+          checks: [{ name: "commit", command: "git rev-parse HEAD", result: "PASS" }],
+        }),
+      }),
+    );
+    expect(builderWriter.status).toBe(422);
+    expect(((await builderWriter.json()) as { error: string }).error).toBe(
+      "stage_writer_restricted",
+    );
+
+    const reviewer = producers.registerTrustedProducer(projectId, {
+      id: "reviewer-1",
+      role: "peer_reviewer",
+    });
     const missing = await app.fetch(
       new Request(
         `http://127.0.0.1/api/v1/projects/${projectId}/evidence/findings/missing-finding/recheck`,
@@ -367,7 +456,7 @@ describe("candidate-bound evidence through backend HTTP, client and CLI", () => 
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            producer: { id: "reviewer-1", role: "peer_reviewer" },
+            producer_credential: reviewer.credential,
             status: "passed",
             checks: [{ name: "review", command: "review", result: "PASS" }],
           }),

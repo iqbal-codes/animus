@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, posix, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -41,6 +41,7 @@ interface RunRow {
   gate_profile: PlanGateProfile;
   target_branch: string;
   ownership_generation: number;
+  lap: number;
   state: string;
   actor: string;
   base_sha: string;
@@ -55,6 +56,7 @@ interface ObservationRow {
   delivery_id: string;
   run_id: string;
   lap: number;
+  attempt_key: string;
   stage: ExecutionStage;
   status: ExecutionObservationStatus;
   candidate_head_sha: string;
@@ -166,6 +168,18 @@ export interface RunEvidence {
   acceptance: AcceptanceDecision;
 }
 
+export interface ProducerRegistrationInput {
+  id: string;
+  role: ProducerRole;
+  name?: string;
+}
+
+export interface ProducerRegistration {
+  producer: ProducerIdentity;
+  /** One-time plaintext credential. Only its SHA-256 hash is persisted. */
+  credential: string;
+}
+
 /**
  * Candidate-bound evidence: immutable stage observations, individual checks,
  * findings with an append-only lifecycle, and finalized artifact references.
@@ -196,6 +210,87 @@ export class ExecutionObservationService {
   }
 
   // -------------------------------------------------------------------------
+  // Trusted producer identity
+  // -------------------------------------------------------------------------
+
+  /**
+   * Mint a durable producer credential. This is a trusted host/engine boundary API:
+   * it is deliberately not exposed through the public evidence HTTP route, so a
+   * public API consumer cannot register a fresh reviewer identity for itself.
+   */
+  registerTrustedProducer(
+    projectId: string,
+    input: ProducerRegistrationInput,
+  ): ProducerRegistration {
+    const producerId = input.id.trim();
+    if (producerId === "") {
+      throw new EvidenceError("invalid_payload", "Producer id is required");
+    }
+    const credential = `prd_${randomBytes(32).toString("hex")}`;
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO execution_producers
+             (project_id, producer_id, role, producer_name, credential_hash, created_at, revoked_at)
+           VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+        )
+        .run(
+          projectId,
+          producerId,
+          input.role,
+          input.name ?? null,
+          this.hashCredential(credential),
+          this.clock(),
+        );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/UNIQUE constraint failed/i.test(message)) {
+        throw new EvidenceError(
+          "producer_exists",
+          `Producer '${producerId}' is already registered for this project`,
+          { producerId },
+        );
+      }
+      throw error;
+    }
+    return {
+      producer: {
+        id: producerId,
+        role: input.role,
+        ...(input.name ? { name: input.name } : {}),
+      },
+      credential,
+    };
+  }
+
+  /** Resolves a one-time producer credential to its durable trusted identity. */
+  authenticateProducer(projectId: string, credential: string): ProducerIdentity {
+    const row = this.db
+      .prepare(
+        `SELECT producer_id, role, producer_name FROM execution_producers
+         WHERE project_id = ? AND credential_hash = ? AND revoked_at IS NULL`,
+      )
+      .get(projectId, this.hashCredential(credential)) as
+      | { producer_id: string; role: ProducerRole; producer_name: string | null }
+      | undefined;
+    if (!row) {
+      throw new EvidenceError(
+        "unauthorized_producer",
+        "Producer credential is not registered for this project",
+      );
+    }
+    return {
+      id: row.producer_id,
+      role: row.role,
+      ...(row.producer_name ? { name: row.producer_name } : {}),
+    };
+  }
+
+  private hashCredential(credential: string): string {
+    return createHash("sha256").update(credential).digest("hex");
+  }
+
+  // -------------------------------------------------------------------------
   // Observation writes
   // -------------------------------------------------------------------------
 
@@ -203,7 +298,7 @@ export class ExecutionObservationService {
     projectId: string,
     runId: string,
     submission: ExecutionObservationSubmissionInput,
-    options: { findingOwnerId?: string } = {},
+    options: { findingOwnerId?: string; attemptKey?: string } = {},
   ): ExecutionObservationRecord {
     const record = executionObservationSubmissionSchema.parse(submission);
     const run = this.loadRun(projectId, runId);
@@ -226,17 +321,18 @@ export class ExecutionObservationService {
       this.db
         .prepare(
           `INSERT INTO execution_observations
-             (id, project_id, delivery_id, run_id, lap, stage, status, candidate_head_sha,
+             (id, project_id, delivery_id, run_id, lap, attempt_key, stage, status, candidate_head_sha,
               target_tip_sha, merge_base_sha, tested_identity, integration_lineage, producer_id,
               producer_role, producer_name, gate_profile, gate_profile_version, error, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           observationId,
           projectId,
           run.delivery_id,
           run.id,
-          run.ownership_generation,
+          run.lap,
+          options.attemptKey ?? `stage:${record.stage}`,
           record.stage,
           record.status,
           candidateHeadSha,
@@ -285,6 +381,13 @@ export class ExecutionObservationService {
 
       const findingIds: string[] = [];
       for (const finding of record.findings) {
+        if (finding.workId !== undefined && finding.workId !== run.work_id) {
+          throw new EvidenceError(
+            "forged_ownership",
+            "A finding must belong to the run's own work item",
+            { runId: run.id, workId: finding.workId, expectedWorkId: run.work_id },
+          );
+        }
         const findingId = `find_${randomUUID()}`;
         findingIds.push(findingId);
         this.db
@@ -299,7 +402,7 @@ export class ExecutionObservationService {
             projectId,
             run.delivery_id,
             run.id,
-            finding.workId ?? run.work_id,
+            run.work_id,
             run.issue_number,
             finding.acKey ?? null,
             finding.severity,
@@ -377,7 +480,7 @@ export class ExecutionObservationService {
         sequence,
         action: "fix_submitted",
         actor: submission.actor,
-        actorRole: submission.actor === runActor ? "builder" : "independent_evaluator",
+        actorRole: this.resolveFixActorRole(projectId, runActor, submission.actor),
         observationId: null,
         detail: submission.detail ?? null,
         createdAt: this.clock(),
@@ -403,6 +506,13 @@ export class ExecutionObservationService {
         { findingId, runId, deliveryId: run.delivery_id, expectedDeliveryId: finding.delivery_id },
       );
     }
+    if (finding.work_id && run.work_id !== finding.work_id) {
+      throw new EvidenceError(
+        "forged_ownership",
+        "A recheck must observe a run for the finding's own work item",
+        { findingId, runId, workId: run.work_id, expectedWorkId: finding.work_id },
+      );
+    }
     this.assertProducerAllowed(run, record.stage ?? "independent_review", record.producer);
 
     return this.withSavepoint(() => {
@@ -416,7 +526,7 @@ export class ExecutionObservationService {
           checks: record.checks,
           artifacts: record.artifacts,
         },
-        { findingOwnerId: finding.id },
+        { findingOwnerId: finding.id, attemptKey: `finding:${finding.id}:${randomUUID()}` },
       );
       const now = this.clock();
       const action: FindingEventAction =
@@ -548,9 +658,13 @@ export class ExecutionObservationService {
     const run = this.loadRun(projectId, runId);
     return {
       observations: this.listObservations(projectId, { runId }),
-      // Findings belong to the delivery and persist across laps, so a later run's
-      // detail must still show defects opened by an earlier candidate.
-      findings: this.listFindings(projectId, { deliveryId: run.delivery_id }),
+      // Findings belong to the ticket (work item) and persist across its laps, so a
+      // later lap still shows defects opened by an earlier candidate. Sibling tickets
+      // that share one plan delivery are never mixed into this run's detail.
+      findings: this.listFindings(projectId, {
+        deliveryId: run.delivery_id,
+        workId: run.work_id,
+      }),
       acceptance: this.evaluateAcceptance(projectId, runId),
     };
   }
@@ -568,10 +682,11 @@ export class ExecutionObservationService {
     const openBlocking = this.db
       .prepare(
         `SELECT id FROM factory_findings
-         WHERE project_id = ? AND delivery_id = ? AND status = 'open' AND severity = 'blocking'
+         WHERE project_id = ? AND delivery_id = ? AND work_id = ?
+           AND status = 'open' AND severity = 'blocking'
          ORDER BY created_at ASC, id ASC`,
       )
-      .all(projectId, run.delivery_id) as Array<{ id: string }>;
+      .all(projectId, run.delivery_id, run.work_id) as Array<{ id: string }>;
     const openBlockingFindingIds = openBlocking.map((row) => row.id);
     if (openBlockingFindingIds.length > 0) {
       reasons.push("open_blocking_findings");
@@ -581,21 +696,30 @@ export class ExecutionObservationService {
       reasons.push("run_not_succeeded");
     }
 
-    const builderObservation = this.latestPassed(projectId, run.id, "builder_execution", null);
+    // Acceptance is governed by the latest actual result for each required stage.
+    // A newer failed/running/inconclusive result therefore revokes an older pass;
+    // historical rows are retained but never resurrected as the current outcome.
+    const builderObservation = this.latestObservation(projectId, run.id, "builder_execution");
     if (!builderObservation) {
       reasons.push("builder_result_missing");
+    } else if (builderObservation.status !== "passed") {
+      reasons.push(`builder_result_not_passed:${builderObservation.status}`);
     }
 
-    const builderIdentity = builderObservation?.producer.id ?? null;
+    const builderIdentity = builderObservation?.producer.id ?? run.actor;
+    const builderIdentities = this.builderIdentities(projectId, run.delivery_id);
     const requiredStage = REQUIRED_INDEPENDENT_STAGE[run.gate_profile];
-    const independentObservation = this.latestPassed(
-      projectId,
-      run.id,
-      requiredStage,
-      builderIdentity,
-    );
+    const independentObservation = this.latestObservation(projectId, run.id, requiredStage);
     if (!independentObservation) {
       reasons.push(`required_stage_missing:${requiredStage}`);
+    } else if (
+      independentObservation.producer.role === "builder" ||
+      builderIdentities.has(independentObservation.producer.id) ||
+      independentObservation.producer.id === builderIdentity
+    ) {
+      reasons.push(`self_certified_stage:${requiredStage}`);
+    } else if (independentObservation.status !== "passed") {
+      reasons.push(`required_stage_not_passed:${requiredStage}:${independentObservation.status}`);
     }
 
     const targetTipSha = this.currentTargetTip(run, reasons);
@@ -678,8 +802,8 @@ export class ExecutionObservationService {
     const row = this.db
       .prepare(
         `SELECT r.id, r.project_id, r.delivery_id, r.work_id, r.issue_number, r.gate_profile,
-                r.target_branch, r.ownership_generation, r.state, r.actor, r.base_sha, r.head_sha,
-                d.graph_hash AS delivery_graph_hash, p.checkout_path AS checkout_path
+                r.target_branch, r.ownership_generation, r.lap, r.state, r.actor, r.base_sha,
+                r.head_sha, d.graph_hash AS delivery_graph_hash, p.checkout_path AS checkout_path
          FROM dispatch_runs r
          JOIN deliveries d ON d.id = r.delivery_id AND d.project_id = r.project_id
          JOIN projects p ON p.id = r.project_id
@@ -712,13 +836,51 @@ export class ExecutionObservationService {
         { stage, role: producer.role },
       );
     }
-    if (stage === "builder_execution") return;
-    const builderIdentities = this.builderIdentities(run.delivery_id);
+    if (stage === "builder_execution") {
+      // Builder evidence is bound to the durable dispatch claim, not to a caller string.
+      if (producer.id !== run.actor) {
+        throw new EvidenceError(
+          "builder_claim_mismatch",
+          "Builder evidence must be produced by the run's durable dispatch actor",
+          { runId: run.id, actor: run.actor, producerId: producer.id },
+        );
+      }
+      return;
+    }
+    const builderIdentities = this.builderIdentities(run.project_id, run.delivery_id);
     if (builderIdentities.has(producer.id)) {
       throw new EvidenceError(
         "self_certification_rejected",
         "A builder identity cannot certify its own independent stage result",
         { stage, producerId: producer.id },
+      );
+    }
+    this.assertProducerRegistered(run.project_id, producer);
+  }
+
+  /**
+   * Independent stages may only be written by an identity registered through the
+   * trusted host/engine boundary. A fresh caller-supplied id is not an identity.
+   */
+  private assertProducerRegistered(projectId: string, producer: ProducerIdentity): void {
+    const row = this.db
+      .prepare(
+        `SELECT role FROM execution_producers
+         WHERE project_id = ? AND producer_id = ? AND revoked_at IS NULL`,
+      )
+      .get(projectId, producer.id) as { role: ProducerRole } | undefined;
+    if (!row) {
+      throw new EvidenceError(
+        "unauthorized_producer",
+        `Producer '${producer.id}' is not a registered trusted identity`,
+        { producerId: producer.id },
+      );
+    }
+    if (row.role !== producer.role) {
+      throw new EvidenceError(
+        "unauthorized_producer",
+        `Producer role '${producer.role}' does not match the registered role '${row.role}'`,
+        { producerId: producer.id, role: producer.role, registeredRole: row.role },
       );
     }
   }
@@ -742,14 +904,38 @@ export class ExecutionObservationService {
     }
   }
 
-  private builderIdentities(deliveryId: string): Set<string> {
+  private builderIdentities(projectId: string, deliveryId: string): Set<string> {
+    const identities = new Set<string>();
+    const runActors = this.db
+      .prepare(`SELECT DISTINCT actor FROM dispatch_runs WHERE project_id = ? AND delivery_id = ?`)
+      .all(projectId, deliveryId) as Array<{ actor: string }>;
+    for (const row of runActors) identities.add(row.actor);
     const rows = this.db
       .prepare(
         `SELECT DISTINCT producer_id FROM execution_observations
-         WHERE delivery_id = ? AND stage = 'builder_execution'`,
+         WHERE project_id = ? AND delivery_id = ? AND stage = 'builder_execution'`,
       )
-      .all(deliveryId) as Array<{ producer_id: string }>;
-    return new Set(rows.map((row) => row.producer_id));
+      .all(projectId, deliveryId) as Array<{ producer_id: string }>;
+    for (const row of rows) identities.add(row.producer_id);
+    return identities;
+  }
+
+  private resolveFixActorRole(projectId: string, runActor: string, actor: string): ProducerRole {
+    if (actor === runActor) return "builder";
+    const row = this.db
+      .prepare(
+        `SELECT role FROM execution_producers
+         WHERE project_id = ? AND producer_id = ? AND revoked_at IS NULL`,
+      )
+      .get(projectId, actor) as { role: ProducerRole } | undefined;
+    if (!row) {
+      throw new EvidenceError(
+        "unauthorized_producer",
+        `Fix actor '${actor}' is not a registered trusted identity`,
+        { actor },
+      );
+    }
+    return row.role;
   }
 
   private runActor(projectId: string, runId: string): string {
@@ -759,31 +945,18 @@ export class ExecutionObservationService {
     return row?.actor ?? "builder";
   }
 
-  private latestPassed(
+  private latestObservation(
     projectId: string,
     runId: string,
     stage: ExecutionStage,
-    builderIdentity: string | null,
   ): ExecutionObservationRecord | null {
-    if (stage === "builder_execution") {
-      const rows = this.db
-        .prepare(
-          `SELECT * FROM execution_observations
-           WHERE project_id = ? AND run_id = ? AND stage = 'builder_execution' AND status = 'passed'
-           ORDER BY created_at DESC, id DESC`,
-        )
-        .all(projectId, runId) as unknown as ObservationRow[];
-      return rows.length > 0 ? this.mapObservation(rows[0]!) : null;
-    }
-    const rows = this.db
+    const row = this.db
       .prepare(
         `SELECT * FROM execution_observations
-         WHERE project_id = ? AND run_id = ? AND stage = ? AND status = 'passed'
-           AND producer_role != 'builder'
-         ORDER BY created_at DESC, id DESC`,
+         WHERE project_id = ? AND run_id = ? AND stage = ?
+         ORDER BY created_at DESC, rowid DESC LIMIT 1`,
       )
-      .all(projectId, runId, stage) as unknown as ObservationRow[];
-    const row = rows.find((candidate) => candidate.producer_id !== builderIdentity);
+      .get(projectId, runId, stage) as unknown as ObservationRow | undefined;
     return row ? this.mapObservation(row) : null;
   }
 
@@ -1064,6 +1237,7 @@ export class ExecutionObservationService {
       deliveryId: row.delivery_id,
       runId: row.run_id,
       lap: row.lap,
+      attemptKey: row.attempt_key,
       stage: row.stage,
       status: row.status,
       candidateHeadSha: row.candidate_head_sha,
