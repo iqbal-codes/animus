@@ -177,6 +177,9 @@ function preparedSpecReason(source: PlanDraftInput["source"]): string | null {
   if (/source\s+acceptance\s+coverage\s*:/i.test(source.body)) {
     return "the imported work declares acceptance coverage for a prepared parent and must be admitted as part of that plan";
   }
+  if (/(^|\r?\n)##\s+Children\b/i.test(source.body)) {
+    return "the imported work declares a '## Children' decomposition and must be admitted as a prepared parent specification instead of being re-decomposed";
+  }
   // A canonical body that is missing its `## Verification` section is not a
   // complete executable ticket. The common cause is a parent-spec body whose
   // label was lost, so refuse instead of re-planning it as fresh raw intake.
@@ -256,13 +259,15 @@ export async function planDraft(
     throw new Error(`Draft planning root does not exist: ${input.root}`);
   }
 
-  const prepared = preparedWorkPlan(input.source);
-  if (!prepared) {
-    const specReason = preparedSpecReason(input.source);
-    if (specReason) {
-      throw new Error(`DRAFT PREPARED WORK: Prepared work is not draft material: ${specReason}.`);
-    }
+  // Refuse prepared specs/children before any pass-through decision: a
+  // canonical parent body can carry a `## Verification` section, so checking
+  // preparedWorkPlan first would silently accept it as standalone.
+  const specReason = preparedSpecReason(input.source);
+  if (specReason) {
+    throw new Error(`DRAFT PREPARED WORK: Prepared work is not draft material: ${specReason}.`);
   }
+
+  const prepared = preparedWorkPlan(input.source);
   if (prepared) {
     return {
       plan: prepared,

@@ -294,17 +294,31 @@ describe("drafts screen", () => {
     expect(screen.getByText(/animus draft refine/)).toBeTruthy();
   });
 
-  test("shows real questions and submits answers through the backend client", async () => {
+  test("a distinct revision identity remounts the detail and renders the new revision", async () => {
     const record = clarificationRecord();
     draftRecordMock.projects = [project];
     draftRecordMock.drafts = [record];
     draftRecordMock.draft = record;
-    const revised = {
+    // A real refinement produces a new revision row, so the identity must change.
+    // Reusing the old id would leave the keyed detail mounted and never exercise
+    // the remount that keeps typed input from being wiped by a stale effect.
+    const revised: DraftRecord = {
       ...record,
-      status: "needs_review" as const,
-      latest_revision: { ...record.latest_revision, revision_number: 2, plan: standalonePlan },
+      status: "needs_review",
+      latest_revision: {
+        ...record.latest_revision,
+        id: "drev_2",
+        revision_number: 2,
+        kind: "standalone",
+        plan: standalonePlan,
+        questions: [],
+      },
     };
-    draftRecordMock.reviseDraft = vi.fn(async () => revised);
+    draftRecordMock.reviseDraft = vi.fn(async () => {
+      draftRecordMock.drafts = [revised];
+      draftRecordMock.draft = revised;
+      return revised;
+    });
     render(<DraftsScreen />);
 
     await waitFor(() => expect(screen.getByText("Awaiting answers")).toBeTruthy());
@@ -321,6 +335,12 @@ describe("drafts screen", () => {
     expect(draftRecordMock.reviseDraft).toHaveBeenCalledWith("draft_1", {
       answers: [{ question_id: "q1", answer: "Clarity first" }],
     });
+
+    // The new revision replaces the clarification detail rather than reusing it.
+    await waitFor(() => expect(screen.getByText("Saved revision 2.")).toBeTruthy());
+    expect(screen.getByText(/revision 2 · standalone/)).toBeTruthy();
+    expect(screen.getByText("Add the small button")).toBeTruthy();
+    expect(screen.queryByLabelText("Which onboarding outcome matters most?")).toBeNull();
   });
 
   test("approve stays disabled until a reason is provided and binds to the current revision", async () => {

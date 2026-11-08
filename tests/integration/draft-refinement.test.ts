@@ -601,6 +601,52 @@ describe("local draft refinement and operator review", () => {
     expect(fixture.transportCalls()).toBe(0);
   });
 
+  test("AC3: a canonical body declaring Source acceptance coverage is not accepted as a prepared standalone", async () => {
+    // Canonical body that keeps `## Verification` but declares parent coverage.
+    // The coverage marker must disqualify prepared pass-through even though the
+    // ticket is otherwise standard-complete.
+    const coveredBody = [canonicalBody(["AC1"]), "", "Source acceptance coverage: AC1"].join("\n");
+    const work = await importWork(35, coveredBody);
+    const fixture = plannerFixture([new Error("transport must not run")]);
+    const service = new DraftService(db, {
+      planner: fixture.planner,
+      stateRoot: join(root, "state"),
+    });
+
+    await expect(
+      service.refine(projectId, { work_id: work.id, answers: [] }),
+    ).rejects.toMatchObject({ code: "draft_prepared_work" });
+    await expect(service.refine(projectId, { work_id: work.id, answers: [] })).rejects.toThrow(
+      /acceptance coverage|plan admission|prepared/i,
+    );
+    expect(service.list(projectId)).toEqual([]);
+    expect(fixture.transportCalls()).toBe(0);
+  });
+
+  test("AC3: a canonical body with a Children section is not accepted as a prepared standalone", async () => {
+    // A parent body that keeps its `## Verification` section but decomposes into
+    // children must be admitted through plan admission, not silently re-planned.
+    const parentBody = canonicalBody(["AC1"]).replace(
+      "Depends on: None",
+      "## Children\n- [ ] C1: First slice\n\nDepends on: None",
+    );
+    const work = await importWork(36, parentBody);
+    const fixture = plannerFixture([new Error("transport must not run")]);
+    const service = new DraftService(db, {
+      planner: fixture.planner,
+      stateRoot: join(root, "state"),
+    });
+
+    await expect(
+      service.refine(projectId, { work_id: work.id, answers: [] }),
+    ).rejects.toMatchObject({ code: "draft_prepared_work" });
+    await expect(service.refine(projectId, { work_id: work.id, answers: [] })).rejects.toThrow(
+      /Children|plan admission|prepared/i,
+    );
+    expect(service.list(projectId)).toEqual([]);
+    expect(fixture.transportCalls()).toBe(0);
+  });
+
   test("AC3: a canonical body without a Verification section is refused, not re-planned", async () => {
     const noVerification = canonicalBody(["AC1"]).replace(
       /## Verification[\s\S]*?(?=Depends on:)/,
