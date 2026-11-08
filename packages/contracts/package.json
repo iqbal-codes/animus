@@ -6,7 +6,8 @@
     "./operator": "./src/operator.ts",
     "./host": "./src/host.ts",
     "./paths": "./src/paths.ts",
-    "./sanitizer": "./src/sanitizer.ts"
+    "./sanitizer": "./src/sanitizer.ts",
+    "./ticket": "./src/ticket.ts"
   },
   "dependencies": {
     "zod": "4.1.12"

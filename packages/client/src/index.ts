@@ -12,6 +12,11 @@ import {
   evaluatedIssueSchema,
   workListSchema,
   workRecordSchema,
+  draftListSchema,
+  draftRecordSchema,
+  draftRefineSubmissionSchema,
+  draftRevisionSubmissionSchema,
+  draftDecisionSubmissionSchema,
   controlStateSchema,
   controlSubmissionSchema,
   lapEvidenceSchema,
@@ -105,6 +110,11 @@ import {
   type EvaluatedIssue,
   type WorkList,
   type WorkRecord,
+  type DraftList,
+  type DraftRecord,
+  type DraftRefineSubmission,
+  type DraftRevisionSubmission,
+  type DraftDecisionSubmission,
   type ControlState,
   type ControlAction,
   type OperatorErrorCode,
@@ -590,6 +600,47 @@ export function createFactoryClient(options: {
         },
         async workItem(workId: string): Promise<WorkRecord> {
           return getJson(`${scopedBase}/work/${encodeURIComponent(workId)}`, workRecordSchema);
+        },
+        async drafts(): Promise<DraftList> {
+          return getJson(`${scopedBase}/drafts`, draftListSchema);
+        },
+        async draft(draftId: string): Promise<DraftRecord> {
+          return getJson(`${scopedBase}/drafts/${encodeURIComponent(draftId)}`, draftRecordSchema);
+        },
+        async workDraft(workId: string): Promise<DraftRecord> {
+          return getJson(
+            `${scopedBase}/drafts/by-work/${encodeURIComponent(workId)}`,
+            draftRecordSchema,
+          );
+        },
+        async refineDraft(submission: DraftRefineSubmission): Promise<DraftRecord> {
+          const parsed = draftRefineSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(`${scopedBase}/drafts`, parsed.data, draftRecordSchema);
+        },
+        async reviseDraft(
+          draftId: string,
+          submission: DraftRevisionSubmission,
+        ): Promise<DraftRecord> {
+          const parsed = draftRevisionSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/drafts/${encodeURIComponent(draftId)}/revisions`,
+            parsed.data,
+            draftRecordSchema,
+          );
+        },
+        async decideDraft(
+          draftId: string,
+          submission: DraftDecisionSubmission,
+        ): Promise<DraftRecord> {
+          const parsed = draftDecisionSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/drafts/${encodeURIComponent(draftId)}/decisions`,
+            parsed.data,
+            draftRecordSchema,
+          );
         },
         async laps(): Promise<LapList> {
           return getJson(`${scopedBase}/laps`, lapListSchema);

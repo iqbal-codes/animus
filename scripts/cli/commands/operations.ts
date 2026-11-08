@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { applyControlAction, readControlState } from "../../../apps/engine-host/src/native";
 import { PromotionService } from "../../../apps/engine-host/src/promotion";
@@ -15,7 +15,7 @@ import {
   type FactoryConnectionOptions,
 } from "./onboarding-registration";
 import { CommandService } from "../../../apps/backend/src/command";
-import type { ControlAction, Project, WorkRecord } from "@animus/contracts/operator";
+import type { ControlAction, DraftAnswerInput, DraftRecord, Project, WorkRecord } from "@animus/contracts/operator";
 
 export async function runControlCommand(opts: {
   subcommand?: string;
@@ -491,6 +491,189 @@ export async function runWorkCommand(
     if (opts.json) console.log(JSON.stringify({ ok: false, error: msg }));
     else console.error(`Error: ${msg}`);
     return 1;
+  }
+}
+
+export async function runDraftCommand(
+  opts: FactoryConnectionOptions & {
+    subcommand?: string;
+    positionals: string[];
+    projectId?: string;
+    answers?: string;
+    instructions?: string;
+    revision?: string;
+    reason?: string;
+    json?: boolean;
+  },
+): Promise<number> {
+  const sub = opts.subcommand ?? "list";
+  try {
+    if (!opts.projectId) {
+      throw new Error(
+        "Usage: factory draft <list|get|refine|revise|approve|reject|request-changes> --project <project-id>",
+      );
+    }
+    const scoped = createRegistrationClient(opts).forProject(opts.projectId);
+
+    if (sub === "list") {
+      const items = await scoped.drafts();
+      if (opts.json) {
+        console.log(JSON.stringify(items, null, 2));
+      } else if (items.length === 0) {
+        console.log("No drafts.");
+      } else {
+        console.log(`Drafts (${items.length}):`);
+        for (const item of items) {
+          console.log(
+            `  ${item.id}  ${item.status.padEnd(19)} kind=${item.latest_revision.kind} rev=${item.latest_revision.revision_number}  ${item.source.title}`,
+          );
+        }
+      }
+      return 0;
+    }
+
+    if (sub === "get") {
+      const draftId = opts.positionals[2];
+      if (!draftId) throw new Error("Usage: factory draft get <draft-id> --project <project-id>");
+      const record = await scoped.draft(draftId);
+      if (opts.json) console.log(JSON.stringify(record, null, 2));
+      else printDraft(record);
+      return 0;
+    }
+
+    if (sub === "refine") {
+      const workId = opts.positionals[2];
+      if (!workId)
+        throw new Error("Usage: factory draft refine <work-id> --project <project-id>");
+      const record = await scoped.refineDraft({
+        work_id: workId,
+        answers: parseDraftAnswers(opts.answers),
+        ...(opts.instructions ? { instructions: opts.instructions } : {}),
+      });
+      if (opts.json) console.log(JSON.stringify(record, null, 2));
+      else printDraft(record);
+      return 0;
+    }
+
+    if (sub === "revise") {
+      const draftId = opts.positionals[2];
+      if (!draftId)
+        throw new Error("Usage: factory draft revise <draft-id> --project <project-id>");
+      const record = await scoped.reviseDraft(draftId, {
+        answers: parseDraftAnswers(opts.answers),
+        ...(opts.instructions ? { instructions: opts.instructions } : {}),
+      });
+      if (opts.json) console.log(JSON.stringify(record, null, 2));
+      else printDraft(record);
+      return 0;
+    }
+
+    if (sub === "approve" || sub === "reject" || sub === "request-changes") {
+      const draftId = opts.positionals[2];
+      if (!draftId)
+        throw new Error(`Usage: factory draft ${sub} <draft-id> --project <project-id>`);
+      const revisionNumber = Number(opts.revision);
+      if (!Number.isInteger(revisionNumber) || revisionNumber <= 0) {
+        throw new Error("A positive --revision <number> is required for a draft decision");
+      }
+      const reason = opts.reason?.trim();
+      if (!reason) throw new Error("A --reason is required for a draft decision");
+      const decision = sub === "approve" ? "approve" : sub === "reject" ? "reject" : "revise";
+      const record = await scoped.decideDraft(draftId, {
+        revision_number: revisionNumber,
+        decision,
+        reason,
+        ...(opts.instructions ? { instructions: opts.instructions } : {}),
+      });
+      if (opts.json) console.log(JSON.stringify(record, null, 2));
+      else printDraft(record);
+      return 0;
+    }
+
+    throw new Error(
+      `Unknown draft subcommand: ${sub}. Expected list, get, refine, revise, approve, reject, or request-changes.`,
+    );
+  } catch (err: any) {
+    const msg = err?.message ?? String(err);
+    if (opts.json) console.log(JSON.stringify({ ok: false, error: msg }));
+    else console.error(`Error: ${msg}`);
+    return 1;
+  }
+}
+
+function parseDraftAnswers(raw?: string): DraftAnswerInput[] {
+  if (!raw) return [];
+  const text = raw.startsWith("@") ? readFileSync(raw.slice(1), "utf-8") : raw;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error("--answers must be a JSON array or @file containing one");
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error("--answers must be a JSON array");
+  }
+  return parsed as DraftAnswerInput[];
+}
+
+function printDraft(record: DraftRecord): void {
+  console.log(`Draft ${record.id} (${record.status})`);
+  console.log(
+    `  Work:        ${record.work_id} (${record.source_provenance.repo_name}#${record.source_provenance.issue_number})`,
+  );
+  console.log(`  Source:      ${record.source_provenance.source_url}`);
+  console.log(`  Source hash: ${record.source_content_hash}`);
+  console.log(`  Revision:    ${record.latest_revision.revision_number} (${record.latest_revision.id})`);
+  console.log(`  Kind:        ${record.latest_revision.kind}`);
+  console.log(`  Publishable: ${record.authorization.can_publish}`);
+  console.log(`  Dispatchable:${record.authorization.can_dispatch}`);
+  console.log(`  Title:       ${record.source.title}`);
+  const plan = record.latest_revision.plan;
+  if (plan.kind === "clarification") {
+    console.log("  Questions:");
+    for (const question of plan.questions) {
+      console.log(`    ${question.id}: ${question.question}`);
+      console.log(`      reason: ${question.reason}`);
+    }
+    console.log(`  Reason:      ${plan.reason}`);
+  } else {
+    console.log(`  Plan title:  ${plan.title}`);
+    console.log(`  Scope:       ${plan.scope}`);
+    console.log(`  Outcome:     ${plan.outcome}`);
+    console.log("  Acceptance criteria:");
+    for (const criterion of plan.acceptance_criteria) {
+      console.log(`    ${criterion.id}: ${criterion.description} (${criterion.verification})`);
+    }
+    console.log("  Verification requirements:");
+    for (const requirement of plan.verification_requirements) {
+      console.log(`    - ${requirement}`);
+    }
+    if (plan.kind === "spec") {
+      console.log(`  Children (${plan.children.length}):`);
+      plan.children.forEach((child) => {
+        const deps = child.depends_on_indices.map((dep) => plan.children[dep]?.id ?? String(dep));
+        console.log(
+          `    ${child.id}: ${child.title}${deps.length ? ` (depends on ${deps.join(", ")})` : ""} covers ${child.covers_parent_ac_ids.join(", ")}`,
+        );
+      });
+    }
+  }
+  if (record.latest_revision.questions.length > 0) {
+    console.log("  Unresolved questions:");
+    for (const question of record.latest_revision.questions) {
+      console.log(`    ${question.id}: ${question.question}`);
+    }
+  }
+  if (record.latest_revision.answers.length > 0) {
+    console.log("  Answers:");
+    for (const answer of record.latest_revision.answers) {
+      console.log(`    ${answer.question_id}: ${answer.answer}`);
+    }
+  }
+  if (record.latest_decision) {
+    console.log(
+      `  Decision:    ${record.latest_decision.decision} rev=${record.latest_decision.revision_number} (${record.latest_decision.reason})`,
+    );
   }
 }
 
