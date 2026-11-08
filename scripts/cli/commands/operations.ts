@@ -4,6 +4,7 @@ import { applyControlAction, readControlState } from "../../../apps/engine-host/
 import { PromotionService } from "../../../apps/engine-host/src/promotion";
 import { IntakeService } from "../../../apps/backend/src/intake";
 import { initializeDatabase } from "../../../apps/backend/src/registry";
+import { BackupRestoreService } from "../../../apps/backend/src/restore";
 import { ProjectRegistryService } from "../../../apps/backend/src/registry/service";
 import { BrakeService } from "../../../apps/backend/src/command/brakes";
 import {
@@ -1612,10 +1613,90 @@ export async function runProjectCommand(
   }
 }
 
+async function runLocalBackupCommand(opts: {
+  subcommand: string;
+  positionals: string[];
+  stateDir: string;
+  destination?: string;
+  targetStateDir?: string;
+  targetHome?: string;
+  actor?: string;
+  json?: boolean;
+}): Promise<number> {
+  const stateDir = resolveAnimusStateDir(opts.stateDir);
+  const db = initializeDatabase(join(stateDir, "console.db"));
+  try {
+    const service = new BackupRestoreService(db, { stateDir });
+    if (opts.subcommand === "status") {
+      const status = service.backupStatus();
+      if (opts.json) {
+        console.log(JSON.stringify(status, null, 2));
+      } else if (!status.lastBackup) {
+        console.log("No completed workspace backup recorded.");
+      } else {
+        console.log(`Last backup: ${status.lastBackup.destinationPath}`);
+        console.log(`  Restorable: ${status.restorable ? "yes" : "no"}`);
+        console.log(`  Schema:     v${status.lastBackup.schemaVersion}`);
+        console.log(`  Artifacts:  ${status.artifactCount}`);
+      }
+      return 0;
+    }
+    if (opts.subcommand === "create") {
+      const destination = opts.destination ?? opts.positionals[2];
+      if (!destination) throw new Error("Usage: animus backup create <destination> [--actor <name>]");
+      const result = service.createBackup(resolve(destination), opts.actor ?? "operator");
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(`Verified workspace backup written to ${result.destinationPath}`);
+        console.log(`  Schema v${result.schemaVersion}; ${result.artifactCount} artifact(s)`);
+        console.log(`  Manifest SHA-256: ${result.manifestHash}`);
+      }
+      return 0;
+    }
+    if (opts.subcommand === "restore") {
+      const source = opts.positionals[2];
+      const targetStateDir = opts.targetStateDir;
+      if (!source || !targetStateDir) {
+        throw new Error(
+          "Usage: animus backup restore <source> --target-state-dir <path> [--target-home <path>] [--actor <name>]",
+        );
+      }
+      const result = service.restoreBackup({
+        sourcePath: resolve(source),
+        targetStateDir: resolve(targetStateDir),
+        targetHome: opts.targetHome ? resolve(opts.targetHome) : undefined,
+        actor: opts.actor ?? "operator",
+      });
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(`Restored workspace into ${result.operation.targetStateDir}`);
+        console.log(`  Held: ${result.installation.held ? "yes" : "no"}`);
+      }
+      return 0;
+    }
+    if (opts.subcommand === "restores") {
+      const status = service.restoreStatus(opts.targetStateDir ? resolve(opts.targetStateDir) : undefined);
+      if (opts.json) console.log(JSON.stringify(status, null, 2));
+      else console.log(`Restored installation held: ${status.installation.held ? "yes" : "no"}`);
+      return 0;
+    }
+    throw new Error(
+      `Unknown backup subcommand: ${opts.subcommand}. Expected status, create, restore, or restores in local mode.`,
+    );
+  } finally {
+    try {
+      db.close();
+    } catch {}
+  }
+}
+
 export async function runBackupCommand(
   opts: FactoryConnectionOptions & {
     subcommand?: string;
     positionals: string[];
+    stateDir?: string;
     destination?: string;
     targetStateDir?: string;
     targetHome?: string;
@@ -1628,6 +1709,22 @@ export async function runBackupCommand(
 ): Promise<number> {
   const sub = opts.subcommand ?? "status";
   try {
+    // Supported offline packaged path: the compiled CLI operates the same
+    // BackupRestoreService directly against the real installation database. No
+    // server/network transport is involved, so a packaged binary can prove
+    // backup + isolated held restore on the build host.
+    if (opts.stateDir) {
+      return await runLocalBackupCommand({
+        subcommand: sub,
+        positionals: opts.positionals,
+        stateDir: opts.stateDir,
+        destination: opts.destination,
+        targetStateDir: opts.targetStateDir,
+        targetHome: opts.targetHome,
+        actor: opts.actor,
+        json: opts.json,
+      });
+    }
     const client = createRegistrationClient(opts);
 
     if (sub === "status") {

@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { git, assertCandidate, type AssertCandidateOptions } from "./worktree";
 import { resolveAnimusStateDir } from "../../packages/contracts/src/paths";
@@ -16,6 +16,32 @@ import type {
 } from "./types";
 import { loadPrompt, renderPrompt } from "./prompts";
 import { assertInstallationNotHeldAtStateDir } from "@animus/contracts/installation-hold";
+import { readExecutionAuthority } from "@animus/contracts/execution-authority";
+
+/**
+ * The legacy loop's direct SQLite integration writer is an authority writer.
+ * Once the durable fence is set it must record nothing, even if the process
+ * passed the startup check before staging began.
+ */
+function legacyIntegrationAuthorityError(stateDir?: string): string | null {
+  const authority = readExecutionAuthority(stateDir);
+  if (authority.error) {
+    return `execution_authority_moved: authority marker is unreadable (${authority.error})`;
+  }
+  if (authority.authority !== "legacy") {
+    return `execution_authority_moved: legacy integration recording is disabled under '${authority.authority}' authority`;
+  }
+  return null;
+}
+
+function assertLegacyIntegrationWriterAllowed(stateDir?: string): void {
+  const error = legacyIntegrationAuthorityError(stateDir);
+  if (error) throw new Error(error);
+}
+
+function authorityStateDirFor(options: { dbPath?: string }): string | undefined {
+  return options.dbPath ? dirname(resolve(options.dbPath)) : undefined;
+}
 
 export type { AutoMergeExecutionResult };
 
@@ -444,6 +470,14 @@ export function recordSubticketIntegration(
 ): { integrated: boolean; projectId?: string; error?: string } {
   const { root, issueNumber, branch, candidate, partOf, finalIntegrationPr } = options;
 
+  // This function writes project_issue_integrations directly with its own
+  // DatabaseSync connection. Gate it at the same authority boundary as the
+  // startup checks so a pre-fence legacy lap cannot become a post-fence writer.
+  const authorityError = legacyIntegrationAuthorityError(authorityStateDirFor(options));
+  if (authorityError) {
+    return { integrated: false, error: authorityError };
+  }
+
   let db = options.db;
   let shouldClose = false;
   let dbAttached = Boolean(options.db || options.dbPath);
@@ -684,6 +718,7 @@ export async function executeSubticketAutoMerge(
   options: ExecuteSubticketAutoMergeOptions,
 ): Promise<AutoMergeExecutionResult> {
   assertInstallationNotHeldAtStateDir();
+  assertLegacyIntegrationWriterAllowed(authorityStateDirFor(options));
   const {
     root,
     candidate,
@@ -823,6 +858,10 @@ export async function executeSubticketAutoMerge(
     }
 
     persistPhase("publication_pending");
+    // Re-check immediately before the irreversible remote publication. A role,
+    // CI or earlier await may have allowed a cutover fence to appear since the
+    // startup check; the push/PR merge/issue close must then not happen.
+    assertLegacyIntegrationWriterAllowed(authorityStateDirFor(options));
     // 3. Irreversible Remote Publication (only after CAS and DB sync succeeded)
     let publicationError: string | undefined;
     if (push !== false) {

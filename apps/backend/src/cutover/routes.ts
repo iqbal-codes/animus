@@ -9,6 +9,7 @@ import {
   cutoverStatusSchema,
 } from "@animus/contracts/cutover";
 import { AuthorityCutoverError, type AuthorityCutoverService } from "./service";
+import { CutoverLockError } from "./lock";
 
 function statusFor(code: string): number {
   switch (code) {
@@ -17,6 +18,8 @@ function statusFor(code: string): number {
     case "cutover_state_changed":
     case "cutover_inconsistent":
     case "cutover_not_abortable":
+    case "cutover_lock_busy":
+    case "cutover_lock_ambiguous":
       return 409;
     case "cutover_not_staged":
     case "cutover_expected_mismatch":
@@ -32,6 +35,12 @@ function failure(error: unknown): Response {
   if (error instanceof AuthorityCutoverError) {
     return Response.json(
       { error: error.code, message: error.message, details: error.details },
+      { status: statusFor(error.code) },
+    );
+  }
+  if (error instanceof CutoverLockError) {
+    return Response.json(
+      { error: error.code, message: error.message },
       { status: statusFor(error.code) },
     );
   }

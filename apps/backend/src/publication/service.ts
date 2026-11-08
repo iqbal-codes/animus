@@ -25,6 +25,7 @@ import { validateHostedAssetUrl } from "../../../../scripts/loop/evidence-manage
 import { processRun } from "../../../../scripts/loop/process";
 import type { ForgeAdapter, ForgePullRequest } from "../registry/forge";
 import { assertInstallationNotHeld } from "@animus/contracts/installation-hold";
+import { assertExternalWriterAllowed } from "../authority/guard";
 import { PublicationError } from "./errors";
 
 interface TargetRow {
@@ -465,6 +466,9 @@ export class PublicationService {
           : "Restored installation is held pending reconciliation",
       );
     }
+    // A migrating or unverified local authority must not push, open a PR or write
+    // an intent. Legacy (pre-cutover) and verified local are both settled.
+    assertExternalWriterAllowed(this.db);
   }
 
   private async reconcileTarget(target: TargetRow): Promise<void> {
@@ -583,6 +587,9 @@ export class PublicationService {
     target: TargetRow,
     intent: IntentRow,
   ): Promise<PullRequestRow | null> {
+    // Re-check before the remote create: a cutover fence may have appeared while
+    // an earlier await (push/read-back) was in flight.
+    this.assertInstallationReady();
     // A crash between claim and the remote call must not leave the intent stuck in
     // 'attempting'. Coerce it to explicit 'unknown' and reconcile by remote read-back
     // before any retry, exactly like event and summary intents.
@@ -686,6 +693,7 @@ export class PublicationService {
    * a PR is never created against a branch that only exists locally.
    */
   private async ensureRemoteSourceRef(target: TargetRow, project: ProjectRow): Promise<void> {
+    this.assertInstallationReady();
     const ref = `refs/heads/${target.source_branch}`;
     const push = await this.gitRemote(
       ["push", "--porcelain", "origin", `${ref}:${ref}`],
@@ -827,6 +835,7 @@ export class PublicationService {
     }
     const project = this.loadProject(target.project_id);
     try {
+      this.assertInstallationReady();
       await this.forge.updatePullRequest(project.repo_name, pr.number, { state: "closed" });
       this.db
         .prepare(
@@ -960,6 +969,7 @@ export class PublicationService {
     const marker = publicationMarker(intent.operation_key);
 
     try {
+      this.assertInstallationReady();
       if (location && typeof this.forge.createPullRequestReview === "function") {
         const valid = this.validDiffLine(target, project, location);
         if (valid) {
@@ -1049,6 +1059,7 @@ export class PublicationService {
       if (!body.includes(marker)) {
         body = body.replace(EVIDENCE_SECTION_START, `${EVIDENCE_SECTION_START}\n${marker}`);
       }
+      this.assertInstallationReady();
       await this.forge.updatePullRequest(project.repo_name, pr.number, { body });
       const readBack = await this.readRemotePullRequest(project.repo_name, pr.number);
       if (!readBack || !(readBack.body ?? "").includes(marker)) {

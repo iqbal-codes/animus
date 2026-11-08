@@ -27,6 +27,7 @@ import {
   type PublicationRemoteRunner,
 } from "../publication";
 import { DeliveryError } from "./errors";
+import { assertExternalWriterAllowed } from "../authority/guard";
 
 interface RunRow {
   id: string;
@@ -136,6 +137,8 @@ export class DeliveryGateService {
     runId: string,
     actor = "operator",
   ): Promise<DeliveryGateStatus> {
+    // Recording a verified delivery is a durable write; fence it during cutover.
+    assertExternalWriterAllowed(this.db);
     const evaluated = await this.evaluate(projectId, runId);
     if (evaluated.merge.verified) return evaluated;
     if (evaluated.state === "remote_unavailable") {

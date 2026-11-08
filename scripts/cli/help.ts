@@ -110,9 +110,9 @@ export const helpEntries: readonly HelpEntry[] = [
   },
   {
     command: "backup",
-    spec: "backup <status|create|restore|restores|reconcile> [destination|source] [--target-state-dir <path>] [--target-home <path>]",
+    spec: "backup <status|create|restore|restores|reconcile> [destination|source] [--target-state-dir <path>] [--target-home <path>] [--state-dir <path>]",
     description:
-      "Create verified workspace backups, report restorability, and restore isolated held installations",
+      "Create verified workspace backups, report restorability, and restore isolated held installations; with --state-dir the compiled CLI runs the same backend service offline",
   },
   {
     command: "command",

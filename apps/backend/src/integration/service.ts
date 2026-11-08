@@ -23,6 +23,7 @@ import {
   InstallationHeldError,
   assertInstallationNotHeld,
 } from "@animus/contracts/installation-hold";
+import { assertExternalWriterAllowed } from "../authority/guard";
 import { IntegrationError, type IntegrationErrorCode } from "./errors";
 
 const execFileAsync = promisify(execFile);
@@ -516,6 +517,9 @@ export class ChildIntegrationService {
 
       let mergeSha: string | null = null;
       try {
+        // Re-check immediately before the forge merge; the fence may have been set
+        // while the earlier verification/awaits were in flight.
+        this.assertInstallationReady();
         const merged = await this.forge.mergePullRequest(run.repo_name, activePullRequest.number, {
           expectedHeadSha: run.head_sha!,
           mergeMethod: "merge",
@@ -1145,6 +1149,7 @@ export class ChildIntegrationService {
           cwd: run.checkout_path,
         });
       }
+      this.assertInstallationReady();
       const pushed = await this.remoteRunner(
         ["push", "origin", `refs/heads/${run.target_branch}:refs/heads/${run.target_branch}`],
         run.checkout_path,
@@ -1445,6 +1450,10 @@ export class ChildIntegrationService {
       }
       throw error;
     }
+    // Child landing/merging is an external writer. It is allowed before cutover
+    // (legacy) and after verified activation, but never while the authority is
+    // migrating or a local marker is unverified.
+    assertExternalWriterAllowed(this.db);
   }
 }
 

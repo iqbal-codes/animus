@@ -485,6 +485,8 @@ export interface SchedulerTickOptions {
   reconcileCi?: boolean;
   ghRun?: GhRunner;
   checkPrCi?: typeof checkPrCiStatus;
+  /** Canonical installation state dir; re-checked inside legacy CI reconciliation. */
+  installationStateDir?: string;
   triage?: TriagePassHandler | null;
   fetchBacklog: () => Promise<{ issues: BacklogCandidate[]; closedNumbers: Set<number> }>;
   launchLap: (issue: BacklogCandidate) => Promise<{ runId: string }>;
@@ -553,6 +555,7 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
         ghRun: options.ghRun,
         maxLaps: mergedConfig.max_laps,
         checkPrCi: options.checkPrCi,
+        installationStateDir: options.installationStateDir,
       });
     } catch (reconcileErr) {
       console.error("Warning: CI reconciliation failed:", reconcileErr);

@@ -7,11 +7,17 @@ import type {
   CutoverDisposition,
   CutoverHeldFact,
   CutoverInventoryEvidence,
+  CutoverLegacyStateSummary,
   CutoverMapping,
   CutoverTableGroup,
   CutoverTableSummary,
 } from "@animus/contracts/cutover";
-import { resolveAnimusStateDir } from "@animus/contracts/paths";
+import {
+  isPidAlive,
+  resolveAnimusHome,
+  resolveAnimusStateDir,
+  resolveProjectWorkspace,
+} from "@animus/contracts/paths";
 
 /**
  * Deterministic inventory of the real durable installation.
@@ -102,7 +108,463 @@ const LEGACY_HISTORY_TABLES = new Set([
 export interface CutoverInventoryOptions {
   stateDir?: string;
   artifactRoot?: string;
+  /** Explicit Animus home used to derive per-project canonical state roots. */
+  home?: string;
+  /** Override the derived legacy roots (tests and callers with their own layout). */
+  legacyRoots?: LegacyStateRoots;
+  /** Disable legacy filesystem scanning (backup snapshot / isolated restore). */
+  includeLegacyState?: boolean;
   now?: () => number;
+}
+
+/** Canonical filesystem roots derived only from registered project checkouts. */
+export interface LegacyStateRoots {
+  runsDirs: string[];
+  locksDirs: string[];
+  dossiersDirs: string[];
+  worktreesDirs: string[];
+  roots: string[];
+}
+
+function uniquePaths(paths: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const path of paths) {
+    const normalized = sep === "/" ? path : path.split(sep).join("/");
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(path);
+  }
+  return out;
+}
+
+/**
+ * Derives canonical legacy execution-state roots from the registered project
+ * table only. There is no arbitrary filesystem walk: every directory inspected is
+ * `<project stateRoot>/{runs,dossiers,locks,worktrees}` for a registered checkout.
+ */
+export function resolveLegacyStateRoots(
+  db: DatabaseSync,
+  options: { stateDir?: string; home?: string } = {},
+): LegacyStateRoots {
+  const stateDir = resolveAnimusStateDir(options.stateDir);
+  const home = resolveAnimusHome(options.home);
+  let projects: Array<{ checkout_path: string }> = [];
+  try {
+    projects = db
+      .prepare("SELECT checkout_path FROM projects ORDER BY checkout_path ASC")
+      .all() as Array<{ checkout_path: string }>;
+  } catch {
+    projects = [];
+  }
+  const stateRoots = new Set<string>();
+  const runsDirs = new Set<string>();
+  for (const project of projects) {
+    if (typeof project.checkout_path !== "string" || project.checkout_path.trim() === "") {
+      continue;
+    }
+    let workspace;
+    try {
+      workspace = resolveProjectWorkspace(project.checkout_path, {
+        customHome: options.home,
+        customStateDir: stateDir,
+      });
+    } catch {
+      continue;
+    }
+    stateRoots.add(workspace.stateRoot);
+    stateRoots.add(join(workspace.canonicalGitCommon, "factory-local-loop"));
+    stateRoots.add(join(workspace.primaryRoot, ".factory-local-loop"));
+    stateRoots.add(join(home, "projects", workspace.projectSlug));
+    runsDirs.add(workspace.runsDir);
+    for (const fallback of workspace.fallbackRunsDirs) runsDirs.add(fallback);
+  }
+  const roots = [...stateRoots];
+  for (const root of roots) runsDirs.add(join(root, "runs"));
+  return {
+    roots,
+    runsDirs: uniquePaths([...runsDirs]),
+    locksDirs: uniquePaths(roots.map((root) => join(root, "locks"))),
+    dossiersDirs: uniquePaths(roots.map((root) => join(root, "dossiers"))),
+    worktreesDirs: uniquePaths(roots.map((root) => join(root, "worktrees"))),
+  };
+}
+
+const LIVE_RUN_STATUSES = new Set([
+  "preparing",
+  "building",
+  "checking",
+  "qa",
+  "reviewing",
+  "reflecting",
+]);
+
+interface LegacyFileEntry {
+  kind: string;
+  identity: string;
+  path: string;
+  digest: string;
+  bytes: number;
+}
+
+interface LegacyScanResult {
+  summary: CutoverLegacyStateSummary;
+  held: CutoverHeldFact[];
+}
+
+function readJsonFile(
+  path: string,
+): { ok: true; value: Record<string, unknown> } | { ok: false; reason: string } {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf-8");
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { ok: false, reason: "state file is not a JSON object" };
+    }
+    return { ok: true, value: value as Record<string, unknown> };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function recordLegacyFile(
+  entries: LegacyFileEntry[],
+  kind: string,
+  identity: string,
+  path: string,
+): string | null {
+  try {
+    const bytes = readFileSync(path);
+    entries.push({
+      kind,
+      identity,
+      path,
+      digest: sha256Bytes(bytes),
+      bytes: bytes.length,
+    });
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+/**
+ * Scans the derived legacy roots for live legacy writers and malformed/ambiguous
+ * ownership. Only a proven-dead pid is treated as stale; a missing owner identity
+ * is held because it cannot be proven safe.
+ */
+export function scanLegacyState(roots: LegacyStateRoots): LegacyScanResult {
+  const entries: LegacyFileEntry[] = [];
+  const held: CutoverHeldFact[] = [];
+  let runs = 0;
+  let dossiers = 0;
+  let locks = 0;
+  let worktrees = 0;
+  let malformed = 0;
+
+  const holdAmbiguous = (entity: string, identity: string, reason: string) => {
+    malformed += 1;
+    held.push({ entity, identity, reason });
+  };
+
+  for (const runsDir of roots.runsDirs) {
+    if (!existsSync(runsDir)) continue;
+    let runEntries: string[];
+    try {
+      runEntries = readdirSync(runsDir).sort();
+    } catch {
+      continue;
+    }
+    for (const runEntry of runEntries) {
+      const runDir = join(runsDir, runEntry);
+      let isDirectory = false;
+      try {
+        isDirectory = lstatSync(runDir).isDirectory();
+      } catch {
+        continue;
+      }
+      if (!isDirectory) continue;
+      const statePath = join(runDir, "state.json");
+      if (!existsSync(statePath)) continue;
+      runs += 1;
+      const issuePath = join(runDir, "issue.json");
+      if (existsSync(issuePath)) {
+        recordLegacyFile(
+          entries,
+          "legacy_run_contract",
+          `run:${relative(runsDir, issuePath)}`,
+          issuePath,
+        );
+      }
+      const recordError = recordLegacyFile(
+        entries,
+        "legacy_run_state",
+        `run:${relative(runsDir, statePath)}`,
+        statePath,
+      );
+      const identity = `run:${runEntry}`;
+      if (recordError) {
+        holdAmbiguous("legacy_run", identity, `legacy run state is unreadable: ${recordError}`);
+        continue;
+      }
+      const parsed = readJsonFile(statePath);
+      if (!parsed.ok) {
+        holdAmbiguous("legacy_run", identity, `legacy run state is malformed: ${parsed.reason}`);
+        continue;
+      }
+      const status = typeof parsed.value.status === "string" ? parsed.value.status : "";
+      const pid = parsed.value.pid;
+      if (LIVE_RUN_STATUSES.has(status)) {
+        if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) {
+          holdAmbiguous(
+            "legacy_run",
+            identity,
+            `legacy run '${status}' has no usable process identity; ownership is ambiguous`,
+          );
+        } else if (isPidAlive(pid)) {
+          held.push({
+            entity: "legacy_run",
+            identity,
+            reason: `legacy run '${status}' is live under pid ${pid}; quiesce it before cutover`,
+          });
+        }
+      } else if (status === "") {
+        holdAmbiguous(
+          "legacy_run",
+          identity,
+          "legacy run state has no status; ownership is ambiguous",
+        );
+      }
+    }
+  }
+
+  for (const dossiersDir of roots.dossiersDirs) {
+    if (!existsSync(dossiersDir)) continue;
+    let files: string[];
+    try {
+      files = readdirSync(dossiersDir).sort();
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      if (!file.endsWith(".json")) continue;
+      const path = join(dossiersDir, file);
+      dossiers += 1;
+      const recordError = recordLegacyFile(entries, "legacy_dossier", `dossier:${file}`, path);
+      if (recordError) {
+        holdAmbiguous(
+          "legacy_dossier",
+          `dossier:${file}`,
+          `legacy dossier is unreadable: ${recordError}`,
+        );
+        continue;
+      }
+      const parsed = readJsonFile(path);
+      if (!parsed.ok) {
+        holdAmbiguous(
+          "legacy_dossier",
+          `dossier:${file}`,
+          `legacy dossier is malformed: ${parsed.reason}`,
+        );
+      }
+    }
+  }
+
+  for (const locksDir of roots.locksDirs) {
+    if (!existsSync(locksDir)) continue;
+    let lockEntries: string[];
+    try {
+      lockEntries = readdirSync(locksDir).sort();
+    } catch {
+      continue;
+    }
+    for (const lockEntry of lockEntries) {
+      const lockPath = join(locksDir, lockEntry);
+      let stats;
+      try {
+        stats = lstatSync(lockPath);
+      } catch {
+        continue;
+      }
+      if (stats.isDirectory()) {
+        const ownerPath = join(lockPath, "owner.json");
+        locks += 1;
+        if (!existsSync(ownerPath)) {
+          holdAmbiguous(
+            "legacy_lock",
+            `lock:${lockEntry}`,
+            "legacy issue lock has no owner identity; ownership is ambiguous",
+          );
+          continue;
+        }
+        const recordError = recordLegacyFile(
+          entries,
+          "legacy_lock",
+          `lock:${lockEntry}`,
+          ownerPath,
+        );
+        if (recordError) {
+          holdAmbiguous(
+            "legacy_lock",
+            `lock:${lockEntry}`,
+            `legacy lock owner is unreadable: ${recordError}`,
+          );
+          continue;
+        }
+        const parsed = readJsonFile(ownerPath);
+        if (!parsed.ok) {
+          holdAmbiguous(
+            "legacy_lock",
+            `lock:${lockEntry}`,
+            `legacy lock owner is malformed: ${parsed.reason}`,
+          );
+          continue;
+        }
+        const pid = parsed.value.pid;
+        const token = parsed.value.ownerToken;
+        if (
+          typeof pid !== "number" ||
+          !Number.isSafeInteger(pid) ||
+          pid <= 0 ||
+          typeof token !== "string" ||
+          token.trim() === ""
+        ) {
+          holdAmbiguous(
+            "legacy_lock",
+            `lock:${lockEntry}`,
+            "legacy lock owner is missing a usable pid/token identity",
+          );
+        } else if (isPidAlive(pid)) {
+          held.push({
+            entity: "legacy_lock",
+            identity: `lock:${lockEntry}`,
+            reason: `legacy issue lock is live under pid ${pid}; quiesce it before cutover`,
+          });
+        }
+        continue;
+      }
+      if (!stats.isFile()) continue;
+      if (!lockEntry.endsWith(".lock")) continue;
+      locks += 1;
+      const recordError = recordLegacyFile(entries, "legacy_lock", `lock:${lockEntry}`, lockPath);
+      if (recordError) {
+        holdAmbiguous(
+          "legacy_lock",
+          `lock:${lockEntry}`,
+          `legacy lock is unreadable: ${recordError}`,
+        );
+        continue;
+      }
+      const parsed = readJsonFile(lockPath);
+      if (!parsed.ok) {
+        holdAmbiguous(
+          "legacy_lock",
+          `lock:${lockEntry}`,
+          `legacy lock is malformed: ${parsed.reason}`,
+        );
+        continue;
+      }
+      const pid = parsed.value.pid;
+      const token = parsed.value.ownerToken;
+      if (
+        typeof pid !== "number" ||
+        !Number.isSafeInteger(pid) ||
+        pid <= 0 ||
+        typeof token !== "string" ||
+        token.trim() === ""
+      ) {
+        holdAmbiguous(
+          "legacy_lock",
+          `lock:${lockEntry}`,
+          "legacy lock owner is missing a usable pid/token identity",
+        );
+      } else if (isPidAlive(pid)) {
+        held.push({
+          entity: "legacy_lock",
+          identity: `lock:${lockEntry}`,
+          reason: `legacy issue lock is live under pid ${pid}; quiesce it before cutover`,
+        });
+      }
+    }
+  }
+
+  for (const worktreesDir of roots.worktreesDirs) {
+    if (!existsSync(worktreesDir)) continue;
+    let worktreeEntries: string[];
+    try {
+      worktreeEntries = readdirSync(worktreesDir).sort();
+    } catch {
+      continue;
+    }
+    for (const worktreeEntry of worktreeEntries) {
+      const worktreeDir = join(worktreesDir, worktreeEntry);
+      const lockPath = join(worktreeDir, ".worktree.lock");
+      if (!existsSync(lockPath)) continue;
+      worktrees += 1;
+      const recordError = recordLegacyFile(
+        entries,
+        "legacy_worktree",
+        `worktree:${worktreeEntry}`,
+        lockPath,
+      );
+      if (recordError) {
+        holdAmbiguous(
+          "legacy_worktree",
+          `worktree:${worktreeEntry}`,
+          `legacy worktree lock is unreadable: ${recordError}`,
+        );
+        continue;
+      }
+      const parsed = readJsonFile(lockPath);
+      if (!parsed.ok) {
+        holdAmbiguous(
+          "legacy_worktree",
+          `worktree:${worktreeEntry}`,
+          `legacy worktree lock is malformed: ${parsed.reason}`,
+        );
+        continue;
+      }
+      const pid = parsed.value.pid;
+      if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) {
+        holdAmbiguous(
+          "legacy_worktree",
+          `worktree:${worktreeEntry}`,
+          "legacy worktree lock has no usable process identity",
+        );
+      } else if (isPidAlive(pid)) {
+        held.push({
+          entity: "legacy_worktree",
+          identity: `worktree:${worktreeEntry}`,
+          reason: `legacy worktree is locked by live pid ${pid}; quiesce it before cutover`,
+        });
+      }
+    }
+  }
+
+  entries.sort((left, right) =>
+    `${left.kind}\u0000${left.identity}`.localeCompare(`${right.kind}\u0000${right.identity}`),
+  );
+  const digest = sha256Text(
+    entries.map((entry) => `${entry.kind}\u0000${entry.identity}\u0000${entry.digest}`).join("\n"),
+  );
+  return {
+    summary: {
+      digest,
+      roots: uniquePaths(roots.roots).sort(),
+      runs,
+      dossiers,
+      locks,
+      worktrees,
+      files: entries.length,
+      malformed,
+    },
+    held,
+  };
 }
 
 export interface CutoverInventory extends CutoverInventoryEvidence {
@@ -111,7 +573,6 @@ export interface CutoverInventory extends CutoverInventoryEvidence {
   /** Stable primary-key identity digest across every table. */
   identityDigest: string;
 }
-
 interface ColumnInfo {
   name: string;
   pk: number;
@@ -333,6 +794,24 @@ export function inventoryInstallation(
     ),
   };
 
+  let legacyState: CutoverLegacyStateSummary = {
+    digest: sha256Text(""),
+    roots: [],
+    runs: 0,
+    dossiers: 0,
+    locks: 0,
+    worktrees: 0,
+    files: 0,
+    malformed: 0,
+  };
+  if (options.includeLegacyState !== false) {
+    const legacyRoots =
+      options.legacyRoots ?? resolveLegacyStateRoots(db, { stateDir, home: options.home });
+    const scan = scanLegacyState(legacyRoots);
+    legacyState = scan.summary;
+    for (const fact of scan.held) held.push(fact);
+  }
+
   const stateTables = tables.filter((entry) => !STATE_DIGEST_EXCLUDED.has(entry.table));
   const stateDigest = sha256Text(
     canonicalJson(stateTables.map(({ table, count, digest }) => ({ table, count, digest }))),
@@ -357,6 +836,7 @@ export function inventoryInstallation(
     totalRows,
     tables,
     artifacts,
+    legacyState,
     held,
     mappings,
   };

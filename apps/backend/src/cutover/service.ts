@@ -29,6 +29,7 @@ import {
 } from "@animus/contracts/execution-authority";
 import type { BackupRestoreService } from "../restore/service";
 import { inventoryInstallation, type CutoverInventory } from "./inventory";
+import { withCutoverLock } from "./lock";
 
 export type AuthorityCutoverErrorCode =
   | "cutover_already_active"
@@ -201,7 +202,11 @@ export class AuthorityCutoverService {
   }
 
   private inventoryLive(): CutoverInventory {
-    return inventoryInstallation(this.db, { stateDir: this.stateDir, now: this.now });
+    return inventoryInstallation(this.db, {
+      stateDir: this.stateDir,
+      home: this.home,
+      now: this.now,
+    });
   }
 
   private inventoryRestored(targetStateDir: string): CutoverInventory {
@@ -209,7 +214,9 @@ export class AuthorityCutoverService {
     try {
       return inventoryInstallation(db, {
         stateDir: targetStateDir,
+        home: this.home,
         artifactRoot: join(targetStateDir, "artifacts"),
+        includeLegacyState: false,
         now: this.now,
       });
     } finally {
@@ -524,6 +531,14 @@ export class AuthorityCutoverService {
     if (marker.authority === "local" && (!operation || operation.status !== "activated")) {
       blockingReasons.push("authority_marker_without_activated_cutover");
     }
+    if (
+      marker.authority === "local" &&
+      operation &&
+      marker.cutover_id &&
+      marker.cutover_id !== operation.id
+    ) {
+      blockingReasons.push("authority_marker_cutover_mismatch");
+    }
     if (marker.authority === "migrating" && !operation) {
       blockingReasons.push("authority_fenced_without_operation");
     }
@@ -531,6 +546,10 @@ export class AuthorityCutoverService {
     if (operation && ["staging", "staged", "activating"].includes(operation.status)) {
       for (const fact of live.held) {
         blockingReasons.push(`live_writer:${fact.entity}:${fact.identity}:${fact.reason}`);
+      }
+      const stagedLegacyState = this.stagedLegacyState(operation);
+      if (stagedLegacyState && live.legacyState.digest !== stagedLegacyState.digest) {
+        blockingReasons.push("legacy_state_changed_since_staging");
       }
       if (operation.inventory_sha256 && live.stateDigest !== operation.inventory_sha256) {
         blockingReasons.push("installation_changed_since_staging");
@@ -558,6 +577,15 @@ export class AuthorityCutoverService {
       }
     }
 
+    const authorityConsistent =
+      marker.authority === "local"
+        ? Boolean(
+            operation &&
+            operation.status === "activated" &&
+            (!marker.cutover_id || marker.cutover_id === operation.id),
+          )
+        : !marker.error;
+
     const nextActions: string[] = [];
     if (marker.authority === "legacy") {
       nextActions.push(
@@ -584,17 +612,31 @@ export class AuthorityCutoverService {
       operation: operation ? mapOperation(operation) : null,
       tables: live.tables,
       artifacts: live.artifacts,
+      legacyState: live.legacyState,
       held: live.held,
       mappingSummary: summarizeMappings(mappings),
       backup: backupStatus,
       isolatedRestore: restoreEvidence,
       installationHeld,
+      authorityConsistent,
       blockingReasons,
       nextActions,
     };
   }
 
+  private stagedLegacyState(operation: OperationRow): { digest: string } | null {
+    const report = parseReport(operation.report);
+    const legacyState = report.legacyState;
+    if (!legacyState || typeof legacyState !== "object") return null;
+    const digest = (legacyState as Record<string, unknown>).digest;
+    return typeof digest === "string" ? { digest } : null;
+  }
+
   async stage(input: CutoverStageSubmission = {}): Promise<CutoverStageResult> {
+    return withCutoverLock(this.stateDir, () => this.stageLocked(input));
+  }
+
+  private async stageLocked(input: CutoverStageSubmission = {}): Promise<CutoverStageResult> {
     const actor = input.actor ?? "operator";
     const marker = readExecutionAuthority(this.stateDir);
     if (marker.error) {
@@ -745,6 +787,7 @@ export class AuthorityCutoverService {
       try {
         snapshotInventory = inventoryInstallation(snapshotDb, {
           stateDir: this.stateDir,
+          home: this.home,
           artifactRoot: join(backupPath, "artifacts"),
           now: this.now,
         });
@@ -773,6 +816,16 @@ export class AuthorityCutoverService {
         throw new AuthorityCutoverError(
           "cutover_state_changed",
           "Finalized artifacts changed between the backup and the live inventory",
+        );
+      }
+      if (live.legacyState.digest !== snapshotInventory.legacyState.digest) {
+        throw new AuthorityCutoverError(
+          "cutover_state_changed",
+          "Legacy filesystem execution state changed during staging; quiesce legacy writers and retry",
+          {
+            expected: snapshotInventory.legacyState.digest,
+            actual: live.legacyState.digest,
+          },
         );
       }
 
@@ -859,10 +912,12 @@ export class AuthorityCutoverService {
           totalRows: snapshotInventory.totalRows,
           tables: snapshotInventory.tables,
           artifacts: snapshotInventory.artifacts,
+          legacyState: snapshotInventory.legacyState,
           held: snapshotInventory.held,
         },
         snapshot: snapshotEvidence,
         restore: restoreEvidence,
+        legacyState: snapshotInventory.legacyState,
         mappingSummary: summarizeMappings(mappings),
         consumerCapability: {
           requiredSchemaVersion: snapshotInventory.schemaVersion,
@@ -944,6 +999,10 @@ export class AuthorityCutoverService {
   }
 
   async activate(input: CutoverActivateSubmission): Promise<CutoverActivateResult> {
+    return withCutoverLock(this.stateDir, () => this.activateLocked(input));
+  }
+
+  private async activateLocked(input: CutoverActivateSubmission): Promise<CutoverActivateResult> {
     let operation = this.getOperation(input.cutoverId);
     if (!operation) {
       throw new AuthorityCutoverError(
@@ -964,13 +1023,23 @@ export class AuthorityCutoverService {
     }
 
     const marker = readExecutionAuthority(this.stateDir);
+
+    // A `local` marker is only reconciled when the exact staged evidence can be
+    // re-proven. This covers a marker written before the database commit (old
+    // crash window or tamper) without ever trusting the marker alone.
     if (marker.authority === "local") {
-      if (marker.cutover_id !== operation.id) {
+      if (marker.cutover_id && marker.cutover_id !== operation.id) {
         throw new AuthorityCutoverError(
           "cutover_inconsistent",
           "A different cutover already activated local authority",
         );
       }
+      if (operation.status === "activated") {
+        return { operation: mapOperation(operation), status: this.status() };
+      }
+      this.requireBackupRestorable(operation);
+      this.requireRestoreHeld(operation);
+      this.assertLiveMatchesStaged(operation);
       operation = this.markActivated(operation, input.actor);
       return { operation: mapOperation(operation), status: this.status() };
     }
@@ -978,12 +1047,6 @@ export class AuthorityCutoverService {
       throw new AuthorityCutoverError(
         "cutover_not_staged",
         "No staged cutover is fenced for activation",
-      );
-    }
-    if (operation.status !== "staged" && operation.status !== "activating") {
-      throw new AuthorityCutoverError(
-        "cutover_not_staged",
-        `Cutover ${operation.id} is ${operation.status}, not staged`,
       );
     }
     if (marker.cutover_id && marker.cutover_id !== operation.id) {
@@ -996,31 +1059,29 @@ export class AuthorityCutoverService {
     this.requireBackupRestorable(operation);
     this.requireRestoreHeld(operation);
 
+    // A crash after the database committed `activated` but before the marker
+    // write leaves `migrating` (writers stay fenced). Re-verify and finalize the
+    // marker; never authorize from the incomplete row alone.
+    if (operation.status === "activated") {
+      this.assertLiveMatchesStaged(operation);
+      this.writeLocalMarker(operation);
+      return { operation: mapOperation(operation), status: this.status() };
+    }
+    if (operation.status !== "staged" && operation.status !== "activating") {
+      throw new AuthorityCutoverError(
+        "cutover_not_staged",
+        `Cutover ${operation.id} is ${operation.status}, not staged`,
+      );
+    }
+
     // Take a real database-wide exclusive lock so an in-flight writer cannot
-    // commit between the final inventory and the marker swap. This is a SQLite
-    // connection/process boundary, not an in-memory boolean.
+    // commit between the final inventory and the status transition. This is a
+    // SQLite connection/process boundary, not an in-memory boolean.
     const lock = this.databasePath === ":memory:" ? null : new DatabaseSync(this.databasePath);
     if (lock) lock.exec("PRAGMA busy_timeout = 5000;");
     if (lock) lock.exec("BEGIN EXCLUSIVE;");
     try {
-      const live = lock
-        ? inventoryInstallation(lock, { stateDir: this.stateDir, now: this.now })
-        : this.inventoryLive();
-      if (live.held.length > 0) {
-        throw new AuthorityCutoverError(
-          "cutover_writers_active",
-          "Live writers appeared after staging; activation is refused",
-          { held: live.held },
-        );
-      }
-      if (live.stateDigest !== operation.inventory_sha256) {
-        throw new AuthorityCutoverError(
-          "cutover_state_changed",
-          "Installation changed since staging; re-run stage before activating",
-          { expected: operation.inventory_sha256, actual: live.stateDigest },
-        );
-      }
-
+      this.assertLiveMatchesStaged(operation, lock ?? undefined);
       if (operation.status !== "activating") {
         if (lock) {
           const result = lock
@@ -1042,29 +1103,6 @@ export class AuthorityCutoverService {
           );
         }
       }
-
-      try {
-        writeExecutionAuthority("local", {
-          stateDir: this.stateDir,
-          expected: "migrating",
-          cutoverId: operation.id,
-          inventorySha256: operation.inventory_sha256,
-          backupManifestSha256: operation.backup_manifest_sha256,
-          phase: "active",
-        });
-      } catch (error) {
-        if (error instanceof ExecutionAuthorityConflictError) {
-          const current = readExecutionAuthority(this.stateDir);
-          if (current.authority !== "local" || current.cutover_id !== operation.id) {
-            throw new AuthorityCutoverError("cutover_inconsistent", error.message);
-          }
-        } else {
-          throw new AuthorityCutoverError(
-            "cutover_failed",
-            error instanceof Error ? error.message : String(error),
-          );
-        }
-      }
       if (lock) lock.exec("COMMIT;");
     } catch (error) {
       if (lock) {
@@ -1081,9 +1119,73 @@ export class AuthorityCutoverService {
       }
     }
 
+    // Persist `activated` *before* the marker. A crash in between leaves the
+    // migrating fence so neither legacy nor local writers can start; the next
+    // activate/status reconciles the verified row into the local marker.
     const current = this.getOperation(operation.id) ?? operation;
     operation = this.markActivated(current, input.actor);
+    this.writeLocalMarker(operation);
     return { operation: mapOperation(operation), status: this.status() };
+  }
+
+  /** Re-proves the live installation still matches the staged evidence. */
+  private assertLiveMatchesStaged(
+    operation: OperationRow,
+    connection?: DatabaseSync,
+  ): CutoverInventory {
+    const live = connection
+      ? inventoryInstallation(connection, {
+          stateDir: this.stateDir,
+          home: this.home,
+          now: this.now,
+        })
+      : this.inventoryLive();
+    if (live.held.length > 0) {
+      throw new AuthorityCutoverError(
+        "cutover_writers_active",
+        "Live writers appeared after staging; activation is refused",
+        { held: live.held },
+      );
+    }
+    if (live.stateDigest !== operation.inventory_sha256) {
+      throw new AuthorityCutoverError(
+        "cutover_state_changed",
+        "Installation changed since staging; re-run stage before activating",
+        { expected: operation.inventory_sha256, actual: live.stateDigest },
+      );
+    }
+    const stagedLegacyState = this.stagedLegacyState(operation);
+    if (stagedLegacyState && live.legacyState.digest !== stagedLegacyState.digest) {
+      throw new AuthorityCutoverError(
+        "cutover_state_changed",
+        "Legacy filesystem execution state changed since staging; quiesce writers and re-run stage",
+        { expected: stagedLegacyState.digest, actual: live.legacyState.digest },
+      );
+    }
+    return live;
+  }
+
+  private writeLocalMarker(operation: OperationRow): void {
+    try {
+      writeExecutionAuthority("local", {
+        stateDir: this.stateDir,
+        expected: "migrating",
+        cutoverId: operation.id,
+        inventorySha256: operation.inventory_sha256,
+        backupManifestSha256: operation.backup_manifest_sha256,
+        phase: "active",
+      });
+    } catch (error) {
+      if (error instanceof ExecutionAuthorityConflictError) {
+        const current = readExecutionAuthority(this.stateDir);
+        if (current.authority === "local" && current.cutover_id === operation.id) return;
+        throw new AuthorityCutoverError("cutover_inconsistent", error.message);
+      }
+      throw new AuthorityCutoverError(
+        "cutover_failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   }
 
   private markActivated(operation: OperationRow, actor: string): OperationRow {
@@ -1110,6 +1212,10 @@ export class AuthorityCutoverService {
   }
 
   async abort(input: CutoverAbortSubmission): Promise<CutoverAbortResult> {
+    return withCutoverLock(this.stateDir, () => this.abortLocked(input));
+  }
+
+  private async abortLocked(input: CutoverAbortSubmission): Promise<CutoverAbortResult> {
     const operation = this.getOperation(input.cutoverId);
     if (!operation) {
       throw new AuthorityCutoverError(

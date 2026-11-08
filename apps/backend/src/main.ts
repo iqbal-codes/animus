@@ -21,6 +21,7 @@ import {
 } from "@animus/contracts/operator";
 import { configuration, hostOrigin, type Configuration } from "./config";
 import { readExecutionAuthority } from "@animus/contracts/execution-authority";
+import { evaluateExecutionAuthority } from "./authority/guard";
 import { IntakeService, handleProjectIntakeRoute } from "./intake";
 import { WorkService, handleProjectWorkRoute } from "./work";
 import { ExecutionBudgetService } from "./work/budget";
@@ -862,6 +863,22 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
 
       const scopedAction = parts[1];
 
+      // One shared external-writer preflight for every scoped action. A cutover
+      // in progress (or a local marker not yet backed by an activated row) is
+      // refused before any route handler can push, mutate or write.
+      const authorityPreflight = (): Response | null => {
+        if (request.method === "GET") return null;
+        const decision = evaluateExecutionAuthority(registryService.getDb());
+        if (decision.settled) return null;
+        return Response.json(
+          {
+            error: "execution_authority_moving",
+            message: `Execution authority is not settled (${decision.reason ?? "migrating"}); retry after the cutover settles`,
+          },
+          { status: 409 },
+        );
+      };
+
       if (scopedAction === "intake") {
         const intakeRes = await handleProjectIntakeRoute(
           request,
@@ -903,15 +920,27 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
       }
 
       if (scopedAction === "coordination") {
-        if (readExecutionAuthority().authority !== "legacy" && request.method !== "GET") {
-          return Response.json(
-            {
-              error: "execution_authority_moved",
-              message:
-                "Legacy live-forge coordination dispatch is disabled after local authority activation; use the frozen plan dispatch routes",
-            },
-            { status: 409 },
-          );
+        if (request.method !== "GET") {
+          const decision = evaluateExecutionAuthority(registryService.getDb());
+          if (!decision.settled) {
+            return Response.json(
+              {
+                error: "execution_authority_moving",
+                message: `Execution authority is not settled (${decision.reason ?? "migrating"}); retry after the cutover settles`,
+              },
+              { status: 409 },
+            );
+          }
+          if (decision.marker.authority !== "legacy") {
+            return Response.json(
+              {
+                error: "execution_authority_moved",
+                message:
+                  "Legacy live-forge coordination dispatch is disabled after local authority activation; use the frozen plan dispatch routes",
+              },
+              { status: 409 },
+            );
+          }
         }
         const coordRes = await handleProjectCoordinationRoute(
           request,
@@ -935,6 +964,8 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
       }
 
       if (scopedAction === "publication") {
+        const preflight = authorityPreflight();
+        if (preflight) return preflight;
         const publicationRes = await handleProjectPublicationRoute(
           request,
           projectId,
@@ -946,6 +977,8 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
       }
 
       if (scopedAction === "integration") {
+        const preflight = authorityPreflight();
+        if (preflight) return preflight;
         const integrationRes = await handleProjectIntegrationRoute(
           request,
           projectId,
@@ -957,6 +990,8 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
       }
 
       if (scopedAction === "draft-publications") {
+        const preflight = authorityPreflight();
+        if (preflight) return preflight;
         const draftPublicationRes = await handleProjectDraftPublicationRoute(
           request,
           projectId,
@@ -968,6 +1003,8 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
       }
 
       if (scopedAction === "delivery") {
+        const preflight = authorityPreflight();
+        if (preflight) return preflight;
         const deliveryRes = await handleProjectDeliveryRoute(
           request,
           projectId,
@@ -979,6 +1016,8 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
       }
 
       if (scopedAction === "final") {
+        const preflight = authorityPreflight();
+        if (preflight) return preflight;
         const finalRes = await handleProjectFinalRoute(request, projectId, parts, finalService);
         if (finalRes) return finalRes;
         return Response.json({ error: "not_found" }, { status: 404 });

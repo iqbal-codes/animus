@@ -13,6 +13,7 @@ import { DraftPublicationService } from "../../apps/backend/src/publication";
 import { ProjectRegistryService, SyntheticForgeAdapter } from "../../apps/backend/src/registry";
 import { runDraftCommand } from "../../scripts/cli/commands/operations";
 import { settleRestoreRelease, verifyRestoreRelease } from "../../apps/backend/src/restore/release";
+import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
 
 const REPO = "owner/repo";
 
@@ -413,6 +414,77 @@ describe("approved draft publication into GitHub issues and admission", () => {
 
     // No builder was dispatched by publication.
     expect(JSON.stringify(publication)).not.toMatch(/https?:\/\//);
+  });
+
+  test("AC5: raw intake refines, approves, publishes and admits under local authority without later issue edits mutating it", async () => {
+    const stateDir = join(fixture.root, "state");
+    const now = Date.now();
+    fixture.app.db
+      .prepare(
+        `INSERT INTO authority_cutover_operations
+           (id, status, actor, report, created_at, updated_at, activated_at)
+         VALUES ('cutover_ac5', 'activated', 'operator', '{}', ?, ?, ?)`,
+      )
+      .run(now, now, now);
+    writeExecutionAuthority("local", {
+      stateDir,
+      cutoverId: "cutover_ac5",
+      phase: "active",
+    });
+
+    const scoped = fixture.client.forProject(fixture.projectId);
+    const draft = await approveDraft(22);
+    const publication = await scoped.publishDraft(draft.id);
+    expect(publication.state).toBe("admitted");
+    expect(publication.planAuthority).toBe("admitted");
+    expect(publication.sourceIssueNumber).toBe(22);
+    const ticket = publication.members[0]!;
+    const issue = await fixture.forge.getIssue(REPO, ticket.issueNumber!);
+    expect(bodyOf(issue)).toContain("Refined request: #22");
+
+    const planId = publication.planId!;
+    const membersBefore = fixture.app.db
+      .prepare("SELECT COUNT(*) AS count FROM plan_members WHERE plan_id = ?")
+      .get(planId) as { count: number };
+    const revisionsBefore = fixture.app.db
+      .prepare("SELECT COUNT(*) AS count FROM work_revisions WHERE work_id = ?")
+      .get(fixture.workByIssue.get(22)!) as { count: number };
+
+    const planRow = fixture.app.db
+      .prepare("SELECT root_revision_id FROM plans WHERE id = ?")
+      .get(planId) as { root_revision_id: string };
+    const frozenHash = (
+      fixture.app.db
+        .prepare("SELECT content_hash FROM work_revisions WHERE id = ?")
+        .get(planRow.root_revision_id) as { content_hash: string }
+    ).content_hash;
+
+    // Manual issue edits/comments after admission must not rebind the frozen plan.
+    await fixture.forge.updateIssue(REPO, ticket.issueNumber!, {
+      title: "Edited after admission",
+      body: "Edited body that must not be re-admitted",
+    });
+    await fixture.forge.createIssueComment(REPO, ticket.issueNumber!, "manual comment");
+    const intake = new IntakeService(fixture.app.db, fixture.forge);
+    await intake.evaluateProjectBacklog(fixture.projectId, true);
+
+    const membersAfter = fixture.app.db
+      .prepare("SELECT COUNT(*) AS count FROM plan_members WHERE plan_id = ?")
+      .get(planId) as { count: number };
+    const revisionsAfter = fixture.app.db
+      .prepare("SELECT COUNT(*) AS count FROM work_revisions WHERE work_id = ?")
+      .get(fixture.workByIssue.get(22)!) as { count: number };
+    expect(membersAfter.count).toBe(membersBefore.count);
+    expect(revisionsAfter.count).toBe(revisionsBefore.count);
+    expect(
+      (
+        fixture.app.db
+          .prepare("SELECT content_hash FROM work_revisions WHERE id = ?")
+          .get(planRow.root_revision_id) as { content_hash: string }
+      ).content_hash,
+    ).toBe(frozenHash);
+    const plan = new PlanService(fixture.app.db, fixture.forge).getPlan(fixture.projectId, planId);
+    expect(plan.authority).toBe("admitted");
   });
 
   test("AC4: a standalone draft publishes its own ticket and is admitted", async () => {

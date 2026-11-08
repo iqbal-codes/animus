@@ -62,6 +62,16 @@ function status(overrides: Record<string, unknown> = {}) {
       },
     ],
     artifacts: { root: "/tmp/artifacts", count: 2, totalBytes: 10, digest: "e".repeat(64) },
+    legacyState: {
+      digest: "9".repeat(64),
+      roots: ["/tmp/home/projects/demo"],
+      runs: 0,
+      dossiers: 0,
+      locks: 0,
+      worktrees: 0,
+      files: 0,
+      malformed: 0,
+    },
     held: [],
     mappingSummary: { total: 10, preserved: 8, preservedHistory: 2, adopted: 0, held: 0 },
     backup: {
@@ -73,6 +83,7 @@ function status(overrides: Record<string, unknown> = {}) {
     },
     isolatedRestore: null,
     installationHeld: false,
+    authorityConsistent: true,
     blockingReasons: [],
     nextActions: ["stage the validated cutover"],
     ...overrides,
@@ -149,7 +160,47 @@ describe("AuthorityPanel", () => {
       false,
     );
     expect(screen.getByText(/live_writer:project_runs:run_1/)).toBeTruthy();
+    expect(screen.getByText(/Held writers and ambiguous state/i)).toBeTruthy();
+    expect(screen.getByText(/Quiesce the listed processes/i)).toBeTruthy();
     expect(screen.getByRole("region", { name: "Execution authority" })).toBeTruthy();
+  });
+
+  test("surfaces filesystem legacy writers and an inconsistent local marker actionably", async () => {
+    backing.authorityStatus.mockResolvedValue(
+      status({
+        authority: "local",
+        markerPhase: "active",
+        cutoverId: "cutover_1",
+        operation: { ...EMPTY_OPERATION, status: "staged" },
+        authorityConsistent: false,
+        legacyState: {
+          digest: "9".repeat(64),
+          roots: ["/tmp/home/projects/demo"],
+          runs: 1,
+          dossiers: 0,
+          locks: 1,
+          worktrees: 0,
+          files: 2,
+          malformed: 0,
+        },
+        held: [
+          {
+            entity: "legacy_run",
+            identity: "run:run_live_1",
+            reason: "legacy run 'building' is live under pid 4242; quiesce it before cutover",
+          },
+        ],
+        blockingReasons: ["authority_marker_without_activated_cutover"],
+        nextActions: [],
+      }),
+    );
+
+    render(<AuthorityPanel />);
+    expect(await screen.findByText("Local authority active")).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toContain("not backed by an activated cutover");
+    expect(screen.getByText(/legacy_run/)).toBeTruthy();
+    expect(screen.getByText(/live under pid 4242/i)).toBeTruthy();
+    expect(screen.getByText(/Legacy runs \/ locks \/ worktrees/)).toBeTruthy();
   });
 
   test("renders the activated local authority without staging actions", async () => {

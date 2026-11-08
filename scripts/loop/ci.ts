@@ -188,6 +188,8 @@ export interface ReconcileWaitingApprovalOptions {
   ghRun?: GhRunner;
   maxLaps?: number;
   checkPrCi?: typeof checkPrCiStatus;
+  /** Canonical installation state dir used to re-check the authority fence. */
+  installationStateDir?: string;
 }
 
 export async function reconcileWaitingApprovalPrCi(
@@ -238,6 +240,7 @@ export async function reconcileWaitingApprovalPrCi(
       issueNumber,
       push: true,
       runner,
+      installationStateDir: options.installationStateDir,
     });
 
     // Verify PR is still OPEN before evaluating CI

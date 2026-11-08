@@ -363,6 +363,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       return await runBackupCommand({
         subcommand,
         positionals,
+        stateDir: values["state-dir"],
         destination: values.destination,
         targetStateDir: values["target-state-dir"],
         targetHome: values["target-home"],

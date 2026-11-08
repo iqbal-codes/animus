@@ -12,6 +12,7 @@ import { BrakeService } from "../../apps/backend/src/command/brakes";
 import { DispatchService } from "../../apps/backend/src/dispatch";
 import { ExecutionObservationService } from "../../apps/backend/src/evidence";
 import { PlanService } from "../../apps/backend/src/plans";
+import { ChildIntegrationService } from "../../apps/backend/src/integration";
 import { inventoryInstallation } from "../../apps/backend/src/cutover/inventory";
 import { AuthorityCutoverService } from "../../apps/backend/src/cutover/service";
 import { BackupRestoreService } from "../../apps/backend/src/restore/service";
@@ -532,6 +533,87 @@ describe("authority cutover (#165)", () => {
       "cutover_already_active",
     );
     expect(readExecutionAuthority().authority).toBe("local");
+  });
+
+  test("external writers fail closed while the authority is migrating", async () => {
+    await buildApp();
+    const staged = await stage();
+    expect(staged.response.status).toBe(201);
+    expect(readExecutionAuthority().authority).toBe("migrating");
+
+    // Read surfaces stay usable during the fence.
+    const statusRes = await app.fetch(new Request("http://127.0.0.1/api/v1/authority"));
+    expect(statusRes.status).toBe(200);
+    expect(((await statusRes.json()) as { authority: string }).authority).toBe("migrating");
+
+    // Route preflight refuses every scoped external writer with a stable 409.
+    for (const action of [
+      "publication/reconcile",
+      "integration/land",
+      "draft-publications",
+      "delivery/verify-merge",
+      "final/advance",
+    ]) {
+      const response = await app.fetch(
+        new Request(`http://127.0.0.1/api/v1/projects/${projectId}/${action}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        }),
+      );
+      expect(response.status).toBe(409);
+      expect(((await response.json()) as { error: string }).error).toBe(
+        "execution_authority_moving",
+      );
+    }
+
+    // Internal callers (final -> integration/publication, dispatch -> publication)
+    // are fenced by the same shared service guard, not only the HTTP layer.
+    const gate = { code: "execution_authority_moving" };
+    await expect(app.publication.reconcileAll(projectId)).rejects.toMatchObject(gate);
+    await expect(app.publication.publish(projectId, "missing-target")).rejects.toMatchObject(gate);
+    await expect(
+      app.draftPublication.publishDraft(projectId, "missing-draft"),
+    ).rejects.toMatchObject(gate);
+    await expect(app.draftPublication.reconcileAll(projectId)).rejects.toMatchObject(gate);
+    await expect(app.delivery.verifyMerge(projectId, "missing-run")).rejects.toMatchObject(gate);
+    await expect(app.final.advance(projectId, "missing-plan")).rejects.toMatchObject(gate);
+    await expect(app.final.verifyMerge(projectId, "missing-plan")).rejects.toMatchObject(gate);
+    await expect(
+      app.final.dispatchCorrection({
+        projectId,
+        runId: "missing-run",
+        deliveryId: "missing-delivery",
+        planId: "missing-plan",
+        workId: "missing-work",
+        actor: "operator",
+        findings: [],
+      }),
+    ).rejects.toMatchObject(gate);
+    const integration = new ChildIntegrationService(app.db, {
+      observations: new ExecutionObservationService(app.db),
+      publication: app.publication,
+      forge,
+    });
+    await expect(integration.land(projectId, "missing-run")).rejects.toMatchObject(gate);
+
+    // Abort returns to legacy so the pre-cutover legacy writers remain supported.
+    const operation = staged.body.operation as { id: string };
+    const aborted = await app.fetch(
+      new Request("http://127.0.0.1/api/v1/authority/abort", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          actor: "operator",
+          reason: "restore legacy",
+          cutoverId: operation.id,
+        }),
+      }),
+    );
+    expect(aborted.status).toBe(200);
+    expect(readExecutionAuthority().authority).toBe("legacy");
+    // Legacy publication remains callable before cutover (no publication target => empty).
+    await expect(app.publication.reconcileAll(projectId)).resolves.toEqual([]);
   });
 
   test("post-activation GitHub manual feedback never mutates accepted work", async () => {

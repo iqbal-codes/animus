@@ -51,6 +51,25 @@ export const cutoverArtifactSummarySchema = z.object({
 });
 export type CutoverArtifactSummary = z.infer<typeof cutoverArtifactSummarySchema>;
 
+/**
+ * Deterministic digest and counts of the legacy filesystem execution state
+ * (run state/contracts, dossiers, issue locks and worktree locks) derived only
+ * from registered project checkouts. The isolated restore has no legacy roots, so
+ * its digest is the empty-input digest; the live and backup-snapshot inventories
+ * are compared to prove the filesystem did not change during staging.
+ */
+export const cutoverLegacyStateSummarySchema = z.object({
+  digest: z.string().regex(/^[a-f0-9]{64}$/),
+  roots: z.array(z.string().min(1)),
+  runs: z.number().int().nonnegative(),
+  dossiers: z.number().int().nonnegative(),
+  locks: z.number().int().nonnegative(),
+  worktrees: z.number().int().nonnegative(),
+  files: z.number().int().nonnegative(),
+  malformed: z.number().int().nonnegative(),
+});
+export type CutoverLegacyStateSummary = z.infer<typeof cutoverLegacyStateSummarySchema>;
+
 export const cutoverHeldFactSchema = z.object({
   entity: z.string().min(1),
   identity: z.string().min(1),
@@ -117,6 +136,7 @@ export const cutoverInventoryEvidenceSchema = z.object({
   totalRows: z.number().int().nonnegative(),
   tables: z.array(cutoverTableSummarySchema),
   artifacts: cutoverArtifactSummarySchema,
+  legacyState: cutoverLegacyStateSummarySchema,
   held: z.array(cutoverHeldFactSchema),
   mappings: z.array(cutoverMappingSchema),
 });
@@ -172,11 +192,17 @@ export const cutoverStatusSchema = z.object({
   operation: cutoverOperationSchema.nullable(),
   tables: z.array(cutoverTableSummarySchema),
   artifacts: cutoverArtifactSummarySchema,
+  legacyState: cutoverLegacyStateSummarySchema,
   held: z.array(cutoverHeldFactSchema),
   mappingSummary: cutoverMappingSummarySchema,
   backup: cutoverBackupStatusSchema.nullable(),
   isolatedRestore: cutoverRestoreEvidenceSchema.nullable(),
   installationHeld: z.boolean(),
+  /**
+   * True when a `local` marker is actually backed by an `activated` cutover row.
+   * A false value means writers stay fenced even though the marker says local.
+   */
+  authorityConsistent: z.boolean(),
   blockingReasons: z.array(z.string()),
   nextActions: z.array(z.string().min(1)),
 });

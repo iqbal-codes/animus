@@ -141,6 +141,7 @@ function verifyDatabasePragmas(db: DatabaseSync, resolvedPath: string): void {
   const foreignKeys = db.prepare("PRAGMA foreign_keys;").get() as
     | { foreign_keys?: number }
     | undefined;
+  const busyTimeout = db.prepare("PRAGMA busy_timeout;").get() as { timeout?: number } | undefined;
 
   if (resolvedPath !== ":memory:" && String(journal?.journal_mode).toLowerCase() !== "wal") {
     throw new Error("SQLite WAL journal mode is unavailable");
@@ -151,4 +152,55 @@ function verifyDatabasePragmas(db: DatabaseSync, resolvedPath: string): void {
   if (Number(foreignKeys?.foreign_keys) !== 1) {
     throw new Error("SQLite foreign key enforcement is unavailable");
   }
+  if (Number(busyTimeout?.timeout) !== 5000) {
+    throw new Error("SQLite busy timeout is unavailable");
+  }
+}
+
+export interface DatabasePragmaSnapshot {
+  journalMode: string;
+  /** SQLite synchronous enum: 2 = FULL. */
+  synchronous: number;
+  /** 1 when foreign-key enforcement is ON for this connection. */
+  foreignKeys: number;
+  /** Per-connection busy timeout in milliseconds. */
+  busyTimeout: number;
+}
+
+/** Reads the effective PRAGMAs from an already open connection. */
+export function readDatabasePragmas(db: DatabaseSync): DatabasePragmaSnapshot {
+  const journal = db.prepare("PRAGMA journal_mode;").get() as { journal_mode?: string } | undefined;
+  const synchronous = db.prepare("PRAGMA synchronous;").get() as
+    | { synchronous?: number }
+    | undefined;
+  const foreignKeys = db.prepare("PRAGMA foreign_keys;").get() as
+    | { foreign_keys?: number }
+    | undefined;
+  const busyTimeout = db.prepare("PRAGMA busy_timeout;").get() as { timeout?: number } | undefined;
+  return {
+    journalMode: String(journal?.journal_mode ?? "").toLowerCase(),
+    synchronous: Number(synchronous?.synchronous ?? -1),
+    foreignKeys: Number(foreignKeys?.foreign_keys ?? -1),
+    busyTimeout: Number(busyTimeout?.timeout ?? -1),
+  };
+}
+
+/**
+ * Opens the installation database read-only and configures the connection-scoped
+ * PRAGMAs that are legitimately settable without a write. This does not run
+ * migrations and must never be reported as an `initializeDatabase` call: WAL is a
+ * persistent database property that is read, while foreign keys, synchronous and
+ * busy timeout are configured/observed on this connection.
+ */
+export function openReadOnlyDatabase(dbPath: string): {
+  db: DatabaseSync;
+  pragmas: DatabasePragmaSnapshot;
+} {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    db.exec("PRAGMA busy_timeout = 5000;");
+    db.exec("PRAGMA foreign_keys = ON;");
+    db.exec("PRAGMA synchronous = FULL;");
+  } catch {}
+  return { db, pragmas: readDatabasePragmas(db) };
 }

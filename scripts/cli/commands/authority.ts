@@ -1,10 +1,13 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { readExecutionAuthority } from "@animus/contracts/execution-authority";
 import { readInstallationHold } from "@animus/contracts/installation-hold";
 import { resolveAnimusStateDir } from "@animus/contracts/paths";
 import { inventoryInstallation } from "../../../apps/backend/src/cutover/inventory";
+import {
+  openReadOnlyDatabase,
+  type DatabasePragmaSnapshot,
+} from "../../../apps/backend/src/registry/db";
 import {
   createRegistrationClient,
   type FactoryConnectionOptions,
@@ -24,6 +27,8 @@ interface LocalAuthoritySnapshot {
   tableCount: number;
   totalRows: number;
   artifactCount: number;
+  legacyState: { digest: string; runs: number; locks: number; worktrees: number; files: number } | null;
+  pragmas: DatabasePragmaSnapshot | null;
   databasePath: string;
 }
 
@@ -37,9 +42,16 @@ function readLocalSnapshot(stateDirOption?: string): LocalAuthoritySnapshot {
   let totalRows = 0;
   let artifactCount = 0;
   let installationHeld = false;
+  let legacyState: LocalAuthoritySnapshot["legacyState"] = null;
+  let pragmas: DatabasePragmaSnapshot | null = null;
 
   if (existsSync(databasePath)) {
-    const db = new DatabaseSync(databasePath, { readOnly: true });
+    // Read-only and truthful: the connection-scoped PRAGMAs are configured here
+    // explicitly. WAL is a persistent database property that is observed, not
+    // written. This is not an `initializeDatabase` call.
+    const opened = openReadOnlyDatabase(databasePath);
+    const db = opened.db;
+    pragmas = opened.pragmas;
     try {
       const hasMigrations = db
         .prepare(
@@ -54,6 +66,13 @@ function readLocalSnapshot(stateDirOption?: string): LocalAuthoritySnapshot {
         totalRows = inventory.totalRows;
         artifactCount = inventory.artifacts.count;
         installationHeld = readInstallationHold(db).held;
+        legacyState = {
+          digest: inventory.legacyState.digest,
+          runs: inventory.legacyState.runs,
+          locks: inventory.legacyState.locks,
+          worktrees: inventory.legacyState.worktrees,
+          files: inventory.legacyState.files,
+        };
       }
     } finally {
       try {
@@ -76,6 +95,8 @@ function readLocalSnapshot(stateDirOption?: string): LocalAuthoritySnapshot {
     tableCount,
     totalRows,
     artifactCount,
+    legacyState,
+    pragmas,
     databasePath,
   };
 }
@@ -112,6 +133,11 @@ export async function runAuthorityCommand(opts: AuthorityCommandOptions): Promis
       console.log(`  Live writers held: ${snapshot.heldCount}`);
       console.log(`  Tables / rows:     ${snapshot.tableCount} / ${snapshot.totalRows}`);
       console.log(`  Artifacts:         ${snapshot.artifactCount}`);
+      if (snapshot.pragmas) {
+        console.log(
+          `  SQLite pragmas:    journal=${snapshot.pragmas.journalMode} synchronous=${snapshot.pragmas.synchronous} foreign_keys=${snapshot.pragmas.foreignKeys} busy_timeout=${snapshot.pragmas.busyTimeout}`,
+        );
+      }
       if (snapshot.markerError) console.log(`  Marker error:      ${snapshot.markerError}`);
       if (snapshot.heldCount > 0) {
         for (const fact of snapshot.held) {

@@ -21,6 +21,7 @@ import {
   InstallationHeldError,
   assertInstallationNotHeld,
 } from "@animus/contracts/installation-hold";
+import { assertExternalWriterAllowed } from "../authority/guard";
 import { assertIssueForge } from "../registry/forge";
 import type { PlanService } from "../plans";
 import { WorkService } from "../work";
@@ -343,6 +344,9 @@ export class DraftPublicationService {
       }
       throw error;
     }
+    // Approved-draft issue publication is an external writer. It stays available
+    // before cutover (legacy) and after verified activation, but not mid-cutover.
+    assertExternalWriterAllowed(this.db);
   }
 
   // -------------------------------------------------------------------------
@@ -670,6 +674,7 @@ export class DraftPublicationService {
     publication: PublicationRow,
     member: MemberRow,
   ): Promise<"created" | "blocked" | "failed"> {
+    this.assertInstallationReady();
     const intent = this.intentFor(
       publication.id,
       `create_issue:${publication.id}:${member.node_key}`,
@@ -955,6 +960,7 @@ export class DraftPublicationService {
     publication: PublicationRow,
     relationship: RelationshipRow,
   ): Promise<"ok" | "failed"> {
+    this.assertInstallationReady();
     if (relationship.state === "verified") return "ok";
     if (relationship.from_issue_number === null || relationship.to_issue_number === null) {
       return "failed";
@@ -1136,6 +1142,7 @@ export class DraftPublicationService {
   // -------------------------------------------------------------------------
 
   private async executeLinkSource(publication: PublicationRow): Promise<void> {
+    this.assertInstallationReady();
     const intent = this.intentFor(publication.id, `link_source:${publication.id}`);
     if (!intent || intent.state === "accepted" || intent.state === "abandoned") return;
     const root = this.memberRows(publication.id).find((row) => row.node_key === "root");
@@ -1485,6 +1492,7 @@ export class DraftPublicationService {
     ) {
       return;
     }
+    this.assertInstallationReady();
     const existing = new Set(
       (await this.forge.listLabels(repo)).map((label) => label.name.toLowerCase()),
     );

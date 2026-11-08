@@ -19,6 +19,7 @@ import {
   InstallationHeldError,
   assertInstallationNotHeld,
 } from "@animus/contracts/installation-hold";
+import { assertExternalWriterAllowed } from "../authority/guard";
 import { SerializedIntegrationManager } from "../coordination/integration";
 import {
   DeliveryGateService,
@@ -553,6 +554,7 @@ export class FinalDeliveryService {
     }
 
     this.syncLocalBranch(project.checkout_path, branch, mergeSha);
+    this.assertInstallationReady();
     const pushed = await this.remoteRunner(project.checkout_path, [
       "push",
       "origin",
@@ -654,6 +656,9 @@ export class FinalDeliveryService {
       }
       throw error;
     }
+    // Final advance/merge verification/correction are external writers. Fence
+    // them during migration and when a local marker is not yet DB-verified.
+    assertExternalWriterAllowed(this.db);
   }
 
   private acquireLease(
@@ -1143,6 +1148,7 @@ export class FinalDeliveryService {
     } catch {
       return null;
     }
+    this.assertInstallationReady();
     await this.remoteRunner(project.checkout_path, ["push", "origin", `refs/heads/${branch}`]);
     const remoteTip = await this.fetchRemoteBranch(project.checkout_path, branch);
     if (!remoteTip) return null;

@@ -6,10 +6,11 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { resolveAnimusStateDir } from "./paths";
+import { isPidAlive, resolveAnimusStateDir } from "./paths";
 
 /**
  * Execution authority marker shared by the scheduler, monitor, CLI and #165 cutover.
@@ -55,7 +56,27 @@ export class ExecutionAuthorityConflictError extends Error {
   }
 }
 
+export type ExecutionAuthorityGateCode =
+  | "execution_authority_moving"
+  | "execution_authority_moved"
+  | "authority_not_activated";
+
+/**
+ * Thrown by shared writer/dispatcher gates so every consumer fails closed with
+ * the same stable code instead of inventing a second authority policy.
+ */
+export class ExecutionAuthorityGateError extends Error {
+  constructor(
+    public readonly code: ExecutionAuthorityGateCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ExecutionAuthorityGateError";
+  }
+}
+
 const AUTHORITY_FILE = "execution-authority.json";
+const AUTHORITY_LOCK_FILE = ".execution-authority.lock";
 const AUTHORITY_VALUES: readonly ExecutionAuthority[] = ["legacy", "migrating", "local"];
 
 export function resolveExecutionAuthorityPath(customStateDir?: string): string {
@@ -165,6 +186,134 @@ function fsyncDirectory(path: string): void {
   }
 }
 
+interface AuthorityLockOwner {
+  pid: number;
+  ownerToken: string;
+  createdAt: string;
+}
+
+/** Paths currently locked by this process, used to fail fast on re-entry. */
+const PROCESS_LOCKS = new Set<string>();
+
+function readLockOwner(
+  path: string,
+): { owner: AuthorityLockOwner } | { missing: true } | { ambiguous: string } {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf-8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { missing: true };
+    return { ambiguous: error instanceof Error ? error.message : String(error) };
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") return { ambiguous: "lock owner is not an object" };
+    const record = parsed as Record<string, unknown>;
+    if (
+      typeof record.pid !== "number" ||
+      !Number.isSafeInteger(record.pid) ||
+      record.pid <= 0 ||
+      typeof record.ownerToken !== "string" ||
+      record.ownerToken.trim() === ""
+    ) {
+      return { ambiguous: "lock owner is missing a usable pid/token identity" };
+    }
+    return {
+      owner: {
+        pid: record.pid,
+        ownerToken: record.ownerToken,
+        createdAt: typeof record.createdAt === "string" ? record.createdAt : "",
+      },
+    };
+  } catch (error) {
+    return { ambiguous: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * True compare-and-swap serialization for the durable marker.
+ *
+ * The lock is an owner-token file created with `O_EXCL` (`wx`). A competing
+ * process may only reclaim it when the recorded owner pid is *proven dead*
+ * (`ESRCH`); unreadable/missing ownership is treated as ambiguous and fails
+ * closed for explicit operator recovery. There is intentionally no time-based
+ * steal. The lock spans the entire read -> compare -> write -> rename -> fsync
+ * sequence, so two writers cannot both observe the same predecessor.
+ */
+function acquireMarkerLock(lockPath: string): () => void {
+  if (PROCESS_LOCKS.has(lockPath)) {
+    throw new ExecutionAuthorityConflictError(
+      `Execution authority marker lock ${lockPath} is already held by this process; refusing re-entrant write`,
+    );
+  }
+  const ownerToken = globalThis.crypto.randomUUID();
+  const owner: AuthorityLockOwner = {
+    pid: process.pid,
+    ownerToken,
+    createdAt: new Date().toISOString(),
+  };
+  for (;;) {
+    let fd: number | undefined;
+    try {
+      fd = openSync(lockPath, "wx", 0o600);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const inspected = readLockOwner(lockPath);
+      if ("owner" in inspected) {
+        if (isPidAlive(inspected.owner.pid)) {
+          // Non-blocking by design: the async cutover operation lock serializes
+          // stage/activate/abort across processes, so direct marker contention is
+          // a real conflict. Never spin or sleep on the event loop.
+          throw new ExecutionAuthorityConflictError(
+            `Execution authority marker is locked by live process ${inspected.owner.pid}; re-read the marker and retry`,
+          );
+        }
+        // Proven dead owner (ESRCH): safe stale reclamation.
+        try {
+          unlinkSync(lockPath);
+        } catch {}
+        continue;
+      }
+      if ("missing" in inspected) {
+        // The creator may still be writing its owner record. Re-read a few times
+        // without blocking; persistent ambiguity fails closed for operator recovery.
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+          const retry = readLockOwner(lockPath);
+          if ("owner" in retry) break;
+          if ("ambiguous" in retry) {
+            throw new ExecutionAuthorityConflictError(
+              `Execution authority marker lock ${lockPath} has unreadable ownership (${retry.ambiguous}); operation recovery is required`,
+            );
+          }
+        }
+        if (existsSync(lockPath) && "missing" in readLockOwner(lockPath)) {
+          throw new ExecutionAuthorityConflictError(
+            `Execution authority marker lock ${lockPath} has no owner identity; operation recovery is required`,
+          );
+        }
+        continue;
+      }
+      throw new ExecutionAuthorityConflictError(
+        `Execution authority marker lock ${lockPath} has unreadable ownership (${inspected.ambiguous}); operation recovery is required`,
+      );
+    }
+    try {
+      writeFileSync(fd, `${JSON.stringify(owner)}\n`);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    PROCESS_LOCKS.add(lockPath);
+    return () => {
+      PROCESS_LOCKS.delete(lockPath);
+      try {
+        const current = JSON.parse(readFileSync(lockPath, "utf-8")) as AuthorityLockOwner;
+        if (current?.ownerToken === ownerToken) unlinkSync(lockPath);
+      } catch {}
+    };
+  }
+}
+
 /**
  * Atomically replaces the durable marker. The payload is written to a temporary
  * file, fsynced, then renamed over the target and the directory is fsynced so a
@@ -178,56 +327,61 @@ export function writeExecutionAuthority(
   if (authority !== "legacy" && authority !== "migrating" && authority !== "local") {
     throw new Error(`invalid authority: ${String(authority)}`);
   }
-  if (options.expected !== undefined) {
-    let current: ExecutionAuthority | null;
-    try {
-      current = readRawAuthority(path);
-    } catch (error) {
-      throw new ExecutionAuthorityConflictError(
-        `Execution authority marker is unreadable; refusing to overwrite it: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-    // A missing marker is the documented legacy default.
-    const comparable = current ?? "legacy";
-    if (comparable !== options.expected) {
-      throw new ExecutionAuthorityConflictError(
-        `Execution authority changed from ${String(options.expected)} to ${String(comparable)}; re-read the marker and retry`,
-      );
-    }
-  }
-
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const payload = {
-    authority,
-    activated_at: options.activatedAt ?? new Date().toISOString(),
-    cutover_id: options.cutoverId ?? null,
-    inventory_sha256: options.inventorySha256 ?? null,
-    backup_manifest_sha256: options.backupManifestSha256 ?? null,
-    phase:
-      options.phase ??
-      (authority === "local" ? "active" : authority === "migrating" ? "staging" : null),
-  };
-  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
-  const fd = openSync(temporary, "w", 0o600);
+  const release = acquireMarkerLock(join(dirname(path), AUTHORITY_LOCK_FILE));
   try {
-    writeFileSync(fd, `${JSON.stringify(payload, null, 2)}\n`);
-    fsyncSync(fd);
+    if (options.expected !== undefined) {
+      let current: ExecutionAuthority | null;
+      try {
+        current = readRawAuthority(path);
+      } catch (error) {
+        throw new ExecutionAuthorityConflictError(
+          `Execution authority marker is unreadable; refusing to overwrite it: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      // A missing marker is the documented legacy default.
+      const comparable = current ?? "legacy";
+      if (comparable !== options.expected) {
+        throw new ExecutionAuthorityConflictError(
+          `Execution authority changed from ${String(options.expected)} to ${String(comparable)}; re-read the marker and retry`,
+        );
+      }
+    }
+
+    const payload = {
+      authority,
+      activated_at: options.activatedAt ?? new Date().toISOString(),
+      cutover_id: options.cutoverId ?? null,
+      inventory_sha256: options.inventorySha256 ?? null,
+      backup_manifest_sha256: options.backupManifestSha256 ?? null,
+      phase:
+        options.phase ??
+        (authority === "local" ? "active" : authority === "migrating" ? "staging" : null),
+    };
+    const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
+    const fd = openSync(temporary, "w", 0o600);
+    try {
+      writeFileSync(fd, `${JSON.stringify(payload, null, 2)}\n`);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(temporary, path);
+    fsyncDirectory(dirname(path));
+    return {
+      authority,
+      activated_at: payload.activated_at,
+      source: "marker",
+      cutover_id: payload.cutover_id,
+      inventory_sha256: payload.inventory_sha256,
+      backup_manifest_sha256: payload.backup_manifest_sha256,
+      phase: payload.phase,
+    };
   } finally {
-    closeSync(fd);
+    release();
   }
-  renameSync(temporary, path);
-  fsyncDirectory(dirname(path));
-  return {
-    authority,
-    activated_at: payload.activated_at,
-    source: "marker",
-    cutover_id: payload.cutover_id,
-    inventory_sha256: payload.inventory_sha256,
-    backup_manifest_sha256: payload.backup_manifest_sha256,
-    phase: payload.phase,
-  };
 }
 
 /** True only for the completed local authority; every other state fails closed. */
@@ -238,4 +392,59 @@ export function isLocalAuthority(stateDir?: string): boolean {
 /** True when the installation is still safe for legacy GitHub/filesystem writers. */
 export function isLegacyAuthority(stateDir?: string): boolean {
   return readExecutionAuthority(stateDir).authority === "legacy";
+}
+
+/**
+ * External-effect gate: an in-progress cutover (`migrating`) or unreadable marker
+ * must fail closed before any push, PR/issue mutation, role dispatch or DB write.
+ * Both `legacy` (before cutover) and `local` (after cutover) are settled.
+ *
+ * This is marker-level only. A caller that also has the database must verify that
+ * a `local` marker is backed by an activated cutover row (see the backend guard).
+ */
+export function assertExecutionAuthoritySettled(stateDir?: string): ExecutionAuthorityState {
+  const state = readExecutionAuthority(stateDir);
+  if (state.error) {
+    throw new ExecutionAuthorityGateError(
+      "execution_authority_moving",
+      `Execution authority marker is unreadable; external writers fail closed: ${state.error}`,
+    );
+  }
+  if (state.authority === "migrating") {
+    throw new ExecutionAuthorityGateError(
+      "execution_authority_moving",
+      "An execution-authority cutover is in progress; external writers are fenced until it settles",
+    );
+  }
+  return state;
+}
+
+/** Legacy writers may only run before cutover; after that they must refuse. */
+export function assertLegacyAuthority(stateDir?: string): ExecutionAuthorityState {
+  const state = readExecutionAuthority(stateDir);
+  if (state.error) {
+    throw new ExecutionAuthorityGateError(
+      "execution_authority_moved",
+      `Execution authority marker is unreadable; legacy writers fail closed: ${state.error}`,
+    );
+  }
+  if (state.authority !== "legacy") {
+    throw new ExecutionAuthorityGateError(
+      "execution_authority_moved",
+      "execution_authority_moved: use animus plan dispatch with an admitted plan",
+    );
+  }
+  return state;
+}
+
+/** Local dispatchers require the completed authority; never a bare default. */
+export function assertLocalAuthority(stateDir?: string): ExecutionAuthorityState {
+  const state = readExecutionAuthority(stateDir);
+  if (state.error || state.authority !== "local") {
+    throw new ExecutionAuthorityGateError(
+      "authority_not_activated",
+      "authority_not_activated: the installation has not completed its local authority cutover",
+    );
+  }
+  return state;
 }

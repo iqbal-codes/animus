@@ -165,6 +165,31 @@ export function AuthorityPanel() {
         </p>
       )}
 
+      {status && status.authority === "local" && !status.authorityConsistent && (
+        <p role="alert" className="mt-2 text-xs text-[var(--destructive)]">
+          The local marker is not backed by an activated cutover row. External writers stay fenced;
+          re-run activation to reconcile or restore a validated snapshot.
+        </p>
+      )}
+
+      {status && status.held.length > 0 && (
+        <div className="mt-3 rounded-[var(--radius-news)] border border-[var(--warning)] p-3">
+          <h3 className="text-xs font-medium text-foreground">Held writers and ambiguous state</h3>
+          <ul className="mt-1 space-y-1 text-xs text-text-secondary">
+            {status.held.map((fact) => (
+              <li key={`${fact.entity}:${fact.identity}`}>
+                <span className="font-medium text-foreground">{fact.entity}</span>{" "}
+                <span className="font-mono">{fact.identity}</span> — {fact.reason}
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 text-xs text-text-secondary">
+            Quiesce the listed processes or repair the ambiguous files, then refresh. Activation
+            stays disabled until every held item clears.
+          </p>
+        </div>
+      )}
+
       {status && (
         <div className="mt-3 grid grid-cols-1 gap-3 text-xs sm:grid-cols-2">
           <dl className="space-y-1">
@@ -203,6 +228,13 @@ export function AuthorityPanel() {
             <div className="flex justify-between gap-2">
               <dt className="text-text-secondary">Finalized artifacts</dt>
               <dd className="text-foreground">{status.artifacts.count}</dd>
+            </div>
+            <div className="flex justify-between gap-2">
+              <dt className="text-text-secondary">Legacy runs / locks / worktrees</dt>
+              <dd className="text-foreground">
+                {status.legacyState.runs} / {status.legacyState.locks} /{" "}
+                {status.legacyState.worktrees}
+              </dd>
             </div>
             <div className="flex justify-between gap-2">
               <dt className="text-text-secondary">Backup restorable</dt>

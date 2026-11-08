@@ -21,6 +21,7 @@ import { LoopPublisher } from "./publisher";
 import { runBoundedRole } from "./role-runner";
 import { resolveProjectWorkspace } from "../../packages/contracts/src/paths";
 import { assertInstallationNotHeldAtStateDir } from "@animus/contracts/installation-hold";
+import { assertLegacyAuthority } from "@animus/contracts/execution-authority";
 import type {
   LocalIssue,
   LocalLoopOptions,
@@ -399,6 +400,11 @@ export class LapSession {
       };
 
       const save = async () => {
+        // A legacy lap must never write after the authority fence is set: this is
+        // the mid-lap half of the startup check, so a builder that started before
+        // the cutover cannot mutate state.json or its dossier afterwards.
+        assertInstallationNotHeldAtStateDir(options.installationStateDir);
+        assertLegacyAuthority(options.installationStateDir);
         const tempPath = join(runDirectory, `state.${crypto.randomUUID()}.tmp`);
         await Bun.write(tempPath, JSON.stringify(state, null, 2) + "\n");
         const { rename } = await import("node:fs/promises");
@@ -420,6 +426,7 @@ export class LapSession {
         issueNumber: issue.number,
         push: options.push !== false,
         runner: options.ghRunner,
+        installationStateDir: options.installationStateDir,
       });
 
       const transport =
@@ -843,6 +850,8 @@ export class LapSession {
    * Stage 2.5: PR CI check verification gate.
    */
   async verifyPrCi(): Promise<{ failed: boolean; failedChecks?: PrCheckItem[] }> {
+    // Remote CI polling is an outward effect: re-check immediately before it.
+    this.assertInstallationReady();
     const prTarget = this.state.pr ?? (this.options.checkPrCi ? "mock-pr" : undefined);
     if (!prTarget || (this.options.push === false && !this.options.checkPrCi)) {
       return { failed: false };
@@ -1232,6 +1241,9 @@ export class LapSession {
    */
   private assertInstallationReady(): void {
     assertInstallationNotHeldAtStateDir(this.installationStateDir);
+    // A legacy lap is a legacy writer. Once the durable fence is written it must
+    // fail closed before any further role, CI, publisher or merge effect.
+    assertLegacyAuthority(this.installationStateDir);
   }
 
   async run(): Promise<LocalLoopResult> {
@@ -1545,6 +1557,9 @@ export async function runAnimusLoop(
   // environment default) and never the per-project worktree stateRoot, which has
   // no console.db.
   assertInstallationNotHeldAtStateDir(options.installationStateDir);
+  // Fail closed before any GitHub read, worktree allocation, forge push or
+  // builder spawn. This is the startup check; the session re-checks mid-lap.
+  assertLegacyAuthority(options.installationStateDir);
   const session = await LapSession.init(root, issue, options);
   return await session.run();
 }
