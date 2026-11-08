@@ -11,6 +11,7 @@ import { applyEvidenceMigrations } from "../evidence/db";
 import { EVIDENCE_MIGRATIONS } from "../evidence/schema";
 import { PUBLICATION_MIGRATIONS } from "../publication/schema";
 import { INTEGRATION_MIGRATIONS } from "../integration/schema";
+import { DRAFT_PUBLICATION_MIGRATIONS } from "../publication/issue-schema";
 import { WORK_MIGRATIONS } from "../work/db";
 import { BUDGET_MIGRATIONS } from "../work/budget-schema";
 import { DRAFT_MIGRATIONS } from "../draft/db";
@@ -26,8 +27,9 @@ import { applyMigrations, type Migration } from "./migrations";
  * ownership (#154) owns version 4, execution evidence (#155) owns version 5,
  * bounded attempt budgets/operator controls (#156) owns version 6, PR
  * publication audit (#157) owns version 7, and child gate integration (#158)
- * owns version 8. A future lane appends the next version instead of claiming
- * an existing one.
+ * owns version 8. Version 9 (#159 final delivery) remains reserved for its
+ * lane. Approved-draft issue publication (#162) owns version 10. A future lane
+ * appends the next version instead of claiming an existing one.
  */
 export const SCHEMA_MIGRATIONS: Migration[] = [
   ...WORK_MIGRATIONS,
@@ -37,6 +39,7 @@ export const SCHEMA_MIGRATIONS: Migration[] = [
   ...BUDGET_MIGRATIONS,
   ...PUBLICATION_MIGRATIONS,
   ...INTEGRATION_MIGRATIONS,
+  ...DRAFT_PUBLICATION_MIGRATIONS,
 ];
 
 export function resolveStateDir(): string {

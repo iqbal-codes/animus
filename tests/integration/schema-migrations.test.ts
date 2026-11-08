@@ -18,6 +18,7 @@ const EVIDENCE_V5 = "execution_observations_findings_artifacts";
 const BUDGET_V6 = "execution_budgets_and_controls";
 const PUBLICATION_V7 = "publication_audit_outgoing_intents";
 const INTEGRATION_V8 = "child_gate_integration";
+const DRAFT_PUBLICATION_V10 = "approved_draft_issue_publication";
 
 const ALL_MIGRATIONS = [
   { version: 1, name: WORK_V1 },
@@ -28,6 +29,8 @@ const ALL_MIGRATIONS = [
   { version: 6, name: BUDGET_V6 },
   { version: 7, name: PUBLICATION_V7 },
   { version: 8, name: INTEGRATION_V8 },
+  // Version 9 (#159) is reserved for its lane.
+  { version: 10, name: DRAFT_PUBLICATION_V10 },
 ];
 
 function tableExists(db: DatabaseSync, table: string): boolean {
@@ -145,6 +148,9 @@ describe("coherent schema migration registry", () => {
         "publication_summaries",
         "child_integrations",
         "child_integration_events",
+        "draft_publications",
+        "draft_publication_members",
+        "draft_publication_relationships",
       ]) {
         expect(tableExists(db, table)).toBe(true);
       }
@@ -156,7 +162,7 @@ describe("coherent schema migration registry", () => {
     const reopened = initializeDatabase(path);
     try {
       expect(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({
-        count: 8,
+        count: 9,
       });
     } finally {
       reopened.close();

@@ -201,6 +201,18 @@ function localPathSanitize(value: string): string {
   return next;
 }
 
+/**
+ * Canonical publication sanitation policy shared by PR audit and issue
+ * publication: scrub credentials/holdouts, unsafe HTML, and local-only paths
+ * before any text crosses the remote boundary.
+ */
+export function sanitizePublicationText(
+  value: string,
+  sanitizer: ReportSanitizer = new ReportSanitizer(),
+): string {
+  return localPathSanitize(sanitizer.sanitizeMarkdown(value).report);
+}
+
 export function publicationMarker(operationKey: string): string {
   return `<!-- animus-publication:${operationKey} -->`;
 }
@@ -481,9 +493,9 @@ export class PublicationService {
     this.db
       .prepare(
         `INSERT INTO publication_intents
-           (id, target_id, project_id, operation_key, kind, state, request_json, attempts,
-            remote_object_id, remote_url, last_error, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'create_pr', 'queued', ?, 0, NULL, NULL, NULL, ?, ?)`,
+           (id, target_id, project_id, operation_key, kind, resource_kind, state,
+            request_json, attempts, remote_object_id, remote_url, last_error, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'create_pr', 'pull_request', 'queued', ?, 0, NULL, NULL, NULL, ?, ?)`,
       )
       .run(
         `int_${target.id}_create`,
@@ -512,9 +524,9 @@ export class PublicationService {
     this.db
       .prepare(
         `INSERT INTO publication_intents
-           (id, target_id, project_id, operation_key, kind, state, request_json, attempts,
-            remote_object_id, remote_url, last_error, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'update_summary', 'queued', ?, 0, NULL, NULL, NULL, ?, ?)`,
+           (id, target_id, project_id, operation_key, kind, resource_kind, state,
+            request_json, attempts, remote_object_id, remote_url, last_error, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'update_summary', 'pull_request', 'queued', ?, 0, NULL, NULL, NULL, ?, ?)`,
       )
       .run(
         `int_${target.id}_summary_${hash}`,
@@ -1608,8 +1620,7 @@ export class PublicationService {
   }
 
   private sanitize(value: string): string {
-    const sanitized = this.sanitizer.sanitizeMarkdown(value).report;
-    return localPathSanitize(sanitized);
+    return sanitizePublicationText(value, this.sanitizer);
   }
 
   private renderSummary(

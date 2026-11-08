@@ -321,20 +321,52 @@ async function main() {
     return (await response.json()) as { id: string; latest_revision: { id: string } };
   };
 
-  const approved = await refine(22);
-  await app.fetch(
-    new Request(`http://127.0.0.1/api/v1/projects/${project.id}/drafts/${approved.id}/decisions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Sec-Fetch-Site": "same-origin" },
-      body: JSON.stringify({
-        revision_id: approved.latest_revision.id,
-        decision: "approve",
-        reason: "Scope matches the request",
+  const decide = async (draft: { id: string; latest_revision: { id: string } }) => {
+    const response = await app.fetch(
+      new Request(`http://127.0.0.1/api/v1/projects/${project.id}/drafts/${draft.id}/decisions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Sec-Fetch-Site": "same-origin" },
+        body: JSON.stringify({
+          revision_id: draft.latest_revision.id,
+          decision: "approve",
+          reason: "Scope matches the request",
+        }),
       }),
-    }),
-  );
+    );
+    if (response.status !== 200) {
+      throw new Error(
+        `Draft approval ${draft.id} failed: ${response.status} ${await response.text()}`,
+      );
+    }
+  };
+
+  const publish = async (draftId: string) => {
+    const response = await app.fetch(
+      new Request(`http://127.0.0.1/api/v1/projects/${project.id}/draft-publications`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Sec-Fetch-Site": "same-origin" },
+        body: JSON.stringify({ draft_id: draftId }),
+      }),
+    );
+    if (response.status !== 200) {
+      throw new Error(
+        `Draft publication ${draftId} failed: ${response.status} ${await response.text()}`,
+      );
+    }
+    return (await response.json()) as { id: string; state: string };
+  };
+
+  // Publish one standalone and one spec so the capture shows real issue numbers,
+  // member states and admission results. The remaining draft stays in clarification.
+  const approved = await refine(22);
+  await decide(approved);
+  await publish(approved.id);
+
+  const specDraft = await refine(23);
+  await decide(specDraft);
+  await publish(specDraft.id);
+
   await refine(21);
-  await refine(23);
 
   const server = Bun.serve({
     hostname: "127.0.0.1",
