@@ -23,6 +23,7 @@ import type {
   PlanKind,
   PlanRecord,
   Project,
+  PublicationStatus,
   RunEvidenceReport,
   WorkRecord,
 } from "@animus/contracts/operator";
@@ -534,6 +535,8 @@ export async function runPlanCommand(
     reason?: string;
     actor?: string;
     expectedSequence?: string;
+    url?: string;
+    reconcile?: boolean;
     json?: boolean;
   },
 ): Promise<number> {
@@ -541,7 +544,7 @@ export async function runPlanCommand(
   try {
     if (!opts.projectId) {
       throw new Error(
-        "Usage: factory plan <list|get|import|approve|revoke|dispatch|runs|run|evidence|findings|reconcile> --project <project-id>",
+        "Usage: factory plan <list|get|import|approve|revoke|dispatch|runs|run|evidence|findings|reconcile|publication|audit|publish|bind-evidence> --project <project-id>",
       );
     }
     const scoped = createRegistrationClient(opts).forProject(opts.projectId);
@@ -705,6 +708,45 @@ export async function runPlanCommand(
       return 0;
     }
 
+    if (sub === "publication" || sub === "audit") {
+      const runId = opts.positionals[2];
+      if (!runId) {
+        throw new Error(`Usage: factory plan ${sub} <run-id> --project <project-id>`);
+      }
+      const status =
+        opts.reconcile
+          ? await scoped.publishPublication(runId)
+          : await scoped.publication(runId);
+      if (opts.json) console.log(JSON.stringify(status, null, 2));
+      else printPublication(status);
+      return 0;
+    }
+
+    if (sub === "publish") {
+      const runId = opts.positionals[2];
+      if (!runId) {
+        throw new Error("Usage: factory plan publish <run-id> --project <project-id>");
+      }
+      const status = await scoped.publishPublication(runId);
+      if (opts.json) console.log(JSON.stringify(status, null, 2));
+      else printPublication(status);
+      return 0;
+    }
+
+    if (sub === "bind-evidence") {
+      const targetId = opts.positionals[2];
+      const artifactId = opts.positionals[3];
+      if (!targetId || !artifactId || !opts.url) {
+        throw new Error(
+          "Usage: factory plan bind-evidence <target-id> <artifact-id> --url <https-url> --project <project-id>",
+        );
+      }
+      const status = await scoped.bindPublicationEvidence(targetId, artifactId, opts.url);
+      if (opts.json) console.log(JSON.stringify(status, null, 2));
+      else printPublication(status);
+      return 0;
+    }
+
     if (sub === "reconcile") {
       const runId = opts.positionals[2];
       if (runId) {
@@ -726,7 +768,7 @@ export async function runPlanCommand(
     }
 
     throw new Error(
-      `Unknown plan subcommand: ${sub}. Expected list, get, import, approve, revoke, dispatch, runs, run, evidence, findings, reconcile.`,
+      `Unknown plan subcommand: ${sub}. Expected list, get, import, approve, revoke, dispatch, runs, run, evidence, findings, reconcile, publication, audit, publish, bind-evidence.`,
     );
   } catch (err: any) {
     const msg = err?.message ?? String(err);
@@ -797,6 +839,46 @@ function printFinding(finding: FactoryFindingRecord, indent: string): void {
     console.log(
       `${indent}  ${event.sequence}. ${event.action} by ${event.actor} (${event.actorRole})${event.observationId ? ` obs=${event.observationId}` : ""}${event.detail ? `: ${event.detail}` : ""}`,
     );
+  }
+}
+
+function printPublication(status: PublicationStatus): void {
+  const { target } = status;
+  console.log(`Publication ${target.id} — ticket #${target.issueNumber} (${target.gateProfile})`);
+  console.log(
+    `  State:      ${target.state}  audit=${status.auditComplete ? "complete" : "incomplete"}`,
+  );
+  console.log(
+    `  Candidate:  ${target.candidateHeadSha}  source=${target.sourceBranch}  target=${target.targetBranch}`,
+  );
+  const active = status.pullRequests.find((pr) => pr.active);
+  console.log(
+    active
+      ? `  Pull request: #${active.number ?? "?"} ${active.url ?? ""} (${active.state}${active.draft ? ", draft" : ""})`
+      : "  Pull request: none yet",
+  );
+  console.log(
+    `  Audit:      ${status.publishedEventCount} published / ${status.queuedEventCount} queued; failed=${status.failedIntentCount} unknown=${status.unknownIntentCount}`,
+  );
+  if (target.lastError) console.log(`  Last error: ${target.lastError}`);
+  if (status.remoteStale) console.log("  REMOTE:     PR head/base no longer matches the candidate; evidence is stale");
+  if (status.events.length > 0) {
+    console.log(`  Events (${status.events.length}):`);
+    for (const event of status.events) {
+      const intent = status.intents.find((item) => item.operationKey === `event:${event.id}`);
+      console.log(
+        `    ${event.sequence}. ${event.kind} ${event.severity} lap=${event.lap ?? "-"} candidate=${event.candidateHeadSha.slice(0, 8)} ${intent?.state ?? "queued"} — ${event.title}`,
+      );
+    }
+  }
+  if (status.intents.some((intent) => intent.state !== "accepted")) {
+    console.log("  Outgoing intents:");
+    for (const intent of status.intents) {
+      if (intent.state === "accepted") continue;
+      console.log(
+        `    ${intent.kind} ${intent.state} attempts=${intent.attempts} ${intent.operationKey}${intent.lastError ? ` — ${intent.lastError}` : ""}`,
+      );
+    }
   }
 }
 

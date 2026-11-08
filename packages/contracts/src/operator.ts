@@ -1400,6 +1400,168 @@ export const runEvidenceReportSchema = z.object({
 });
 export type RunEvidenceReport = z.infer<typeof runEvidenceReportSchema>;
 
+// ---------------------------------------------------------------------------
+// Durable PR publication, per-lap audit and outgoing publication intents
+// ---------------------------------------------------------------------------
+
+export const publicationTargetStateSchema = z.enum([
+  "no_candidate",
+  "ready",
+  "publishing",
+  "published",
+  "failed",
+  "unknown",
+]);
+export type PublicationTargetState = z.infer<typeof publicationTargetStateSchema>;
+
+export const publicationPullRequestStateSchema = z.enum(["open", "closed", "merged", "superseded"]);
+export type PublicationPullRequestState = z.infer<typeof publicationPullRequestStateSchema>;
+
+export const publicationEventKindSchema = z.enum([
+  "verification_failure",
+  "finding",
+  "fix_submitted",
+  "recheck_passed",
+  "recheck_failed",
+  "recheck_inconclusive",
+  "verdict",
+  "escalation",
+]);
+export type PublicationEventKind = z.infer<typeof publicationEventKindSchema>;
+
+export const publicationEventSeveritySchema = z.enum(["blocking", "conditional", "info"]);
+export type PublicationEventSeverity = z.infer<typeof publicationEventSeveritySchema>;
+
+export const publicationIntentKindSchema = z.enum([
+  "create_pr",
+  "publish_event",
+  "update_summary",
+  "create_review",
+]);
+export type PublicationIntentKind = z.infer<typeof publicationIntentKindSchema>;
+
+export const publicationIntentStateSchema = z.enum([
+  "queued",
+  "attempting",
+  "accepted",
+  "failed",
+  "unknown",
+]);
+export type PublicationIntentState = z.infer<typeof publicationIntentStateSchema>;
+
+export const publicationTargetSchema = z.object({
+  id: z.string().min(1),
+  projectId: z.string().min(1),
+  deliveryId: z.string().min(1),
+  planId: z.string().min(1),
+  workId: z.string().min(1),
+  issueNumber: z.number().int().positive(),
+  gateProfile: planGateProfileSchema,
+  sourceBranch: z.string().min(1),
+  targetBranch: z.string().min(1),
+  candidateHeadSha: z.string().min(1),
+  baseSha: z.string().min(1),
+  state: publicationTargetStateSchema,
+  activePullRequestId: z.string().min(1).nullable(),
+  lastError: z.string().nullable(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type PublicationTarget = z.infer<typeof publicationTargetSchema>;
+
+export const publicationPullRequestSchema = z.object({
+  id: z.string().min(1),
+  targetId: z.string().min(1),
+  projectId: z.string().min(1),
+  number: z.number().int().positive().nullable(),
+  url: z.string().min(1).nullable(),
+  headBranch: z.string().min(1),
+  baseBranch: z.string().min(1),
+  candidateHeadSha: z.string().min(1),
+  headRefOid: z.string().min(1).nullable(),
+  draft: z.boolean(),
+  state: publicationPullRequestStateSchema,
+  active: z.boolean(),
+  createdByIntent: z.string().min(1).nullable(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type PublicationPullRequest = z.infer<typeof publicationPullRequestSchema>;
+
+export const publicationEventRecordSchema = z.object({
+  id: z.string().min(1),
+  targetId: z.string().min(1),
+  projectId: z.string().min(1),
+  sequence: z.number().int().positive(),
+  workId: z.string().min(1),
+  runId: z.string().min(1).nullable(),
+  lap: z.number().int().positive().nullable(),
+  candidateHeadSha: z.string().min(1),
+  observationId: z.string().min(1).nullable(),
+  findingId: z.string().min(1).nullable(),
+  kind: publicationEventKindSchema,
+  severity: publicationEventSeveritySchema,
+  title: z.string().min(1),
+  body: z.string(),
+  occurredAt: z.number().int().nonnegative(),
+});
+export type PublicationEventRecord = z.infer<typeof publicationEventRecordSchema>;
+
+export const publicationIntentRecordSchema = z.object({
+  id: z.string().min(1),
+  targetId: z.string().min(1),
+  projectId: z.string().min(1),
+  operationKey: z.string().min(1),
+  kind: publicationIntentKindSchema,
+  state: publicationIntentStateSchema,
+  attempts: z.number().int().nonnegative(),
+  remoteObjectId: z.string().min(1).nullable(),
+  remoteUrl: z.string().min(1).nullable(),
+  lastError: z.string().nullable(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type PublicationIntentRecord = z.infer<typeof publicationIntentRecordSchema>;
+
+export const publicationEvidenceBindingSchema = z.object({
+  id: z.string().min(1),
+  targetId: z.string().min(1),
+  projectId: z.string().min(1),
+  artifactId: z.string().min(1),
+  status: z.enum(["pending", "supplied_unverified"]),
+  hostedUrl: z.string().min(1).nullable(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type PublicationEvidenceBinding = z.infer<typeof publicationEvidenceBindingSchema>;
+
+export const publicationStatusSchema = z.object({
+  target: publicationTargetSchema,
+  pullRequests: z.array(publicationPullRequestSchema),
+  events: z.array(publicationEventRecordSchema),
+  intents: z.array(publicationIntentRecordSchema),
+  evidence: z.array(publicationEvidenceBindingSchema),
+  summary: z.string().nullable(),
+  queuedEventCount: z.number().int().nonnegative(),
+  publishedEventCount: z.number().int().nonnegative(),
+  failedIntentCount: z.number().int().nonnegative(),
+  unknownIntentCount: z.number().int().nonnegative(),
+  auditComplete: z.boolean(),
+  remoteObservedAt: z.number().int().nonnegative().nullable(),
+  remoteStale: z.boolean(),
+});
+export type PublicationStatus = z.infer<typeof publicationStatusSchema>;
+export const publicationStatusListSchema = z.array(publicationStatusSchema);
+export type PublicationStatusList = z.infer<typeof publicationStatusListSchema>;
+
+export const publicationEvidenceBindingRequestSchema = z
+  .object({
+    hosted_url: z.string().min(1).max(2000),
+  })
+  .strict();
+export type PublicationEvidenceBindingRequest = z.infer<
+  typeof publicationEvidenceBindingRequestSchema
+>;
+
 export const findingFixSubmissionSchema = z
   .object({
     actor: z.string().min(1).max(200),

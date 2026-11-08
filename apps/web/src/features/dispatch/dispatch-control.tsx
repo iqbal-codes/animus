@@ -4,6 +4,7 @@ import type {
   PlanDispatchRunList,
   PlanList,
   Project,
+  PublicationStatus,
   RunEvidenceReport,
 } from "@animus/contracts/operator";
 import { client } from "@/lib/factory-client";
@@ -57,6 +58,11 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
   const [evidenceLoading, setEvidenceLoading] = useState<string | null>(null);
   const [evidenceError, setEvidenceError] = useState<Record<string, string>>({});
   const [selectedRuns, setSelectedRuns] = useState<Record<string, string>>({});
+  const [auditExpanded, setAuditExpanded] = useState<Record<string, boolean>>({});
+  const [audit, setAudit] = useState<Record<string, PublicationStatus>>({});
+  const [auditLoading, setAuditLoading] = useState<string | null>(null);
+  const [auditError, setAuditError] = useState<Record<string, string>>({});
+  const [publishing, setPublishing] = useState<string | null>(null);
 
   const loadProject = useCallback(
     async (id: string) => {
@@ -166,6 +172,49 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
       setEvidenceError((current) => ({ ...current, [runId]: message }));
     } finally {
       setEvidenceLoading(null);
+    }
+  };
+
+  const toggleAudit = async (runId: string) => {
+    const next = !auditExpanded[runId];
+    setAuditExpanded((current) => ({ ...current, [runId]: next }));
+    if (!next || audit[runId] || auditLoading === runId) return;
+    setAuditLoading(runId);
+    setAuditError((current) => {
+      const copy = { ...current };
+      delete copy[runId];
+      return copy;
+    });
+    try {
+      const status = await factory.forProject(projectId).publication(runId);
+      setAudit((current) => ({ ...current, [runId]: status }));
+    } catch (err) {
+      setAuditError((current) => ({
+        ...current,
+        [runId]: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      setAuditLoading(null);
+    }
+  };
+
+  const publishAudit = async (runId: string) => {
+    setPublishing(runId);
+    setAuditError((current) => {
+      const copy = { ...current };
+      delete copy[runId];
+      return copy;
+    });
+    try {
+      const status = await factory.forProject(projectId).publishPublication(runId);
+      setAudit((current) => ({ ...current, [runId]: status }));
+    } catch (err) {
+      setAuditError((current) => ({
+        ...current,
+        [runId]: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      setPublishing(null);
     }
   };
 
@@ -292,6 +341,16 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
                     >
                       {expanded[run.id] ? "Hide evidence" : "View evidence"}
                     </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="min-h-11 sm:min-h-8"
+                      aria-expanded={Boolean(auditExpanded[run.id])}
+                      aria-controls={`run-audit-${run.id}`}
+                      onClick={() => void toggleAudit(run.id)}
+                    >
+                      {auditExpanded[run.id] ? "Hide audit" : "View audit"}
+                    </Button>
                   </>
                 )}
                 <Button
@@ -327,6 +386,29 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
                     ) : null}
                   </div>
                 )}
+                {run && auditExpanded[run.id] && (
+                  <div
+                    id={`run-audit-${run.id}`}
+                    data-testid={`run-audit-${run.id}`}
+                    className="w-full"
+                  >
+                    {auditLoading === run.id ? (
+                      <p role="status" className="text-xs text-text-secondary">
+                        Loading publication audit…
+                      </p>
+                    ) : auditError[run.id] ? (
+                      <p role="alert" className="text-xs text-[var(--destructive)]">
+                        Publication audit unavailable: {auditError[run.id]}
+                      </p>
+                    ) : audit[run.id] ? (
+                      <PublicationAuditPanel
+                        status={audit[run.id]!}
+                        publishing={publishing === run.id}
+                        onRetry={() => void publishAudit(run.id)}
+                      />
+                    ) : null}
+                  </div>
+                )}
               </div>
             );
           })
@@ -356,6 +438,114 @@ const CHECK_RESULT_TONE: Record<
   BLOCKED: "warning",
   NOT_RUN: "default",
 };
+
+/** Selected-run publication state: active PR, queued/failed intents and audit history. */
+function PublicationAuditPanel({
+  status,
+  publishing,
+  onRetry,
+}: {
+  status: PublicationStatus;
+  publishing: boolean;
+  onRetry: () => void;
+}) {
+  const { target } = status;
+  const active = status.pullRequests.find((pr) => pr.active);
+  const pending = status.intents.filter((intent) => intent.state !== "accepted");
+  return (
+    <section
+      aria-label="Publication audit and outgoing intents"
+      className="mt-2 min-w-0 space-y-2 overflow-hidden rounded-[10px] border border-[var(--border-subtle)] bg-background/40 p-3"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="text-xs font-medium text-foreground">Publication audit</h3>
+        <Badge variant={status.auditComplete ? "success" : "warning"}>
+          {status.auditComplete ? "Audit published" : "Audit incomplete"}
+        </Badge>
+        <Badge
+          variant={target.state === "failed" || target.state === "unknown" ? "error" : "default"}
+        >
+          {target.state}
+        </Badge>
+        {active ? (
+          <a
+            href={active.url ?? undefined}
+            target="_blank"
+            rel="noreferrer"
+            className="break-all text-[11px] text-accent underline"
+          >
+            PR #{active.number} ({active.draft ? "draft" : "ready"})
+          </a>
+        ) : (
+          <span className="text-[11px] text-text-secondary">No PR yet</span>
+        )}
+        {!status.auditComplete && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="min-h-11 sm:min-h-8"
+            onClick={onRetry}
+            disabled={publishing}
+          >
+            {publishing ? "Retrying…" : "Retry publication"}
+          </Button>
+        )}
+      </div>
+
+      <p className="break-all font-mono text-[10px] text-text-secondary">
+        source {target.sourceBranch} → {target.targetBranch} · candidate {target.candidateHeadSha}
+      </p>
+
+      {target.state === "no_candidate" ? (
+        <p data-testid="publication-no-candidate" className="text-[11px] text-text-secondary">
+          No committed candidate change; no draft PR was created and audit events stay queued.
+        </p>
+      ) : null}
+
+      <p className="text-[11px] text-text-secondary">
+        {status.publishedEventCount} published · {status.queuedEventCount} queued ·{" "}
+        {status.failedIntentCount} failed · {status.unknownIntentCount} unknown
+      </p>
+      {status.remoteStale && (
+        <p role="alert" className="text-[11px] text-[var(--warning)]">
+          The remote PR head/base no longer matches this candidate; evidence is stale.
+        </p>
+      )}
+      {target.lastError && (
+        <p className="break-words text-[11px] text-[var(--destructive)]">{target.lastError}</p>
+      )}
+
+      {pending.length > 0 && (
+        <ul aria-label="Outgoing publication intents" className="min-w-0 space-y-0.5">
+          {pending.map((intent) => (
+            <li key={intent.id} className="break-all font-mono text-[10px] text-text-secondary">
+              {intent.kind} · {intent.state} · attempts {intent.attempts} · {intent.operationKey}
+              {intent.lastError ? ` — ${intent.lastError}` : ""}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {status.events.length > 0 && (
+        <ul aria-label="Publication audit history" className="min-w-0 space-y-0.5">
+          {status.events.map((event) => {
+            const intent = status.intents.find((item) => item.operationKey === `event:${event.id}`);
+            return (
+              <li
+                key={event.id}
+                data-testid={`publication-event-${event.id}`}
+                className="break-words text-[10px] text-text-secondary"
+              >
+                {event.sequence}. {event.kind} · {event.severity} · lap {event.lap ?? "-"} ·{" "}
+                {event.candidateHeadSha.slice(0, 8)} · {intent?.state ?? "queued"} · {event.title}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
 
 /** Selected-run detail: durable checks, findings, artifacts and acceptance state. */
 function RunEvidencePanel({ report }: { report: RunEvidenceReport }) {

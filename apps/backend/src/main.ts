@@ -42,6 +42,7 @@ import { RegisteredProjectMonitor } from "./monitor/service";
 import { loadMonitorRuntime, type MonitorRuntime } from "./monitor/runtime";
 import { SpecCoordinatorService, handleProjectCoordinationRoute } from "./coordination";
 import { EvidenceService, handleProjectEvidenceRoute } from "./evidence";
+import { PublicationService, handleProjectPublicationRoute } from "./publication";
 import { HarnessService, handleHarnessRoute } from "./harness";
 import {
   validateCsrfProtection,
@@ -89,6 +90,7 @@ export interface BackendApp {
   };
   monitor: RegisteredProjectMonitor;
   db: DatabaseSync;
+  publication: PublicationService;
   stop(): Promise<void>;
 }
 
@@ -283,6 +285,11 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     registryService.getDb(),
     registryService.getForge(),
     commandService.ledger,
+  );
+
+  const publicationService = new PublicationService(
+    registryService.getDb(),
+    registryService.getForge(),
   );
 
   const monitorRuntime =
@@ -798,6 +805,17 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
         return Response.json({ error: "not_found" }, { status: 404 });
       }
 
+      if (scopedAction === "publication") {
+        const publicationRes = await handleProjectPublicationRoute(
+          request,
+          projectId,
+          parts,
+          publicationService,
+        );
+        if (publicationRes) return publicationRes;
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
       if (scopedAction === "laps") {
         return handleLapsRoute(request, parts.slice(1), routeContext, projectId);
       }
@@ -871,6 +889,7 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
   };
 
   return {
+    publication: publicationService,
     fetch: appFetch,
     websocket,
     monitor,

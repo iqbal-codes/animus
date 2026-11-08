@@ -61,6 +61,8 @@ export interface ParsedCliArgs {
     publish?: boolean;
     candidate?: string;
     kind?: string;
+    url?: string;
+    reconcile?: boolean;
   };
 }
 
@@ -126,6 +128,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       publish: { type: "boolean", default: false },
       candidate: { type: "string" },
       kind: { type: "string" },
+      url: { type: "string" },
+      reconcile: { type: "boolean", default: false },
     },
   });
 

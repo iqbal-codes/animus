@@ -71,6 +71,9 @@ import {
   findingListSchema,
   findingFixRequestSchema,
   findingRecheckRequestSchema,
+  publicationStatusSchema,
+  publicationStatusListSchema,
+  publicationEvidenceBindingRequestSchema,
   landingGuardResultSchema,
   landingSubmissionSchema,
   landingExecutionResultSchema,
@@ -171,6 +174,8 @@ import {
   type TargetBindingResult,
   type BranchIntegrationSubmission,
   type BranchIntegrationResult,
+  type PublicationStatus,
+  type PublicationStatusList,
 } from "@animus/contracts/operator";
 
 export {
@@ -203,6 +208,9 @@ export {
   targetBindingResultSchema,
   branchIntegrationSubmissionSchema,
   branchIntegrationResultSchema,
+  publicationStatusSchema,
+  publicationStatusListSchema,
+  publicationEvidenceBindingRequestSchema,
   planListSchema,
   planRecordSchema,
   planImportSubmissionSchema,
@@ -965,6 +973,70 @@ export function createFactoryClient(options: {
             `${scopedBase}/evidence/findings/${encodeURIComponent(id)}/recheck`,
             parsed.data,
             factoryFindingRecordSchema,
+          );
+        },
+        async publicationTargets(opts?: {
+          workId?: string;
+          deliveryId?: string;
+        }): Promise<PublicationStatusList> {
+          const params = new URLSearchParams();
+          if (opts?.workId) params.set("work_id", opts.workId);
+          if (opts?.deliveryId) params.set("delivery_id", opts.deliveryId);
+          const qs = params.toString();
+          return getJson(
+            `${scopedBase}/publication/targets${qs ? `?${qs}` : ""}`,
+            publicationStatusListSchema,
+          );
+        },
+        async publication(runId: string): Promise<PublicationStatus> {
+          return getJson(
+            `${scopedBase}/publication/runs/${encodeURIComponent(runId)}`,
+            publicationStatusSchema,
+          );
+        },
+        async publicationTarget(targetId: string): Promise<PublicationStatus> {
+          return getJson(
+            `${scopedBase}/publication/targets/${encodeURIComponent(targetId)}`,
+            publicationStatusSchema,
+          );
+        },
+        async publishPublication(runId: string): Promise<PublicationStatus> {
+          return postJson(
+            `${scopedBase}/publication/runs/${encodeURIComponent(runId)}/publish`,
+            {},
+            publicationStatusSchema,
+          );
+        },
+        async publishPublicationTarget(targetId: string): Promise<PublicationStatus> {
+          return postJson(
+            `${scopedBase}/publication/targets/${encodeURIComponent(targetId)}/publish`,
+            {},
+            publicationStatusSchema,
+          );
+        },
+        async reconcilePublication(): Promise<PublicationStatusList> {
+          return postJson(`${scopedBase}/publication/reconcile`, {}, publicationStatusListSchema);
+        },
+        async reconcilePublicationTarget(targetId: string): Promise<PublicationStatus> {
+          return postJson(
+            `${scopedBase}/publication/targets/${encodeURIComponent(targetId)}/reconcile`,
+            {},
+            publicationStatusSchema,
+          );
+        },
+        async bindPublicationEvidence(
+          targetId: string,
+          artifactId: string,
+          hostedUrl: string,
+        ): Promise<PublicationStatus> {
+          const parsed = publicationEvidenceBindingRequestSchema.safeParse({
+            hosted_url: hostedUrl,
+          });
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/publication/targets/${encodeURIComponent(targetId)}/evidence/${encodeURIComponent(artifactId)}/bind`,
+            parsed.data,
+            publicationStatusSchema,
           );
         },
       };

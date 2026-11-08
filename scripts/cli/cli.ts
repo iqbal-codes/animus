@@ -297,6 +297,8 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         reason: values.reason,
         actor: values.actor,
         expectedSequence: values["expected-sequence"],
+        url: values.url,
+        reconcile: values.reconcile,
         factoryUrl: values["factory-url"],
         factoryToken: values["factory-token"],
         json: values.json,

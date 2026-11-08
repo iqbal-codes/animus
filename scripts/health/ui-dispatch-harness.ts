@@ -174,13 +174,48 @@ await postJson(`/evidence/findings/${encodeURIComponent(seedFinding.id)}/recheck
   ],
 });
 
+// Publish the real candidate through the public route and the injected forge
+// transport. This proves the operator audit panel is reading durable local state,
+// not a UI fixture.
+const publicationBeforeResponse = await app.fetch(
+  new Request(
+    `http://127.0.0.1/api/v1/projects/${project.id}/publication/runs/${encodeURIComponent(seedRun.id)}`,
+  ),
+);
+if (!publicationBeforeResponse.ok)
+  throw new Error(`Seed publication read failed: ${await publicationBeforeResponse.text()}`);
+const publishResponse = await app.fetch(
+  new Request(
+    `http://127.0.0.1/api/v1/projects/${project.id}/publication/runs/${encodeURIComponent(seedRun.id)}/publish`,
+    { method: "POST" },
+  ),
+);
+if (!publishResponse.ok)
+  throw new Error(`Seed publication failed: ${await publishResponse.text()}`);
+const seededPublication = (await publishResponse.json()) as {
+  auditComplete: boolean;
+  queuedEventCount: number;
+  pullRequests: Array<{ number: number; url: string | null; draft: boolean }>;
+};
+if (!seededPublication.auditComplete || seededPublication.pullRequests.length !== 1) {
+  throw new Error(`Seed publication is not complete: ${JSON.stringify(seededPublication)}`);
+}
+
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
   fetch: (request) => app.fetch(request),
   websocket: app.websocket,
 });
-console.log(JSON.stringify({ url: server.url.origin, project_id: project.id, root }));
+console.log(
+  JSON.stringify({
+    url: server.url.origin,
+    project_id: project.id,
+    run_id: seedRun.id,
+    publication: seededPublication,
+    root,
+  }),
+);
 async function shutdown() {
   await server.stop(true);
   await app.stop();

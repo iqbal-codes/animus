@@ -93,8 +93,8 @@ describe("GitHub webhook ingestion endpoint and deduplication", () => {
 
     // PR reviews and check runs
     expect(classifyGitHubWebhookEvent("pull_request_review", { action: "submitted" })).toEqual({
-      eligible: true,
-      reason: "pull_request_review.submitted",
+      eligible: false,
+      reason: "manual_feedback_ignored",
     });
     expect(classifyGitHubWebhookEvent("check_run", { action: "completed" })).toEqual({
       eligible: true,
@@ -108,11 +108,11 @@ describe("GitHub webhook ingestion endpoint and deduplication", () => {
     // #118 AC3: unsupported events
     expect(classifyGitHubWebhookEvent("issue_comment", { action: "created" })).toEqual({
       eligible: false,
-      reason: "unsupported_event",
+      reason: "manual_feedback_ignored",
     });
     expect(classifyGitHubWebhookEvent("pull_request", { action: "synchronize" })).toEqual({
       eligible: false,
-      reason: "unsupported_event",
+      reason: "manual_feedback_ignored",
     });
     expect(classifyGitHubWebhookEvent("push", {})).toEqual({
       eligible: false,
@@ -258,10 +258,10 @@ describe("GitHub webhook ingestion endpoint and deduplication", () => {
     });
     expect(wakes).toEqual([{ projectId: "proj_abc", reason: "issues.labeled" }]);
 
-    // 2. Capacity full -> pending_wake: true
+    // 2. Capacity full -> pending_wake: true (remote CI observation still wakes)
     nextWakeReturn = { triggered: false, pending_wake: true };
     const body2 = JSON.stringify({
-      action: "submitted",
+      action: "completed",
       repository: { id: 101 },
     });
     const req2 = new Request("http://localhost/api/v1/webhooks/github", {
@@ -270,7 +270,7 @@ describe("GitHub webhook ingestion endpoint and deduplication", () => {
         "Content-Type": "application/json",
         "X-Hub-Signature-256": computeSignature(body2, secret),
         "X-GitHub-Delivery": "del-wake-2",
-        "X-GitHub-Event": "pull_request_review",
+        "X-GitHub-Event": "check_run",
       },
       body: body2,
     });
@@ -283,9 +283,9 @@ describe("GitHub webhook ingestion endpoint and deduplication", () => {
       pending_wake: true,
     });
     expect(wakes.length).toBe(2);
-    expect(wakes[1]).toEqual({ projectId: "proj_abc", reason: "pull_request_review.submitted" });
+    expect(wakes[1]).toEqual({ projectId: "proj_abc", reason: "check_run.completed" });
 
-    // 3. Unsupported event -> 202 ignored with reason unsupported_event, onProjectWake NOT called
+    // 3. Manual PR feedback -> ignored, onProjectWake NOT called
     const body3 = JSON.stringify({
       action: "created",
       repository: { id: 101 },
@@ -304,7 +304,7 @@ describe("GitHub webhook ingestion endpoint and deduplication", () => {
     expect(res3.status).toBe(202);
     expect(await res3.json()).toEqual({
       status: "ignored",
-      reason: "unsupported_event",
+      reason: "manual_feedback_ignored",
       delivery: "del-wake-3",
     });
     // Wake count did not increment
@@ -607,7 +607,7 @@ if (args.includes("POST")) {
       });
     }
 
-    // #118 AC3: Unsupported events (issue_comment, issues labeled with non-ready-for-agent, missing X-GitHub-Event)
+    // #118 AC3: Unsupported events (manual PR feedback, non-ready labels, missing X-GitHub-Event)
     {
       const commentPayload = JSON.stringify({
         action: "created",
@@ -627,7 +627,7 @@ if (args.includes("POST")) {
       expect(res.status).toBe(202);
       expect(await res.json()).toEqual({
         status: "ignored",
-        reason: "unsupported_event",
+        reason: "manual_feedback_ignored",
         delivery: "delivery-unsupported-comment",
       });
     }

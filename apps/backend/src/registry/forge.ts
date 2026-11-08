@@ -2,7 +2,8 @@ import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
 export interface ForgeRepoInfo {
@@ -49,6 +50,8 @@ export interface ForgePullRequest {
   base: string;
   state: string; // "OPEN" | "CLOSED" | "MERGED"
   html_url?: string;
+  draft?: boolean;
+  headRefOid?: string;
 }
 
 export interface CreatePullRequestInput {
@@ -57,6 +60,27 @@ export interface CreatePullRequestInput {
   head: string;
   base: string;
   draft?: boolean;
+}
+
+export interface UpdatePullRequestInput {
+  title?: string;
+  body?: string;
+  base?: string;
+  state?: "open" | "closed";
+}
+
+export interface CreatePullRequestReviewInput {
+  commitId: string;
+  body: string;
+  event?: "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
+  comments?: Array<{ path: string; line: number; side?: "RIGHT" | "LEFT"; body: string }>;
+}
+
+export interface ForgePullRequestReview {
+  id?: string;
+  body?: string | null;
+  state?: string;
+  html_url?: string;
 }
 
 export interface ForgeLabel {
@@ -87,6 +111,17 @@ export interface ForgeAdapter {
   getSubIssues?(repo: string, parentNumber: number): Promise<number[]>;
   getIssueDependencies?(repo: string, childNumber: number): Promise<number[]>;
   createPullRequest?(repo: string, input: CreatePullRequestInput): Promise<ForgePullRequest>;
+  updatePullRequest?(
+    repo: string,
+    prNumber: number,
+    input: UpdatePullRequestInput,
+  ): Promise<ForgePullRequest>;
+  createPullRequestReview?(
+    repo: string,
+    prNumber: number,
+    input: CreatePullRequestReviewInput,
+  ): Promise<ForgePullRequestReview>;
+  listPullRequestReviews?(repo: string, prNumber: number): Promise<ForgePullRequestReview[]>;
   listPullRequests?(repo: string): Promise<ForgePullRequest[]>;
   getPullRequest?(repo: string, prNumber: number): Promise<ForgePullRequest | null>;
   mergePullRequest?(repo: string, prNumber: number): Promise<{ merged: boolean; sha?: string }>;
@@ -103,6 +138,17 @@ export interface IssueForgeAdapter extends ForgeAdapter {
   getSubIssues?(repo: string, parentNumber: number): Promise<number[]>;
   getIssueDependencies?(repo: string, childNumber: number): Promise<number[]>;
   createPullRequest(repo: string, input: CreatePullRequestInput): Promise<ForgePullRequest>;
+  updatePullRequest?(
+    repo: string,
+    prNumber: number,
+    input: UpdatePullRequestInput,
+  ): Promise<ForgePullRequest>;
+  createPullRequestReview?(
+    repo: string,
+    prNumber: number,
+    input: CreatePullRequestReviewInput,
+  ): Promise<ForgePullRequestReview>;
+  listPullRequestReviews?(repo: string, prNumber: number): Promise<ForgePullRequestReview[]>;
   listPullRequests(repo: string): Promise<ForgePullRequest[]>;
   getPullRequest(repo: string, prNumber: number): Promise<ForgePullRequest | null>;
 }
@@ -884,7 +930,7 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
           "--limit",
           "100",
           "--json",
-          "number,title,body,headRefName,baseRefName,state,url",
+          "number,title,body,headRefName,baseRefName,state,url,isDraft,headRefOid",
         ],
         {
           encoding: "utf-8",
@@ -900,6 +946,8 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
         base: i.baseRefName,
         state: i.state,
         html_url: i.url,
+        draft: Boolean(i.isDraft),
+        ...(typeof i.headRefOid === "string" ? { headRefOid: i.headRefOid } : {}),
       }));
     } catch (error: any) {
       throw new Error(
@@ -920,7 +968,7 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
           "--repo",
           cleanRepo,
           "--json",
-          "number,title,body,headRefName,baseRefName,state,url",
+          "number,title,body,headRefName,baseRefName,state,url,isDraft,headRefOid",
         ],
         {
           encoding: "utf-8",
@@ -936,9 +984,117 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
         base: i.baseRefName,
         state: i.state,
         html_url: i.url,
+        draft: Boolean(i.isDraft),
+        ...(typeof i.headRefOid === "string" ? { headRefOid: i.headRefOid } : {}),
       };
     } catch {
       return null;
+    }
+  }
+
+  async updatePullRequest(
+    repo: string,
+    prNumber: number,
+    input: UpdatePullRequestInput,
+  ): Promise<ForgePullRequest> {
+    const cleanRepo = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+    const args =
+      input.state === "closed"
+        ? ["pr", "close", String(prNumber), "--repo", cleanRepo]
+        : (() => {
+            const next = ["pr", "edit", String(prNumber), "--repo", cleanRepo];
+            if (input.title !== undefined) next.push("--title", input.title);
+            if (input.body !== undefined) next.push("--body", input.body);
+            if (input.base !== undefined) next.push("--base", input.base);
+            return next;
+          })();
+    try {
+      execFileSync("gh", args, { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+    } catch (error: any) {
+      throw new Error(
+        `Failed to update pull request ${prNumber} for ${cleanRepo}: ${error?.message || String(error)}`,
+      );
+    }
+    const updated = await this.getPullRequest(cleanRepo, prNumber);
+    if (!updated) {
+      throw new Error(`Pull request ${prNumber} disappeared after update`);
+    }
+    return updated;
+  }
+
+  async createPullRequestReview(
+    repo: string,
+    prNumber: number,
+    input: CreatePullRequestReviewInput,
+  ): Promise<ForgePullRequestReview> {
+    const cleanRepo = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+    const [owner, name] = cleanRepo.split("/");
+    if (!owner || !name) throw new Error(`Invalid repository '${repo}'`);
+    const dir = mkdtempSync(join(tmpdir(), "animus-pr-review-"));
+    const payloadPath = join(dir, "review.json");
+    writeFileSync(
+      payloadPath,
+      JSON.stringify({
+        commit_id: input.commitId,
+        body: input.body,
+        event: input.event ?? "COMMENT",
+        comments: (input.comments ?? []).map((comment) => ({
+          path: comment.path,
+          line: comment.line,
+          side: comment.side ?? "RIGHT",
+          body: comment.body,
+        })),
+      }),
+      "utf-8",
+    );
+    try {
+      const output = execFileSync(
+        "gh",
+        [
+          "api",
+          `repos/${owner}/${name}/pulls/${prNumber}/reviews`,
+          "--method",
+          "POST",
+          "--input",
+          payloadPath,
+        ],
+        { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+      );
+      const parsed = JSON.parse(output || "{}");
+      return {
+        ...(parsed.id !== undefined ? { id: String(parsed.id) } : {}),
+        body: parsed.body ?? input.body,
+        ...(typeof parsed.state === "string" ? { state: parsed.state } : {}),
+        ...(typeof parsed.html_url === "string" ? { html_url: parsed.html_url } : {}),
+      };
+    } catch (error: any) {
+      throw new Error(
+        `Failed to create pull request review ${prNumber} for ${cleanRepo}: ${error?.message || String(error)}`,
+      );
+    }
+  }
+
+  async listPullRequestReviews(repo: string, prNumber: number): Promise<ForgePullRequestReview[]> {
+    const cleanRepo = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+    const [owner, name] = cleanRepo.split("/");
+    if (!owner || !name) throw new Error(`Invalid repository '${repo}'`);
+    try {
+      const output = execFileSync(
+        "gh",
+        ["api", `repos/${owner}/${name}/pulls/${prNumber}/reviews`, "--paginate"],
+        { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+      );
+      const items = JSON.parse(output || "[]");
+      return items.map((item: any) => ({
+        ...(item.id !== undefined ? { id: String(item.id) } : {}),
+        body: item.body ?? null,
+        ...(typeof item.state === "string" ? { state: item.state } : {}),
+        ...(typeof item.html_url === "string" ? { html_url: item.html_url } : {}),
+      }));
+    } catch (error: any) {
+      throw new Error(
+        `Failed to list pull request reviews ${prNumber} for ${cleanRepo}: ${error?.message || String(error)}`,
+      );
     }
   }
 }
@@ -947,6 +1103,7 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
   private repos = new Map<string, ForgeRepoInfo>();
   private issuesByRepo = new Map<string, Map<number, ForgeIssue>>();
   private pullRequestsByRepo = new Map<string, Map<number, ForgePullRequest>>();
+  private pullRequestReviews = new Map<string, Map<number, ForgePullRequestReview[]>>();
   private labelsByRepo = new Map<string, Map<string, ForgeLabel>>();
   private subIssues = new Map<string, Map<number, Set<number>>>();
   private issueDependencies = new Map<string, Map<number, Set<number>>>();
@@ -978,6 +1135,11 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
   public failNextClone = false;
   public failNextCreate = false;
   public failNextComment = false;
+  public failNextPullRequest = false;
+  public failNextUpdate = false;
+  public failNextReview = false;
+  public failNextGetPullRequest = false;
+  public failNextListPullRequests = false;
 
   constructor(initialRepos?: Record<string, number>) {
     if (initialRepos) {
@@ -1225,6 +1387,10 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
   }
 
   async listPullRequests(repo: string): Promise<ForgePullRequest[]> {
+    if (this.failNextListPullRequests) {
+      this.failNextListPullRequests = false;
+      throw new Error("Synthetic forge pull request listing failed");
+    }
     const key = repo.toLowerCase();
     const prMap = this.pullRequestsByRepo.get(key);
     if (!prMap) return [];
@@ -1232,6 +1398,10 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
   }
 
   async getPullRequest(repo: string, prNumber: number): Promise<ForgePullRequest | null> {
+    if (this.failNextGetPullRequest) {
+      this.failNextGetPullRequest = false;
+      throw new Error("Synthetic forge pull request read failed");
+    }
     const key = repo.toLowerCase();
     const prMap = this.pullRequestsByRepo.get(key);
     if (!prMap) return null;
@@ -1240,6 +1410,10 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
   }
 
   async createPullRequest(repo: string, input: CreatePullRequestInput): Promise<ForgePullRequest> {
+    if (this.failNextPullRequest) {
+      this.failNextPullRequest = false;
+      throw new Error("Synthetic forge pull request creation failed");
+    }
     const key = repo.toLowerCase();
     let prMap = this.pullRequestsByRepo.get(key);
     if (!prMap) {
@@ -1256,9 +1430,84 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
       base: input.base,
       state: "OPEN",
       html_url: `https://github.com/${repo}/pull/${prNumber}`,
+      draft: Boolean(input.draft),
     };
     prMap.set(prNumber, pr);
+    // GitHub issues and pull requests share the comment surface. Mirror the PR
+    // into the issue map so comments and read-back behave like the real forge.
+    let issueMap = this.issuesByRepo.get(key);
+    if (!issueMap) {
+      issueMap = new Map<number, ForgeIssue>();
+      this.issuesByRepo.set(key, issueMap);
+    }
+    if (!issueMap.has(prNumber)) {
+      issueMap.set(prNumber, {
+        number: prNumber,
+        title: input.title,
+        body: input.body,
+        state: "OPEN",
+        labels: [],
+        comments: [],
+      });
+    }
     return { ...pr };
+  }
+
+  async updatePullRequest(
+    repo: string,
+    prNumber: number,
+    input: UpdatePullRequestInput,
+  ): Promise<ForgePullRequest> {
+    if (this.failNextUpdate) {
+      this.failNextUpdate = false;
+      throw new Error("Synthetic forge pull request update failed");
+    }
+    const key = repo.toLowerCase();
+    const pr = this.pullRequestsByRepo.get(key)?.get(prNumber);
+    if (!pr) throw new Error(`PR #${prNumber} not found in repository ${repo}`);
+    if (input.title !== undefined) pr.title = input.title;
+    if (input.body !== undefined) pr.body = input.body;
+    if (input.base !== undefined) pr.base = input.base;
+    if (input.state === "closed") pr.state = "CLOSED";
+    if (input.state === "open") pr.state = "OPEN";
+    return { ...pr };
+  }
+
+  async createPullRequestReview(
+    repo: string,
+    prNumber: number,
+    input: CreatePullRequestReviewInput,
+  ): Promise<ForgePullRequestReview> {
+    if (this.failNextReview) {
+      this.failNextReview = false;
+      throw new Error("Synthetic forge pull request review failed");
+    }
+    const key = repo.toLowerCase();
+    const prMap = this.pullRequestsByRepo.get(key);
+    if (!prMap || !prMap.has(prNumber)) {
+      throw new Error(`PR #${prNumber} not found in repository ${repo}`);
+    }
+    let byPr = this.pullRequestReviews.get(key);
+    if (!byPr) {
+      byPr = new Map();
+      this.pullRequestReviews.set(key, byPr);
+    }
+    const list = byPr.get(prNumber) ?? [];
+    const review: ForgePullRequestReview = {
+      id: String(list.length + 1),
+      body: input.body,
+      state: input.event ?? "COMMENT",
+    };
+    list.push(review);
+    byPr.set(prNumber, list);
+    return { ...review };
+  }
+
+  async listPullRequestReviews(repo: string, prNumber: number): Promise<ForgePullRequestReview[]> {
+    const key = repo.toLowerCase();
+    return [...(this.pullRequestReviews.get(key)?.get(prNumber) ?? [])].map((review) => ({
+      ...review,
+    }));
   }
 
   async mergePullRequest(

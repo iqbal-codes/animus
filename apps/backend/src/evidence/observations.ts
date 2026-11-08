@@ -28,14 +28,17 @@ import {
   type PlanGateProfile,
   type ProducerIdentity,
   type ProducerRole,
+  type PublicationEventKind,
 } from "@animus/contracts/operator";
 import { resolveAnimusStateDir } from "@animus/contracts/paths";
+import { enqueuePublicationEvent, ensurePublicationTarget } from "../publication/outbox";
 import { EvidenceError } from "./errors";
 
 interface RunRow {
   id: string;
   project_id: string;
   delivery_id: string;
+  plan_id: string;
   work_id: string;
   issue_number: number;
   gate_profile: PlanGateProfile;
@@ -44,6 +47,7 @@ interface RunRow {
   lap: number;
   state: string;
   actor: string;
+  branch: string;
   base_sha: string;
   head_sha: string | null;
   delivery_graph_hash: string;
@@ -298,7 +302,11 @@ export class ExecutionObservationService {
     projectId: string,
     runId: string,
     submission: ExecutionObservationSubmissionInput,
-    options: { findingOwnerId?: string; attemptKey?: string } = {},
+    options: {
+      findingOwnerId?: string;
+      attemptKey?: string;
+      publishVerificationEvent?: boolean;
+    } = {},
   ): ExecutionObservationRecord {
     const record = executionObservationSubmissionSchema.parse(submission);
     const run = this.loadRun(projectId, runId);
@@ -451,8 +459,108 @@ export class ExecutionObservationService {
         }
       }
 
-      return this.getObservation(projectId, observationId);
+      const observation = this.getObservation(projectId, observationId);
+      if (options.publishVerificationEvent !== false) {
+        this.queueObservationAudit(run, observation, record, findingIds, now);
+      }
+
+      return observation;
     }, "observation");
+  }
+
+  private queueObservationAudit(
+    run: RunRow,
+    observation: ExecutionObservationRecord,
+    record: ExecutionObservationSubmission,
+    findingIds: string[],
+    now: number,
+  ): void {
+    if (record.status === "running") return;
+    const candidateHeadSha = run.head_sha ?? run.base_sha;
+    const eligible =
+      run.state === "succeeded" && Boolean(run.head_sha) && run.head_sha !== run.base_sha;
+    const targetId = ensurePublicationTarget(
+      this.db,
+      {
+        projectId: run.project_id,
+        deliveryId: run.delivery_id,
+        planId: run.plan_id,
+        workId: run.work_id,
+        issueNumber: run.issue_number,
+        gateProfile: run.gate_profile,
+        sourceBranch: run.branch,
+        targetBranch: run.target_branch,
+        candidateHeadSha,
+        baseSha: run.base_sha,
+        eligible,
+      },
+      now,
+    );
+    const checkLines = record.checks.map(
+      (check) =>
+        `- ${check.result} ${check.name}: \`${check.command}\`${check.detail ? ` — ${check.detail}` : ""}`,
+    );
+    const findingLines = record.findings.map(
+      (finding) =>
+        `- [${finding.severity}] ${finding.acKey ? `${finding.acKey} ` : ""}${finding.fileContext}: ${finding.summary}`,
+    );
+    const artifactLines = record.artifacts.map(
+      (artifact) => `- ${artifact.name} (${artifact.relativePath}, ${artifact.mediaType})`,
+    );
+    const body = [
+      `**Stage:** ${record.stage} · **Status:** ${record.status} · **Lap:** ${observation.lap}`,
+      `**Producer:** ${record.producer.id} (${record.producer.role})`,
+      `**Candidate:** \`${candidateHeadSha}\``,
+      ...(checkLines.length > 0 ? ["", "**Checks:**", ...checkLines] : []),
+      ...(findingLines.length > 0 ? ["", "**Findings:**", ...findingLines] : []),
+      ...(artifactLines.length > 0 ? ["", "**Artifacts:**", ...artifactLines] : []),
+      ...(observation.error ? ["", `**Error:** ${observation.error}`] : []),
+    ].join("\n");
+    const title =
+      record.status === "passed" ? `${record.stage} passed` : `${record.stage} ${record.status}`;
+    enqueuePublicationEvent(this.db, {
+      targetId,
+      projectId: run.project_id,
+      workId: run.work_id,
+      runId: run.id,
+      lap: observation.lap,
+      candidateHeadSha,
+      observationId: observation.id,
+      findingId: null,
+      kind: record.status === "passed" ? "verdict" : "verification_failure",
+      severity:
+        record.status === "failed"
+          ? "blocking"
+          : record.status === "passed"
+            ? "info"
+            : "conditional",
+      title,
+      body,
+      occurredAt: now,
+    });
+    for (let index = 0; index < record.findings.length; index += 1) {
+      const finding = record.findings[index]!;
+      enqueuePublicationEvent(this.db, {
+        targetId,
+        projectId: run.project_id,
+        workId: run.work_id,
+        runId: run.id,
+        lap: observation.lap,
+        candidateHeadSha,
+        observationId: observation.id,
+        findingId: findingIds[index] ?? null,
+        kind: "finding",
+        severity: finding.severity,
+        title: `Finding: ${finding.summary.slice(0, 120)}`,
+        body: [
+          `**Severity:** ${finding.severity}${finding.acKey ? ` · **AC:** ${finding.acKey}` : ""}`,
+          `**Location:** \`${finding.fileContext}\``,
+          "",
+          finding.summary,
+        ].join("\n"),
+        occurredAt: now,
+      });
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -474,17 +582,27 @@ export class ExecutionObservationService {
     return this.withSavepoint(() => {
       const sequence = this.nextFindingSequence(finding.id);
       const runActor = this.runActor(projectId, finding.run_id);
+      const now = this.clock();
+      const actorRole = this.resolveFixActorRole(projectId, runActor, submission.actor);
       this.insertFindingEvent({
         findingId: finding.id,
         projectId,
         sequence,
         action: "fix_submitted",
         actor: submission.actor,
-        actorRole: this.resolveFixActorRole(projectId, runActor, submission.actor),
+        actorRole,
         observationId: null,
         detail: submission.detail ?? null,
-        createdAt: this.clock(),
+        createdAt: now,
       });
+      this.queueFindingAudit(
+        finding,
+        "fix_submitted",
+        "info",
+        now,
+        submission.detail ?? null,
+        actorRole,
+      );
       // A builder (or anyone) claiming a fix must not resolve the finding.
       return this.getFinding(projectId, finding.id);
     }, "fix");
@@ -526,7 +644,11 @@ export class ExecutionObservationService {
           checks: record.checks,
           artifacts: record.artifacts,
         },
-        { findingOwnerId: finding.id, attemptKey: `finding:${finding.id}:${randomUUID()}` },
+        {
+          findingOwnerId: finding.id,
+          attemptKey: `finding:${finding.id}:${randomUUID()}`,
+          publishVerificationEvent: false,
+        },
       );
       const now = this.clock();
       const action: FindingEventAction =
@@ -556,8 +678,86 @@ export class ExecutionObservationService {
           .prepare(`UPDATE factory_findings SET status = 'open', resolved_at = NULL WHERE id = ?`)
           .run(finding.id);
       }
+      this.queueFindingAudit(
+        finding,
+        action,
+        record.status === "passed"
+          ? "info"
+          : record.status === "failed"
+            ? "blocking"
+            : "conditional",
+        now,
+        record.detail ?? null,
+        record.producer.role,
+        run,
+        observation.lap,
+      );
       return this.getFinding(projectId, finding.id);
     }, "recheck");
+  }
+
+  private queueFindingAudit(
+    finding: FindingRow,
+    action: FindingEventAction,
+    severity: "blocking" | "conditional" | "info",
+    now: number,
+    detail: string | null,
+    actorRole: ProducerRole,
+    explicitRun?: RunRow,
+    lap?: number,
+  ): void {
+    const run = explicitRun ?? this.loadRun(finding.project_id, finding.run_id);
+    const candidateHeadSha = run.head_sha ?? run.base_sha;
+    const eligible =
+      run.state === "succeeded" && Boolean(run.head_sha) && run.head_sha !== run.base_sha;
+    const targetId = ensurePublicationTarget(
+      this.db,
+      {
+        projectId: run.project_id,
+        deliveryId: run.delivery_id,
+        planId: run.plan_id,
+        workId: run.work_id,
+        issueNumber: run.issue_number,
+        gateProfile: run.gate_profile,
+        sourceBranch: run.branch,
+        targetBranch: run.target_branch,
+        candidateHeadSha,
+        baseSha: run.base_sha,
+        eligible,
+      },
+      now,
+    );
+    const kind: PublicationEventKind =
+      action === "fix_submitted"
+        ? "fix_submitted"
+        : action === "recheck_passed"
+          ? "recheck_passed"
+          : action === "recheck_failed"
+            ? "recheck_failed"
+            : "recheck_inconclusive";
+    enqueuePublicationEvent(this.db, {
+      targetId,
+      projectId: run.project_id,
+      workId: run.work_id,
+      runId: run.id,
+      lap: lap ?? run.lap,
+      candidateHeadSha,
+      observationId: null,
+      findingId: finding.id,
+      kind,
+      severity,
+      title:
+        action === "fix_submitted"
+          ? `Fix submitted for finding ${finding.id}`
+          : `Finding ${finding.id} ${action.replace("recheck_", "recheck ")}`,
+      body: [
+        `**Finding:** ${finding.summary}`,
+        `**Location:** \`${finding.file_context}\``,
+        `**Severity:** ${finding.severity} · **Actor role:** ${actorRole}`,
+        ...(detail ? ["", detail] : []),
+      ].join("\n"),
+      occurredAt: now,
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -801,9 +1001,10 @@ export class ExecutionObservationService {
   private loadRun(projectId: string, runId: string): RunRow {
     const row = this.db
       .prepare(
-        `SELECT r.id, r.project_id, r.delivery_id, r.work_id, r.issue_number, r.gate_profile,
-                r.target_branch, r.ownership_generation, r.lap, r.state, r.actor, r.base_sha,
-                r.head_sha, d.graph_hash AS delivery_graph_hash, p.checkout_path AS checkout_path
+        `SELECT r.id, r.project_id, r.delivery_id, r.plan_id, r.work_id, r.issue_number, r.gate_profile,
+                r.target_branch, r.ownership_generation, r.lap, r.state, r.actor, r.branch,
+                r.base_sha, r.head_sha, d.graph_hash AS delivery_graph_hash,
+                p.checkout_path AS checkout_path
          FROM dispatch_runs r
          JOIN deliveries d ON d.id = r.delivery_id AND d.project_id = r.project_id
          JOIN projects p ON p.id = r.project_id

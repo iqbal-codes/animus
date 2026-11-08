@@ -449,6 +449,156 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
     expect(evidenceRequests).toEqual(["run-1"]);
   });
 
+  test("DispatchControl exposes publication audit, failed outgoing intents and recovery", async () => {
+    const plan = {
+      id: "plan-1",
+      project_id: "proj-1",
+      kind: "standalone" as const,
+      root_work_id: "work-1",
+      root_issue_number: 714,
+      root_title: "Standalone delivery",
+      graph_hash: "a".repeat(64),
+      authority: "admitted" as const,
+      member_count: 1,
+      ticket_count: 1,
+      hold_count: 0,
+      accepted_revision_id: "rev-1",
+      created_at: 1,
+      updated_at: 1,
+    };
+    const run = {
+      id: "run-1",
+      project_id: "proj-1",
+      delivery_id: "del-1",
+      plan_id: "plan-1",
+      work_id: "work-1",
+      revision_id: "rev-1",
+      content_hash: "b".repeat(64),
+      issue_number: 714,
+      role: "ticket" as const,
+      gate_profile: "child" as const,
+      merge_policy: "auto_after_gates" as const,
+      target_branch: "factory/spec-714-integration",
+      ownership_generation: 1,
+      lap: 2,
+      state: "failed" as const,
+      actor: "operator",
+      command_request_id: "cmd-1",
+      branch: "factory/spec-714/ticket-714-r2",
+      worktree_path: "/tmp/worktree",
+      base_sha: "c".repeat(40),
+      owner_pid: 1,
+      owner_token: "token",
+      lease_expires_at: null,
+      head_sha: "d".repeat(40),
+      error: "publication failed",
+      launched_at: 1,
+      finished_at: 1,
+      created_at: 1,
+      updated_at: 1,
+    };
+    const status = {
+      target: {
+        id: "pub-1",
+        projectId: "proj-1",
+        deliveryId: "del-1",
+        planId: "plan-1",
+        workId: "work-1",
+        issueNumber: 714,
+        gateProfile: "child" as const,
+        sourceBranch: "factory/spec-714/ticket-714-r2",
+        targetBranch: "factory/spec-714-integration",
+        candidateHeadSha: "d".repeat(40),
+        baseSha: "c".repeat(40),
+        state: "failed" as const,
+        activePullRequestId: null,
+        lastError: "GitHub unavailable",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      pullRequests: [],
+      events: [
+        {
+          id: "pevt-1",
+          targetId: "pub-1",
+          projectId: "proj-1",
+          sequence: 1,
+          workId: "work-1",
+          runId: "run-1",
+          lap: 2,
+          candidateHeadSha: "d".repeat(40),
+          observationId: "obs-1",
+          findingId: null,
+          kind: "verification_failure" as const,
+          severity: "blocking" as const,
+          title: "technical_checks failed",
+          body: "unit failed",
+          occurredAt: 1,
+        },
+      ],
+      intents: [
+        {
+          id: "int-1",
+          targetId: "pub-1",
+          projectId: "proj-1",
+          operationKey: "event:pevt-1",
+          kind: "publish_event" as const,
+          state: "failed" as const,
+          attempts: 2,
+          remoteObjectId: null,
+          remoteUrl: null,
+          lastError: "GitHub unavailable",
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+      evidence: [],
+      summary: "audit summary",
+      queuedEventCount: 1,
+      publishedEventCount: 0,
+      failedIntentCount: 1,
+      unknownIntentCount: 0,
+      auditComplete: false,
+      remoteObservedAt: null,
+      remoteStale: false,
+    };
+    const published: string[] = [];
+    const factory = {
+      projects: async () => [mockProjects[0]!],
+      forProject: () => ({
+        plans: async () => [plan],
+        dispatchRuns: async () => [run],
+        dispatchPlan: async () => {
+          throw new Error("must not dispatch");
+        },
+        publication: async () => status,
+        publishPublication: async (runId: string) => {
+          published.push(runId);
+          return status;
+        },
+      }),
+    } as any;
+
+    render(<DispatchControl factory={factory} />);
+    const auditButton = await screen.findByRole("button", { name: "View audit" });
+    expect(auditButton.getAttribute("aria-expanded")).toBe("false");
+    expect(auditButton.getAttribute("aria-controls")).toBe("run-audit-run-1");
+    fireEvent.click(auditButton);
+
+    const panel = await screen.findByTestId("run-audit-run-1");
+    expect(panel.textContent).toContain("Audit incomplete");
+    expect(panel.textContent).toContain("failed");
+    expect(panel.textContent).toContain("GitHub unavailable");
+    expect(panel.textContent).toContain("technical_checks failed");
+    expect(panel.textContent).toContain("lap 2");
+    expect(panel.textContent).toContain("No PR yet");
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry publication" }));
+    await waitFor(() => expect(published).toEqual(["run-1"]));
+    expect(screen.getByLabelText("Outgoing publication intents")).toBeTruthy();
+    expect(screen.getByLabelText("Publication audit history")).toBeTruthy();
+  });
+
   test("DispatchControl lets operators select a ticket/run/candidate history", async () => {
     const plan = {
       id: "plan-1",

@@ -77,11 +77,10 @@ export function classifyGitHubWebhookEvent(
     return { eligible: false, reason: "unsupported_event" };
   }
 
-  if (event === "pull_request_review") {
-    if (action === "submitted") {
-      return { eligible: true, reason: "pull_request_review.submitted" };
-    }
-    return { eligible: false, reason: "unsupported_event" };
+  // Human PR feedback is observation only. Manual comments, reviews and
+  // request-changes must never create factory findings, rebind scope or allocate laps.
+  if (event === "pull_request_review" || event === "issue_comment" || event === "pull_request") {
+    return { eligible: false, reason: "manual_feedback_ignored" };
   }
 
   if (event === "check_run" || event === "workflow_run") {
