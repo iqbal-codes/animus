@@ -30,7 +30,13 @@ import { graphFromManifest, computeGraphHash } from "../plans/parser";
 import { freezeContract } from "../coordination/primitive";
 import { runFrozenBuilder } from "../coordination/frozen-builder";
 import type { AgentTransport, RoleBudget } from "../coordination/frozen-builder";
-import { clearWorkerOwner, pidOrGroupAlive, readWorkerOwner, writeWorkerOwner } from "./ownership";
+import {
+  clearWorkerOwner,
+  pidOrGroupAlive,
+  readWorkerOwner,
+  resolveWorkerOwnerPath,
+  writeWorkerOwner,
+} from "./ownership";
 import { readExecutionAuthority, type ExecutionAuthority } from "./authority";
 import {
   allocateWorktree,
@@ -1273,12 +1279,21 @@ export class DispatchService {
    * while branch/remote state is unreadable. Those cases fail closed.
    */
   private inspectRunEffects(run: PlanDispatchRun): string | null {
-    const owner = readWorkerOwner(run.id);
-    if (owner && pidOrGroupAlive(owner.pid, owner.pgid)) {
-      throw new DispatchError(
-        "external_effect_unverified",
-        `Run ${run.id} still has a live builder process group (pid ${owner.pid}, pgid ${owner.pgid})`,
-      );
+    const ownerPath = resolveWorkerOwnerPath(run.id);
+    if (existsSync(ownerPath)) {
+      const owner = readWorkerOwner(run.id);
+      if (!owner) {
+        throw new DispatchError(
+          "external_effect_unverified",
+          `Run ${run.id} has an unreadable worker ownership record; manual inspection required`,
+        );
+      }
+      if (pidOrGroupAlive(owner.pid, owner.pgid)) {
+        throw new DispatchError(
+          "external_effect_unverified",
+          `Run ${run.id} still has a live builder process group (pid ${owner.pid}, pgid ${owner.pgid})`,
+        );
+      }
     }
 
     const lockPath = join(run.worktree_path, ".worktree.lock");

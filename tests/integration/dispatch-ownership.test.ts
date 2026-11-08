@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -14,6 +22,7 @@ import { BrakeService } from "../../apps/backend/src/command/brakes";
 import {
   DispatchService,
   runLocalDispatchTick,
+  resolveWorkerOwnerPath,
   writeExecutionAuthority,
   writeWorkerOwner,
   type DispatchRunner,
@@ -756,6 +765,15 @@ describe("local dispatch ownership and frozen execution", () => {
 
       process.kill(-writerPid, "SIGKILL");
       await Promise.race([writerExited, new Promise<void>((resolve) => setTimeout(resolve, 2000))]);
+
+      // An unreadable ownership record is unknown, not absent: keep the claim.
+      const ownerPath = resolveWorkerOwnerPath(interruptedId);
+      writeFileSync(ownerPath, "{ not valid json");
+      expect(() => restarted.reconcileRun(projectId, interruptedId)).toThrowError(
+        /unreadable worker ownership/,
+      );
+      expect(restarted.getRun(projectId, interruptedId).state).toBe("running");
+      unlinkSync(ownerPath);
 
       const released = restarted.reconcileRun(projectId, interruptedId);
       expect(released.state).toBe("reconciled");
