@@ -1,12 +1,6 @@
-import type { DatabaseSync } from "node:sqlite";
+import type { Migration } from "../registry/migrations";
 
-interface WorkMigration {
-  version: number;
-  name: string;
-  up: (db: DatabaseSync) => void;
-}
-
-const MIGRATIONS: WorkMigration[] = [
+export const WORK_MIGRATIONS: Migration[] = [
   {
     version: 1,
     name: "project_work_identity_and_revisions",
@@ -232,41 +226,3 @@ const MIGRATIONS: WorkMigration[] = [
     },
   },
 ];
-
-export function applyWorkMigrations(db: DatabaseSync): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS schema_migrations (
-      version INTEGER PRIMARY KEY,
-      name TEXT NOT NULL,
-      applied_at INTEGER NOT NULL
-    );
-  `);
-
-  const applied = new Set(
-    (db.prepare("SELECT version FROM schema_migrations").all() as Array<{ version: number }>).map(
-      (row) => row.version,
-    ),
-  );
-
-  for (const migration of MIGRATIONS) {
-    if (applied.has(migration.version)) continue;
-    db.exec("BEGIN IMMEDIATE;");
-    try {
-      const present = db
-        .prepare("SELECT 1 AS present FROM schema_migrations WHERE version = ?")
-        .get(migration.version);
-      if (!present) {
-        migration.up(db);
-        db.prepare(
-          "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
-        ).run(migration.version, migration.name, Date.now());
-      }
-      db.exec("COMMIT;");
-    } catch (error) {
-      try {
-        db.exec("ROLLBACK;");
-      } catch {}
-      throw error;
-    }
-  }
-}
