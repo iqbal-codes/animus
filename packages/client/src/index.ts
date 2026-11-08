@@ -56,6 +56,16 @@ import {
   projectBrakeSubmissionSchema,
   backupSubmissionSchema,
   backupResultSchema,
+  backupCreateSubmissionSchema,
+  backupCreateResultSchema,
+  backupStatusSchema,
+  backupSnapshotRecordSchema,
+  restoreCreateSubmissionSchema,
+  restoreCreateResultSchema,
+  restoreStatusResultSchema,
+  restoreReconcileSubmissionSchema,
+  restoreOperationRecordSchema,
+  installationHoldSchema,
   labelEffectsSchema,
   admissionPreviewSchema,
   intakePreviewSubmissionSchema,
@@ -185,6 +195,17 @@ import {
   type ProjectBrakeSubmission,
   type BackupSubmission,
   type BackupResult,
+  type BackupCreateSubmission,
+  type BackupCreateResult,
+  type BackupStatus,
+  type BackupSnapshotRecord,
+  type BackupCredentialNotice,
+  type RestoreCreateSubmission,
+  type RestoreCreateResult,
+  type RestoreStatusResult,
+  type RestoreReconcileSubmission,
+  type RestoreOperationRecord,
+  type InstallationHold,
   type LabelEffects,
   type AdmissionPreview,
   type IntakePreviewSubmission,
@@ -219,6 +240,16 @@ export {
   projectBrakeSubmissionSchema,
   backupSubmissionSchema,
   backupResultSchema,
+  backupCreateSubmissionSchema,
+  backupCreateResultSchema,
+  backupStatusSchema,
+  backupSnapshotRecordSchema,
+  restoreCreateSubmissionSchema,
+  restoreCreateResultSchema,
+  restoreStatusResultSchema,
+  restoreReconcileSubmissionSchema,
+  restoreOperationRecordSchema,
+  installationHoldSchema,
   labelEffectsSchema,
   admissionPreviewSchema,
   intakePreviewSubmissionSchema,
@@ -271,6 +302,17 @@ export {
   type ProjectBrakeSubmission,
   type BackupSubmission,
   type BackupResult,
+  type BackupCreateSubmission,
+  type BackupCreateResult,
+  type BackupStatus,
+  type BackupSnapshotRecord,
+  type BackupCredentialNotice,
+  type RestoreCreateSubmission,
+  type RestoreCreateResult,
+  type RestoreStatusResult,
+  type RestoreReconcileSubmission,
+  type RestoreOperationRecord,
+  type InstallationHold,
   type LabelEffects,
   type AdmissionPreview,
   type IntakePreviewSubmission,
@@ -559,6 +601,32 @@ export function createFactoryClient(options: {
       const parsed = backupSubmissionSchema.safeParse({ destinationPath });
       if (!parsed.success) throw new FactoryClientError("invalid_payload");
       return postJson("/api/v1/commands/backup", parsed.data, backupResultSchema);
+    },
+    async backupStatus(): Promise<BackupStatus> {
+      return getJson("/api/v1/backups/status", backupStatusSchema);
+    },
+    async createWorkspaceBackup(submission: BackupCreateSubmission): Promise<BackupCreateResult> {
+      const parsed = backupCreateSubmissionSchema.safeParse(submission);
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      return postJson("/api/v1/backups", parsed.data, backupCreateResultSchema);
+    },
+    async restoreStatus(stateDir?: string): Promise<RestoreStatusResult> {
+      const qs = stateDir ? `?state_dir=${encodeURIComponent(stateDir)}` : "";
+      return getJson(`/api/v1/restores/status${qs}`, restoreStatusResultSchema);
+    },
+    async restoreWorkspace(submission: RestoreCreateSubmission): Promise<RestoreCreateResult> {
+      const parsed = restoreCreateSubmissionSchema.safeParse(submission);
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      return postJson("/api/v1/restores", parsed.data, restoreCreateResultSchema);
+    },
+    async reconcileRestore(
+      submission: RestoreReconcileSubmission,
+      stateDir?: string,
+    ): Promise<RestoreStatusResult> {
+      const parsed = restoreReconcileSubmissionSchema.safeParse(submission);
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      const qs = stateDir ? `?state_dir=${encodeURIComponent(stateDir)}` : "";
+      return postJson(`/api/v1/restores/reconcile${qs}`, parsed.data, restoreStatusResultSchema);
     },
     forProject(projectId: string) {
       const encId = encodeURIComponent(projectId);

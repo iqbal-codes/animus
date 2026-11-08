@@ -14,7 +14,8 @@ export type PublicationErrorCode =
   | "publication_head_mismatch"
   | "publication_summary_binding_ambiguous"
   | "publication_evidence_not_found"
-  | "publication_invalid_url";
+  | "publication_invalid_url"
+  | "publication_installation_held";
 
 export class PublicationError extends Error {
   constructor(

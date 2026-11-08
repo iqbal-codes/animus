@@ -17,6 +17,7 @@ function errorStatus(code: PublicationError["code"]): number {
     case "publication_wrong_binding":
     case "publication_summary_binding_ambiguous":
     case "publication_candidate_mismatch":
+    case "publication_installation_held":
     case "publication_no_candidate":
     case "publication_remote_ref_mismatch":
     case "publication_head_unverified":

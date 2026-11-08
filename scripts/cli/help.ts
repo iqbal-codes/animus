@@ -84,7 +84,8 @@ export const helpEntries: readonly HelpEntry[] = [
   {
     command: "draft",
     spec: "draft <list|get|refine|revise|approve|reject|request-changes> --project <project-id>",
-    description: "Refine imported work into local drafts, answer questions, and record operator decisions",
+    description:
+      "Refine imported work into local drafts, answer questions, and record operator decisions",
   },
   {
     command: "promotion",
@@ -94,12 +95,19 @@ export const helpEntries: readonly HelpEntry[] = [
   {
     command: "plan",
     spec: "plan <list|get|import|approve|revoke|dispatch|runs|run|detail|evidence|findings|grants|grant|hold|resume|stop|takeover|reconcile|publication|audit|publish|bind-evidence> --project <project-id>",
-    description: "Inspect, decide and dispatch frozen local execution plans with budgets, run controls and publication audit",
+    description:
+      "Inspect, decide and dispatch frozen local execution plans with budgets, run controls and publication audit",
   },
   {
     command: "project",
     spec: "project <list|get|register|remove|monitoring>",
     description: "Manage projects through the selected factory API",
+  },
+  {
+    command: "backup",
+    spec: "backup <status|create|restore|restores|reconcile> [destination|source] [--target-state-dir <path>] [--target-home <path>]",
+    description:
+      "Create verified workspace backups, report restorability, and restore isolated held installations",
   },
   {
     command: "command",
@@ -185,12 +193,14 @@ export const orderedFlags: readonly FlagHelp[] = [
   },
   {
     spec: "--kind <standalone|spec>",
-    description: "Prepared plan kind for import; standalone tickets stay standalone, specs never fall back",
+    description:
+      "Prepared plan kind for import; standalone tickets stay standalone, specs never fall back",
     commands: ["plan"],
   },
   {
     spec: "--provider <id>",
-    description: "Default agent harness provider (pi, claude, omp, commandcode; codex, opencode coming soon)",
+    description:
+      "Default agent harness provider (pi, claude, omp, commandcode; codex, opencode coming soon)",
     commands: ["setup", "config"],
   },
   {
@@ -317,6 +327,16 @@ export const orderedFlags: readonly FlagHelp[] = [
     spec: "--refresh",
     description: "Force fresh GitHub API lookup bypassing intake cache",
     commands: ["intake"],
+  },
+  {
+    spec: "--target-state-dir <path>",
+    description: "Isolated target state directory for backup restore, status and reconciliation",
+    commands: ["backup"],
+  },
+  {
+    spec: "--target-home <path>",
+    description: "Isolated target Animus home used to rewrite legitimate home-local worktree paths",
+    commands: ["backup"],
   },
   {
     spec: "--mapping <path>",

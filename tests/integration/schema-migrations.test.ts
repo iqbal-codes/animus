@@ -17,6 +17,7 @@ const DISPATCH_V4 = "delivery_dispatch_ownership";
 const EVIDENCE_V5 = "execution_observations_findings_artifacts";
 const BUDGET_V6 = "execution_budgets_and_controls";
 const PUBLICATION_V7 = "publication_audit_outgoing_intents";
+const RESTORE_V11 = "workspace_backup_restore";
 
 const ALL_MIGRATIONS = [
   { version: 1, name: WORK_V1 },
@@ -26,6 +27,7 @@ const ALL_MIGRATIONS = [
   { version: 5, name: EVIDENCE_V5 },
   { version: 6, name: BUDGET_V6 },
   { version: 7, name: PUBLICATION_V7 },
+  { version: 11, name: RESTORE_V11 },
 ];
 
 function tableExists(db: DatabaseSync, table: string): boolean {
@@ -152,7 +154,7 @@ describe("coherent schema migration registry", () => {
     const reopened = initializeDatabase(path);
     try {
       expect(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({
-        count: 7,
+        count: ALL_MIGRATIONS.length,
       });
     } finally {
       reopened.close();

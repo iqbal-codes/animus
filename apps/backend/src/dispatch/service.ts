@@ -51,6 +51,7 @@ import {
   readExecutionAuthority,
   type ExecutionAuthority,
 } from "@animus/contracts/execution-authority";
+import { assertInstallationNotHeld } from "../restore/hold";
 import { ExecutionObservationService } from "../evidence/observations";
 import {
   BudgetGrantConflictError,
@@ -88,6 +89,7 @@ export type DispatchErrorCode =
   | "owner_still_alive"
   | "external_effect_unverified"
   | "authority_not_activated"
+  | "installation_held"
   | "budget_exhausted"
   | "budget_scope_missing"
   | "work_held"
@@ -1364,6 +1366,20 @@ export class DispatchService {
         "Local execution authority is not activated; complete the validated #165 cutover before dispatching",
       );
     }
+    this.assertInstallationReady();
+  }
+
+  private assertInstallationReady(): void {
+    try {
+      assertInstallationNotHeld(this.db);
+    } catch (error) {
+      throw new DispatchError(
+        "installation_held",
+        error instanceof Error
+          ? error.message
+          : "Restored installation is held pending reconciliation",
+      );
+    }
   }
 
   private claim(input: {
@@ -2038,6 +2054,11 @@ export class DispatchService {
     explicit: boolean;
   }): void {
     const { project, plan, manifest, member, targetBranch, scheduled, explicit } = input;
+
+    // A restored installation must not allocate work until an operator records
+    // explicit ownership/external reconciliation. Re-checked inside the serialized
+    // claim transaction so a concurrent restore hold cannot be raced.
+    this.assertInstallationReady();
 
     let currentPlan: PlanRecord;
     try {

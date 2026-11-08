@@ -40,6 +40,11 @@ export const operatorErrorSchema = z.object({
     "brake_state_unknown",
     "storage_failed",
     "backup_failed",
+    "backup_incomplete",
+    "restore_failed",
+    "restore_validation_failed",
+    "restore_target_unavailable",
+    "installation_held",
     "target_drift",
     "admission_rejected",
     "spec_parse_error",
@@ -1396,6 +1401,115 @@ export const backupResultSchema = z.object({
   timestamp: z.string(),
 });
 export type BackupResult = z.infer<typeof backupResultSchema>;
+
+// Workspace backup/restore (#164)
+export const backupSnapshotStatusSchema = z.enum(["complete", "failed"]);
+export type BackupSnapshotStatus = z.infer<typeof backupSnapshotStatusSchema>;
+
+export const backupSnapshotRecordSchema = z.object({
+  id: z.string().min(1),
+  destinationPath: z.string().min(1),
+  manifestVersion: z.number().int().positive(),
+  manifestHash: z.string().regex(/^[a-f0-9]{64}$/),
+  databaseSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  databaseSizeBytes: z.number().int().nonnegative(),
+  artifactCount: z.number().int().nonnegative(),
+  schemaVersion: z.number().int().positive(),
+  status: backupSnapshotStatusSchema,
+  createdBy: z.string().min(1),
+  error: z.string().nullable(),
+  verifiedAt: z.number().int().nonnegative().nullable(),
+  createdAt: z.number().int().nonnegative(),
+  finishedAt: z.number().int().nonnegative(),
+});
+export type BackupSnapshotRecord = z.infer<typeof backupSnapshotRecordSchema>;
+
+export const backupCreateSubmissionSchema = z.object({
+  destinationPath: z.string().min(1).max(4096),
+  actor: z.string().min(1).max(200).optional(),
+});
+export type BackupCreateSubmission = z.infer<typeof backupCreateSubmissionSchema>;
+
+export const backupCreateResultSchema = z.object({
+  snapshot: backupSnapshotRecordSchema,
+  manifestHash: z.string().regex(/^[a-f0-9]{64}$/),
+  databaseSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  artifactCount: z.number().int().nonnegative(),
+  schemaVersion: z.number().int().positive(),
+  destinationPath: z.string().min(1),
+  createdAt: z.number().int().nonnegative(),
+});
+export type BackupCreateResult = z.infer<typeof backupCreateResultSchema>;
+
+export const backupCredentialNoticeSchema = z.object({
+  included: z.literal(false),
+  reconfigurationRequired: z.array(z.string().min(1)),
+  note: z.string().min(1),
+});
+export type BackupCredentialNotice = z.infer<typeof backupCredentialNoticeSchema>;
+
+export const backupStatusSchema = z.object({
+  lastBackup: backupSnapshotRecordSchema.nullable(),
+  restorable: z.boolean(),
+  reasons: z.array(z.string()),
+  artifactCount: z.number().int().nonnegative(),
+  credentials: backupCredentialNoticeSchema,
+  sameDiskWarning: z.string().min(1),
+});
+export type BackupStatus = z.infer<typeof backupStatusSchema>;
+
+export const restoreCreateSubmissionSchema = z.object({
+  sourcePath: z.string().min(1).max(4096),
+  targetStateDir: z.string().min(1).max(4096),
+  targetHome: z.string().min(1).max(4096).optional(),
+  actor: z.string().min(1).max(200).optional(),
+});
+export type RestoreCreateSubmission = z.infer<typeof restoreCreateSubmissionSchema>;
+
+export const restoreStatusSchema = z.enum(["completed", "failed"]);
+export type RestoreStatus = z.infer<typeof restoreStatusSchema>;
+
+export const restoreOperationRecordSchema = z.object({
+  id: z.string().min(1),
+  sourcePath: z.string().min(1),
+  targetStateDir: z.string().min(1),
+  manifestHash: z.string().regex(/^[a-f0-9]{64}$/),
+  status: restoreStatusSchema,
+  report: z.record(z.string(), z.unknown()),
+  createdAt: z.number().int().nonnegative(),
+  finishedAt: z.number().int().nonnegative(),
+});
+export type RestoreOperationRecord = z.infer<typeof restoreOperationRecordSchema>;
+
+export const installationHoldSchema = z.object({
+  held: z.boolean(),
+  status: z.enum(["held", "reconciled"]).nullable(),
+  reason: z.string().nullable(),
+  sourceRestoreId: z.string().nullable(),
+  restoredAt: z.number().int().nonnegative().nullable(),
+  reconciledAt: z.number().int().nonnegative().nullable(),
+});
+export type InstallationHold = z.infer<typeof installationHoldSchema>;
+
+export const restoreCreateResultSchema = z.object({
+  operation: restoreOperationRecordSchema,
+  installation: installationHoldSchema,
+});
+export type RestoreCreateResult = z.infer<typeof restoreCreateResultSchema>;
+
+export const restoreStatusResultSchema = z.object({
+  installation: installationHoldSchema,
+  lastRestore: restoreOperationRecordSchema.nullable(),
+  heldRunCount: z.number().int().nonnegative(),
+  pendingPublicationIntentCount: z.number().int().nonnegative(),
+});
+export type RestoreStatusResult = z.infer<typeof restoreStatusResultSchema>;
+
+export const restoreReconcileSubmissionSchema = z.object({
+  actor: z.string().min(1).max(200),
+  reason: z.string().min(1).max(2000),
+});
+export type RestoreReconcileSubmission = z.infer<typeof restoreReconcileSubmissionSchema>;
 
 // Coordination schemas (Issue #62)
 export const childTicketStatusSchema = z.enum([
