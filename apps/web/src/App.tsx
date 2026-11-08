@@ -6,6 +6,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { JobsScreen } from "@/features/jobs/jobs-screen";
 import { InboxScreen } from "@/features/inbox/inbox-screen";
+import { DraftsScreen } from "@/features/drafts/drafts-screen";
 import { SettingsModal } from "@/features/settings/settings-modal";
 import { JOBS_BOARD, selectInbox } from "@/features/jobs/jobs-model";
 import type { BackendState } from "@/features/jobs/factory-status";
@@ -64,20 +65,22 @@ export function App() {
           />
 
           <SidebarInset className="min-w-0">
-            {tab === "inbox" ? (
+            {tab === "inbox" && (
               <InboxScreen
                 board={JOBS_BOARD}
                 backendState={backendState}
                 includeFailed={preferences.notifyFailedJobs}
                 onOpenJobs={() => setTab("jobs")}
               />
-            ) : (
+            )}
+            {tab === "jobs" && (
               <JobsScreen
                 board={JOBS_BOARD}
                 backendState={backendState}
                 density={preferences.cardDensity}
               />
             )}
+            {tab === "drafts" && <DraftsScreen />}
           </SidebarInset>
         </div>
 

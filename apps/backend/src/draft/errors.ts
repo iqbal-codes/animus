@@ -7,6 +7,7 @@ export type DraftErrorCode =
   | "draft_stale_revision"
   | "draft_concurrent_update"
   | "draft_not_approvable"
+  | "draft_prepared_work"
   | "draft_planning_unavailable"
   | "draft_planning_failed"
   | "draft_storage_failed";

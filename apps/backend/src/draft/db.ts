@@ -1,14 +1,8 @@
-import type { DatabaseSync } from "node:sqlite";
+import type { Migration } from "../registry/migrations";
 
-interface DraftMigration {
-  version: number;
-  name: string;
-  up: (db: DatabaseSync) => void;
-}
-
-const MIGRATIONS: DraftMigration[] = [
+export const DRAFT_MIGRATIONS: Migration[] = [
   {
-    version: 2,
+    version: 3,
     name: "project_work_drafts_and_decisions",
     up(db) {
       db.exec(`
@@ -108,41 +102,3 @@ const MIGRATIONS: DraftMigration[] = [
     },
   },
 ];
-
-export function applyDraftMigrations(db: DatabaseSync): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS schema_migrations (
-      version INTEGER PRIMARY KEY,
-      name TEXT NOT NULL,
-      applied_at INTEGER NOT NULL
-    );
-  `);
-
-  const applied = new Set(
-    (db.prepare("SELECT version FROM schema_migrations").all() as Array<{ version: number }>).map(
-      (row) => row.version,
-    ),
-  );
-
-  for (const migration of MIGRATIONS) {
-    if (applied.has(migration.version)) continue;
-    db.exec("BEGIN IMMEDIATE;");
-    try {
-      const present = db
-        .prepare("SELECT 1 AS present FROM schema_migrations WHERE version = ?")
-        .get(migration.version);
-      if (!present) {
-        migration.up(db);
-        db.prepare(
-          "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
-        ).run(migration.version, migration.name, Date.now());
-      }
-      db.exec("COMMIT;");
-    } catch (error) {
-      try {
-        db.exec("ROLLBACK;");
-      } catch {}
-      throw error;
-    }
-  }
-}

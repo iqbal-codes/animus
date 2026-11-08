@@ -123,7 +123,9 @@ export class DraftService {
       );
       const instructions =
         submission.instructions ??
-        (priorDecision?.decision === "revise"
+        (priorDecision?.decision === "revise" &&
+        priorRevision &&
+        priorDecision.revision_id === priorRevision.id
           ? (priorDecision.instructions ?? undefined)
           : undefined);
 
@@ -185,7 +187,7 @@ export class DraftService {
       const answers = resolveAnswers(this.questionsOf(priorRevision), submission.answers ?? []);
       const instructions =
         submission.instructions ??
-        (priorDecision?.decision === "revise"
+        (priorDecision?.decision === "revise" && priorDecision.revision_id === priorRevision.id
           ? (priorDecision.instructions ?? undefined)
           : undefined);
 
@@ -354,6 +356,12 @@ export class DraftService {
     } catch (error) {
       if (error instanceof DraftError) throw error;
       const message = error instanceof Error ? error.message : String(error);
+      if (message.startsWith("DRAFT PREPARED WORK:")) {
+        throw new DraftError(
+          "draft_prepared_work",
+          message.replace(/^DRAFT PREPARED WORK:\s*/, ""),
+        );
+      }
       const invalid = /Invalid draft planning output|not canonical|missing a non-empty/i.test(
         message,
       );
@@ -501,7 +509,6 @@ export class DraftService {
           approved,
           approved_revision_id: approved ? revision.id : null,
           can_publish: approved,
-          can_dispatch: approved,
         },
       });
     } catch (error) {

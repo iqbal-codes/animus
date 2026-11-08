@@ -92,6 +92,11 @@ export const helpEntries: readonly HelpEntry[] = [
     description: "Inspect unpromoted commits or prepare batch promotion PR",
   },
   {
+    command: "plan",
+    spec: "plan <list|get|import|approve|revoke> --project <project-id>",
+    description: "Inspect and decide frozen local execution plans",
+  },
+  {
     command: "project",
     spec: "project <list|get|register|remove|monitoring>",
     description: "Manage projects through the selected factory API",
@@ -155,13 +160,13 @@ export const orderedFlags: readonly FlagHelp[] = [
   },
   {
     spec: "--project <project-id>",
-    description: "Registered project ID for work or draft reads",
-    commands: ["work", "draft"],
+    description: "Registered project ID for work, draft, or plan reads",
+    commands: ["work", "draft", "plan"],
   },
   {
     spec: "--reason <text>",
-    description: "Reason for a draft approve, reject, or request-changes decision",
-    commands: ["draft"],
+    description: "Reason for a draft or plan decision",
+    commands: ["draft", "plan"],
   },
   {
     spec: "--answers <json>",
@@ -177,6 +182,11 @@ export const orderedFlags: readonly FlagHelp[] = [
     spec: "--revision <number>",
     description: "Exact draft revision number a decision targets",
     commands: ["draft"],
+  },
+  {
+    spec: "--kind <standalone|spec>",
+    description: "Prepared plan kind for import; standalone tickets stay standalone, specs never fall back",
+    commands: ["plan"],
   },
   {
     spec: "--provider <id>",
@@ -270,8 +280,8 @@ export const orderedFlags: readonly FlagHelp[] = [
   },
   {
     spec: "--issue, -i <number>",
-    description: "Target GitHub issue number for loop run/watch or intake",
-    commands: ["loop", "intake"],
+    description: "Target GitHub issue number for loop run/watch, intake or plan import",
+    commands: ["loop", "intake", "plan"],
   },
   {
     spec: "--run, -r <id>",

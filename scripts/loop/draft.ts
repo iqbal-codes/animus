@@ -22,10 +22,8 @@ import { loadPrompt, renderPrompt } from "./prompts";
 import { buildProviderArgv } from "./providers";
 import {
   getWorkspaceSnapshot,
-  triageOutputSchema,
   validateCanonicalIssueBody,
   REQUIRED_TRIAGE_SKILL,
-  type TriageAction,
 } from "./triage";
 import type { AgentTransport, LoopRole, RoleBudget } from "./types";
 
@@ -117,7 +115,18 @@ function verificationOf(markdown: string, boundary: DraftBoundary): string[] {
   return [boundary.test_seam];
 }
 
-function preparedStandalonePlan(source: PlanDraftInput["source"]): DraftPlan | null {
+/**
+ * A prepared work contract is admitted as-is only when it is unambiguously a
+ * single standalone ticket.
+ *
+ * Two signals disqualify pass-through, both of which mean the item is a spec or
+ * a child of one: the `spec` label, or a `Part of #<n>` reference. A canonical
+ * parent-spec body that loses its label must never be silently converted into
+ * standalone execution, so the check is on explicit structural markers rather
+ * than on title wording. Prepared specs are admitted by the plan-admission lane
+ * (#153); draft refinement never performs that decomposition itself.
+ */
+function preparedWorkPlan(source: PlanDraftInput["source"]): DraftPlan | null {
   if (parsePartOf(source.body) !== null) return null;
   if (source.labels.some((label) => label.toLowerCase() === "spec")) return null;
   if (!validateCanonicalIssueBody(source.body).valid) return null;
@@ -127,9 +136,14 @@ function preparedStandalonePlan(source: PlanDraftInput["source"]): DraftPlan | n
   if (acceptance.length === 0) return null;
   const boundary = boundaryOf(source.body);
   const verification = verificationOf(source.body, boundary);
-  const invariants = sections.invariants.length > 0 ? sections.invariants : [
-    "The prepared ticket contract remains binding without a second decomposition.",
-  ];
+  // A complete standalone ticket proves its own verification. A parent-spec body
+  // does not carry a `## Verification` section, so requiring one here prevents a
+  // canonical spec from being silently accepted as standalone execution.
+  if (extractSection(source.body, "Verification").length === 0) return null;
+  const invariants =
+    sections.invariants.length > 0
+      ? sections.invariants
+      : ["The prepared ticket contract remains binding without a second decomposition."];
 
   return {
     kind: "standalone",
@@ -144,6 +158,35 @@ function preparedStandalonePlan(source: PlanDraftInput["source"]): DraftPlan | n
     body: source.body,
     prepared: true,
   };
+}
+
+/**
+ * Detects a work item that is already a prepared specification or a child of
+ * one. Draft refinement never re-decomposes these: admission of prepared specs
+ * and children belongs to the plan-admission lane (#153), so this refuses
+ * closed rather than silently treating a spec as fresh raw intake.
+ */
+function preparedSpecReason(source: PlanDraftInput["source"]): string | null {
+  const partOf = parsePartOf(source.body);
+  if (partOf !== null) {
+    return `the imported work already declares 'Part of #${partOf}' and must be admitted as a prepared child of that spec`;
+  }
+  if (source.labels.some((label) => label.toLowerCase() === "spec")) {
+    return "the imported work is a prepared parent specification and must be admitted through plan admission instead of being re-decomposed";
+  }
+  if (/source\s+acceptance\s+coverage\s*:/i.test(source.body)) {
+    return "the imported work declares acceptance coverage for a prepared parent and must be admitted as part of that plan";
+  }
+  // A canonical body that is missing its `## Verification` section is not a
+  // complete executable ticket. The common cause is a parent-spec body whose
+  // label was lost, so refuse instead of re-planning it as fresh raw intake.
+  if (validateCanonicalIssueBody(source.body).valid) {
+    const hasVerification = extractSection(source.body, "Verification").length > 0;
+    if (!hasVerification) {
+      return "the imported canonical work has no '## Verification' section, so it is an incomplete or parent-spec record that must be admitted deliberately rather than re-planned";
+    }
+  }
+  return null;
 }
 
 function renderDraftPrompt(input: PlanDraftInput, artifactsDir: string): string {
@@ -205,95 +248,6 @@ function assertProviderGuard(provider: string, extensions: string[]): void {
   );
 }
 
-function withVerificationSection(body: string, boundary: DraftBoundary): string {
-  if (extractSection(body, "Verification").length > 0) return body;
-  return `${body.trimEnd()}\n\n## Verification\n- ${boundary.test_seam}\n`;
-}
-
-function legacyAcceptanceCriteria(body: string, label: string): DraftAcceptanceCriterion[] {
-  const acceptance = acceptanceCriteriaOf(body);
-  if (acceptance.length === 0) {
-    throw new Error(`Legacy triage output for ${label} has no acceptance criteria`);
-  }
-  return acceptance;
-}
-
-function adaptLegacyTriageAction(action: TriageAction): DraftPlan {
-  if (action.action === "ask_clarification") {
-    return {
-      kind: "clarification",
-      reason: action.reason,
-      questions: [{ id: "q1", question: action.question, reason: action.reason }],
-    };
-  }
-  if (action.action === "promote_single_ticket") {
-    const sections = parseTicketSections(action.body);
-    const boundary = boundaryOf(action.body);
-    return {
-      kind: "standalone",
-      title: action.title,
-      scope: sections.sourceProblem,
-      outcome: sections.outcome,
-      invariants:
-        sections.invariants.length > 0
-          ? sections.invariants
-          : ["The requested contract remains binding."],
-      acceptance_criteria: legacyAcceptanceCriteria(action.body, "standalone ticket"),
-      verification_requirements: verificationOf(action.body, boundary),
-      boundary,
-      depends_on: sections.dependsOn,
-      body: withVerificationSection(action.body, boundary),
-      prepared: true,
-    };
-  }
-  if (action.action === "promote_epic_spec_and_tickets") {
-    if (action.childTickets.length < 2) {
-      throw new Error("Legacy epic promotion needs at least two child tickets to form a spec draft");
-    }
-    const parentSections = parseTicketSections(action.parentBody);
-    const parentBoundary = boundaryOf(action.parentBody);
-    const parentAcceptance = legacyAcceptanceCriteria(action.parentBody, "parent spec");
-    const parentAcIds = parentAcceptance.map((criterion) => criterion.id);
-    return {
-      kind: "spec",
-      title: action.parentTitle,
-      scope: parentSections.sourceProblem,
-      outcome: parentSections.outcome,
-      invariants:
-        parentSections.invariants.length > 0
-          ? parentSections.invariants
-          : ["The requested contract remains binding."],
-      acceptance_criteria: parentAcceptance,
-      verification_requirements: verificationOf(action.parentBody, parentBoundary),
-      boundary: parentBoundary,
-      depends_on: parentSections.dependsOn,
-      body: withVerificationSection(action.parentBody, parentBoundary),
-      children: action.childTickets.map((child, index) => {
-        const sections = parseTicketSections(child.body);
-        const boundary = boundaryOf(child.body);
-        return {
-          id: `C${index + 1}`,
-          title: child.title,
-          scope: sections.sourceProblem,
-          outcome: sections.outcome,
-          invariants:
-            sections.invariants.length > 0
-              ? sections.invariants
-              : ["The requested contract remains binding."],
-          acceptance_criteria: legacyAcceptanceCriteria(child.body, `child ticket #${index + 1}`),
-          verification_requirements: verificationOf(child.body, boundary),
-          boundary,
-          depends_on: sections.dependsOn,
-          body: withVerificationSection(child.body, boundary),
-          depends_on_indices: child.dependsOnIndices,
-          covers_parent_ac_ids: [parentAcIds[index % parentAcIds.length]!],
-        };
-      }),
-    };
-  }
-  throw new Error("Legacy hold_for_human triage output cannot become an approvable draft plan");
-}
-
 export async function planDraft(
   input: PlanDraftInput,
   options: PlanDraftOptions = {},
@@ -302,7 +256,13 @@ export async function planDraft(
     throw new Error(`Draft planning root does not exist: ${input.root}`);
   }
 
-  const prepared = preparedStandalonePlan(input.source);
+  const prepared = preparedWorkPlan(input.source);
+  if (!prepared) {
+    const specReason = preparedSpecReason(input.source);
+    if (specReason) {
+      throw new Error(`DRAFT PREPARED WORK: Prepared work is not draft material: ${specReason}.`);
+    }
+  }
   if (prepared) {
     return {
       plan: prepared,
@@ -417,16 +377,10 @@ export async function planDraft(
     );
   }
   const validated = draftPlanSchema.safeParse(parsed);
-  let plan: DraftPlan;
-  if (validated.success) {
-    plan = validated.data;
-  } else {
-    const legacy = triageOutputSchema.safeParse(parsed);
-    if (!legacy.success) {
-      throw new Error(`Invalid draft planning output schema: ${validated.error.message}`);
-    }
-    plan = adaptLegacyTriageAction(legacy.data);
+  if (!validated.success) {
+    throw new Error(`Invalid draft planning output schema: ${validated.error.message}`);
   }
+  const plan = validated.data;
   if (plan.kind !== "clarification") {
     const bodies = plan.kind === "standalone" ? [plan.body] : [plan.body, ...plan.children.map((child) => child.body)];
     for (const body of bodies) {

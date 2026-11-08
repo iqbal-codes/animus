@@ -22,6 +22,7 @@ import {
 import { configuration, hostOrigin, type Configuration } from "./config";
 import { IntakeService, handleProjectIntakeRoute } from "./intake";
 import { WorkService, handleProjectWorkRoute } from "./work";
+import { PlanService, handleProjectPlanRoute } from "./plans";
 import {
   DraftService,
   handleProjectDraftRoute,
@@ -144,6 +145,7 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     planner: options?.draftPlanner ?? defaultDraftPlannerAdapter,
     stateRoot: options?.stateDir ?? resolveStateDir(),
   });
+  const planService = new PlanService(registryService.getDb(), registryService.getForge());
   const onboardingService = new ProjectOnboardingService(registryService);
   const harnessService = new HarnessService();
 
@@ -731,6 +733,12 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
       if (scopedAction === "drafts") {
         const draftRes = await handleProjectDraftRoute(request, projectId, parts, draftService);
         if (draftRes) return draftRes;
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
+      if (scopedAction === "plans") {
+        const planRes = await handleProjectPlanRoute(request, projectId, parts, planService);
+        if (planRes) return planRes;
         return Response.json({ error: "not_found" }, { status: 404 });
       }
 

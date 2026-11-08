@@ -290,7 +290,6 @@ describe("local draft refinement and operator review", () => {
       approved: false,
       approved_revision_id: null,
       can_publish: false,
-      can_dispatch: false,
     });
     expect(fixture.transportCalls()).toBe(1);
     expect(fixture.requests[0]!.work.revision.content_hash).toBe(work.revision.content_hash);
@@ -390,12 +389,14 @@ describe("local draft refinement and operator review", () => {
       reason: "Scope is correct",
     });
     expect(approved.status).toBe("approved");
+    // Publication approval is not execution admission: an approved but
+    // unpublished draft may publish, but carries no dispatch authority at all.
     expect(approved.authorization).toEqual({
       approved: true,
       approved_revision_id: first.latest_revision.id,
       can_publish: true,
-      can_dispatch: true,
     });
+    expect(approved.authorization).not.toHaveProperty("can_dispatch");
 
     const revised = await service.revise(projectId, first.id, {
       answers: [],
@@ -443,6 +444,102 @@ describe("local draft refinement and operator review", () => {
     expect(fixture.requests[1]!.prior?.instructions).toBe("Keep the existing API stable.");
   });
 
+  test("AC4: revise instructions stop applying once the decision no longer targets the current revision", async () => {
+    const work = await importWork(17);
+    const fixture = plannerFixture([
+      standalonePlan(),
+      standalonePlan({ title: "Revised once" }),
+      standalonePlan({ title: "Revised twice" }),
+      standalonePlan({ title: "Revised three times" }),
+    ]);
+    const service = new DraftService(db, {
+      planner: fixture.planner,
+      stateRoot: join(root, "state"),
+    });
+
+    const first = await service.refine(projectId, { work_id: work.id, answers: [] });
+    // Operator asks for a change on revision 1 with explicit instructions.
+    service.decide(projectId, first.id, {
+      revision_number: 1,
+      decision: "revise",
+      reason: "Change the boundary",
+      instructions: "INSTR-FROM-REV1",
+    });
+
+    // Revision 2 inherits the revision-1 instructions exactly once.
+    const r2 = await service.revise(projectId, first.id, { answers: [] });
+    expect(r2.latest_revision.revision_number).toBe(2);
+    expect(fixture.requests[1]!.prior?.instructions).toBe("INSTR-FROM-REV1");
+    expect(r2.latest_revision.instructions).toBe("INSTR-FROM-REV1");
+
+    // The revise decision still targets revision 1, which is no longer the
+    // current revision, so revision 3 must not re-inherit the stale text.
+    const r3 = await service.revise(projectId, first.id, { answers: [] });
+    expect(r3.latest_revision.revision_number).toBe(3);
+    expect(fixture.requests[2]!.prior?.instructions).toBeUndefined();
+    expect(r3.latest_revision.instructions).toBeNull();
+
+    // A fresh revise decision on the current revision supplies new instructions.
+    service.decide(projectId, first.id, {
+      revision_number: 3,
+      decision: "revise",
+      reason: "Second pass",
+      instructions: "INSTR-FROM-REV3",
+    });
+    const r4 = await service.revise(projectId, first.id, { answers: [] });
+    expect(r4.latest_revision.revision_number).toBe(4);
+    expect(fixture.requests[3]!.prior?.instructions).toBe("INSTR-FROM-REV3");
+    expect(r4.latest_revision.instructions).toBe("INSTR-FROM-REV3");
+  });
+
+  test("AC4: revise instructions are not resurfaced after an approval supersedes them", async () => {
+    const work = await importWork(18);
+    const fixture = plannerFixture([
+      standalonePlan(),
+      standalonePlan({ title: "Revision two" }),
+      standalonePlan({ title: "Revision three" }),
+    ]);
+    const service = new DraftService(db, {
+      planner: fixture.planner,
+      stateRoot: join(root, "state"),
+    });
+
+    const first = await service.refine(projectId, { work_id: work.id, answers: [] });
+    service.decide(projectId, first.id, {
+      revision_number: 1,
+      decision: "revise",
+      reason: "Needs work",
+      instructions: "STALE-INSTRUCTIONS",
+    });
+    await service.revise(projectId, first.id, { answers: [] });
+    expect(fixture.requests[1]!.prior?.instructions).toBe("STALE-INSTRUCTIONS");
+
+    // The operator now approves revision 2, superseding the revise decision.
+    service.decide(projectId, first.id, {
+      revision_number: 2,
+      decision: "approve",
+      reason: "This scope is correct",
+    });
+    // Explicit instructions supplied here are honored; the stale revise text is not inherited.
+    const r3 = await service.revise(projectId, first.id, {
+      answers: [],
+      instructions: "FRESH-INSTRUCTIONS",
+    });
+    expect(r3.latest_revision.instructions).toBe("FRESH-INSTRUCTIONS");
+    expect(fixture.requests[2]!.prior?.instructions).toBe("FRESH-INSTRUCTIONS");
+
+    // Without new instructions, approval does not replay the old revise text.
+    const fixture2 = plannerFixture([standalonePlan({ title: "Revision four" })]);
+    const service2 = new DraftService(db, {
+      planner: fixture2.planner,
+      stateRoot: join(root, "state"),
+    });
+    const r4 = await service2.revise(projectId, first.id, { answers: [] });
+    expect(r4.latest_revision.revision_number).toBe(4);
+    expect(fixture2.requests[0]!.prior?.instructions).toBeUndefined();
+    expect(r4.latest_revision.instructions).toBeNull();
+  });
+
   test("AC3: a standard-complete prepared ticket is not decomposed or sent to the model again", async () => {
     const preparedBody = canonicalBody(["AC1"]);
     const work = await importWork(12, preparedBody);
@@ -459,6 +556,107 @@ describe("local draft refinement and operator review", () => {
     if (record.latest_revision.plan.kind !== "standalone") throw new Error("expected standalone");
     expect(record.latest_revision.plan.prepared).toBe(true);
     expect(record.latest_revision.plan.title).toBe("Add a small button");
+  });
+
+  test("AC3: a prepared parent spec is routed to plan admission rather than re-decomposed as standalone", async () => {
+    // Canonical parent-spec body with no `## Verification` section and no `Part of`.
+    const specBody = [
+      "## Source and problem",
+      "A substantial feature spanning several slices.",
+      "",
+      "## Outcome",
+      "The feature is delivered end to end.",
+      "",
+      "## Invariants",
+      "- Existing behavior remains intact.",
+      "",
+      "## Acceptance criteria",
+      "- [ ] AC1: First parent behavior.",
+      "- [ ] AC2: Second parent behavior.",
+      "",
+      "## Boundary",
+      "- **Touchpoints**: entire feature",
+      "- **Known callers**: none",
+      "- **Test seam**: tests/integration/feature.test.ts",
+      "- **Exclusions**: unrelated work",
+      "",
+      "Source acceptance coverage: AC1",
+      "",
+      "Depends on: None",
+    ].join("\n");
+    const work = await importWork(31, specBody);
+    const fixture = plannerFixture([new Error("transport must not run")]);
+    const service = new DraftService(db, {
+      planner: fixture.planner,
+      stateRoot: join(root, "state"),
+    });
+
+    await expect(
+      service.refine(projectId, { work_id: work.id, answers: [] }),
+    ).rejects.toMatchObject({ code: "draft_prepared_work" });
+    await expect(service.refine(projectId, { work_id: work.id, answers: [] })).rejects.toThrow(
+      /plan admission|prepared/i,
+    );
+    expect(service.list(projectId)).toEqual([]);
+    expect(fixture.transportCalls()).toBe(0);
+  });
+
+  test("AC3: a canonical body without a Verification section is refused, not re-planned", async () => {
+    const noVerification = canonicalBody(["AC1"]).replace(
+      /## Verification[\s\S]*?(?=Depends on:)/,
+      "",
+    );
+    const work = await importWork(34, noVerification);
+    const fixture = plannerFixture([new Error("transport must not run")]);
+    const service = new DraftService(db, {
+      planner: fixture.planner,
+      stateRoot: join(root, "state"),
+    });
+
+    await expect(
+      service.refine(projectId, { work_id: work.id, answers: [] }),
+    ).rejects.toMatchObject({ code: "draft_prepared_work" });
+    expect(service.list(projectId)).toEqual([]);
+    expect(fixture.transportCalls()).toBe(0);
+  });
+
+  test("AC3: a prepared child ticket is routed to plan admission rather than refined as standalone", async () => {
+    const childBody = ["Part of #900", "", canonicalBody(["AC1"])].join("\n");
+    const work = await importWork(32, childBody);
+    const fixture = plannerFixture([new Error("transport must not run")]);
+    const service = new DraftService(db, {
+      planner: fixture.planner,
+      stateRoot: join(root, "state"),
+    });
+
+    await expect(
+      service.refine(projectId, { work_id: work.id, answers: [] }),
+    ).rejects.toMatchObject({ code: "draft_prepared_work" });
+    await expect(service.refine(projectId, { work_id: work.id, answers: [] })).rejects.toThrow(
+      /Part of #900/,
+    );
+    expect(service.list(projectId)).toEqual([]);
+    expect(fixture.transportCalls()).toBe(0);
+  });
+
+  test("AC1: acceptance criterion AC1 is not satisfied by the substring inside AC10", async () => {
+    const bodyWithAc10 = canonicalBody(["AC10"]);
+    const planWithAc1 = {
+      ...standalonePlan(),
+      acceptance_criteria: [{ id: "AC1", description: "Only AC1.", verification: "Test" }],
+      body: bodyWithAc10,
+    } as DraftPlan;
+    const work = await importWork(33);
+    const fixture = plannerFixture([planWithAc1]);
+    const service = new DraftService(db, {
+      planner: fixture.planner,
+      stateRoot: join(root, "state"),
+    });
+
+    await expect(
+      service.refine(projectId, { work_id: work.id, answers: [] }),
+    ).rejects.toMatchObject({ code: "draft_invalid_plan" });
+    expect(service.list(projectId)).toEqual([]);
   });
 
   test("AC5: invalid spec coverage and missing answers fail closed without persistence", async () => {
@@ -511,8 +709,11 @@ describe("local draft refinement and operator review", () => {
     expect(prompt).toContain("Discover repository facts first");
   });
 
-  test("AC5: legacy triage planning output is adapted without bypassing review", async () => {
+  test("AC5: draft planning accepts only the draft plan schema, not legacy triage actions", async () => {
     const work = await importWork(15);
+    // The old compatibility shortcut re-derived acceptance criteria, coverage and
+    // verification heuristically from a triage action. It must not exist: a
+    // legacy action payload is an invalid draft plan and persists nothing.
     const fixture = plannerFixture([
       {
         action: "promote_single_ticket",
@@ -527,12 +728,10 @@ describe("local draft refinement and operator review", () => {
       stateRoot: join(root, "state"),
     });
 
-    const record = await service.refine(projectId, { work_id: work.id, answers: [] });
-    expect(record.latest_revision.kind).toBe("standalone");
-    expect(record.latest_revision.plan.kind).toBe("standalone");
-    if (record.latest_revision.plan.kind !== "standalone") throw new Error("expected standalone");
-    expect(record.latest_revision.plan.title).toBe("Implement the button");
-    expect(record.latest_revision.plan.prepared).toBe(true);
+    await expect(
+      service.refine(projectId, { work_id: work.id, answers: [] }),
+    ).rejects.toMatchObject({ code: "draft_invalid_plan" });
+    expect(service.list(projectId)).toEqual([]);
   });
 
   test("AC5: planner failures do not create drafts or mutate the imported source", async () => {
@@ -676,6 +875,6 @@ describe("draft visibility through backend HTTP, client and CLI", () => {
 
     const fresh = await scoped.draft(record.id);
     expect(fresh.authorization.can_publish).toBe(false);
-    expect(fresh.authorization.can_dispatch).toBe(false);
+    expect(fresh.authorization).not.toHaveProperty("can_dispatch");
   });
 });

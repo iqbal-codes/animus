@@ -102,9 +102,11 @@ export const operatorErrorSchema = z.object({
     "draft_stale_revision",
     "draft_concurrent_update",
     "draft_not_approvable",
+    "draft_prepared_work",
     "draft_planning_unavailable",
     "draft_planning_failed",
     "draft_storage_failed",
+    "plan_import_failed",
   ]),
 });
 export type OperatorErrorCode = z.infer<typeof operatorErrorSchema>["error"];
@@ -399,11 +401,17 @@ export const draftDecisionSchema = z.object({
 });
 export type DraftDecision = z.infer<typeof draftDecisionSchema>;
 
+/**
+ * Publication authorization for an operator-approved draft revision.
+ *
+ * This deliberately carries no dispatch or execution authority. Approval here
+ * only permits publication; execution is admitted later by the publication and
+ * read-back flow (#162) and by the execution authority cutover (#165).
+ */
 export const draftAuthorizationSchema = z.object({
   approved: z.boolean(),
   approved_revision_id: z.string().nullable(),
   can_publish: z.boolean(),
-  can_dispatch: z.boolean(),
 });
 export type DraftAuthorization = z.infer<typeof draftAuthorizationSchema>;
 
@@ -459,6 +467,245 @@ export const draftDecisionSubmissionSchema = z
     }
   });
 export type DraftDecisionSubmission = z.infer<typeof draftDecisionSubmissionSchema>;
+
+export const planKindSchema = z.enum(["standalone", "spec"]);
+export type PlanKind = z.infer<typeof planKindSchema>;
+
+export const planAuthoritySchema = z.enum(["admitted", "held", "revoked"]);
+export type PlanAuthority = z.infer<typeof planAuthoritySchema>;
+
+export const planMemberRoleSchema = z.enum(["spec", "ticket"]);
+export type PlanMemberRole = z.infer<typeof planMemberRoleSchema>;
+
+export const planGateProfileSchema = z.enum(["child", "standalone", "final"]);
+export type PlanGateProfile = z.infer<typeof planGateProfileSchema>;
+
+export const planHoldSeveritySchema = z.enum(["blocking", "conditional"]);
+export type PlanHoldSeverity = z.infer<typeof planHoldSeveritySchema>;
+
+export const planDecisionActionSchema = z.enum(["import", "approve", "revoke"]);
+export type PlanDecisionAction = z.infer<typeof planDecisionActionSchema>;
+
+export const planDecisionOutcomeSchema = z.enum(["admitted", "held", "revoked"]);
+export type PlanDecisionOutcome = z.infer<typeof planDecisionOutcomeSchema>;
+
+export const planDecisionSourceSchema = z.enum(["import_authorization", "operator"]);
+export type PlanDecisionSource = z.infer<typeof planDecisionSourceSchema>;
+
+export const planDependencySourceSchema = z.enum(["textual", "native", "textual+native"]);
+export type PlanDependencySource = z.infer<typeof planDependencySourceSchema>;
+
+export const planDependencyTargetSchema = z.enum(["internal", "external", "unresolved"]);
+export type PlanDependencyTarget = z.infer<typeof planDependencyTargetSchema>;
+
+export const planAcceptanceCriterionSchema = z.object({
+  id: z.string().min(1),
+  work_id: z.string().min(1),
+  revision_id: z.string().min(1),
+  ac_key: z.string().min(1),
+  ordinal: z.number().int().positive(),
+  text: z.string(),
+});
+export type PlanAcceptanceCriterion = z.infer<typeof planAcceptanceCriterionSchema>;
+
+export const planDependencySchema = z.object({
+  id: z.string().min(1),
+  work_id: z.string().min(1),
+  revision_id: z.string().min(1),
+  target_issue_number: z.number().int().positive(),
+  source: planDependencySourceSchema,
+  target_role: planDependencyTargetSchema,
+  target_work_id: z.string().min(1).nullable(),
+  target_revision_id: z.string().min(1).nullable(),
+});
+export type PlanDependency = z.infer<typeof planDependencySchema>;
+
+export const planCoverageSchema = z.object({
+  parent_ac_key: z.string().min(1),
+  child_work_id: z.string().min(1),
+  note: z.string().nullable(),
+});
+export type PlanCoverage = z.infer<typeof planCoverageSchema>;
+
+export const planHoldSchema = z.object({
+  code: z.string().min(1),
+  severity: planHoldSeveritySchema,
+  member_work_id: z.string().min(1).nullable(),
+  issue_number: z.number().int().positive().nullable(),
+  detail: z.string(),
+});
+export type PlanHold = z.infer<typeof planHoldSchema>;
+
+export const planMemberSchema = z.object({
+  work_id: z.string().min(1),
+  revision_id: z.string().min(1),
+  revision_number: z.number().int().positive(),
+  issue_number: z.number().int().positive(),
+  content_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  title: z.string(),
+  source_state: z.enum(["OPEN", "CLOSED"]),
+  role: planMemberRoleSchema,
+  gate_profile: planGateProfileSchema,
+});
+export type PlanMember = z.infer<typeof planMemberSchema>;
+
+export const planDecisionSchema = z.object({
+  id: z.string().min(1),
+  sequence: z.number().int().positive(),
+  action: planDecisionActionSchema,
+  outcome: planDecisionOutcomeSchema,
+  actor: z.string().min(1),
+  source: planDecisionSourceSchema,
+  reason: z.string().nullable(),
+  manifest_id: z.string().min(1).nullable(),
+  recorded_at: z.number().int().nonnegative(),
+  holds: z.array(planHoldSchema),
+});
+export type PlanDecision = z.infer<typeof planDecisionSchema>;
+
+export const planManifestSchema = z.object({
+  version: z.literal(1),
+  plan_id: z.string().min(1),
+  project_id: z.string().min(1),
+  kind: planKindSchema,
+  graph_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  root: z.object({
+    work_id: z.string().min(1),
+    revision_id: z.string().min(1),
+    revision_number: z.number().int().positive(),
+    issue_number: z.number().int().positive(),
+    content_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  }),
+  members: z.array(
+    z.object({
+      work_id: z.string().min(1),
+      revision_id: z.string().min(1),
+      revision_number: z.number().int().positive(),
+      issue_number: z.number().int().positive(),
+      content_hash: z.string().regex(/^[a-f0-9]{64}$/),
+      role: planMemberRoleSchema,
+      gate_profile: planGateProfileSchema,
+    }),
+  ),
+  acceptance_criteria: z.array(
+    z.object({
+      work_id: z.string().min(1),
+      ac_key: z.string().min(1),
+      text: z.string(),
+    }),
+  ),
+  ac_coverage: z.array(
+    z.object({
+      parent_ac_key: z.string().min(1),
+      child_work_ids: z.array(z.string().min(1)),
+    }),
+  ),
+  dependencies: z.array(
+    z.object({
+      work_id: z.string().min(1),
+      target_issue_number: z.number().int().positive(),
+      source: planDependencySourceSchema,
+      target_work_id: z.string().min(1).nullable(),
+      internal: z.boolean(),
+    }),
+  ),
+  targets: z.object({
+    delivery_branch: z.string().min(1),
+    integration_branch: z.string().min(1).nullable(),
+    final_pr_base: z.string().min(1),
+  }),
+  gate_profiles: z.array(
+    z.object({
+      work_id: z.string().min(1),
+      gate_profile: planGateProfileSchema,
+    }),
+  ),
+  merge_policy: z.object({
+    child: z.literal("auto_after_gates"),
+    standalone: z.literal("manual"),
+    final: z.literal("manual"),
+  }),
+  budgets: z.object({
+    child_max_laps: z.number().int().positive(),
+    final_max_laps: z.number().int().positive(),
+  }),
+  frozen_at: z.number().int().nonnegative(),
+});
+export type PlanManifest = z.infer<typeof planManifestSchema>;
+
+export const planAcceptedRevisionSchema = z.object({
+  work_id: z.string().min(1),
+  revision_id: z.string().min(1),
+  revision_number: z.number().int().positive(),
+  content_hash: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export type PlanAcceptedRevision = z.infer<typeof planAcceptedRevisionSchema>;
+
+export const planRecordSchema = z.object({
+  id: z.string().min(1),
+  project_id: z.string().min(1),
+  kind: planKindSchema,
+  root_work_id: z.string().min(1),
+  root_revision_id: z.string().min(1),
+  graph_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  delivery_branch: z.string().min(1),
+  integration_branch: z.string().min(1).nullable(),
+  created_at: z.number().int().nonnegative(),
+  updated_at: z.number().int().nonnegative(),
+  members: z.array(planMemberSchema),
+  acceptance_criteria: z.array(planAcceptanceCriterionSchema),
+  dependencies: z.array(planDependencySchema),
+  coverage: z.array(planCoverageSchema),
+  decisions: z.array(planDecisionSchema),
+  authority: planAuthoritySchema,
+  holds: z.array(planHoldSchema),
+  dispatchable: z.boolean(),
+  accepted_revision: planAcceptedRevisionSchema.nullable(),
+  manifest: planManifestSchema.nullable(),
+});
+export type PlanRecord = z.infer<typeof planRecordSchema>;
+
+export const planSummarySchema = z.object({
+  id: z.string().min(1),
+  project_id: z.string().min(1),
+  kind: planKindSchema,
+  root_work_id: z.string().min(1),
+  root_issue_number: z.number().int().positive(),
+  root_title: z.string(),
+  graph_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  authority: planAuthoritySchema,
+  member_count: z.number().int().nonnegative(),
+  ticket_count: z.number().int().nonnegative(),
+  hold_count: z.number().int().nonnegative(),
+  accepted_revision_id: z.string().min(1).nullable(),
+  created_at: z.number().int().nonnegative(),
+  updated_at: z.number().int().nonnegative(),
+});
+export type PlanSummary = z.infer<typeof planSummarySchema>;
+export const planListSchema = z.array(planSummarySchema);
+export type PlanList = z.infer<typeof planListSchema>;
+
+export const planImportSubmissionSchema = z
+  .object({
+    work_id: z.string().min(1).optional(),
+    issue_number: z.number().int().positive().optional(),
+    kind: planKindSchema,
+    delivery_branch: z.string().min(1).optional(),
+  })
+  .strict()
+  .refine((value) => Boolean(value.work_id) !== Boolean(value.issue_number), {
+    message: "Provide exactly one of work_id or issue_number",
+  });
+export type PlanImportSubmission = z.infer<typeof planImportSubmissionSchema>;
+
+export const planDecisionSubmissionSchema = z
+  .object({
+    actor: z.string().min(1).max(200).optional(),
+    reason: z.string().min(1).max(2000).optional(),
+    expected_sequence: z.number().int().positive().optional(),
+  })
+  .strict();
+export type PlanDecisionSubmission = z.infer<typeof planDecisionSubmissionSchema>;
 
 export const evaluatedIssueSchema = z.object({
   number: z.number().int().positive(),

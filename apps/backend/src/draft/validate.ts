@@ -33,7 +33,9 @@ function assertCriterionIdsPresent(
   label: string,
 ): void {
   for (const criterion of criteria) {
-    if (!body.includes(criterion.id)) {
+    const escaped = criterion.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = new RegExp(`(?<![A-Za-z0-9])${escaped}(?![0-9])`);
+    if (!pattern.test(body)) {
       invalidPlan(`${label} body does not expose acceptance criterion '${criterion.id}'`);
     }
   }

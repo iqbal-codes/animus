@@ -15,7 +15,8 @@ function failure(error: unknown): Response {
         ? 404
         : error.code === "draft_stale_revision" ||
             error.code === "draft_concurrent_update" ||
-            error.code === "draft_not_approvable"
+            error.code === "draft_not_approvable" ||
+            error.code === "draft_prepared_work"
           ? 409
           : error.code === "draft_planning_unavailable" || error.code === "draft_storage_failed"
             ? 503

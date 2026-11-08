@@ -29,6 +29,7 @@ export interface ParsedCliArgs {
     refresh?: boolean;
     reason?: string;
     actor?: string;
+    "expected-sequence"?: string;
     title?: string;
     body?: string;
     name?: string;
@@ -62,6 +63,7 @@ export interface ParsedCliArgs {
     answers?: string;
     instructions?: string;
     revision?: string;
+    kind?: string;
   };
 }
 
@@ -95,6 +97,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       refresh: { type: "boolean", default: false },
       reason: { type: "string" },
       actor: { type: "string" },
+      "expected-sequence": { type: "string" },
       title: { type: "string" },
       body: { type: "string" },
       name: { type: "string" },
@@ -128,6 +131,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       answers: { type: "string" },
       instructions: { type: "string" },
       revision: { type: "string" },
+      kind: { type: "string" },
     },
   });
 
