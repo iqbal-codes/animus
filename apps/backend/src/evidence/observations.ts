@@ -142,10 +142,14 @@ const STAGE_PRODUCER_ROLES: Record<ExecutionStage, readonly ProducerRole[]> = {
   final_acceptance: ["independent_evaluator"],
 };
 
-const REQUIRED_INDEPENDENT_STAGE: Record<PlanGateProfile, ExecutionStage> = {
-  child: "technical_checks",
-  standalone: "independent_review",
-  final: "final_acceptance",
+// A child profile must prove both its applicable technical/contract checks and an
+// independent standards/contract review before auto-integration; full parent QA is
+// a separate, later profile. Standalone and final profiles keep their existing
+// required stage here (standalone delivery and final acceptance are later slices).
+const REQUIRED_STAGES: Record<PlanGateProfile, readonly ExecutionStage[]> = {
+  child: ["technical_checks", "independent_review"],
+  standalone: ["independent_review"],
+  final: ["final_acceptance"],
 };
 
 export interface ExecutionObservationServiceOptions {
@@ -978,18 +982,22 @@ export class ExecutionObservationService {
 
     const builderIdentity = builderObservation?.producer.id ?? run.actor;
     const builderIdentities = this.builderIdentities(projectId, run.delivery_id);
-    const requiredStage = REQUIRED_INDEPENDENT_STAGE[run.gate_profile];
-    const independentObservation = this.latestObservation(projectId, run.id, requiredStage);
-    if (!independentObservation) {
-      reasons.push(`required_stage_missing:${requiredStage}`);
-    } else if (
-      independentObservation.producer.role === "builder" ||
-      builderIdentities.has(independentObservation.producer.id) ||
-      independentObservation.producer.id === builderIdentity
-    ) {
-      reasons.push(`self_certified_stage:${requiredStage}`);
-    } else if (independentObservation.status !== "passed") {
-      reasons.push(`required_stage_not_passed:${requiredStage}:${independentObservation.status}`);
+    const requiredStages = REQUIRED_STAGES[run.gate_profile];
+    const independentObservations: Array<ExecutionObservationRecord | null> = [];
+    for (const requiredStage of requiredStages) {
+      const independentObservation = this.latestObservation(projectId, run.id, requiredStage);
+      independentObservations.push(independentObservation ?? null);
+      if (!independentObservation) {
+        reasons.push(`required_stage_missing:${requiredStage}`);
+      } else if (
+        independentObservation.producer.role === "builder" ||
+        builderIdentities.has(independentObservation.producer.id) ||
+        independentObservation.producer.id === builderIdentity
+      ) {
+        reasons.push(`self_certified_stage:${requiredStage}`);
+      } else if (independentObservation.status !== "passed") {
+        reasons.push(`required_stage_not_passed:${requiredStage}:${independentObservation.status}`);
+      }
     }
 
     const targetTipSha = this.currentTargetTip(run, reasons);
@@ -1004,7 +1012,7 @@ export class ExecutionObservationService {
       reasons.push("candidate_missing");
     }
 
-    for (const observation of [builderObservation, independentObservation]) {
+    for (const observation of [builderObservation, ...independentObservations]) {
       if (!observation) continue;
       if (observation.gateProfileVersion !== GATE_PROFILE_VERSION) {
         reasons.push("gate_profile_version_stale");
@@ -1024,7 +1032,7 @@ export class ExecutionObservationService {
     }
 
     const verifiedArtifactIds: string[] = [];
-    for (const observation of [builderObservation, independentObservation]) {
+    for (const observation of [builderObservation, ...independentObservations]) {
       if (!observation) continue;
       for (const artifact of observation.artifacts) {
         const outcome = this.verifyArtifact(projectId, artifact);
@@ -1045,6 +1053,11 @@ export class ExecutionObservationService {
         }
       }
     }
+
+    const independentObservation =
+      [...independentObservations]
+        .reverse()
+        .find((item): item is ExecutionObservationRecord => Boolean(item)) ?? null;
 
     return acceptanceDecisionSchema.parse({
       runId: run.id,

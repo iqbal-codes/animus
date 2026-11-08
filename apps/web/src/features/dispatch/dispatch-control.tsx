@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   DeliveryGateStatus,
   DispatchRunDetail,
+  IntegrationStatus,
   PlanDispatchRun,
   PlanDispatchRunList,
   PlanList,
@@ -81,6 +82,11 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
   const [detailExpanded, setDetailExpanded] = useState<Record<string, boolean>>({});
   const [detailLoading, setDetailLoading] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<Record<string, string>>({});
+  const [integrationExpanded, setIntegrationExpanded] = useState<Record<string, boolean>>({});
+  const [integration, setIntegration] = useState<Record<string, IntegrationStatus>>({});
+  const [integrationLoading, setIntegrationLoading] = useState<string | null>(null);
+  const [integrationError, setIntegrationError] = useState<Record<string, string>>({});
+  const [landing, setLanding] = useState<string | null>(null);
   const [controlBusy, setControlBusy] = useState<string | null>(null);
   const [controlNotice, setControlNotice] = useState<Record<string, string>>({});
   const [grantAmount, setGrantAmount] = useState<Record<string, string>>({});
@@ -294,6 +300,59 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
       setGateError((current) => ({ ...current, [runId]: message }));
     } finally {
       setGateBusy(null);
+    }
+  };
+
+  const toggleIntegration = async (runId: string) => {
+    const next = !integrationExpanded[runId];
+    setIntegrationExpanded((current) => ({ ...current, [runId]: next }));
+    if (!next || integration[runId] || integrationLoading === runId) return;
+    setIntegrationLoading(runId);
+    setIntegrationError((current) => {
+      const copy = { ...current };
+      delete copy[runId];
+      return copy;
+    });
+    try {
+      const status = await factory.forProject(projectId).integrationStatus(runId);
+      setIntegration((current) => ({ ...current, [runId]: status }));
+    } catch (err) {
+      setIntegrationError((current) => ({
+        ...current,
+        [runId]: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      setIntegrationLoading(null);
+    }
+  };
+
+  const landChild = async (runId: string) => {
+    setLanding(runId);
+    setIntegrationError((current) => {
+      const copy = { ...current };
+      delete copy[runId];
+      return copy;
+    });
+    try {
+      const status = await factory.forProject(projectId).landChild(runId, {
+        actor: "operator",
+      });
+      setIntegration((current) => ({ ...current, [runId]: status }));
+      setControlNotice((current) => ({
+        ...current,
+        [runId]:
+          status.state === "integrated"
+            ? `Integrated into ${status.targetBranch}.`
+            : `Integration held: ${status.blockers.map((item) => item.code).join(", ")}`,
+      }));
+      await loadProject(projectId);
+    } catch (err) {
+      setIntegrationError((current) => ({
+        ...current,
+        [runId]: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      setLanding(null);
     }
   };
 
@@ -580,6 +639,18 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
                     >
                       {detailExpanded[run.id] ? "Hide budget" : "Budget & controls"}
                     </Button>
+                    {run.gate_profile === "child" && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="min-h-11 sm:min-h-8"
+                        aria-expanded={Boolean(integrationExpanded[run.id])}
+                        aria-controls={`run-integration-${run.id}`}
+                        onClick={() => void toggleIntegration(run.id)}
+                      >
+                        {integrationExpanded[run.id] ? "Hide integration" : "Integration"}
+                      </Button>
+                    )}
                     {details[run.id]?.budget?.status === "exhausted" && (
                       <Badge variant="error">Needs owner</Badge>
                     )}
@@ -703,6 +774,30 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
                         }}
                         onControl={(action) => void runControl(run.id, action)}
                         onGrant={() => void grantAttempt(run.id)}
+                      />
+                    ) : null}
+                  </div>
+                )}
+                {run && run.gate_profile === "child" && integrationExpanded[run.id] && (
+                  <div
+                    id={`run-integration-${run.id}`}
+                    data-testid={`run-integration-${run.id}`}
+                    className="w-full"
+                  >
+                    {integrationLoading === run.id ? (
+                      <p role="status" className="text-xs text-text-secondary">
+                        Loading child integration status…
+                      </p>
+                    ) : integrationError[run.id] ? (
+                      <p role="alert" className="text-xs text-[var(--destructive)]">
+                        Integration unavailable: {integrationError[run.id]}
+                      </p>
+                    ) : integration[run.id] ? (
+                      <ChildIntegrationPanel
+                        status={integration[run.id]!}
+                        landing={landing === run.id}
+                        notice={controlNotice[run.id] ?? null}
+                        onLand={() => void landChild(run.id)}
                       />
                     ) : null}
                   </div>
@@ -1287,6 +1382,157 @@ function RunBudgetPanel({
             {grants.map((grant) => (
               <li key={grant.id} className="break-all text-[10px] text-text-secondary">
                 +{grant.amount} by {grant.actor} · {grant.reason} · {grant.idempotencyKey}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
+  );
+}
+
+const INTEGRATION_TONE: Record<
+  IntegrationStatus["state"],
+  "default" | "success" | "warning" | "error" | "accent"
+> = {
+  not_ready: "default",
+  blocked: "error",
+  ready: "accent",
+  integrating: "accent",
+  integrated: "success",
+  unknown: "warning",
+};
+
+function ChildIntegrationPanel({
+  status,
+  landing,
+  notice,
+  onLand,
+}: {
+  status: IntegrationStatus;
+  landing: boolean;
+  notice: string | null;
+  onLand: () => void;
+}) {
+  const active = status.publication?.pullRequests.find((pr) => pr.active) ?? null;
+  const canLand = status.state === "ready" || status.state === "blocked";
+  const blockers = status.blockers;
+  const checks = status.requiredChecks;
+  const integration = status.integration;
+  const acceptanceReasons = status.acceptance.authorized ? [] : status.acceptance.reasons;
+  return (
+    <section
+      aria-label="Child integration"
+      data-testid="child-integration"
+      className="mt-2 space-y-2 rounded-[10px] border border-[var(--border-subtle)] p-3"
+    >
+      <header className="flex flex-wrap items-center gap-2">
+        <h4 className="text-[11px] font-medium uppercase tracking-wide text-text-secondary">
+          Integration to {status.targetBranch}
+        </h4>
+        <Badge variant={INTEGRATION_TONE[status.state]}>{status.state}</Badge>
+        <span className="text-[10px] text-text-secondary">merge policy: {status.mergePolicy}</span>
+        <span className="flex-1" />
+        <Button
+          variant="secondary"
+          size="sm"
+          className="min-h-11 sm:min-h-8"
+          onClick={onLand}
+          disabled={landing || !canLand}
+          title={
+            status.state === "integrated"
+              ? "Candidate is already verified on the integration branch"
+              : status.state === "not_ready"
+                ? "The child must finish successfully before integration"
+                : "Merge the verified child pull request into the integration branch"
+          }
+        >
+          {landing ? "Merging…" : "Merge to integration"}
+        </Button>
+      </header>
+
+      {notice && (
+        <p role="status" className="text-[10px] text-text-secondary">
+          {notice}
+        </p>
+      )}
+
+      <p className="break-all text-[10px] text-text-secondary">
+        Candidate {status.acceptance.candidateHeadSha?.slice(0, 12) ?? "none"} · target tip{" "}
+        {status.acceptance.targetTipSha?.slice(0, 12) ?? "unresolved"} · evidence{" "}
+        {status.acceptance.authorized ? "authorized" : "blocked"}
+      </p>
+
+      {acceptanceReasons.length > 0 && (
+        <div>
+          <h5 className="text-[11px] font-medium text-foreground">Acceptance reasons</h5>
+          <ul aria-label="Acceptance reasons" className="mt-1 space-y-0.5">
+            {acceptanceReasons.map((reason) => (
+              <li key={reason} className="break-all text-[10px] text-text-secondary">
+                {reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {blockers.length > 0 && (
+        <div>
+          <h5 className="text-[11px] font-medium text-foreground">Integration blockers</h5>
+          <ul aria-label="Integration blockers" className="mt-1 space-y-0.5">
+            {blockers.map((blocker) => (
+              <li
+                key={`${blocker.code}:${blocker.message}`}
+                className="break-all text-[10px] text-text-secondary"
+              >
+                <span className="font-mono">{blocker.code}</span> · {blocker.message}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {checks.length > 0 && (
+        <div>
+          <h5 className="text-[11px] font-medium text-foreground">Required remote checks</h5>
+          <ul aria-label="Required remote checks" className="mt-1 space-y-0.5">
+            {checks.map((check) => (
+              <li key={check.name} className="break-all text-[10px] text-text-secondary">
+                {check.name} · {check.status}
+                {check.conclusion ? `/${check.conclusion}` : ""}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div>
+        <h5 className="text-[11px] font-medium text-foreground">Child pull request</h5>
+        <p className="break-all text-[10px] text-text-secondary">
+          {active
+            ? `#${active.number ?? "?"} ${active.url ?? ""} (${active.state}${active.draft ? ", draft" : ""})`
+            : "No active pull request"}
+        </p>
+      </div>
+
+      {integration && (
+        <div>
+          <h5 className="text-[11px] font-medium text-foreground">Verified integration</h5>
+          <p className="break-all text-[10px] text-text-secondary">
+            merge {integration.mergeSha.slice(0, 12)} ·{" "}
+            {integration.targetTipBeforeSha.slice(0, 12)} →{" "}
+            {integration.targetTipAfterSha.slice(0, 12)} · evidence {integration.evidenceIdentity}
+          </p>
+        </div>
+      )}
+
+      {status.events.length > 0 && (
+        <div>
+          <h5 className="text-[11px] font-medium text-foreground">Integration attempts</h5>
+          <ul aria-label="Integration attempts" className="mt-1 space-y-0.5">
+            {status.events.map((event) => (
+              <li key={event.id} className="break-all text-[10px] text-text-secondary">
+                {event.kind} · {event.reasons.join("; ") || "no reasons"}
               </li>
             ))}
           </ul>

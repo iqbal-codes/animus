@@ -470,6 +470,7 @@ describe("standalone full-delivery gate and verified merge", () => {
     expect((await delivery.getGate(projectId, run.id)).state).toBe("ready_for_operator_review");
 
     // Remote merge without target inclusion is not delivery.
+    await forge.updatePullRequest(REPO, pr.number!, { draft: false });
     expect((await forge.mergePullRequest(REPO, pr.number!)).merged).toBe(true);
     const mergedWithoutLineage = await delivery.getGate(projectId, run.id);
     expect(mergedWithoutLineage.state).toBe("invalidated");

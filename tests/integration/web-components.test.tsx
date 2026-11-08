@@ -601,6 +601,147 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
     expect(screen.getByLabelText("Publication audit history")).toBeTruthy();
   });
 
+  test("DispatchControl exposes child integration blockers, checks and a landing action", async () => {
+    const plan = {
+      id: "plan-1",
+      project_id: "proj-1",
+      kind: "spec" as const,
+      root_work_id: "work-1",
+      root_issue_number: 714,
+      root_title: "Spec delivery",
+      graph_hash: "a".repeat(64),
+      authority: "admitted" as const,
+      member_count: 2,
+      ticket_count: 1,
+      hold_count: 0,
+      accepted_revision_id: "rev-1",
+      created_at: 1,
+      updated_at: 1,
+    };
+    const run = {
+      id: "run-1",
+      project_id: "proj-1",
+      delivery_id: "del-1",
+      plan_id: "plan-1",
+      work_id: "work-1",
+      revision_id: "rev-1",
+      content_hash: "b".repeat(64),
+      issue_number: 714,
+      role: "ticket" as const,
+      gate_profile: "child" as const,
+      merge_policy: "auto_after_gates" as const,
+      target_branch: "factory/spec-714-integration",
+      ownership_generation: 1,
+      lap: 1,
+      state: "succeeded" as const,
+      actor: "operator",
+      command_request_id: "cmd-1",
+      branch: "factory/spec-714/ticket-714",
+      worktree_path: "/tmp/worktree",
+      base_sha: "c".repeat(40),
+      owner_pid: 1,
+      owner_token: "token",
+      lease_expires_at: null,
+      head_sha: "d".repeat(40),
+      error: null,
+      launched_at: 1,
+      finished_at: 1,
+      created_at: 1,
+      updated_at: 1,
+    };
+    const status = {
+      runId: "run-1",
+      projectId: "proj-1",
+      deliveryId: "del-1",
+      planId: "plan-1",
+      workId: "work-1",
+      issueNumber: 714,
+      gateProfile: "child" as const,
+      mergePolicy: "auto_after_gates" as const,
+      targetBranch: "factory/spec-714-integration",
+      state: "blocked" as const,
+      blockers: [
+        {
+          code: "integration_acceptance_blocked",
+          message: "Candidate-bound acceptance is not authorized",
+        },
+      ],
+      acceptance: {
+        runId: "run-1",
+        projectId: "proj-1",
+        deliveryId: "del-1",
+        gateProfile: "child" as const,
+        candidateHeadSha: "d".repeat(40),
+        targetTipSha: "c".repeat(40),
+        mergeBaseSha: "c".repeat(40),
+        integrationLineage: "lineage@factory/spec-714-integration",
+        authorized: false,
+        reasons: ["required_stage_missing:independent_review"],
+        builderObservationId: "obs-1",
+        independentObservationId: null,
+        openBlockingFindingIds: [],
+        verifiedArtifactIds: [],
+      },
+      publication: null,
+      requiredChecks: [
+        {
+          name: "ci/verify",
+          required: true,
+          status: "completed",
+          conclusion: "success",
+        },
+      ],
+      integration: null,
+      events: [
+        {
+          id: "ievt-1",
+          projectId: "proj-1",
+          runId: "run-1",
+          kind: "blocked" as const,
+          candidateHeadSha: "d".repeat(40),
+          targetTipSha: "c".repeat(40),
+          mergeSha: null,
+          reasons: ["integration_acceptance_blocked: Candidate-bound acceptance is not authorized"],
+          createdAt: 1,
+        },
+      ],
+    };
+    const landed: string[] = [];
+    const factory = {
+      projects: async () => [mockProjects[0]!],
+      forProject: () => ({
+        plans: async () => [plan],
+        dispatchRuns: async () => [run],
+        dispatchRunDetail: async () => {
+          throw new Error("not needed");
+        },
+        integrationStatus: async () => status,
+        landChild: async (runId: string) => {
+          landed.push(runId);
+          return status;
+        },
+      }),
+    } as any;
+
+    render(<DispatchControl factory={factory} />);
+    const button = await screen.findByRole("button", { name: "Integration" });
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+    expect(button.getAttribute("aria-controls")).toBe("run-integration-run-1");
+    expect((button as HTMLButtonElement).className).toContain("min-h-11");
+    fireEvent.click(button);
+
+    const panel = await screen.findByTestId("run-integration-run-1");
+    expect(panel.textContent).toContain("Integration to factory/spec-714-integration");
+    expect(panel.textContent).toContain("integration_acceptance_blocked");
+    expect(panel.textContent).toContain("required_stage_missing:independent_review");
+    expect(panel.textContent).toContain("ci/verify");
+    expect(panel.textContent).toContain("No active pull request");
+    expect(panel.textContent).toContain("Integration attempts");
+
+    fireEvent.click(screen.getByRole("button", { name: "Merge to integration" }));
+    await waitFor(() => expect(landed).toEqual(["run-1"]));
+  });
+
   test("DispatchControl lets operators select a ticket/run/candidate history", async () => {
     const plan = {
       id: "plan-1",

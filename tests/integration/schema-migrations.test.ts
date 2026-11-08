@@ -17,6 +17,7 @@ const DISPATCH_V4 = "delivery_dispatch_ownership";
 const EVIDENCE_V5 = "execution_observations_findings_artifacts";
 const BUDGET_V6 = "execution_budgets_and_controls";
 const PUBLICATION_V7 = "publication_audit_outgoing_intents";
+const INTEGRATION_V8 = "child_gate_integration";
 const DELIVERY_V9 = "standalone_delivery_gate_and_merge_verification";
 const DRAFT_PUBLICATION_V10 = "approved_draft_issue_publication";
 
@@ -28,7 +29,7 @@ const ALL_MIGRATIONS = [
   { version: 5, name: EVIDENCE_V5 },
   { version: 6, name: BUDGET_V6 },
   { version: 7, name: PUBLICATION_V7 },
-  // Version 8 (#158) is reserved for its lane.
+  { version: 8, name: INTEGRATION_V8 },
   { version: 9, name: DELIVERY_V9 },
   { version: 10, name: DRAFT_PUBLICATION_V10 },
 ];
@@ -146,6 +147,8 @@ describe("coherent schema migration registry", () => {
         "publication_intents",
         "publication_evidence_bindings",
         "publication_summaries",
+        "child_integrations",
+        "child_integration_events",
         "draft_publications",
         "draft_publication_members",
         "draft_publication_relationships",
@@ -167,7 +170,7 @@ describe("coherent schema migration registry", () => {
     const reopened = initializeDatabase(path);
     try {
       expect(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({
-        count: 9,
+        count: 10,
       });
     } finally {
       reopened.close();

@@ -67,8 +67,8 @@ export interface ForgePullRequest {
   html_url?: string;
   draft?: boolean;
   headRefOid?: string;
-  /** Commit created by a verified remote merge, when the transport reports it. */
-  mergeCommitOid?: string;
+  /** Transport-reported merge commit for a MERGED pull request, verified before use. */
+  mergeCommitOid?: string | null;
   /** Transport-confirmed repository identity; validated against the recorded repo. */
   repository?: string;
 }
@@ -86,6 +86,27 @@ export interface UpdatePullRequestInput {
   body?: string;
   base?: string;
   state?: "open" | "closed";
+  /** `false` marks a draft PR ready for review so it can be merged. */
+  draft?: boolean;
+}
+
+export interface ForgeCheckRun {
+  name: string;
+  status: string;
+  conclusion: string | null;
+}
+
+export interface MergePullRequestInput {
+  /** Merge precondition: the pull request head must still be this exact SHA. */
+  expectedHeadSha?: string;
+  /** Merge commits keep the candidate head in the target lineage. */
+  mergeMethod?: "merge" | "squash" | "rebase";
+}
+
+export interface MergePullRequestResult {
+  merged: boolean;
+  sha?: string;
+  message?: string;
 }
 
 export interface CreatePullRequestReviewInput {
@@ -143,7 +164,15 @@ export interface ForgeAdapter {
   listPullRequestReviews?(repo: string, prNumber: number): Promise<ForgePullRequestReview[]>;
   listPullRequests?(repo: string): Promise<ForgePullRequest[]>;
   getPullRequest?(repo: string, prNumber: number): Promise<ForgePullRequest | null>;
-  mergePullRequest?(repo: string, prNumber: number): Promise<{ merged: boolean; sha?: string }>;
+  mergePullRequest?(
+    repo: string,
+    prNumber: number,
+    input?: MergePullRequestInput,
+  ): Promise<MergePullRequestResult>;
+  /** Required status check contexts from branch protection; [] when unprotected. */
+  getRequiredStatusChecks?(repo: string, branch: string): Promise<string[]>;
+  /** Check runs observed for a commit/ref. Unreadable state must throw. */
+  listCheckRuns?(repo: string, ref: string): Promise<ForgeCheckRun[]>;
 }
 
 export interface IssueForgeAdapter extends ForgeAdapter {
@@ -951,7 +980,7 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
       "--limit",
       "100",
       "--json",
-      "number,title,body,headRefName,baseRefName,state,url,isDraft,headRefOid,mergeCommit",
+      "number,title,body,headRefName,baseRefName,state,url,isDraft,headRefOid",
     ]);
     const items = JSON.parse(output);
     if (!Array.isArray(items)) {
@@ -967,7 +996,6 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
       html_url: i.url,
       draft: Boolean(i.isDraft),
       ...(typeof i.headRefOid === "string" ? { headRefOid: i.headRefOid } : {}),
-      ...(typeof i.mergeCommit?.oid === "string" ? { mergeCommitOid: i.mergeCommit.oid } : {}),
       repository: cleanRepo,
     }));
   }
@@ -983,7 +1011,7 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
         "--repo",
         cleanRepo,
         "--json",
-        "number,title,body,headRefName,baseRefName,state,url,isDraft,headRefOid,mergeCommit",
+        "number,title,body,headRefName,baseRefName,state,url,isDraft,headRefOid",
       ]);
       const i = JSON.parse(output);
       if (
@@ -1007,7 +1035,6 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
         html_url: i.url,
         draft: Boolean(i.isDraft),
         ...(typeof i.headRefOid === "string" ? { headRefOid: i.headRefOid } : {}),
-        ...(typeof i.mergeCommit?.oid === "string" ? { mergeCommitOid: i.mergeCommit.oid } : {}),
         repository: cleanRepo,
       };
     } catch (error) {
@@ -1025,6 +1052,8 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
     input: UpdatePullRequestInput,
   ): Promise<ForgePullRequest> {
     const cleanRepo = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+    const hasEdit =
+      input.title !== undefined || input.body !== undefined || input.base !== undefined;
     const args =
       input.state === "closed"
         ? ["pr", "close", String(prNumber), "--repo", cleanRepo]
@@ -1036,7 +1065,12 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
             return next;
           })();
     try {
-      await this.runner(["gh", ...args]);
+      if (input.draft === false && input.state !== "closed") {
+        await this.runner(["gh", "pr", "ready", String(prNumber), "--repo", cleanRepo]);
+      }
+      if (input.state === "closed" || hasEdit) {
+        await this.runner(["gh", ...args]);
+      }
     } catch (error: any) {
       throw new Error(
         `Failed to update pull request ${prNumber} for ${cleanRepo}: ${error?.message || String(error)}`,
@@ -1122,6 +1156,97 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
       );
     }
   }
+
+  async getRequiredStatusChecks(repo: string, branch: string): Promise<string[]> {
+    const cleanRepo = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+    const [owner, name] = cleanRepo.split("/");
+    if (!owner || !name) throw new Error(`Invalid repository '${repo}'`);
+    try {
+      const output = await this.runner([
+        "gh",
+        "api",
+        `repos/${owner}/${name}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`,
+      ]);
+      const parsed = JSON.parse(output || "{}");
+      const contexts = new Set<string>();
+      if (Array.isArray(parsed.contexts)) {
+        for (const value of parsed.contexts) {
+          if (typeof value === "string" && value.trim() !== "") contexts.add(value);
+        }
+      }
+      if (Array.isArray(parsed.checks)) {
+        for (const check of parsed.checks) {
+          if (check && typeof check.context === "string" && check.context.trim() !== "") {
+            contexts.add(check.context);
+          }
+        }
+      }
+      return [...contexts];
+    } catch (error: any) {
+      const text = `${error?.message || ""}\n${error?.stderr || ""}\n${error?.stdout || ""}`;
+      if (/branch not protected/i.test(text)) return [];
+      throw new Error(
+        `Failed to read required status checks for ${cleanRepo}#${branch}: ${error?.message || String(error)}`,
+      );
+    }
+  }
+
+  async listCheckRuns(repo: string, ref: string): Promise<ForgeCheckRun[]> {
+    const cleanRepo = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+    const [owner, name] = cleanRepo.split("/");
+    if (!owner || !name) throw new Error(`Invalid repository '${repo}'`);
+    try {
+      const output = await this.runner([
+        "gh",
+        "api",
+        `repos/${owner}/${name}/commits/${encodeURIComponent(ref)}/check-runs`,
+        "--paginate",
+      ]);
+      const parsed = JSON.parse(output || "{}");
+      const runs = Array.isArray(parsed.check_runs) ? parsed.check_runs : [];
+      return runs.map((run: any) => ({
+        name: String(run.name ?? run.app?.slug ?? "check"),
+        status: String(run.status ?? "unknown"),
+        conclusion: typeof run.conclusion === "string" ? run.conclusion : null,
+      }));
+    } catch (error: any) {
+      throw new Error(
+        `Failed to read check runs for ${cleanRepo}@${ref}: ${error?.message || String(error)}`,
+      );
+    }
+  }
+
+  async mergePullRequest(
+    repo: string,
+    prNumber: number,
+    input?: MergePullRequestInput,
+  ): Promise<MergePullRequestResult> {
+    const cleanRepo = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+    const [owner, name] = cleanRepo.split("/");
+    if (!owner || !name) throw new Error(`Invalid repository '${repo}'`);
+    const args = [
+      "api",
+      `repos/${owner}/${name}/pulls/${prNumber}/merge`,
+      "--method",
+      "PUT",
+      "-f",
+      `merge_method=${input?.mergeMethod ?? "merge"}`,
+    ];
+    if (input?.expectedHeadSha) args.push("-f", `sha=${input.expectedHeadSha}`);
+    try {
+      const output = await this.runner(["gh", ...args]);
+      const parsed = JSON.parse(output || "{}");
+      return {
+        merged: Boolean(parsed.merged),
+        ...(typeof parsed.sha === "string" ? { sha: parsed.sha } : {}),
+        ...(typeof parsed.message === "string" ? { message: parsed.message } : {}),
+      };
+    } catch (error: any) {
+      throw new Error(
+        `Failed to merge pull request ${prNumber} for ${cleanRepo}: ${error?.message || String(error)}`,
+      );
+    }
+  }
 }
 
 export interface SyntheticForgeOptions {
@@ -1129,6 +1254,8 @@ export interface SyntheticForgeOptions {
   resolveHeadRefOid?: (repo: string, branch: string) => string | null;
   /** Refuse to create a PR whose source branch is not present on the remote. */
   requireRemoteSourceRef?: boolean;
+  /** Perform the real remote merge for the synthetic transport and return its merge SHA. */
+  mergeRemote?: (repo: string, pr: ForgePullRequest) => { sha: string } | null;
 }
 
 export class SyntheticForgeAdapter implements IssueForgeAdapter {
@@ -1139,6 +1266,9 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
   private labelsByRepo = new Map<string, Map<string, ForgeLabel>>();
   private subIssues = new Map<string, Map<number, Set<number>>>();
   private issueDependencies = new Map<string, Map<number, Set<number>>>();
+  private requiredChecksByBranch = new Map<string, Map<string, string[]>>();
+  private checkRunsByRef = new Map<string, Map<string, ForgeCheckRun[]>>();
+  private mergeShas = new Map<string, string>();
   public failNextLabel = false;
 
   async listLabels(repo: string): Promise<ForgeLabel[]> {
@@ -1173,6 +1303,9 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
   public failNextReview = false;
   public failNextGetPullRequest = false;
   public failNextListPullRequests = false;
+  public failNextMerge = false;
+  public failNextRequiredChecks = false;
+  public failNextCheckRuns = false;
 
   constructor(
     initialRepos?: Record<string, number>,
@@ -1527,6 +1660,7 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
     if (input.base !== undefined) pr.base = input.base;
     if (input.state === "closed") pr.state = "CLOSED";
     if (input.state === "open") pr.state = "OPEN";
+    if (input.draft !== undefined) pr.draft = input.draft;
     return this.withResolvedHead(repo, pr);
   }
 
@@ -1570,15 +1704,90 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
   async mergePullRequest(
     repo: string,
     prNumber: number,
-  ): Promise<{ merged: boolean; sha?: string }> {
+    input?: MergePullRequestInput,
+  ): Promise<MergePullRequestResult> {
     const key = repo.toLowerCase();
     const prMap = this.pullRequestsByRepo.get(key);
     if (!prMap || !prMap.has(prNumber)) {
       throw new Error(`PR #${prNumber} not found in repository ${repo}`);
     }
     const pr = prMap.get(prNumber)!;
+    const remoteHead = this.withResolvedHead(repo, pr).headRefOid ?? pr.head;
+    if (input?.expectedHeadSha && remoteHead !== input.expectedHeadSha) {
+      throw new Error(
+        `Pull request #${prNumber} head ${remoteHead} does not match expected ${input.expectedHeadSha}`,
+      );
+    }
+    const mergeKey = `${key}:${prNumber}`;
+    if (pr.state === "MERGED") {
+      const prior = this.mergeShas.get(mergeKey);
+      return { merged: true, ...(prior ? { sha: prior } : {}) };
+    }
+    if (pr.state !== "OPEN") {
+      throw new Error(`Pull request #${prNumber} is ${pr.state}, not mergeable`);
+    }
+    if (pr.draft) {
+      throw new Error(`Pull request #${prNumber} is still a draft`);
+    }
+    if (this.failNextMerge) {
+      this.failNextMerge = false;
+      throw new Error("Synthetic forge pull request merge failed");
+    }
+    const remote = this.options.mergeRemote?.(repo, { ...pr }) ?? null;
+    if (!remote) {
+      // The legacy landing-guard path injects no git transport. This synthetic
+      // acknowledgement is never accepted by the child integration service, which
+      // independently verifies the real remote lineage after merging.
+      const sha = `merged_sha_${prNumber}`;
+      pr.state = "MERGED";
+      pr.mergeCommitOid = sha;
+      this.mergeShas.set(mergeKey, sha);
+      return { merged: true, sha };
+    }
     pr.state = "MERGED";
-    pr.mergeCommitOid = `merged_sha_${prNumber}`;
-    return { merged: true, sha: pr.mergeCommitOid };
+    pr.mergeCommitOid = remote.sha;
+    this.mergeShas.set(mergeKey, remote.sha);
+    return { merged: true, sha: remote.sha };
+  }
+
+  async getRequiredStatusChecks(repo: string, branch: string): Promise<string[]> {
+    if (this.failNextRequiredChecks) {
+      this.failNextRequiredChecks = false;
+      throw new Error("Synthetic forge required check lookup failed");
+    }
+    return [...(this.requiredChecksByBranch.get(repo.toLowerCase())?.get(branch) ?? [])];
+  }
+
+  async listCheckRuns(repo: string, ref: string): Promise<ForgeCheckRun[]> {
+    if (this.failNextCheckRuns) {
+      this.failNextCheckRuns = false;
+      throw new Error("Synthetic forge check run listing failed");
+    }
+    return [...(this.checkRunsByRef.get(repo.toLowerCase())?.get(ref) ?? [])].map((run) => ({
+      ...run,
+    }));
+  }
+
+  setRequiredStatusChecks(repo: string, branch: string, names: string[]): void {
+    const key = repo.toLowerCase();
+    let byBranch = this.requiredChecksByBranch.get(key);
+    if (!byBranch) {
+      byBranch = new Map();
+      this.requiredChecksByBranch.set(key, byBranch);
+    }
+    byBranch.set(branch, [...names]);
+  }
+
+  setCheckRuns(repo: string, ref: string, runs: ForgeCheckRun[]): void {
+    const key = repo.toLowerCase();
+    let byRef = this.checkRunsByRef.get(key);
+    if (!byRef) {
+      byRef = new Map();
+      this.checkRunsByRef.set(key, byRef);
+    }
+    byRef.set(
+      ref,
+      runs.map((run) => ({ ...run })),
+    );
   }
 }

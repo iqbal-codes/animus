@@ -51,6 +51,32 @@ Only an ESRCH-confirmed dead PID permits stale-owner reclamation. Missing or mal
 owner data, or an abandoned mutation mutex, requires operator inspection rather than
 age-based deletion. Stop competing workers before manually recovering either lock.
 
+## Child gate integration
+
+A child ticket auto-integrates only when its candidate-bound acceptance is authorized
+under gate-profile version 2: builder, applicable technical/contract checks and an
+independent standards/contract review, with any required remote CI completed and
+passing. The merge itself is performed by the configured forge so GitHub protections
+still apply; factory code only records completion after re-reading the remote target
+and proving the candidate (and merge commit) are included in that lineage.
+
+Each verified merge is stored in `child_integrations` (migration v8) with candidate,
+merge, before/after target tips and PR identity; attempts are append-only in
+`child_integration_events`. Serialization reuses the cross-process integration lock
+and git compare-and-swap. Conflicts, target drift, stale evidence, closed PRs, an
+exhausted budget or incomplete PR audit hold the ticket; they never force a merge.
+A stale succeeded candidate re-enters a new bounded builder lap when the target has
+advanced since it was built. Dependents release only after the verified inclusion is
+recorded, not from issue closure or a `MERGED` flag alone.
+
+- HTTP: `GET /projects/:id/integration`, `GET /projects/:id/integration/runs/:runId`,
+  `POST /projects/:id/integration/runs/:runId/land`.
+- CLI: `factory plan integrations`, `factory plan integration <run-id>`,
+  `factory plan land <run-id>`.
+- Operator UI: the per-run **Integration** panel shows acceptance reasons, blockers,
+  required checks, the child PR, verified merge identity and attempts, and exposes the
+  keyboard-operable merge action.
+
 Embedded monitor operations inherit an async-local subprocess policy that leaves
 SIGTERM/SIGINT ownership with the backend. Nested Git and agent processes still have
 bounded owned-process cleanup, but cannot terminate the backend with the standalone

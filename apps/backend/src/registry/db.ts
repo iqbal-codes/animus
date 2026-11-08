@@ -10,6 +10,7 @@ import { applyCoordinationMigrations } from "../coordination/db";
 import { applyEvidenceMigrations } from "../evidence/db";
 import { EVIDENCE_MIGRATIONS } from "../evidence/schema";
 import { PUBLICATION_MIGRATIONS } from "../publication/schema";
+import { INTEGRATION_MIGRATIONS } from "../integration/schema";
 import { DRAFT_PUBLICATION_MIGRATIONS } from "../publication/issue-schema";
 import { WORK_MIGRATIONS } from "../work/db";
 import { BUDGET_MIGRATIONS } from "../work/budget-schema";
@@ -26,8 +27,8 @@ import { applyMigrations, type Migration } from "./migrations";
  * version 2, local draft authoring (#161) owns version 3, delivery dispatch
  * ownership (#154) owns version 4, execution evidence (#155) owns version 5,
  * bounded attempt budgets/operator controls (#156) owns version 6, PR
- * publication audit (#157) owns version 7, child gate profiles (#158) reserve
- * version 8, standalone full-delivery gates (#159) own version 9, and
+ * publication audit (#157) owns version 7, child gate integration (#158)
+ * owns version 8, standalone full-delivery gates (#159) own version 9, and
  * approved-draft issue publication (#162) owns version 10. A future lane
  * appends the next version instead of claiming an existing one.
  */
@@ -38,6 +39,7 @@ export const SCHEMA_MIGRATIONS: Migration[] = [
   ...EVIDENCE_MIGRATIONS,
   ...BUDGET_MIGRATIONS,
   ...PUBLICATION_MIGRATIONS,
+  ...INTEGRATION_MIGRATIONS,
   ...DELIVERY_MIGRATIONS,
   ...DRAFT_PUBLICATION_MIGRATIONS,
 ];

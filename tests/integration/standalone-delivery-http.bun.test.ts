@@ -266,6 +266,7 @@ describe("standalone delivery gate through backend HTTP, client and CLI", () => 
     );
 
     // Manual merge in GitHub plus target inclusion.
+    await forge.updatePullRequest(REPO, pr.number!, { draft: false });
     await forge.mergePullRequest(REPO, pr.number!);
     execFileSync("git", ["--git-dir", bareOrigin, "update-ref", "refs/heads/main", run.head_sha!], {
       stdio: "ignore",
