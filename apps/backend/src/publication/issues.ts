@@ -266,7 +266,7 @@ export class DraftPublicationService {
       const publication = this.loadPublication(projectId, publicationId);
       const project = this.project(projectId);
 
-      if (!this.isAdmitted(publication) && !this.allMembersResolved(publication.id)) {
+      if (!this.isAdmitted(publication)) {
         this.assertBoundRevision(publication);
       }
 
@@ -299,6 +299,7 @@ export class DraftPublicationService {
       }
 
       await this.executeLinkSource(resolved);
+      if (!this.isAdmitted(resolved)) this.assertBoundRevision(resolved);
       await this.admit(resolved);
       this.refresh(resolved.id);
       return this.record(projectId, resolved.id);
@@ -665,6 +666,7 @@ export class DraftPublicationService {
     const project = this.project(publication.project_id);
     const marker = publicationMarker(intent.operation_key);
 
+    const wasAmbiguous = intent.state === "attempting" || intent.state === "unknown";
     if (intent.state === "attempting") this.markIntentUnknown(intent);
 
     // Reconcile an ambiguous prior attempt by exact correlation before any retry.
@@ -672,7 +674,7 @@ export class DraftPublicationService {
     try {
       recovered = await this.findIssueByMarker(project.repo_name, marker);
     } catch {
-      if (intent.state === "unknown") return "failed";
+      if (wasAmbiguous) return "failed";
     }
     if (recovered) return this.bindCreated(publication, member, intent, recovered);
 
@@ -997,7 +999,7 @@ export class DraftPublicationService {
       return "ok";
     }
 
-    if (intent.state === "unknown") {
+    if (intent.state === "unknown" || intent.state === "attempting") {
       try {
         if (await this.nativeExists(project.repo_name, relationship)) {
           return this.verifyNative(relationship, intent);
@@ -1124,7 +1126,7 @@ export class DraftPublicationService {
     );
 
     if (intent.state === "attempting") this.markIntentUnknown(intent);
-    if (intent.state === "unknown") {
+    if (intent.state === "unknown" || intent.state === "attempting") {
       try {
         if (await this.commentExists(project.repo_name, publication.source_issue_number, marker)) {
           this.acceptIntent(this.loadIntent(intent.id), null);

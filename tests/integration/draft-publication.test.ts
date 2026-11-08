@@ -562,6 +562,81 @@ describe("partial, ambiguous and unsupported publication recovery", () => {
     expect(markers).toHaveLength(1);
   });
 
+  test("AC3: a crashed create with unreadable correlation never retries the remote mutation", async () => {
+    const forge = new AmbiguousCreateForge({ [REPO]: 501 });
+    fixture = await buildFixture(forge);
+    forge.ambiguousOnCreate = 2;
+    forge.failNextListAfterAmbiguous = true;
+    const draft = await approveDraft(21);
+    const scoped = fixture.client.forProject(fixture.projectId);
+    const partial = await scoped.publishDraft(draft.id);
+    const uncertain = partial.intents.find((intent) => intent.state === "unknown")!;
+    expect(uncertain).toBeTruthy();
+    const before = await forge.listIssues(REPO, "ALL");
+    // Crash persistence: remote accepted, local intent never acknowledged completion.
+    fixture.app.db
+      .prepare("UPDATE publication_intents SET state = 'attempting' WHERE id = ?")
+      .run(uncertain.id);
+    const create = vi.spyOn(forge, "createIssue");
+    const read = vi
+      .spyOn(forge, "listIssues")
+      .mockRejectedValue(new Error("remote correlation unavailable"));
+    const blocked = await scoped.reconcileDraftPublication(partial.id);
+    expect(create).not.toHaveBeenCalled();
+    expect(blocked.state).toBe("unknown");
+    expect(blocked.planId).toBeNull();
+    read.mockRestore();
+    expect(await forge.listIssues(REPO, "ALL")).toHaveLength(before.length);
+    const recovered = await scoped.reconcileDraftPublication(partial.id);
+    expect(recovered.state).toBe("admitted");
+    const matches = (await forge.listIssues(REPO, "ALL")).filter((issue) =>
+      bodyOf(issue).includes(uncertain.operationKey),
+    );
+    expect(matches).toHaveLength(1);
+    create.mockRestore();
+  });
+
+  test.each(["revise", "reject"] as const)(
+    "AC1: all-created graphs remain fenced after draft %s before admission",
+    async (decision) => {
+      const forge = new SyntheticForgeAdapter({ [REPO]: 501 });
+      fixture = await buildFixture(forge);
+      const relationship = vi
+        .spyOn(forge, "addSubIssue")
+        .mockRejectedValue(new Error("relationship outage"));
+      const relationshipRead = vi
+        .spyOn(forge, "getSubIssues")
+        .mockRejectedValue(new Error("relationship unreadable"));
+      const draft = await approveDraft(21);
+      const scoped = fixture.client.forProject(fixture.projectId);
+      const partial = await scoped.publishDraft(draft.id);
+      expect(partial.members.every((member) => member.issueNumber !== null)).toBe(true);
+      expect(partial.planId).toBeNull();
+      relationship.mockRestore();
+      relationshipRead.mockRestore();
+      if (decision === "revise") {
+        await scoped.reviseDraft(draft.id, {
+          answers: [],
+          instructions: "Change the approved scope",
+        });
+      } else {
+        await scoped.decideDraft(draft.id, {
+          revision_id: draft.latest_revision.id,
+          decision: "reject",
+          reason: "Revoke publication approval",
+        });
+      }
+      await expect(scoped.reconcileDraftPublication(partial.id)).rejects.toMatchObject({
+        code:
+          decision === "revise"
+            ? "draft_publication_stale_revision"
+            : "draft_publication_not_approved",
+      });
+      expect(await scoped.plans()).toHaveLength(0);
+      expect((await scoped.draftPublication(partial.id)).planId).toBeNull();
+    },
+  );
+
   test("AC2/AC3: unsupported native relationships fall back to canonical textual references", async () => {
     const forge = new SyntheticForgeAdapter({ [REPO]: 501 });
     // Simulate a forge that supports no native relationship creation.
