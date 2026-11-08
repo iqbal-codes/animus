@@ -32,7 +32,6 @@ export function JobsScreen({
     <div className="flex min-h-0 flex-1 flex-col">
       <JobsHeader board={board} />
       <DispatchControl />
-      <DispatchControl />
       <BackupPanel />
       <JobsBoard
         board={board}

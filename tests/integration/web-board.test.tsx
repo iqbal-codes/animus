@@ -10,6 +10,8 @@ import { BrakeService } from "../../apps/backend/src/command/brakes";
 import { DispatchService } from "../../apps/backend/src/dispatch";
 import { JobsBoard } from "../../apps/web/src/features/jobs/jobs-board";
 import { WorkDetailDialog } from "../../apps/web/src/features/jobs/work-detail-dialog";
+import { JobsScreen } from "../../apps/web/src/features/jobs/jobs-screen";
+import { SidebarProvider } from "../../apps/web/src/components/ui/sidebar";
 import {
   emptyBoard,
   mapOperatorBoard,
@@ -120,6 +122,16 @@ describe("operator board UI", () => {
     if (ORIGINAL_ANIMUS_HOME === undefined) delete process.env.ANIMUS_HOME;
     else process.env.ANIMUS_HOME = ORIGINAL_ANIMUS_HOME;
     rmSync(fixture.root, { recursive: true, force: true });
+  });
+
+  test("screen: mounts exactly one canonical dispatch control and preserves all board lanes", async () => {
+    render(
+      <SidebarProvider>
+        <JobsScreen board={emptyBoard("animus/platform")} backendState="connected" />
+      </SidebarProvider>,
+    );
+    expect(screen.getAllByRole("heading", { name: "Run admitted plan" })).toHaveLength(1);
+    for (const name of LANES) expect(lane(name)).toBeTruthy();
   });
 
   test("component: preserves the established columns and renders honest loading, error and empty states", () => {
