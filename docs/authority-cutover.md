@@ -25,9 +25,15 @@ atomic and refuses to replace an existing path. Exactly one process therefore
 wins the create, and no competitor can ever observe a zero-length or partial
 owner record. A competitor may reclaim a lock only when the recorded pid is
 proven dead (`ESRCH`; `EPERM` counts as alive); missing or unreadable ownership
-is corruption and fails closed for explicit operator recovery. There is no
-time-based steal. A crash before the `link` leaves no lock (only an inert temp
-file), so it is safely retryable. `expected` therefore behaves as a true
+is corruption and fails closed for explicit operator recovery. Reclamation itself
+is serialized: the dead owner is re-read and removed under an atomic
+`mkdir`-published `.execution-authority.lock.mutex` guard, so two reclaimers can
+never both free the path and unlink the fresh owner the other just linked. The
+guard is never force-stolen (forcing it would repeat the same stale-owner race);
+marker reclamation fails fast on guard contention while the async operation lock
+bounds its wait, and both fail closed rather than stealing a held guard. There is
+no time-based steal. A crash before the `link` leaves no lock (only an inert temp file), so it
+is safely retryable. `expected` therefore behaves as a true
 cross-process compare-and-swap, so two processes cannot both observe the same
 predecessor. A malformed marker reads as `legacy` with an `error` surfaced by
 `animus authority status`; it never activates silently.
@@ -122,9 +128,12 @@ not backed by an `activated` row, so a read never authorizes an incomplete
 activation.
 
 `POST /api/v1/authority/abort` is allowed only before `local`. Under the same
-operation lock it writes `legacy` with CAS from `migrating` and marks the operation
-aborted. A concurrent abort/activate/stage therefore produces one winner and one
-conflict, never a local marker with an aborted row or a legacy marker with an
+operation lock it fences the operation row to `aborted` with a status CAS *before*
+writing `legacy` with CAS from `migrating`, so an activation that already won the
+row can never be paired with a legacy marker. `markActivated` and the stage error
+path are likewise status-CAS updates, so a competing writer cannot overwrite a
+terminal row. A concurrent abort/activate/stage therefore produces one winner and
+one conflict, never a local marker with an aborted row or a legacy marker with an
 activated row. After activation there is no dual-read/write rollback: the
 supported rollback is restoring a validated snapshot into an isolated held
 installation and reconciling it, exactly as #164 defines. Old code is never

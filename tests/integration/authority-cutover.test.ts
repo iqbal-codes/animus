@@ -834,11 +834,118 @@ describe("authority cutover (#165)", () => {
     // exactly the pathological interleaving that used to fall through as a held lock.
     symlinkSync(join(root, "missing-lock-owner.json"), lockPath);
     expect(() => writeExecutionAuthority("local", { stateDir })).toThrow(
-      /could not be acquired after bounded retries/,
+      /could not be acquired|unreadable ownership/,
     );
     expect(existsSync(join(stateDir, "execution-authority.json"))).toBe(false);
 
     rmSync(lockPath, { force: true });
     expect(writeExecutionAuthority("local", { stateDir }).authority).toBe("local");
   });
+  test("activation status CAS refuses to overwrite a competing terminal writer", async () => {
+    await buildApp();
+    const staged = await stage();
+    expect(staged.response.status).toBe(201);
+    const operation = staged.body.operation as {
+      id: string;
+      inventorySha256: string;
+      backupManifestSha256: string;
+    };
+
+    // Simulate an external writer moving the durable row to a terminal state in
+    // the window between the activation's read and its terminal UPDATE. The
+    // injected `now` seam is the same boundary a concurrent abort races at.
+    let flipped = false;
+    const racing = new AuthorityCutoverService(app.db, {
+      stateDir,
+      backup,
+      home,
+      now: () => {
+        const row = app.db
+          .prepare("SELECT status FROM authority_cutover_operations WHERE id = ?")
+          .get(operation.id) as { status: string } | undefined;
+        if (!flipped && row?.status === "activating") {
+          flipped = true;
+          app.db
+            .prepare(
+              "UPDATE authority_cutover_operations SET status = 'aborted' WHERE id = ? AND status = 'activating'",
+            )
+            .run(operation.id);
+        }
+        return Date.now();
+      },
+    });
+
+    let error: unknown;
+    try {
+      await racing.activate({
+        actor: "operator",
+        cutoverId: operation.id,
+        inventorySha256: operation.inventorySha256,
+        backupManifestSha256: operation.backupManifestSha256,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toMatchObject({ code: "cutover_inconsistent" });
+
+    const row = app.db
+      .prepare("SELECT status FROM authority_cutover_operations WHERE id = ?")
+      .get(operation.id) as { status: string };
+    expect(row.status).toBe("aborted");
+    // Activation never reached the local marker write.
+    expect(readExecutionAuthority(stateDir).authority).toBe("migrating");
+  }, 60_000);
+
+  test("abort status CAS never pairs a legacy marker with an activated row", async () => {
+    await buildApp();
+    const staged = await stage();
+    const operation = staged.body.operation as {
+      id: string;
+      inventorySha256: string;
+      backupManifestSha256: string;
+    };
+
+    // Simulate an activation that has already won the durable row at the abort
+    // boundary. Abort must fence the row first and refuse, so it can never write
+    // a `legacy` marker over an `activated` row.
+    let flipped = false;
+    const racing = new AuthorityCutoverService(app.db, {
+      stateDir,
+      backup,
+      home,
+      now: () => {
+        const row = app.db
+          .prepare("SELECT status FROM authority_cutover_operations WHERE id = ?")
+          .get(operation.id) as { status: string } | undefined;
+        if (!flipped && row?.status === "staged") {
+          flipped = true;
+          app.db
+            .prepare(
+              "UPDATE authority_cutover_operations SET status = 'activated' WHERE id = ? AND status = 'staged'",
+            )
+            .run(operation.id);
+        }
+        return Date.now();
+      },
+    });
+
+    let error: unknown;
+    try {
+      await racing.abort({
+        actor: "operator",
+        reason: "race with activation",
+        cutoverId: operation.id,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toMatchObject({ code: "cutover_inconsistent" });
+
+    const row = app.db
+      .prepare("SELECT status FROM authority_cutover_operations WHERE id = ?")
+      .get(operation.id) as { status: string };
+    expect(row.status).toBe("activated");
+    // The winning activation was not demoted to a legacy marker.
+    expect(readExecutionAuthority(stateDir).authority).toBe("migrating");
+  }, 60_000);
 });

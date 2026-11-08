@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { isPidAlive } from "@animus/contracts/paths";
+import { isPidAlive, withLockMutation } from "@animus/contracts/paths";
 
 /**
  * Cross-process operation lock for the authority cutover.
@@ -103,6 +103,38 @@ function writeOwnerRecordAtomically(path: string, owner: LockOwner): void {
   }
 }
 
+/**
+ * Serialize stale reclamation under the shared atomic `mkdir` guard before any
+ * unlink. Without it, two processes that both observed the same dead owner can
+ * each unlink by path: the second removes the fresh owner the first just linked,
+ * and both enter the critical section. Under the guard the owner is re-read and
+ * removed only when it is still proven dead, so exactly one reclaimer frees the
+ * path and every other contender observes the winner's live owner. An abandoned
+ * guard fails closed for operator recovery (the same contract as
+ * `withLockMutation`); it is never silently stolen.
+ */
+async function reclaimDeadOwner(lockPath: string): Promise<void> {
+  try {
+    await withLockMutation(lockPath, () => {
+      const current = readOwner(lockPath);
+      if (!("owner" in current) || isPidAlive(current.owner.pid)) return;
+      try {
+        unlinkSync(lockPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    });
+  } catch (error) {
+    if (error instanceof CutoverLockError) throw error;
+    throw new CutoverLockError(
+      "cutover_lock_ambiguous",
+      `Authority cutover lock ${lockPath} could not be safely reclaimed (${
+        error instanceof Error ? error.message : String(error)
+      }); explicit operator recovery is required`,
+    );
+  }
+}
+
 async function acquireFileLock(lockPath: string, timeoutMs: number): Promise<() => void> {
   const ownerToken = globalThis.crypto.randomUUID();
   const owner: LockOwner = {
@@ -132,10 +164,9 @@ async function acquireFileLock(lockPath: string, timeoutMs: number): Promise<() 
             await sleep(25);
             continue;
           }
-          // Proven dead owner (ESRCH): safe stale reclamation.
-          try {
-            unlinkSync(lockPath);
-          } catch {}
+          // Proven dead owner (ESRCH): reclaim under the atomic guard so two
+          // reclaimers cannot both free the path and unlink each other's owner.
+          await reclaimDeadOwner(lockPath);
           continue;
         }
         if ("missing" in inspected) {

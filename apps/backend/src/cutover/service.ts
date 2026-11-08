@@ -659,7 +659,11 @@ export class AuthorityCutoverService {
     if (!operation) {
       operation = this.createOperation(actor);
     } else if (marker.authority === "legacy") {
-      operation = this.updateOperation(operation.id, { status: "staging", actor });
+      operation = this.updateOperation(operation.id, { status: "staging", actor }, [
+        "staging",
+        "staged",
+        "activating",
+      ]);
     }
     if (
       marker.authority === "migrating" &&
@@ -681,11 +685,15 @@ export class AuthorityCutoverService {
           phase: "staging",
         });
       }
-      operation = this.updateOperation(operation.id, {
-        status: "staging",
-        actor,
-        error: null,
-      });
+      operation = this.updateOperation(
+        operation.id,
+        {
+          status: "staging",
+          actor,
+          error: null,
+        },
+        ["staging", "staged", "activating"],
+      );
 
       const pre = this.inventoryLive();
       if (pre.held.length > 0) {
@@ -978,15 +986,19 @@ export class AuthorityCutoverService {
       // Keep the operation resumable under the explicit migrating fence; never
       // silently return to legacy while a backup/restore artifact may exist.
       try {
-        this.updateOperation(operation.id, {
-          status: "staging",
-          error: message,
-          report: JSON.stringify({
-            ...parseReport(operation.report),
-            lastStageError: message,
-            failedAt: this.now(),
-          }),
-        });
+        this.updateOperation(
+          operation.id,
+          {
+            status: "staging",
+            error: message,
+            report: JSON.stringify({
+              ...parseReport(operation.report),
+              lastStageError: message,
+              failedAt: this.now(),
+            }),
+          },
+          ["staging", "staged"],
+        );
       } catch {}
       if (error instanceof AuthorityCutoverError) throw error;
       throw new AuthorityCutoverError("cutover_failed", message, {
@@ -1188,24 +1200,30 @@ export class AuthorityCutoverService {
   private markActivated(operation: OperationRow, actor: string): OperationRow {
     if (operation.status === "activated") return operation;
     const now = this.now();
-    return this.updateOperation(operation.id, {
-      status: "activated",
-      inventory_sha256: operation.inventory_sha256,
-      backup_snapshot_id: operation.backup_snapshot_id,
-      backup_path: operation.backup_path,
-      backup_manifest_sha256: operation.backup_manifest_sha256,
-      restore_operation_id: operation.restore_operation_id,
-      restore_target_state_dir: operation.restore_target_state_dir,
-      held_count: operation.held_count,
-      total_rows: operation.total_rows,
-      report: JSON.stringify({
-        ...parseReport(operation.report),
-        activatedAt: now,
-        activatedBy: actor,
-      }),
-      activated_at: now,
-      error: null,
-    });
+    return this.updateOperation(
+      operation.id,
+      {
+        status: "activated",
+        inventory_sha256: operation.inventory_sha256,
+        backup_snapshot_id: operation.backup_snapshot_id,
+        backup_path: operation.backup_path,
+        backup_manifest_sha256: operation.backup_manifest_sha256,
+        restore_operation_id: operation.restore_operation_id,
+        restore_target_state_dir: operation.restore_target_state_dir,
+        held_count: operation.held_count,
+        total_rows: operation.total_rows,
+        report: JSON.stringify({
+          ...parseReport(operation.report),
+          activatedAt: now,
+          activatedBy: actor,
+        }),
+        activated_at: now,
+        error: null,
+      },
+      // A concurrent terminal writer (abort) that already moved the row must not
+      // be overwritten into `activated`; the CAS changes nothing and throws.
+      ["staged", "activating"],
+    );
   }
 
   async abort(input: CutoverAbortSubmission): Promise<CutoverAbortResult> {
@@ -1233,13 +1251,34 @@ export class AuthorityCutoverService {
         `Cutover ${operation.id} is ${operation.status} and cannot be aborted`,
       );
     }
+    const conflictingMarker =
+      marker.authority === "migrating" &&
+      Boolean(marker.cutover_id) &&
+      marker.cutover_id !== operation.id;
+    if (conflictingMarker) {
+      throw new AuthorityCutoverError(
+        "cutover_inconsistent",
+        "Execution authority marker belongs to a different cutover",
+      );
+    }
+    // Fence the durable row to `aborted` *before* demoting the marker. If a
+    // concurrent activation already won the row, the CAS changes nothing and
+    // throws, so abort can never pair a `legacy` marker with an `activated` row.
+    const aborted = this.updateOperation(
+      operation.id,
+      {
+        status: "aborted",
+        report: JSON.stringify({
+          ...parseReport(operation.report),
+          abortedAt: this.now(),
+          abortedBy: input.actor,
+          abortReason: input.reason,
+        }),
+        error: null,
+      },
+      ["staging", "staged", "activating", "aborted"],
+    );
     if (marker.authority === "migrating") {
-      if (marker.cutover_id && marker.cutover_id !== operation.id) {
-        throw new AuthorityCutoverError(
-          "cutover_inconsistent",
-          "Execution authority marker belongs to a different cutover",
-        );
-      }
       writeExecutionAuthority("legacy", {
         stateDir: this.stateDir,
         expected: "migrating",
@@ -1247,16 +1286,6 @@ export class AuthorityCutoverService {
         phase: null,
       });
     }
-    const aborted = this.updateOperation(operation.id, {
-      status: "aborted",
-      report: JSON.stringify({
-        ...parseReport(operation.report),
-        abortedAt: this.now(),
-        abortedBy: input.actor,
-        abortReason: input.reason,
-      }),
-      error: null,
-    });
     return { operation: mapOperation(aborted), status: this.status() };
   }
 }
