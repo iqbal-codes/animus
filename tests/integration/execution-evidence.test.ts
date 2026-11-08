@@ -535,7 +535,32 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
     expect(firstRunEvidence.some((item) => item.candidateHeadSha === newHead)).toBe(false);
     const secondRunEvidence = observations.listObservations(projectId, { runId: nextRunId });
     expect(secondRunEvidence.map((item) => item.candidateHeadSha)).toEqual([newHead]);
-    expect(observations.listFindings(projectId, { runId: run.id })[0]!.status).toBe("open");
+    const crossLapFinding = observations.listFindings(projectId, { runId: run.id })[0]!;
+    expect(crossLapFinding.status).toBe("open");
+
+    // The finding persists into the next lap; an authorized recheck against the new
+    // candidate resolves it and the later run's detail still shows that history.
+    const resolvedOnNextLap = observations.recordFindingRecheck(projectId, crossLapFinding.id, {
+      runId: nextRunId,
+      producer: { id: "reviewer-3", role: "peer_reviewer" },
+      status: "passed",
+      checks: [{ name: "unit", command: "bun test", result: "PASS" }],
+    });
+    expect(resolvedOnNextLap.status).toBe("resolved");
+    expect(resolvedOnNextLap.events.at(-1)).toMatchObject({
+      action: "recheck_passed",
+      actor: "reviewer-3",
+    });
+    const nextEvidence = observations.getRunEvidence(projectId, nextRunId);
+    expect(nextEvidence.findings.map((finding) => finding.id)).toContain(crossLapFinding.id);
+    expect(
+      nextEvidence.findings.find((finding) => finding.id === crossLapFinding.id)!.events.at(-1)!
+        .action,
+    ).toBe("recheck_passed");
+    expect(nextEvidence.acceptance.authorized).toBe(true);
+    expect(nextEvidence.acceptance.independentObservationId).toBe(
+      resolvedOnNextLap.events.at(-1)!.observationId,
+    );
   });
 
   test("AC4: artifact ownership is typed and re-verified on disk", async () => {

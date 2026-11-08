@@ -545,9 +545,12 @@ export class ExecutionObservationService {
   }
 
   getRunEvidence(projectId: string, runId: string): RunEvidence {
+    const run = this.loadRun(projectId, runId);
     return {
       observations: this.listObservations(projectId, { runId }),
-      findings: this.listFindings(projectId, { runId }),
+      // Findings belong to the delivery and persist across laps, so a later run's
+      // detail must still show defects opened by an earlier candidate.
+      findings: this.listFindings(projectId, { deliveryId: run.delivery_id }),
       acceptance: this.evaluateAcceptance(projectId, runId),
     };
   }
