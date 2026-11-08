@@ -1,10 +1,17 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { ProjectRegistryService } from "../registry/service";
 import type { WebhookAck } from "@animus/contracts/operator";
+import type { ExecutionAuthority } from "@animus/contracts/execution-authority";
 
 export interface GitHubWebhookOptions {
   secret?: string;
   ttlMs?: number;
+  /**
+   * Durable authority read. After the validated cutover, issue/label/closure
+   * webhooks are observation only: they never reselect work or rebind contracts.
+   * Remote CI events stay supported for readiness observation.
+   */
+  authority?: () => ExecutionAuthority;
   onProjectWake?: (
     projectId: string,
     reason: string,
@@ -53,9 +60,22 @@ export class DeliveryDeduplicationCache {
 export function classifyGitHubWebhookEvent(
   eventType: string | null | undefined,
   payload: Record<string, unknown>,
+  authority: ExecutionAuthority = "legacy",
 ): { eligible: boolean; reason: string } {
   const event = (eventType ?? "").trim().toLowerCase();
   const action = typeof payload.action === "string" ? payload.action.toLowerCase() : "";
+
+  // Once execution authority is local (or explicitly fenced while migrating),
+  // GitHub issue edits/labels/closure are not an execution control plane. Only
+  // remote CI observations remain eligible; manual feedback never creates work.
+  if (authority !== "legacy") {
+    if (event === "check_run" || event === "workflow_run") {
+      return action === "completed"
+        ? { eligible: true, reason: `${event}.completed` }
+        : { eligible: false, reason: "unsupported_event" };
+    }
+    return { eligible: false, reason: "manual_feedback_ignored" };
+  }
 
   if (event === "issues") {
     if (action === "labeled") {
@@ -215,6 +235,7 @@ export class GitHubWebhookService {
     const classification = classifyGitHubWebhookEvent(
       eventType,
       payload as Record<string, unknown>,
+      this.options.authority?.() ?? "legacy",
     );
 
     if (!classification.eligible) {

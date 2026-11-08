@@ -244,6 +244,24 @@ import {
   type FinalDeliveryStatusList,
   type FinalDeliveryAdvanceSubmission,
 } from "@animus/contracts/operator";
+import {
+  cutoverStatusSchema,
+  cutoverStageSubmissionSchema,
+  cutoverStageResultSchema,
+  cutoverActivateSubmissionSchema,
+  cutoverActivateResultSchema,
+  cutoverAbortSubmissionSchema,
+  cutoverAbortResultSchema,
+  cutoverMappingsResultSchema,
+  type CutoverStatus,
+  type CutoverStageSubmission,
+  type CutoverStageResult,
+  type CutoverActivateSubmission,
+  type CutoverActivateResult,
+  type CutoverAbortSubmission,
+  type CutoverAbortResult,
+  type CutoverMappingsResult,
+} from "@animus/contracts/cutover";
 
 export {
   projectSchema,
@@ -687,6 +705,34 @@ export function createFactoryClient(options: {
       if (!parsed.success) throw new FactoryClientError("invalid_payload");
       const qs = stateDir ? `?state_dir=${encodeURIComponent(stateDir)}` : "";
       return postJson(`/api/v1/restores/reconcile${qs}`, parsed.data, restoreStatusResultSchema);
+    },
+    async authorityStatus(): Promise<CutoverStatus> {
+      return getJson("/api/v1/authority/status", cutoverStatusSchema);
+    },
+    async stageAuthorityCutover(
+      submission: CutoverStageSubmission = {},
+    ): Promise<CutoverStageResult> {
+      const parsed = cutoverStageSubmissionSchema.safeParse(submission);
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      return postJson("/api/v1/authority/stage", parsed.data, cutoverStageResultSchema);
+    },
+    async activateAuthorityCutover(
+      submission: CutoverActivateSubmission,
+    ): Promise<CutoverActivateResult> {
+      const parsed = cutoverActivateSubmissionSchema.safeParse(submission);
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      return postJson("/api/v1/authority/activate", parsed.data, cutoverActivateResultSchema);
+    },
+    async abortAuthorityCutover(submission: CutoverAbortSubmission): Promise<CutoverAbortResult> {
+      const parsed = cutoverAbortSubmissionSchema.safeParse(submission);
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      return postJson("/api/v1/authority/abort", parsed.data, cutoverAbortResultSchema);
+    },
+    async authorityMappings(cutoverId: string): Promise<CutoverMappingsResult> {
+      return getJson(
+        `/api/v1/authority/mappings?cutover_id=${encodeURIComponent(cutoverId)}`,
+        cutoverMappingsResultSchema,
+      );
     },
     forProject(projectId: string) {
       const encId = encodeURIComponent(projectId);

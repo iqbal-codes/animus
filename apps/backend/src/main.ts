@@ -57,6 +57,7 @@ import {
 import { PublicationService, handleProjectPublicationRoute } from "./publication";
 import { ChildIntegrationService, handleProjectIntegrationRoute } from "./integration";
 import { BackupRestoreService, handleBackupRoute, handleRestoreRoute } from "./restore";
+import { AuthorityCutoverService, handleAuthorityRoute } from "./cutover";
 import { DraftPublicationService, handleProjectDraftPublicationRoute } from "./publication";
 import {
   DeliveryGateService,
@@ -116,6 +117,7 @@ export interface BackendApp {
   db: DatabaseSync;
   publication: PublicationService;
   backup: BackupRestoreService;
+  authority: AuthorityCutoverService;
   draftPublication: DraftPublicationService;
   delivery: DeliveryGateService;
   final: FinalDeliveryService;
@@ -378,6 +380,11 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     forge: registryService.getForge(),
   });
 
+  const authorityService = new AuthorityCutoverService(db, {
+    stateDir: options?.stateDir ?? resolveStateDir(),
+    backup: backupService,
+  });
+
   const boardService = new OperatorBoardService({
     projects: registryService,
     work: workService,
@@ -416,6 +423,7 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
 
   const githubWebhookService = new GitHubWebhookService(registryService, {
     onProjectWake: (projectId) => monitor.wakeProject(projectId),
+    authority: () => readExecutionAuthority().authority,
   });
 
   const wsClients = new Set<ServerWebSocket<WsClientData>>();
@@ -641,6 +649,11 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
       const sub = path.slice("/api/v1/".length);
       const parts = sub.split("/");
       return handleCommandsRoute(request, parts, routeContext);
+    }
+
+    if (path === "/api/v1/authority" || path.startsWith("/api/v1/authority/")) {
+      const authorityRes = await handleAuthorityRoute(request, path, authorityService);
+      if (authorityRes) return authorityRes;
     }
 
     if (path === "/api/v1/backups" || path.startsWith("/api/v1/backups/")) {
@@ -890,7 +903,7 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
       }
 
       if (scopedAction === "coordination") {
-        if (readExecutionAuthority().authority === "local" && request.method !== "GET") {
+        if (readExecutionAuthority().authority !== "legacy" && request.method !== "GET") {
           return Response.json(
             {
               error: "execution_authority_moved",
@@ -1052,6 +1065,7 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
   return {
     publication: publicationService,
     backup: backupService,
+    authority: authorityService,
     draftPublication: draftPublicationService,
     delivery: deliveryService,
     final: finalService,

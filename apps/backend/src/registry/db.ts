@@ -18,6 +18,7 @@ import { DRAFT_MIGRATIONS } from "../draft/db";
 import { DISPATCH_MIGRATIONS } from "../dispatch/db";
 import { DELIVERY_MIGRATIONS } from "../delivery/schema";
 import { RESTORE_MIGRATIONS } from "../restore/schema";
+import { CUTOVER_MIGRATIONS } from "../cutover/schema";
 import { FINAL_DELIVERY_MIGRATIONS } from "../final/schema";
 import { applyMigrations, type Migration } from "./migrations";
 
@@ -49,6 +50,7 @@ export const SCHEMA_MIGRATIONS: Migration[] = [
   ...RESTORE_MIGRATIONS.filter((migration) => migration.version < 12),
   ...FINAL_DELIVERY_MIGRATIONS,
   ...RESTORE_MIGRATIONS.filter((migration) => migration.version > 12),
+  ...CUTOVER_MIGRATIONS,
 ];
 
 export function resolveStateDir(): string {

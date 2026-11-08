@@ -7,6 +7,7 @@
     "./host": "./src/host.ts",
     "./paths": "./src/paths.ts",
     "./execution-authority": "./src/execution-authority.ts",
+    "./cutover": "./src/cutover.ts",
     "./sanitizer": "./src/sanitizer.ts",
     "./ticket": "./src/ticket.ts",
     "./installation-hold": "./src/installation-hold.ts"

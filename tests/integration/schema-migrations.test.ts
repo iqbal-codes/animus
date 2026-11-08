@@ -23,6 +23,7 @@ const DRAFT_PUBLICATION_V10 = "approved_draft_issue_publication";
 const RESTORE_V11 = "workspace_backup_restore";
 const FINAL_V12 = "final_spec_delivery_coordination";
 const RESTORE_V13 = "restore_terminal_intent_disposition";
+const CUTOVER_V15 = "authority_cutover";
 
 const ALL_MIGRATIONS = [
   { version: 1, name: WORK_V1 },
@@ -38,6 +39,7 @@ const ALL_MIGRATIONS = [
   { version: 11, name: RESTORE_V11 },
   { version: 12, name: FINAL_V12 },
   { version: 13, name: RESTORE_V13 },
+  { version: 15, name: CUTOVER_V15 },
 ];
 
 function tableExists(db: DatabaseSync, table: string): boolean {

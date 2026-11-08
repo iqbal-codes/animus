@@ -39,6 +39,9 @@ export interface ParsedCliArgs {
     destination?: string;
     "target-state-dir"?: string;
     "target-home"?: string;
+    "cutover-id"?: string;
+    "inventory-sha256"?: string;
+    "backup-manifest-sha256"?: string;
     "release-run"?: string[];
     "release-intent"?: string[];
     state?: string;
@@ -116,6 +119,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       destination: { type: "string" },
       "target-state-dir": { type: "string" },
       "target-home": { type: "string" },
+      "cutover-id": { type: "string" },
+      "inventory-sha256": { type: "string" },
+      "backup-manifest-sha256": { type: "string" },
       "release-run": { type: "string", multiple: true },
       "release-intent": { type: "string", multiple: true },
       state: { type: "string" },

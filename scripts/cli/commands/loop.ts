@@ -52,7 +52,7 @@ export async function runLoopCliCommand(opts: {
   try {
     if (sub === "run") {
       assertInstallationNotHeldAtStateDir();
-      if (readExecutionAuthority().authority === "local") {
+      if (readExecutionAuthority().authority !== "legacy") {
         throw new Error("execution_authority_moved: use animus plan dispatch with an admitted plan");
       }
       const rawIssue = opts.issue ?? opts.positionals[2];
@@ -303,7 +303,13 @@ export async function runSchedulerCliCommand(opts: {
     assertInstallationNotHeldAtStateDir();
     // A single mutually exclusive authority: once the validated local authority is
     // active this command never resolves a GitHub repository or fetches backlog.
-    if (readExecutionAuthority().authority === "local") {
+    const authority = readExecutionAuthority().authority;
+    if (authority === "migrating") {
+      throw new Error(
+        "execution_authority_moved: the installation is fenced for the validated #165 cutover; finish or abort it before scheduling",
+      );
+    }
+    if (authority === "local") {
       return await runLocalSchedulerCommand(opts, interval);
     }
 

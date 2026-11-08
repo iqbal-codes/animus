@@ -20,6 +20,7 @@ import {
 } from "./commands/operations";
 import { runLoopCliCommand, runSchedulerCliCommand } from "./commands/loop";
 import { runConfigCliCommand, runSetupCommand } from "./commands/setup";
+import { runAuthorityCommand } from "./commands/authority";
 
 export function resolveRepoRoot(cwdOverride?: string): string {
   if (cwdOverride) return resolve(cwdOverride);
@@ -334,6 +335,24 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         name: values.name,
         path: values.path,
         repo: values.repo,
+        factoryUrl: values["factory-url"],
+        factoryToken: values["factory-token"],
+        json: values.json,
+      });
+
+    case "authority":
+      return await runAuthorityCommand({
+        subcommand,
+        positionals,
+        repoRoot,
+        stateDir: values["state-dir"],
+        cutoverId: values["cutover-id"],
+        inventorySha256: values["inventory-sha256"],
+        backupManifestSha256: values["backup-manifest-sha256"],
+        actor: values.actor,
+        reason: values.reason,
+        destination: values.destination,
+        targetStateDir: values["target-state-dir"],
         factoryUrl: values["factory-url"],
         factoryToken: values["factory-token"],
         json: values.json,

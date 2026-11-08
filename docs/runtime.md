@@ -376,3 +376,12 @@ The unified factory operates `apps/backend` and `apps/engine-host`
 via `apps/launcher/src/main.ts`. See [monorepo health instructions](monorepo-health.md)
 for pinned Bun 1.4.2 / Node 26.8.1 / Vite+ 1.4.0, exact start argv, private credential provisioning and checks.
 Backend API serves on loopback or configured host, while engine-host remains strictly loopback private.
+
+## Execution authority cutover
+
+An existing installation upgrades to the single local execution authority through
+the validated #165 cutover. The durable marker, migration-15 schema, restartable
+staging, isolated held-restore proof, CAS activation/abort and every fenced legacy
+consumer are documented in [authority-cutover.md](authority-cutover.md). Restore
+holds remain a separate gate: a held restored installation never activates
+execution authority automatically.

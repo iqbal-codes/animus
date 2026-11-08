@@ -103,6 +103,12 @@ export const helpEntries: readonly HelpEntry[] = [
     description: "Manage projects through the selected factory API",
   },
   {
+    command: "authority",
+    spec: "authority <status|stage|activate|abort|mappings>",
+    description:
+      "Inspect, stage, activate or abort the validated local execution-authority cutover with backup and held-restore proof",
+  },
+  {
     command: "backup",
     spec: "backup <status|create|restore|restores|reconcile> [destination|source] [--target-state-dir <path>] [--target-home <path>]",
     description:
@@ -172,8 +178,13 @@ export const orderedFlags: readonly FlagHelp[] = [
   },
   {
     spec: "--reason <text>",
-    description: "Reason for a draft or plan decision",
-    commands: ["draft", "plan"],
+    description: "Reason for a draft, plan decision, or cutover abort",
+    commands: ["draft", "plan", "authority"],
+  },
+  {
+    spec: "--cutover-id <id>",
+    description: "Exact authority cutover operation",
+    commands: ["authority"],
   },
   {
     spec: "--answers <json>",

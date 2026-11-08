@@ -389,7 +389,7 @@ describe("workspace backup and isolated restore", () => {
     }>(response);
     expect(created.manifestHash).toMatch(/^[a-f0-9]{64}$/);
     expect(created.artifactCount).toBe(1);
-    expect(created.schemaVersion).toBe(13);
+    expect(created.schemaVersion).toBe(15);
 
     const manifest = JSON.parse(readFileSync(join(bundle, BACKUP_MANIFEST_FILE), "utf8"));
     expect(manifest.kind).toBe("animus-workspace-backup");
@@ -1658,7 +1658,7 @@ describe("workspace backup and isolated restore", () => {
           version: number;
         }>
       ).map((row) => row.version);
-      expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+      expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15]);
       expect(
         restoredDb
           .prepare(

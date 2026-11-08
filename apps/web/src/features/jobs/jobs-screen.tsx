@@ -4,6 +4,7 @@ import { JobsHeader } from "./jobs-header";
 import { WorkDetailDialog } from "./work-detail-dialog";
 import { DispatchControl } from "@/features/dispatch/dispatch-control";
 import { BackupPanel } from "@/features/backup/backup-panel";
+import { AuthorityPanel } from "@/features/authority/authority-panel";
 import type { JobsBoardModel } from "./jobs-model";
 import type { BackendState } from "./factory-status";
 import type { CardDensity } from "@/lib/preferences";
@@ -32,6 +33,7 @@ export function JobsScreen({
     <div className="flex min-h-0 flex-1 flex-col">
       <JobsHeader board={board} />
       <DispatchControl />
+      <AuthorityPanel />
       <BackupPanel />
       <JobsBoard
         board={board}

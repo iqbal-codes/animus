@@ -517,9 +517,17 @@ export class RegisteredProjectMonitor {
         return;
       }
 
-      // Under the validated local authority the monitor dispatches from the frozen
-      // plan manifest and never fetches or rebinds GitHub backlog content.
-      if (this.options.localDispatch && this.options.authority?.() === "local") {
+      // Any non-legacy authority dispatches from the frozen plan manifest and
+      // never fetches or rebinds GitHub backlog content. While `migrating` the
+      // local tick fails closed with authority_not_activated instead of falling
+      // through to the legacy GitHub/filesystem path.
+      const authority = this.options.authority?.() ?? "legacy";
+      if (authority !== "legacy") {
+        if (!this.options.localDispatch) {
+          status.state = "held";
+          status.reason = "authority_not_activated";
+          return;
+        }
         this.assertDispatch(project);
         const result = await this.options.localDispatch();
         status.tick = {

@@ -396,6 +396,43 @@ export class BackupRestoreService {
     }
   }
 
+  /**
+   * Re-verifies one explicit bundle path. The cutover activation uses this to
+   * prove the exact staged backup is still complete instead of trusting the
+   * last-backup pointer, which another backup could have moved.
+   */
+  verifySnapshotAt(destinationPath: string): {
+    restorable: boolean;
+    reasons: string[];
+    manifestHash: string | null;
+    databaseSha256: string | null;
+    artifactCount: number;
+    schemaVersion: number | null;
+  } {
+    const destination = resolve(destinationPath);
+    try {
+      const manifest = this.readBundleManifest(destination);
+      const verification = this.verifyBundle(destination, manifest, manifest.database.sha256);
+      return {
+        restorable: verification.reasons.length === 0,
+        reasons: verification.reasons,
+        manifestHash: manifestHash(manifest),
+        databaseSha256: manifest.database.sha256,
+        artifactCount: manifest.artifacts.length,
+        schemaVersion: manifest.build.schemaVersion,
+      };
+    } catch (error) {
+      return {
+        restorable: false,
+        reasons: [error instanceof Error ? error.message : String(error)],
+        manifestHash: null,
+        databaseSha256: null,
+        artifactCount: 0,
+        schemaVersion: null,
+      };
+    }
+  }
+
   backupStatus(): BackupStatus {
     const row = this.db
       .prepare(

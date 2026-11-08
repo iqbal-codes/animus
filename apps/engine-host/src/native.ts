@@ -315,7 +315,7 @@ export function readLapReport(repoRoot: string, lapId: string): string {
 export function launchNativeLap(repoRoot: string, specification: string): LaunchAck {
   // A restored, held installation must never reach the native workflow launcher.
   assertInstallationNotHeldAtStateDir();
-  if (readExecutionAuthority().authority === "local") {
+  if (readExecutionAuthority().authority !== "legacy") {
     throw new Error("execution_authority_moved: use animus plan dispatch with an admitted plan");
   }
   const preflight = evaluateWorkspacePreflight(repoRoot, { mode: "launch" });
