@@ -1131,13 +1131,15 @@ export class DispatchService {
     owner: DispatchWorkerOwner | null,
     ownerPathExists: boolean,
   ): string | null {
-    if (!ownerPathExists) return null;
+    if (!ownerPathExists) return "worker_owner_record_missing";
     if (!owner) return "worker_owner_record_unreadable";
     if (owner.run_id !== run.id) return "worker_owner_run_mismatch";
     if (owner.owner_token !== run.owner_token) return "worker_owner_token_mismatch";
     if (owner.ownership_generation !== run.ownership_generation) {
       return "worker_owner_generation_mismatch";
     }
+    // The bounded builder is spawned detached as its process-group leader.
+    if (owner.pgid !== owner.pid) return "worker_owner_process_group_mismatch";
     if (owner.process_start === null) return "worker_owner_process_identity_unreadable";
     if (processStartIdentity(owner.pid) !== owner.process_start) {
       return "worker_owner_process_identity_unverified";

@@ -790,6 +790,80 @@ describe("bounded attempt budgets and operator controls", () => {
     }
   });
 
+  test("B2: a missing worker record never confirms termination from coordinator liveness alone", async () => {
+    addIssue(1803);
+    const plan = await plans.importPlan(projectId, { issue_number: 1803, kind: "standalone" });
+    const service = makeService();
+    const runId = await dispatchLap(service, plan.id, plan.members[0]!.work_id);
+    db.prepare("UPDATE dispatch_runs SET state = 'running' WHERE id = ?").run(runId);
+    expect(existsSync(resolveWorkerOwnerPath(runId))).toBe(false);
+    const signaled: unknown[] = [];
+    const restarted = makeService({
+      processAlive: () => false,
+      terminate: (target: Parameters<DispatchTerminator>[0]) => signaled.push(target),
+    });
+    const stopped = restarted.applyControl(projectId, runId, {
+      action: "stop",
+      actor: "operator",
+      reason: "owner record absent",
+    });
+    expect(signaled).toEqual([]);
+    expect(stopped.confirmed).toBe(false);
+    expect(stopped.control.status).toBe("stopping");
+    expect(stopped.detail).toBe("termination_unverified:worker_owner_record_missing");
+  });
+
+  test("B2: a matching process identity cannot authorize signalling a foreign process group", async () => {
+    addIssue(1804);
+    const plan = await plans.importPlan(projectId, { issue_number: 1804, kind: "standalone" });
+    const service = makeService();
+    const runId = await dispatchLap(service, plan.id, plan.members[0]!.work_id);
+    const run = service.getRun(projectId, runId);
+    db.prepare("UPDATE dispatch_runs SET state = 'running' WHERE id = ?").run(runId);
+    const { spawn } = await import("node:child_process");
+    const writer = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    const foreign = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    writer.unref();
+    foreign.unref();
+    const signaled: unknown[] = [];
+    try {
+      const owner = writeWorkerOwner({
+        run_id: runId,
+        owner_token: run.owner_token,
+        ownership_generation: run.ownership_generation,
+        pid: writer.pid!,
+        pgid: foreign.pid!,
+      });
+      expect(owner.process_start).not.toBeNull();
+      const restarted = makeService({
+        processAlive: () => false,
+        terminate: (target: Parameters<DispatchTerminator>[0]) => signaled.push(target),
+      });
+      const stopped = restarted.applyControl(projectId, runId, {
+        action: "stop",
+        actor: "operator",
+        reason: "foreign group guard",
+      });
+      expect(signaled).toEqual([]);
+      expect(stopped.confirmed).toBe(false);
+      expect(stopped.control.status).toBe("stopping");
+      expect(stopped.detail).toBe("termination_unverified:worker_owner_process_group_mismatch");
+      expect(() => process.kill(foreign.pid!, 0)).not.toThrow();
+    } finally {
+      for (const child of [writer, foreign]) {
+        try {
+          process.kill(-child.pid!, "SIGKILL");
+        } catch {}
+      }
+    }
+  });
+
   test("B3: takeover terminalizes the stale run so public reconcile and the next numbered dispatch work", async () => {
     addIssue(1900);
     const plan = await plans.importPlan(projectId, { issue_number: 1900, kind: "standalone" });
