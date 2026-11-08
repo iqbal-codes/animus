@@ -62,6 +62,15 @@ import {
   coordinationFinalPrSubmissionSchema,
   candidateVerificationRecordSchema,
   candidateVerificationSubmissionSchema,
+  executionObservationRequestSchema,
+  executionObservationRecordSchema,
+  observationListSchema,
+  runEvidenceReportSchema,
+  acceptanceDecisionSchema,
+  factoryFindingRecordSchema,
+  findingListSchema,
+  findingFixSubmissionSchema,
+  findingRecheckSubmissionSchema,
   landingGuardResultSchema,
   landingSubmissionSchema,
   landingExecutionResultSchema,
@@ -83,6 +92,13 @@ import {
   type WsEvent,
   type CandidateVerificationRecord,
   type CandidateVerificationSubmission,
+  type ExecutionObservationRecord,
+  type ExecutionObservationRequestInput,
+  type RunEvidenceReport,
+  type AcceptanceDecision,
+  type FactoryFindingRecord,
+  type FindingFixSubmission,
+  type FindingRecheckSubmissionInput,
   type LandingGuardResult,
   type LandingSubmission,
   type LandingExecutionResult,
@@ -859,6 +875,96 @@ export function createFactoryClient(options: {
           return getJson(
             `${scopedBase}/evidence/report/${encodeURIComponent(prNumber)}/sanitized`,
             sanitizedReportSchema,
+          );
+        },
+        async recordObservation(
+          submission: ExecutionObservationRequestInput,
+        ): Promise<ExecutionObservationRecord> {
+          const parsed = executionObservationRequestSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/evidence/observations`,
+            parsed.data,
+            executionObservationRecordSchema,
+          );
+        },
+        async observations(opts?: {
+          runId?: string;
+          deliveryId?: string;
+          candidateHeadSha?: string;
+          workId?: string;
+        }): Promise<ExecutionObservationRecord[]> {
+          const params = new URLSearchParams();
+          if (opts?.runId) params.set("run_id", opts.runId);
+          if (opts?.deliveryId) params.set("delivery_id", opts.deliveryId);
+          if (opts?.candidateHeadSha) params.set("candidate_head_sha", opts.candidateHeadSha);
+          if (opts?.workId) params.set("work_id", opts.workId);
+          const qs = params.toString();
+          return getJson(
+            `${scopedBase}/evidence/observations${qs ? `?${qs}` : ""}`,
+            observationListSchema,
+          );
+        },
+        async observation(id: string): Promise<ExecutionObservationRecord> {
+          return getJson(
+            `${scopedBase}/evidence/observations/${encodeURIComponent(id)}`,
+            executionObservationRecordSchema,
+          );
+        },
+        async runEvidence(runId: string): Promise<RunEvidenceReport> {
+          return getJson(
+            `${scopedBase}/evidence/runs/${encodeURIComponent(runId)}`,
+            runEvidenceReportSchema,
+          );
+        },
+        async acceptance(runId: string): Promise<AcceptanceDecision> {
+          return getJson(
+            `${scopedBase}/evidence/acceptance/${encodeURIComponent(runId)}`,
+            acceptanceDecisionSchema,
+          );
+        },
+        async findings(opts?: {
+          runId?: string;
+          deliveryId?: string;
+          workId?: string;
+          status?: "open" | "resolved";
+        }): Promise<FactoryFindingRecord[]> {
+          const params = new URLSearchParams();
+          if (opts?.runId) params.set("run_id", opts.runId);
+          if (opts?.deliveryId) params.set("delivery_id", opts.deliveryId);
+          if (opts?.workId) params.set("work_id", opts.workId);
+          if (opts?.status) params.set("status", opts.status);
+          const qs = params.toString();
+          return getJson(`${scopedBase}/evidence/findings${qs ? `?${qs}` : ""}`, findingListSchema);
+        },
+        async finding(id: string): Promise<FactoryFindingRecord> {
+          return getJson(
+            `${scopedBase}/evidence/findings/${encodeURIComponent(id)}`,
+            factoryFindingRecordSchema,
+          );
+        },
+        async submitFindingFix(
+          id: string,
+          submission: FindingFixSubmission,
+        ): Promise<FactoryFindingRecord> {
+          const parsed = findingFixSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/evidence/findings/${encodeURIComponent(id)}/fix`,
+            parsed.data,
+            factoryFindingRecordSchema,
+          );
+        },
+        async recheckFinding(
+          id: string,
+          submission: FindingRecheckSubmissionInput,
+        ): Promise<FactoryFindingRecord> {
+          const parsed = findingRecheckSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/evidence/findings/${encodeURIComponent(id)}/recheck`,
+            parsed.data,
+            factoryFindingRecordSchema,
           );
         },
       };

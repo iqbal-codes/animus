@@ -388,6 +388,11 @@ describe("local dispatch ownership and frozen execution", () => {
     };
     expect(row.state).toBe("running");
     expect(row.head_sha).toBeNull();
+    // A fenced result must not leave a stage observation behind either.
+    const observations = db
+      .prepare("SELECT COUNT(*) AS count FROM execution_observations WHERE run_id = ?")
+      .get(runId) as { count: number };
+    expect(observations.count).toBe(0);
   });
 
   test("AC4: restart keeps interrupted ownership; lease expiry alone never frees the claim", async () => {
