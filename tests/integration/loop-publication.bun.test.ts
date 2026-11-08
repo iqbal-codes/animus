@@ -18,8 +18,8 @@ import {
   type GhRunner,
 } from "../../scripts/loop/pr-publication";
 import { LoopPublisher } from "../../scripts/loop/publisher";
-import { runAnimusLoop } from "../../scripts/animus-loop";
-import type { LocalIssue, AgentTransport, LocalLoopResult } from "../../scripts/animus-loop";
+import { runAnimusLoop } from "./support/loop-harness";
+import type { LocalIssue, AgentTransport, LocalLoopResult } from "./support/loop-harness";
 import type {
   CaptureRecord,
   HostBoundIdentities,

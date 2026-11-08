@@ -429,6 +429,7 @@ ${verif.review ? verif.review.summary : "No review conducted."}`;
         invalid_payload: 400,
         unauthorized_control: 403,
         landing_guard_blocked: 422,
+        installation_held: 409,
         builder_self_approval_rejected: 422,
         candidate_drift: 422,
         base_drift: 422,

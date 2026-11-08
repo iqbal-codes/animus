@@ -23,6 +23,7 @@ import {
 import { readHarnessChecks } from "../../../../scripts/loop/worktree";
 import type { AgentTransport, LoopRole, RoleBudget } from "../../../../scripts/loop/types";
 import type { DispatchService } from "../dispatch";
+import { assertInstallationNotHeld } from "@animus/contracts/installation-hold";
 import type { ExecutionObservationService } from "../evidence";
 import type { ExecutionBudgetService } from "../work/budget";
 import type { PublicationService } from "../publication";
@@ -166,6 +167,11 @@ export class DeliveryRuntimeCoordinator {
   private readonly artifactRoot: string;
   private readonly maxCorrections: number;
 
+  /** Fail closed before any reviewer/QA transport, evidence write or publication. */
+  private assertInstallationReady(): void {
+    assertInstallationNotHeld(this.db);
+  }
+
   constructor(
     private readonly db: DatabaseSync,
     private readonly options: DeliveryRuntimeOptions,
@@ -181,6 +187,9 @@ export class DeliveryRuntimeCoordinator {
    * from where the previous tick stopped.
    */
   async process(projectId: string, runId: string): Promise<DeliveryRuntimeResult> {
+    // Reviewer/QA transports, evidence writes, correction dispatch and
+    // publication all happen below; a held installation must reach none of them.
+    this.assertInstallationReady();
     let currentRunId = runId;
     let corrections = 0;
     let iterations = 0;
@@ -396,6 +405,7 @@ export class DeliveryRuntimeCoordinator {
   }
 
   private async publishIfNeeded(run: RuntimeRunRow): Promise<void> {
+    this.assertInstallationReady();
     const status = this.options.publication.getStatusByRun(run.project_id, run.id);
     const hasActive = status.pullRequests.some((pullRequest) => pullRequest.active);
     if (status.target.state !== "published" || !hasActive) {
@@ -407,11 +417,13 @@ export class DeliveryRuntimeCoordinator {
     run: RuntimeRunRow,
     stage: "independent_review",
   ): Promise<DeliveryRuntimeRoleResult> {
+    this.assertInstallationReady();
     const request = this.roleRequest(run, stage);
     return this.executor(request);
   }
 
   private async runAcceptance(run: RuntimeRunRow): Promise<DeliveryRuntimeRoleResult> {
+    this.assertInstallationReady();
     const request = this.roleRequest(run, "final_acceptance");
     const result = await this.executor(request);
     const regression = await this.runRegressionChecks(run);
@@ -438,6 +450,7 @@ export class DeliveryRuntimeCoordinator {
   private async runRegressionChecks(
     run: RuntimeRunRow,
   ): Promise<{ check: DeliveryRuntimeCheck; detail: string }> {
+    this.assertInstallationReady();
     let commands = this.options.regressionChecks;
     if (!commands) {
       try {
@@ -485,6 +498,7 @@ export class DeliveryRuntimeCoordinator {
     stage: "independent_review" | "final_acceptance",
     result: DeliveryRuntimeRoleResult,
   ): Promise<DeliveryRuntimeFinding[]> {
+    this.assertInstallationReady();
     const producer = this.ensureProducer(
       run,
       stage === "independent_review" ? REVIEW_ROLE : ACCEPTANCE_ROLE,

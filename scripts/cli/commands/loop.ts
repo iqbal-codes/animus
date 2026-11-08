@@ -18,6 +18,7 @@ import {
 import { PlanService } from "../../../apps/backend/src/plans";
 import { CommandLedger } from "../../../apps/backend/src/command/ledger";
 import { BrakeService } from "../../../apps/backend/src/command/brakes";
+import { assertInstallationNotHeldAtStateDir } from "@animus/contracts/installation-hold";
 import {
   loadScheduleConfig,
   runSchedulerTick,
@@ -50,6 +51,7 @@ export async function runLoopCliCommand(opts: {
 
   try {
     if (sub === "run") {
+      assertInstallationNotHeldAtStateDir();
       if (readExecutionAuthority().authority === "local") {
         throw new Error("execution_authority_moved: use animus plan dispatch with an admitted plan");
       }
@@ -202,6 +204,7 @@ export async function runLocalSchedulerCommand(
   },
   interval: number | undefined,
 ): Promise<number> {
+  assertInstallationNotHeldAtStateDir();
   const db = initializeDatabase();
   try {
     const registry = new ProjectRegistryService(db, new SystemForgeAdapter());
@@ -297,6 +300,7 @@ export async function runSchedulerCliCommand(opts: {
       throw new Error("Interval must be a positive integer in seconds");
     }
 
+    assertInstallationNotHeldAtStateDir();
     // A single mutually exclusive authority: once the validated local authority is
     // active this command never resolves a GitHub repository or fetches backlog.
     if (readExecutionAuthority().authority === "local") {

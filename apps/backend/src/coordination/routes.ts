@@ -113,17 +113,19 @@ export async function handleProjectCoordinationRoute(
     } catch (err: any) {
       if (err instanceof CoordinationError) {
         const status =
-          err.code === "child_not_in_plan" || err.code === "plan_not_found"
-            ? 404
-            : err.code === "prerequisites_not_satisfied" ||
-                err.code === "coordination_pipeline_halted" ||
-                err.code === "integration_conflict" ||
-                err.code === "integration_drift" ||
-                err.code === "worktree_lock_conflict"
-              ? 409
-              : err.code === "starting_sha_mismatch" || err.code === "worktree_dirty"
-                ? 422
-                : 400;
+          err.code === "coordination_installation_held"
+            ? 409
+            : err.code === "child_not_in_plan" || err.code === "plan_not_found"
+              ? 404
+              : err.code === "prerequisites_not_satisfied" ||
+                  err.code === "coordination_pipeline_halted" ||
+                  err.code === "integration_conflict" ||
+                  err.code === "integration_drift" ||
+                  err.code === "worktree_lock_conflict"
+                ? 409
+                : err.code === "starting_sha_mismatch" || err.code === "worktree_dirty"
+                  ? 422
+                  : 400;
         return Response.json(
           { error: err.code, message: err.message, details: err.details },
           { status },
@@ -168,7 +170,8 @@ export async function handleProjectCoordinationRoute(
         const status =
           err.code === "plan_not_found"
             ? 404
-            : err.code === "unintegrated_children_remain"
+            : err.code === "unintegrated_children_remain" ||
+                err.code === "coordination_installation_held"
               ? 409
               : 400;
         return Response.json(

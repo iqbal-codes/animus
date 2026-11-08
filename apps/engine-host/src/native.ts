@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { readExecutionAuthority } from "@animus/contracts/execution-authority";
+import { assertInstallationNotHeldAtStateDir } from "@animus/contracts/installation-hold";
 import { createHash, randomUUID } from "node:crypto";
 import type {
   Diagnostics,
@@ -312,6 +313,8 @@ export function readLapReport(repoRoot: string, lapId: string): string {
 }
 
 export function launchNativeLap(repoRoot: string, specification: string): LaunchAck {
+  // A restored, held installation must never reach the native workflow launcher.
+  assertInstallationNotHeldAtStateDir();
   if (readExecutionAuthority().authority === "local") {
     throw new Error("execution_authority_moved: use animus plan dispatch with an admitted plan");
   }

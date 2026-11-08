@@ -845,6 +845,7 @@ function PublicationAuditPanel({
   const { target } = status;
   const active = status.pullRequests.find((pr) => pr.active);
   const pending = status.intents.filter((intent) => intent.state !== "accepted");
+  const abandonedCount = status.intents.filter((intent) => intent.state === "abandoned").length;
   return (
     <section
       aria-label="Publication audit and outgoing intents"
@@ -898,6 +899,7 @@ function PublicationAuditPanel({
       <p className="text-[11px] text-text-secondary">
         {status.publishedEventCount} published · {status.queuedEventCount} queued ·{" "}
         {status.failedIntentCount} failed · {status.unknownIntentCount} unknown
+        {abandonedCount > 0 ? ` · ${abandonedCount} abandoned` : ""}
       </p>
       {status.remoteStale && (
         <p role="alert" className="text-[11px] text-[var(--warning)]">

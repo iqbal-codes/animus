@@ -19,6 +19,10 @@ import { enqueuePublicationEvent } from "../publication/outbox";
 import type { PublicationService } from "../publication/service";
 import type { ForgeAdapter, ForgePullRequest } from "../registry/forge";
 import { readRequiredChecks } from "../registry/required-checks";
+import {
+  InstallationHeldError,
+  assertInstallationNotHeld,
+} from "@animus/contracts/installation-hold";
 import { IntegrationError, type IntegrationErrorCode } from "./errors";
 
 const execFileAsync = promisify(execFile);
@@ -249,6 +253,7 @@ export class ChildIntegrationService {
     runId: string,
     submission: { actor?: string; reason?: string } = {},
   ): Promise<IntegrationStatus> {
+    this.assertInstallationReady();
     const run = this.loadRun(projectId, runId);
     this.assertChildProfile(run);
 
@@ -1426,6 +1431,21 @@ export class ChildIntegrationService {
   private message(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
   }
+
+  /**
+   * A restored installation never auto-merges or pushes integration refs. The
+   * verified hold is the same authority that fences dispatch and publication.
+   */
+  private assertInstallationReady(): void {
+    try {
+      assertInstallationNotHeld(this.db);
+    } catch (error) {
+      if (error instanceof InstallationHeldError) {
+        throw new IntegrationError("integration_installation_held", error.message);
+      }
+      throw error;
+    }
+  }
 }
 
 export function integrationErrorStatus(code: IntegrationErrorCode): number {
@@ -1449,6 +1469,7 @@ export function integrationErrorStatus(code: IntegrationErrorCode): number {
     case "integration_conflict":
     case "integration_merge_rejected":
     case "integration_lineage_unverified":
+    case "integration_installation_held":
       return 409;
     case "integration_remote_unreadable":
     case "integration_merge_unknown":

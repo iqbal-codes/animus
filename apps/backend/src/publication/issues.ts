@@ -17,6 +17,10 @@ import { validateCanonicalIssueBody } from "@animus/contracts/ticket";
 import { ReportSanitizer } from "@animus/contracts/sanitizer";
 import type { DraftService } from "../draft";
 import type { ForgeAdapter, ForgeIssue } from "../registry/forge";
+import {
+  InstallationHeldError,
+  assertInstallationNotHeld,
+} from "@animus/contracts/installation-hold";
 import { assertIssueForge } from "../registry/forge";
 import type { PlanService } from "../plans";
 import { WorkService } from "../work";
@@ -32,6 +36,7 @@ export type DraftPublicationErrorCode =
   | "draft_publication_transport_unsupported"
   | "draft_publication_invalid_plan"
   | "draft_publication_source_missing"
+  | "draft_publication_installation_held"
   | "draft_publication_failed";
 
 export class DraftPublicationError extends Error {
@@ -111,7 +116,7 @@ interface IntentRow {
   operation_key: string;
   kind: "create_issue" | "create_issue_relationship" | "link_source_issue";
   resource_kind: "issue" | "relationship";
-  state: "queued" | "attempting" | "accepted" | "failed" | "unknown";
+  state: "queued" | "attempting" | "accepted" | "failed" | "unknown" | "abandoned";
   request_json: string;
   attempts: number;
   remote_object_id: string | null;
@@ -253,6 +258,7 @@ export class DraftPublicationService {
   // -------------------------------------------------------------------------
 
   async publishDraft(projectId: string, draftId: string): Promise<DraftPublication> {
+    this.assertInstallationReady();
     const draft = this.loadDraft(projectId, draftId);
     const existing = this.findByRevision(projectId, draft.id, draft.latest_revision.id);
     const publication = existing
@@ -262,6 +268,7 @@ export class DraftPublicationService {
   }
 
   async publish(projectId: string, publicationId: string): Promise<DraftPublication> {
+    this.assertInstallationReady();
     return this.serialize(publicationId, async () => {
       const publication = this.loadPublication(projectId, publicationId);
       const project = this.project(projectId);
@@ -311,6 +318,7 @@ export class DraftPublicationService {
   }
 
   async reconcileAll(projectId: string): Promise<DraftPublication[]> {
+    this.assertInstallationReady();
     this.project(projectId);
     const rows = this.db
       .prepare(
@@ -320,6 +328,21 @@ export class DraftPublicationService {
     const results: DraftPublication[] = [];
     for (const row of rows) results.push(await this.publish(projectId, row.id));
     return results;
+  }
+
+  /**
+   * A restored installation disables outward issue/relationship publication
+   * until the installation hold is released through verified reconciliation.
+   */
+  private assertInstallationReady(): void {
+    try {
+      assertInstallationNotHeld(this.db);
+    } catch (error) {
+      if (error instanceof InstallationHeldError) {
+        throw new DraftPublicationError("draft_publication_installation_held", error.message);
+      }
+      throw error;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -661,6 +684,7 @@ export class DraftPublicationService {
       if (intent.state !== "accepted") this.acceptIntent(intent, String(member.issue_number));
       return "created";
     }
+    const abandoned = intent.state === "abandoned";
     const rendered = this.renderMember(publication, member);
     if (!rendered) return "blocked";
     const project = this.project(publication.project_id);
@@ -678,6 +702,7 @@ export class DraftPublicationService {
     }
     if (recovered) return this.bindCreated(publication, member, intent, recovered);
 
+    if (abandoned) return "failed";
     const current = this.loadIntent(intent.id);
     if (!this.claimIntent(current)) return "blocked";
     try {
@@ -982,6 +1007,7 @@ export class DraftPublicationService {
       );
       return "ok";
     }
+    if (intent.state === "abandoned") return "failed";
     if (intent.state === "attempting") this.markIntentUnknown(intent);
 
     const nativeSupported =
@@ -1111,7 +1137,7 @@ export class DraftPublicationService {
 
   private async executeLinkSource(publication: PublicationRow): Promise<void> {
     const intent = this.intentFor(publication.id, `link_source:${publication.id}`);
-    if (!intent || intent.state === "accepted") return;
+    if (!intent || intent.state === "accepted" || intent.state === "abandoned") return;
     const root = this.memberRows(publication.id).find((row) => row.node_key === "root");
     if (!root?.issue_number) return;
     const project = this.project(publication.project_id);
@@ -1326,7 +1352,7 @@ export class DraftPublicationService {
   }
 
   private claimIntent(intent: IntentRow): boolean {
-    if (intent.state === "accepted") return false;
+    if (intent.state === "accepted" || intent.state === "abandoned") return false;
     const result = this.db
       .prepare(
         `UPDATE publication_intents
@@ -1394,6 +1420,11 @@ export class DraftPublicationService {
     } else {
       const failedIntent = intents.find((intent) => intent.state === "failed");
       const unknownIntent = intents.find((intent) => intent.state === "unknown");
+      const abandonedIntent = intents.find(
+        (intent) =>
+          intent.state === "abandoned" &&
+          (intent.kind === "create_issue" || intent.kind === "create_issue_relationship"),
+      );
       const failedMember = members.find((member) => member.state === "failed");
       const unknownRelationship = relationships.find((row) => row.state === "unknown");
       const failedRelationship = relationships.find((row) => row.state === "failed");
@@ -1407,9 +1438,10 @@ export class DraftPublicationService {
         state = "unknown";
         lastError =
           unknownIntent?.last_error ?? unknownRelationship?.detail ?? publication.last_error;
-      } else if (failedIntent || failedMember || failedRelationship) {
+      } else if (failedIntent || failedMember || failedRelationship || abandonedIntent) {
         state = "failed";
         lastError =
+          abandonedIntent?.last_error ??
           failedIntent?.last_error ??
           failedRelationship?.detail ??
           publication.last_error ??

@@ -15,6 +15,7 @@ import type {
   ReviewerReport,
 } from "./types";
 import { loadPrompt, renderPrompt } from "./prompts";
+import { assertInstallationNotHeldAtStateDir } from "@animus/contracts/installation-hold";
 
 export type { AutoMergeExecutionResult };
 
@@ -682,6 +683,7 @@ export function recordSubticketIntegration(
 export async function executeSubticketAutoMerge(
   options: ExecuteSubticketAutoMergeOptions,
 ): Promise<AutoMergeExecutionResult> {
+  assertInstallationNotHeldAtStateDir();
   const {
     root,
     candidate,

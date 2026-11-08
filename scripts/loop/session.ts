@@ -20,6 +20,7 @@ import { loadScheduleConfig } from "./scheduler";
 import { LoopPublisher } from "./publisher";
 import { runBoundedRole } from "./role-runner";
 import { resolveProjectWorkspace } from "../../packages/contracts/src/paths";
+import { assertInstallationNotHeldAtStateDir } from "@animus/contracts/installation-hold";
 import type {
   LocalIssue,
   LocalLoopOptions,
@@ -118,6 +119,7 @@ export class LapSession {
   readonly artifactsDir: string;
   readonly handoffDir: string;
   readonly stateRoot: string;
+  private readonly installationStateDir: string | undefined;
   readonly branch: string;
   readonly base: string;
   readonly baseBranch: string;
@@ -166,6 +168,7 @@ export class LapSession {
     artifactsDir: string;
     handoffDir: string;
     stateRoot: string;
+    installationStateDir?: string;
     branch: string;
     base: string;
     baseBranch: string;
@@ -202,6 +205,7 @@ export class LapSession {
     this.artifactsDir = init.artifactsDir;
     this.handoffDir = init.handoffDir;
     this.stateRoot = init.stateRoot;
+    this.installationStateDir = init.installationStateDir;
     this.branch = init.branch;
     this.base = init.base;
     this.baseBranch = init.baseBranch;
@@ -438,6 +442,7 @@ export class LapSession {
         artifactsDir,
         handoffDir,
         stateRoot,
+        installationStateDir: options.installationStateDir,
         branch,
         base,
         baseBranch,
@@ -490,6 +495,9 @@ export class LapSession {
     cwdOverride?: string,
     optionsOverride?: { requiredAcIds?: string[] },
   ): Promise<any> {
+    // Re-check immediately before any role transport spawns. A hold installed
+    // while this lap was being prepared must still stop the builder/QA/reviewer.
+    this.assertInstallationReady();
     await inspectLocalLoop(this.root);
     this.state.status = role === "builder" ? "building" : role === "qa" ? "qa" : "reviewing";
     await this.save();
@@ -1222,8 +1230,15 @@ export class LapSession {
   /**
    * Runs the full autonomous lap lifecycle through the public seam.
    */
+  private assertInstallationReady(): void {
+    assertInstallationNotHeldAtStateDir(this.installationStateDir);
+  }
+
   async run(): Promise<LocalLoopResult> {
     try {
+      // No worktree allocation, checker or role transport may run while the
+      // installation is held by a restore.
+      this.assertInstallationReady();
       // Worktree allocation / reuse
       await prepareLoopWorktree({
         root: this.root,
@@ -1524,6 +1539,12 @@ export async function runAnimusLoop(
     };
   } = {},
 ): Promise<LocalLoopResult> {
+  // A restored installation is held: no native builder lap may start until the
+  // installation hold is released through verified reconciliation. Always resolve
+  // the canonical installation state directory (explicit embedder override or the
+  // environment default) and never the per-project worktree stateRoot, which has
+  // no console.db.
+  assertInstallationNotHeldAtStateDir(options.installationStateDir);
   const session = await LapSession.init(root, issue, options);
   return await session.run();
 }

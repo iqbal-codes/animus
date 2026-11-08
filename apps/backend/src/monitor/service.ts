@@ -15,6 +15,10 @@ import {
 import type { MonitorRuntime } from "./runtime";
 import type { LocalDispatchTickResult } from "../dispatch/scheduler";
 import type { ExecutionAuthority } from "@animus/contracts/execution-authority";
+import {
+  assertInstallationNotHeld,
+  readInstallationHold,
+} from "@animus/contracts/installation-hold";
 
 export class RegisteredProjectMonitor {
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -286,6 +290,9 @@ export class RegisteredProjectMonitor {
 
   private assertDispatch(project: Project): void {
     if (this.stopped) throw new Error("monitor_stopped");
+    // A restored installation must never dispatch, launch a lap or publish while
+    // held. An unreadable hold database fails closed as well.
+    assertInstallationNotHeld(this.registry.getDb());
     const current = this.registry.getProject(project.id);
     if (
       current.status !== "active" ||
@@ -316,6 +323,13 @@ export class RegisteredProjectMonitor {
 
     const runtime = this.options.runtime;
     if (!runtime.triage) return;
+
+    // A held or unreadable installation must not refine/publish intake work.
+    try {
+      if (readInstallationHold(this.registry.getDb()).held) return;
+    } catch {
+      return;
+    }
 
     // Isolate all sync checks per project into caught status
     try {
@@ -469,6 +483,20 @@ export class RegisteredProjectMonitor {
       if (project.status !== "active") {
         status.state = "held";
         status.reason = project.status_reason ?? project.status;
+        return;
+      }
+      try {
+        const hold = readInstallationHold(this.registry.getDb());
+        if (hold.held) {
+          status.state = "held";
+          status.reason = hold.reason ?? "restored_installation_pending_reconciliation";
+          return;
+        }
+      } catch (error) {
+        // An unreadable installation database is never treated as unheld.
+        status.state = "error";
+        status.reason = "installation_hold_unavailable";
+        status.error = error instanceof Error ? error.message : String(error);
         return;
       }
       if (this.registry.getActiveRunCount(project.id) > 0) {

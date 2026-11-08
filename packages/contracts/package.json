@@ -8,7 +8,8 @@
     "./paths": "./src/paths.ts",
     "./execution-authority": "./src/execution-authority.ts",
     "./sanitizer": "./src/sanitizer.ts",
-    "./ticket": "./src/ticket.ts"
+    "./ticket": "./src/ticket.ts",
+    "./installation-hold": "./src/installation-hold.ts"
   },
   "dependencies": {
     "zod": "4.1.12"

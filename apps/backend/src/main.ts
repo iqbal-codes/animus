@@ -56,6 +56,7 @@ import {
 } from "./evidence";
 import { PublicationService, handleProjectPublicationRoute } from "./publication";
 import { ChildIntegrationService, handleProjectIntegrationRoute } from "./integration";
+import { BackupRestoreService, handleBackupRoute, handleRestoreRoute } from "./restore";
 import { DraftPublicationService, handleProjectDraftPublicationRoute } from "./publication";
 import {
   DeliveryGateService,
@@ -112,6 +113,7 @@ export interface BackendApp {
   monitor: RegisteredProjectMonitor;
   db: DatabaseSync;
   publication: PublicationService;
+  backup: BackupRestoreService;
   draftPublication: DraftPublicationService;
   delivery: DeliveryGateService;
   stop(): Promise<void>;
@@ -350,6 +352,12 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
       budget: new ExecutionBudgetService(registryService.getDb()),
       publication: publicationService,
     });
+
+  const backupService = new BackupRestoreService(db, {
+    stateDir: options?.stateDir ?? resolveStateDir(),
+    ledger: commandService.ledger,
+    forge: registryService.getForge(),
+  });
 
   const monitorRuntime =
     options?.monitorRuntime ?? (await loadMonitorRuntime({ forge: options?.forge }));
@@ -601,6 +609,16 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
       const sub = path.slice("/api/v1/".length);
       const parts = sub.split("/");
       return handleCommandsRoute(request, parts, routeContext);
+    }
+
+    if (path === "/api/v1/backups" || path.startsWith("/api/v1/backups/")) {
+      const backupRes = await handleBackupRoute(request, path, backupService);
+      if (backupRes) return backupRes;
+    }
+
+    if (path === "/api/v1/restores" || path.startsWith("/api/v1/restores/")) {
+      const restoreRes = await handleRestoreRoute(request, path, backupService);
+      if (restoreRes) return restoreRes;
     }
 
     if (path === "/api/v1/intake") {
@@ -989,6 +1007,7 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
 
   return {
     publication: publicationService,
+    backup: backupService,
     draftPublication: draftPublicationService,
     delivery: deliveryService,
     fetch: appFetch,

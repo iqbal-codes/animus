@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
-import { isAbsolute, join, posix, resolve, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
   GATE_PROFILE_VERSION,
@@ -33,6 +33,7 @@ import {
 import { resolveAnimusStateDir } from "@animus/contracts/paths";
 import { enqueuePublicationEvent, ensurePublicationTarget } from "../publication/outbox";
 import { ExecutionBudgetService } from "../work/budget";
+import { ArtifactPathError, normalizeArtifactRelativePath } from "./artifact-path";
 import { EvidenceError } from "./errors";
 
 interface RunRow {
@@ -1440,31 +1441,14 @@ export class ExecutionObservationService {
   }
 
   private normalizeArtifactPath(relativePath: string): string {
-    const candidate = relativePath.trim();
-    if (
-      candidate === "" ||
-      isAbsolute(candidate) ||
-      candidate.includes("\\") ||
-      candidate.includes("\0")
-    ) {
-      throw new EvidenceError(
-        "artifact_unsafe_path",
-        `Artifact path must be a normalized project-relative path: ${relativePath}`,
-      );
+    try {
+      return normalizeArtifactRelativePath(relativePath);
+    } catch (error) {
+      if (error instanceof ArtifactPathError) {
+        throw new EvidenceError("artifact_unsafe_path", error.message);
+      }
+      throw error;
     }
-    const normalized = posix.normalize(candidate).replace(/^\.\//, "");
-    if (
-      normalized === "." ||
-      normalized === ".." ||
-      normalized.startsWith("../") ||
-      normalized.split("/").some((segment) => segment === "..")
-    ) {
-      throw new EvidenceError(
-        "artifact_unsafe_path",
-        `Artifact path escapes the project artifact root: ${relativePath}`,
-      );
-    }
-    return normalized;
   }
 
   private artifactRootFor(projectId: string): string {

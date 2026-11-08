@@ -24,6 +24,7 @@ import { extractValidDiffLines } from "../../../../scripts/loop/pr-publication";
 import { validateHostedAssetUrl } from "../../../../scripts/loop/evidence-manager";
 import { processRun } from "../../../../scripts/loop/process";
 import type { ForgeAdapter, ForgePullRequest } from "../registry/forge";
+import { assertInstallationNotHeld } from "@animus/contracts/installation-hold";
 import { PublicationError } from "./errors";
 
 interface TargetRow {
@@ -92,7 +93,7 @@ interface IntentRow {
   project_id: string;
   operation_key: string;
   kind: "create_pr" | "publish_event" | "update_summary" | "create_review";
-  state: "queued" | "attempting" | "accepted" | "failed" | "unknown";
+  state: "queued" | "attempting" | "accepted" | "failed" | "unknown" | "abandoned";
   request_json: string;
   attempts: number;
   remote_object_id: string | null;
@@ -286,7 +287,9 @@ export class PublicationService {
     );
     const failedIntentCount = intents.filter((intent) => intent.state === "failed").length;
     const unknownIntentCount = intents.filter((intent) => intent.state === "unknown").length;
-    const queuedEventCount = eventIntents.filter((intent) => intent.state !== "accepted").length;
+    const queuedEventCount = eventIntents.filter(
+      (intent) => intent.state !== "accepted" && intent.state !== "abandoned",
+    ).length;
     const publishedEventCount = eventIntents.filter((intent) => intent.state === "accepted").length;
     const remoteStale = Boolean(
       activePr &&
@@ -370,6 +373,7 @@ export class PublicationService {
 
   async publish(projectId: string, targetId: string): Promise<PublicationStatus> {
     return this.serialize(targetId, async () => {
+      this.assertInstallationReady();
       const target = this.loadTarget(projectId, targetId);
       if (target.state !== "no_candidate") {
         await this.reconcileTarget(target);
@@ -385,6 +389,7 @@ export class PublicationService {
   }
 
   async reconcileAll(projectId: string): Promise<PublicationStatus[]> {
+    this.assertInstallationReady();
     const rows = this.db
       .prepare(
         "SELECT id FROM publication_targets WHERE project_id = ? ORDER BY created_at ASC, id ASC",
@@ -445,6 +450,23 @@ export class PublicationService {
     return this.getStatus(projectId, targetId);
   }
 
+  /**
+   * A restored installation disables every publication path until an operator
+   * records explicit ownership/external reconciliation. Local reads stay usable.
+   */
+  private assertInstallationReady(): void {
+    try {
+      assertInstallationNotHeld(this.db);
+    } catch (error) {
+      throw new PublicationError(
+        "publication_installation_held",
+        error instanceof Error
+          ? error.message
+          : "Restored installation is held pending reconciliation",
+      );
+    }
+  }
+
   private async reconcileTarget(target: TargetRow): Promise<void> {
     let pr = this.activePullRequest(target);
     const createIntent = this.ensureCreateIntent(target);
@@ -471,7 +493,7 @@ export class PublicationService {
     const pendingEvents = this.db
       .prepare(
         `SELECT * FROM publication_intents
-          WHERE target_id = ? AND kind = 'publish_event' AND state != 'accepted'
+          WHERE target_id = ? AND kind = 'publish_event' AND state NOT IN ('accepted', 'abandoned')
           ORDER BY created_at ASC, id ASC`,
       )
       .all(target.id) as unknown as IntentRow[];
@@ -499,7 +521,9 @@ export class PublicationService {
     const existing = this.db
       .prepare("SELECT * FROM publication_intents WHERE target_id = ? AND operation_key = ?")
       .get(target.id, key) as unknown as IntentRow | undefined;
-    if (existing) return existing.state === "accepted" ? null : existing;
+    if (existing) {
+      return existing.state === "accepted" || existing.state === "abandoned" ? null : existing;
+    }
     const now = this.clock();
     this.db
       .prepare(
@@ -530,7 +554,9 @@ export class PublicationService {
     const existing = this.db
       .prepare("SELECT * FROM publication_intents WHERE target_id = ? AND operation_key = ?")
       .get(target.id, key) as unknown as IntentRow | undefined;
-    if (existing) return existing.state === "accepted" ? null : existing;
+    if (existing) {
+      return existing.state === "accepted" || existing.state === "abandoned" ? null : existing;
+    }
     const now = this.clock();
     this.db
       .prepare(
@@ -1087,7 +1113,7 @@ export class PublicationService {
   }
 
   private claimIntent(intent: IntentRow): boolean {
-    if (intent.state === "accepted") return false;
+    if (intent.state === "accepted" || intent.state === "abandoned") return false;
     const result = this.db
       .prepare(
         `UPDATE publication_intents
@@ -1656,7 +1682,11 @@ export class PublicationService {
     const activePr = pullRequests.find((pr) => pr.active) ?? null;
     const queuedEvents = events.filter((event) => {
       const intent = intents.find((item) => item.operationKey === `event:${event.id}`);
-      return intent && intent.state !== "accepted";
+      return intent && intent.state !== "accepted" && intent.state !== "abandoned";
+    });
+    const abandonedEvents = events.filter((event) => {
+      const intent = intents.find((item) => item.operationKey === `event:${event.id}`);
+      return intent?.state === "abandoned";
     });
     const failed = intents.filter((intent) => intent.state === "failed").length;
     const unknown = intents.filter((intent) => intent.state === "unknown").length;
@@ -1664,6 +1694,7 @@ export class PublicationService {
     const auditStatus =
       activePr &&
       queuedEvents.length === 0 &&
+      abandonedEvents.length === 0 &&
       failed === 0 &&
       unknown === 0 &&
       this.remoteSourceVerified(target) &&
@@ -1721,6 +1752,12 @@ export class PublicationService {
     }
     if (queuedEvents.length > 0) {
       lines.push(`> ${queuedEvents.length} audit event(s) remain queued for publication.`, "");
+    }
+    if (abandonedEvents.length > 0) {
+      lines.push(
+        `> ${abandonedEvents.length} audit event(s) were abandoned during restore reconciliation and will not be replayed.`,
+        "",
+      );
     }
 
     lines.push("#### Current stage results", "");

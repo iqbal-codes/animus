@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { interruptionReport, resolveRoleBudgets } from "../../scripts/loop/deadlines";
 import { processRun } from "../../scripts/loop/process";
-import { runLocalLoop } from "../../scripts/local-loop";
+import { runLocalLoop } from "./support/loop-harness";
 import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, rm, chmod } from "node:fs/promises";
 import { join } from "node:path";

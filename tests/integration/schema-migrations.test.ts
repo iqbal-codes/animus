@@ -20,6 +20,8 @@ const PUBLICATION_V7 = "publication_audit_outgoing_intents";
 const INTEGRATION_V8 = "child_gate_integration";
 const DELIVERY_V9 = "standalone_delivery_gate_and_merge_verification";
 const DRAFT_PUBLICATION_V10 = "approved_draft_issue_publication";
+const RESTORE_V11 = "workspace_backup_restore";
+const RESTORE_V13 = "restore_terminal_intent_disposition";
 
 const ALL_MIGRATIONS = [
   { version: 1, name: WORK_V1 },
@@ -32,6 +34,8 @@ const ALL_MIGRATIONS = [
   { version: 8, name: INTEGRATION_V8 },
   { version: 9, name: DELIVERY_V9 },
   { version: 10, name: DRAFT_PUBLICATION_V10 },
+  { version: 11, name: RESTORE_V11 },
+  { version: 13, name: RESTORE_V13 },
 ];
 
 function tableExists(db: DatabaseSync, table: string): boolean {
@@ -170,7 +174,7 @@ describe("coherent schema migration registry", () => {
     const reopened = initializeDatabase(path);
     try {
       expect(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({
-        count: 10,
+        count: ALL_MIGRATIONS.length,
       });
     } finally {
       reopened.close();

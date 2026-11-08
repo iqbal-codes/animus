@@ -19,7 +19,8 @@ export type IntegrationErrorCode =
   | "integration_merge_rejected"
   | "integration_merge_unknown"
   | "integration_lineage_unverified"
-  | "integration_storage_failed";
+  | "integration_storage_failed"
+  | "integration_installation_held";
 
 export class IntegrationError extends Error {
   constructor(
