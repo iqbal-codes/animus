@@ -67,7 +67,8 @@ export const RESTORE_MIGRATIONS: Migration[] = [
           source_restore_id TEXT,
           restored_at INTEGER NOT NULL,
           reconciled_at INTEGER,
-          reconciled_by TEXT
+          reconciled_by TEXT,
+          reconciliation_report TEXT
         );
       `);
     },

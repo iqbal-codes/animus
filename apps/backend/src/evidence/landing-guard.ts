@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { CandidateVerificationEngine } from "./verification";
 import type { ForgeAdapter } from "../registry/forge";
 import { EvidenceError } from "./errors";
+import { InstallationHeldError, assertInstallationNotHeld } from "../restore/hold";
 
 export interface EvaluateLandingOptions {
   projectId: string;
@@ -143,6 +144,17 @@ export class LandingGuard {
 
   async executeLanding(options: ExecuteLandingOptions): Promise<LandingExecutionResult> {
     const { projectId, prNumber, repoName, expectedHeadSha, expectedBaseSha, forge } = options;
+
+    if (this.db) {
+      try {
+        assertInstallationNotHeld(this.db);
+      } catch (error) {
+        if (error instanceof InstallationHeldError) {
+          throw new EvidenceError("installation_held", error.message);
+        }
+        throw error;
+      }
+    }
 
     const evalResult = await this.evaluateLanding({
       projectId,

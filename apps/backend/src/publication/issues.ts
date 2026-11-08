@@ -17,6 +17,7 @@ import { validateCanonicalIssueBody } from "@animus/contracts/ticket";
 import { ReportSanitizer } from "@animus/contracts/sanitizer";
 import type { DraftService } from "../draft";
 import type { ForgeAdapter, ForgeIssue } from "../registry/forge";
+import { InstallationHeldError, assertInstallationNotHeld } from "../restore/hold";
 import { assertIssueForge } from "../registry/forge";
 import type { PlanService } from "../plans";
 import { WorkService } from "../work";
@@ -32,6 +33,7 @@ export type DraftPublicationErrorCode =
   | "draft_publication_transport_unsupported"
   | "draft_publication_invalid_plan"
   | "draft_publication_source_missing"
+  | "draft_publication_installation_held"
   | "draft_publication_failed";
 
 export class DraftPublicationError extends Error {
@@ -253,6 +255,7 @@ export class DraftPublicationService {
   // -------------------------------------------------------------------------
 
   async publishDraft(projectId: string, draftId: string): Promise<DraftPublication> {
+    this.assertInstallationReady();
     const draft = this.loadDraft(projectId, draftId);
     const existing = this.findByRevision(projectId, draft.id, draft.latest_revision.id);
     const publication = existing
@@ -262,6 +265,7 @@ export class DraftPublicationService {
   }
 
   async publish(projectId: string, publicationId: string): Promise<DraftPublication> {
+    this.assertInstallationReady();
     return this.serialize(publicationId, async () => {
       const publication = this.loadPublication(projectId, publicationId);
       const project = this.project(projectId);
@@ -311,6 +315,7 @@ export class DraftPublicationService {
   }
 
   async reconcileAll(projectId: string): Promise<DraftPublication[]> {
+    this.assertInstallationReady();
     this.project(projectId);
     const rows = this.db
       .prepare(
@@ -320,6 +325,21 @@ export class DraftPublicationService {
     const results: DraftPublication[] = [];
     for (const row of rows) results.push(await this.publish(projectId, row.id));
     return results;
+  }
+
+  /**
+   * A restored installation disables outward issue/relationship publication
+   * until the installation hold is released through verified reconciliation.
+   */
+  private assertInstallationReady(): void {
+    try {
+      assertInstallationNotHeld(this.db);
+    } catch (error) {
+      if (error instanceof InstallationHeldError) {
+        throw new DraftPublicationError("draft_publication_installation_held", error.message);
+      }
+      throw error;
+    }
   }
 
   // -------------------------------------------------------------------------

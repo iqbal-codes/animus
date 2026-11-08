@@ -62,6 +62,13 @@ export function BackupPanel({ factory = client }: { factory?: typeof client }) {
   const [targetStateDir, setTargetStateDir] = useState("");
   const [targetHome, setTargetHome] = useState("");
   const [lastRestore, setLastRestore] = useState<RestoreCreateResult | null>(null);
+  const [reconcileReason, setReconcileReason] = useState("");
+  const [runDispositions, setRunDispositions] = useState<Record<string, "resolved" | "abandoned">>(
+    {},
+  );
+  const [intentDispositions, setIntentDispositions] = useState<
+    Record<string, "resolved" | "abandoned">
+  >({});
   const targetStateRef = useRef(targetStateDir);
   targetStateRef.current = targetStateDir;
 
@@ -147,15 +154,48 @@ export function BackupPanel({ factory = client }: { factory?: typeof client }) {
     setError(null);
     setNotice(null);
     try {
+      const unresolved = restore?.unresolved;
+      const snapshot = restore?.installation;
+      if (!unresolved || !snapshot?.sourceRestoreId || snapshot.restoredAt === null) {
+        throw new Error("Read the held installation status before releasing it.");
+      }
+      const runs = unresolved.runs
+        .filter((run) => runDispositions[run.runId])
+        .map((run) => ({ runId: run.runId, disposition: runDispositions[run.runId]! }));
+      const intents = unresolved.intents
+        .filter((intent) => intentDispositions[intent.intentId])
+        .map((intent) => ({
+          intentId: intent.intentId,
+          disposition: intentDispositions[intent.intentId]!,
+        }));
+      if (runs.length !== unresolved.runs.length || intents.length !== unresolved.intents.length) {
+        throw new Error(
+          "Choose resolved or abandoned for every interrupted run and pending publication intent.",
+        );
+      }
+      if (!reconcileReason.trim()) {
+        throw new Error(
+          "Record why the restored ownership and external effects are verified safe.",
+        );
+      }
       const result = await factory.reconcileRestore(
         {
           actor: "operator",
-          reason: "Operator reconciled ownership and pending external effects",
+          reason: reconcileReason.trim(),
+          snapshot: {
+            sourceRestoreId: snapshot.sourceRestoreId,
+            restoredAt: snapshot.restoredAt,
+          },
+          runs,
+          intents,
         },
         targetStateDir.trim() || undefined,
       );
       setRestore(result);
-      setNotice("Restore reconciliation recorded.");
+      setRunDispositions({});
+      setIntentDispositions({});
+      setReconcileReason("");
+      setNotice("Restored installation released after verified reconciliation.");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -298,7 +338,7 @@ export function BackupPanel({ factory = client }: { factory?: typeof client }) {
           </div>
 
           {restore?.installation.held && (
-            <div className="space-y-2 rounded-[var(--radius-news)] border border-[var(--border-subtle)] p-3">
+            <div className="space-y-3 rounded-[var(--radius-news)] border border-[var(--border-subtle)] p-3">
               <p className="text-sm font-medium text-foreground">
                 Restored installation held since {formatTimestamp(restore.installation.restoredAt)}
               </p>
@@ -306,15 +346,102 @@ export function BackupPanel({ factory = client }: { factory?: typeof client }) {
                 Dispatch and publication are disabled. {restore.heldRunCount} interrupted run(s) and{" "}
                 {restore.pendingPublicationIntentCount} pending publication intent(s) require
                 explicit reconciliation. Live processes and uncommitted worktree edits are not
-                resumed.
+                resumed, and copied owner tokens are not authority.
               </p>
+
+              {restore.unresolved.runs.length > 0 && (
+                <fieldset className="space-y-2">
+                  <legend className="text-xs font-medium text-foreground">Interrupted runs</legend>
+                  {restore.unresolved.runs.map((run, index) => (
+                    <div key={run.runId} className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+                      <label
+                        htmlFor={`restore-run-${run.runId}`}
+                        className="text-xs text-text-secondary"
+                      >
+                        {run.runId} · {run.state} · owner cleared{" "}
+                        {run.ownerPidCleared && run.leaseCleared ? "yes" : "NO"} · worktree present{" "}
+                        {run.worktreePresent ? "yes" : "no"}
+                      </label>
+                      <select
+                        id={`restore-run-${run.runId}`}
+                        aria-label={`Disposition for interrupted run ${index + 1}`}
+                        value={runDispositions[run.runId] ?? ""}
+                        onChange={(event) =>
+                          setRunDispositions((current) => ({
+                            ...current,
+                            [run.runId]: event.target.value as "resolved" | "abandoned",
+                          }))
+                        }
+                        className="min-h-11 rounded-[var(--radius-news)] border border-[var(--border-subtle)] bg-transparent px-3 text-sm text-foreground sm:min-h-8"
+                      >
+                        <option value="">Choose disposition</option>
+                        <option value="resolved">resolved</option>
+                        <option value="abandoned">abandoned</option>
+                      </select>
+                    </div>
+                  ))}
+                </fieldset>
+              )}
+
+              {restore.unresolved.intents.length > 0 && (
+                <fieldset className="space-y-2">
+                  <legend className="text-xs font-medium text-foreground">
+                    Pending external intents
+                  </legend>
+                  <p className="text-xs text-text-secondary">
+                    `resolved` is accepted only with a positive remote readback; use `abandoned` for
+                    an intent whose effect is verifiably absent or ambiguous.
+                  </p>
+                  {restore.unresolved.intents.map((intent, index) => (
+                    <div key={intent.intentId} className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+                      <label
+                        htmlFor={`restore-intent-${intent.intentId}`}
+                        className="text-xs text-text-secondary"
+                      >
+                        {intent.intentId} · {intent.kind} · {intent.state} · {intent.attempts}{" "}
+                        attempt(s)
+                      </label>
+                      <select
+                        id={`restore-intent-${intent.intentId}`}
+                        aria-label={`Disposition for pending publication intent ${index + 1}`}
+                        value={intentDispositions[intent.intentId] ?? ""}
+                        onChange={(event) =>
+                          setIntentDispositions((current) => ({
+                            ...current,
+                            [intent.intentId]: event.target.value as "resolved" | "abandoned",
+                          }))
+                        }
+                        className="min-h-11 rounded-[var(--radius-news)] border border-[var(--border-subtle)] bg-transparent px-3 text-sm text-foreground sm:min-h-8"
+                      >
+                        <option value="">Choose disposition</option>
+                        <option value="resolved">resolved</option>
+                        <option value="abandoned">abandoned</option>
+                      </select>
+                    </div>
+                  ))}
+                </fieldset>
+              )}
+
+              <label
+                htmlFor="restore-reconcile-reason"
+                className="block text-xs text-text-secondary"
+              >
+                Reconciliation reason
+              </label>
+              <input
+                id="restore-reconcile-reason"
+                value={reconcileReason}
+                onChange={(event) => setReconcileReason(event.target.value)}
+                placeholder="Explain how ownership and remote effects were verified"
+                className="min-h-11 w-full rounded-[var(--radius-news)] border border-[var(--border-subtle)] bg-transparent px-3 text-sm text-foreground sm:min-h-8"
+              />
               <Button
                 size="sm"
                 className="min-h-11 sm:min-h-8"
                 onClick={() => void reconcile()}
                 disabled={busy === "reconcile"}
               >
-                {busy === "reconcile" ? "Reconciling…" : "Record reconciliation"}
+                {busy === "reconcile" ? "Verifying…" : "Verify and release"}
               </Button>
             </div>
           )}

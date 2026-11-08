@@ -71,10 +71,50 @@ function installation(held: boolean) {
       sourceRestoreId: held ? "restore_1" : null,
       restoredAt: held ? 1_700_000_000_000 : null,
       reconciledAt: held ? null : 1_700_000_100_000,
+      reconciliation: held
+        ? null
+        : {
+            releasedAt: 1_700_000_100_000,
+            actor: "operator",
+            reason: "verified",
+            runs: [],
+            intents: [],
+          },
     },
     lastRestore: null,
     heldRunCount: held ? 1 : 0,
     pendingPublicationIntentCount: held ? 2 : 0,
+    unresolved: {
+      runs: held
+        ? [
+            {
+              runId: "run_1",
+              projectId: "proj_1",
+              issueNumber: 701,
+              state: "interrupted",
+              branch: "factory/spec-1/ticket-701",
+              worktreePath: "/restored/home/projects/p/worktrees/ticket-701",
+              worktreePresent: false,
+              ownerPidCleared: true,
+              leaseCleared: true,
+            },
+          ]
+        : [],
+      intents: held
+        ? [
+            {
+              intentId: "int_1",
+              projectId: "proj_1",
+              kind: "publish_event",
+              operationKey: "event:evt_1",
+              state: "queued",
+              attempts: 0,
+              remoteObservation: "unverified",
+              remoteDetail: "Remote readback runs when the installation hold is released",
+            },
+          ]
+        : [],
+    },
   };
 }
 
@@ -165,13 +205,28 @@ describe("workspace backup and restore operator panel", () => {
     expect(screen.getByText(/Dispatch and publication are disabled/i)).toBeTruthy();
     expect(screen.getByText(/1 interrupted run\(s\)/i)).toBeTruthy();
 
-    const reconcile = screen.getByRole("button", { name: /record reconciliation/i });
+    const runSelect = screen.getByLabelText(/Disposition for interrupted run 1/i);
+    expect(runSelect.className).toContain("min-h-11");
+    fireEvent.change(runSelect, { target: { value: "resolved" } });
+    const intentSelect = screen.getByLabelText(/Disposition for pending publication intent 1/i);
+    fireEvent.change(intentSelect, { target: { value: "abandoned" } });
+    fireEvent.change(screen.getByLabelText(/reconciliation reason/i), {
+      target: { value: "Verified owner identity cleared and remote intents read back" },
+    });
+
+    const reconcile = screen.getByRole("button", { name: /verify and release/i });
     expect(reconcile.className).toContain("min-h-11");
     fireEvent.click(reconcile);
     await waitFor(() =>
       expect(backing.reconcileRestore).toHaveBeenCalledWith({
         actor: "operator",
-        reason: "Operator reconciled ownership and pending external effects",
+        reason: "Verified owner identity cleared and remote intents read back",
+        snapshot: {
+          sourceRestoreId: "restore_1",
+          restoredAt: 1_700_000_000_000,
+        },
+        runs: [{ runId: "run_1", disposition: "resolved" }],
+        intents: [{ intentId: "int_1", disposition: "abandoned" }],
       }),
     );
     expect(await screen.findByRole("status")).toBeTruthy();

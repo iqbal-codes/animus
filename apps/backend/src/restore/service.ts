@@ -25,10 +25,22 @@ import type {
   RestoreStatusResult,
 } from "@animus/contracts/operator";
 import { resolveAnimusHome, resolveAnimusStateDir } from "@animus/contracts/paths";
-import type { CommandLedger } from "../command/ledger";
+import { CommandLedger } from "../command/ledger";
 import { normalizeArtifactRelativePath } from "../evidence/artifact-path";
 import { initializeDatabase } from "../registry/db";
-import { InstallationHeldError, readInstallationHold, reconcileInstallationHold } from "./hold";
+import type { ForgeAdapter } from "../registry/forge";
+import {
+  InstallationHeldError,
+  InstallationHoldConflictError,
+  readInstallationHold,
+  reconcileInstallationHold,
+} from "./hold";
+import {
+  RestoreReleaseError,
+  enumerateRestoreUnresolved,
+  verifyRestoreRelease,
+  type ReleaseDispositions,
+} from "./release";
 import {
   BACKUP_DATABASE_FILE,
   BACKUP_MANIFEST_FILE,
@@ -64,6 +76,8 @@ export interface BackupRestoreServiceOptions {
   artifactRoot?: string;
   /** Live Animus home used to recognise home-local paths. */
   home?: string;
+  /** Read-only forge transport used to verify pending external intents. */
+  forge?: ForgeAdapter;
   now?: () => number;
   ledger?: CommandLedger;
   /** How long the drain lock waits for live writers before failing closed. */
@@ -118,6 +132,8 @@ const COUNTED_TABLES = [
 
 interface ArtifactRow {
   project_id: string;
+  owner_type: string;
+  owner_id: string;
   relative_path: string;
   size_bytes: number;
   digest_sha256: string;
@@ -254,6 +270,7 @@ export class BackupRestoreService {
   private readonly stateDir: string;
   private readonly artifactRoot: string;
   private readonly home: string;
+  private readonly forge?: ForgeAdapter;
   private readonly now: () => number;
   private readonly ledger?: CommandLedger;
   private readonly busyTimeoutMs: number;
@@ -264,8 +281,9 @@ export class BackupRestoreService {
   ) {
     this.stateDir = resolve(options.stateDir ?? resolveAnimusStateDir());
     this.databasePath = resolve(options.databasePath ?? join(this.stateDir, BACKUP_DATABASE_FILE));
-    this.artifactRoot = resolve(options.artifactRoot ?? join(resolveAnimusStateDir(), "artifacts"));
+    this.artifactRoot = resolve(options.artifactRoot ?? join(this.stateDir, "artifacts"));
     this.home = resolve(options.home ?? resolveAnimusHome());
+    this.forge = options.forge;
     this.now = options.now ?? (() => Date.now());
     this.ledger = options.ledger;
     this.busyTimeoutMs = options.busyTimeoutMs ?? 5000;
@@ -514,19 +532,34 @@ export class BackupRestoreService {
         tables[table] = Number(count?.count ?? 0);
       }
 
+      // Two owners may legitimately reference the same finalized file (for
+      // example one check log per observation lap). Bundle identity is the
+      // physical project-relative path, so identical references collapse into
+      // one entry while conflicting bytes fail closed.
       const artifactRows = snap
         .prepare(
-          `SELECT project_id, relative_path, size_bytes, digest_sha256
+          `SELECT project_id, owner_type, owner_id, relative_path, size_bytes, digest_sha256
              FROM execution_artifacts
-            ORDER BY project_id ASC, relative_path ASC`,
+            ORDER BY project_id ASC, relative_path ASC, owner_type ASC, owner_id ASC`,
         )
         .all() as unknown as ArtifactRow[];
 
-      const artifacts: BackupArtifactEntry[] = [];
+      const artifactsByKey = new Map<string, BackupArtifactEntry>();
       for (const row of artifactRows) {
-        const artifact = this.copyArtifactToBundle(tempRoot, row);
-        artifacts.push(artifact);
+        const key = `${row.project_id}\u0000${row.relative_path}`;
+        const existing = artifactsByKey.get(key);
+        if (existing) {
+          if (existing.sizeBytes !== row.size_bytes || existing.sha256 !== row.digest_sha256) {
+            throw new BackupRestoreError(
+              "backup_incomplete",
+              `Artifact rows disagree on finalized bytes for ${row.project_id}/${row.relative_path}`,
+            );
+          }
+          continue;
+        }
+        artifactsByKey.set(key, this.copyArtifactToBundle(tempRoot, row));
       }
+      const artifacts = [...artifactsByKey.values()];
 
       const size = lstatSync(snapshotDbPath).size;
       return {
@@ -848,6 +881,7 @@ export class BackupRestoreService {
           "Restore target must not overlap the backup bundle",
         );
       }
+      assertNoSymlinkedComponents(target);
       if (!existingDirectoryIsEmptyOrAbsent(target)) {
         throw new BackupRestoreError(
           "restore_target_unavailable",
@@ -882,8 +916,7 @@ export class BackupRestoreService {
       }
 
       stage = "copy_artifacts";
-      const targetArtifactRoot = join(temp, "artifacts");
-      this.copyArtifactsFromBundle(source, targetArtifactRoot, manifest);
+      this.copyArtifactsFromBundle(source, join(temp, "artifacts"), manifest);
 
       stage = "apply_schema";
       let restoredDb: DatabaseSync;
@@ -907,7 +940,8 @@ export class BackupRestoreService {
           source,
           target,
           targetHome,
-          targetArtifactRoot,
+          // Final, post-rename artifact root: a staged temp path would disappear.
+          targetArtifactRoot: join(target, "artifacts"),
           restoreId: id,
           now: this.now(),
         });
@@ -944,16 +978,28 @@ export class BackupRestoreService {
       renameSync(temp, target);
 
       const finishedAt = this.now();
-      const operation = this.recordRestore({
+      const record = {
         id,
         sourcePath: source,
         targetStateDir: target,
         manifestHash: manifestHashValue,
-        status: "completed",
+        status: "completed" as const,
         report: { ...report, ok: true },
         createdAt: startedAt,
         finishedAt,
-      });
+      };
+      const operation = this.recordRestore(record);
+
+      // The restored installation owns its own restore history, so its status and
+      // UI report the operation that produced it instead of an empty ledger.
+      const restoredWrite = initializeDatabase(join(target, BACKUP_DATABASE_FILE));
+      try {
+        this.writeRestoreRecord(restoredWrite, record);
+      } finally {
+        try {
+          restoredWrite.close();
+        } catch {}
+      }
 
       const restored = new DatabaseSync(join(target, BACKUP_DATABASE_FILE), { readOnly: true });
       let installation: InstallationHold;
@@ -1006,6 +1052,7 @@ export class BackupRestoreService {
         lastRestore: lastRestoreRow ? mapRestore(lastRestoreRow) : null,
         heldRunCount,
         pendingPublicationIntentCount,
+        unresolved: enumerateRestoreUnresolved(db),
       };
     } finally {
       if (!isLive) {
@@ -1016,7 +1063,25 @@ export class BackupRestoreService {
     }
   }
 
-  reconcileRestore(input: { actor: string; reason: string }, stateDir?: string): InstallationHold {
+  /**
+   * Verified release of a restored installation.
+   *
+   * A free-text reason cannot clear the hold: the caller must enumerate every
+   * interrupted run and every pending/unknown external intent, and the server
+   * independently verifies copied owner identity was cleared and reads the remote
+   * outcome (read-only) before accepting each disposition. Budgets, laps and
+   * history are never touched here.
+   */
+  async reconcileRestore(
+    input: {
+      actor: string;
+      reason: string;
+      snapshot: { sourceRestoreId: string; restoredAt: number };
+      runs: ReleaseDispositions["runs"];
+      intents: ReleaseDispositions["intents"];
+    },
+    stateDir?: string,
+  ): Promise<InstallationHold> {
     const targetState = resolve(stateDir ?? this.stateDir);
     const targetDbPath = join(targetState, BACKUP_DATABASE_FILE);
     const isLive = targetState === this.stateDir;
@@ -1029,19 +1094,77 @@ export class BackupRestoreService {
           "This installation is not held by a restore; nothing to reconcile",
         );
       }
-      if (this.ledger && isLive) {
-        this.ledger.recordBeforeDispatch({
-          actor: input.actor,
-          projectId: null,
-          action: "restore_reconcile",
-          target: {
-            reason: input.reason,
-            source_restore_id: hold.sourceRestoreId,
-            restored_at: hold.restoredAt,
-          },
-        });
+      if (
+        hold.sourceRestoreId !== input.snapshot.sourceRestoreId ||
+        hold.restoredAt !== input.snapshot.restoredAt
+      ) {
+        throw new BackupRestoreError(
+          "restore_reconcile_conflict",
+          "The held installation changed since it was inspected; re-read the restored snapshot and retry",
+        );
       }
-      return reconcileInstallationHold(db, { actor: input.actor, now: this.now() });
+
+      const now = this.now();
+      let verification: Awaited<ReturnType<typeof verifyRestoreRelease>>;
+      try {
+        verification = await verifyRestoreRelease({
+          db,
+          forge: this.forge,
+          dispositions: { runs: input.runs, intents: input.intents },
+          now,
+        });
+      } catch (error) {
+        if (error instanceof RestoreReleaseError) {
+          throw new BackupRestoreError(error.code, error.message, error.details);
+        }
+        throw error;
+      }
+
+      const reconciliation = {
+        releasedAt: now,
+        actor: input.actor,
+        reason: input.reason,
+        snapshot: input.snapshot,
+        runs: verification.report.runs,
+        intents: verification.report.intents,
+        unresolvedRunCount: verification.report.unresolvedRunCount,
+        unresolvedIntentCount: verification.report.unresolvedIntentCount,
+      };
+
+      const ledger = isLive && this.ledger ? this.ledger : new CommandLedger(db);
+      const requestId = `cmd_restore_release_${hold.sourceRestoreId ?? "unknown"}_${now}`;
+      ledger.recordBeforeDispatch({
+        requestId,
+        actor: input.actor,
+        projectId: null,
+        action: "restore_release",
+        target: reconciliation as unknown as Record<string, unknown>,
+      });
+
+      let released: InstallationHold;
+      try {
+        released = reconcileInstallationHold(db, {
+          actor: input.actor,
+          now,
+          reconciliation,
+          expected: input.snapshot,
+        });
+      } catch (error) {
+        if (error instanceof InstallationHoldConflictError) {
+          throw new BackupRestoreError("restore_reconcile_conflict", error.message);
+        }
+        throw error;
+      }
+
+      ledger.updateOutcome(requestId, {
+        state: "succeeded",
+        provenance: {
+          source: "restore_release",
+          timestamp: new Date(now).toISOString(),
+          details: `released ${Number(verification.report.unresolvedRunCount)} run(s) and ${Number(verification.report.unresolvedIntentCount)} intent(s)`,
+        },
+      });
+      return released;
     } finally {
       if (!isLive) {
         try {
@@ -1107,25 +1230,48 @@ export class BackupRestoreService {
       );
     }
 
+    // Manifest completeness counts must match the restored database, not just
+    // the DB digest; an older bundle must never claim tables it did not capture.
+    for (const table of COUNTED_TABLES) {
+      const expected = manifest.completeness.tables[table];
+      if (expected === undefined) {
+        throw new BackupRestoreError(
+          "restore_validation_failed",
+          `Backup manifest has no completeness count for ${table}`,
+        );
+      }
+      const count = db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as
+        | { count: number }
+        | undefined;
+      const actual = Number(count?.count ?? 0);
+      if (actual !== expected) {
+        throw new BackupRestoreError(
+          "restore_validation_failed",
+          `Restored ${table} has ${actual} row(s) but the manifest recorded ${expected}`,
+        );
+      }
+    }
+
     const rows = db
       .prepare(
-        `SELECT project_id, relative_path, size_bytes, digest_sha256
+        `SELECT project_id, owner_type, owner_id, relative_path, size_bytes, digest_sha256
            FROM execution_artifacts
-          ORDER BY project_id ASC, relative_path ASC`,
+          ORDER BY project_id ASC, relative_path ASC, owner_type ASC, owner_id ASC`,
       )
       .all() as unknown as ArtifactRow[];
+    if (rows.length !== manifest.completeness.artifactRows) {
+      throw new BackupRestoreError(
+        "restore_validation_failed",
+        `Artifact completeness mismatch: database has ${rows.length} row(s), manifest recorded ${manifest.completeness.artifactRows}`,
+      );
+    }
     const byKey = new Map(
       manifest.artifacts.map((artifact) => [
         `${artifact.projectId}\u0000${artifact.relativePath}`,
         artifact,
       ]),
     );
-    if (rows.length !== manifest.artifacts.length) {
-      throw new BackupRestoreError(
-        "restore_validation_failed",
-        `Artifact completeness mismatch: database has ${rows.length}, manifest has ${manifest.artifacts.length}`,
-      );
-    }
+    const referenced = new Set<string>();
     for (const row of rows) {
       const key = `${row.project_id}\u0000${row.relative_path}`;
       const expected = byKey.get(key);
@@ -1135,12 +1281,19 @@ export class BackupRestoreService {
           `Artifact row is missing from the backup manifest: ${row.project_id}/${row.relative_path}`,
         );
       }
+      referenced.add(key);
       if (expected.sizeBytes !== row.size_bytes || expected.sha256 !== row.digest_sha256) {
         throw new BackupRestoreError(
           "restore_validation_failed",
           `Artifact row disagrees with the backup manifest: ${row.project_id}/${row.relative_path}`,
         );
       }
+    }
+    if (referenced.size !== manifest.artifacts.length) {
+      throw new BackupRestoreError(
+        "restore_validation_failed",
+        "Backup manifest lists finalized artifacts that no restored row references",
+      );
     }
   }
 
@@ -1170,6 +1323,50 @@ export class BackupRestoreService {
           WHERE state IN ('claimed', 'dispatched', 'running')`,
       )
       .run(input.now);
+
+    // A restored installation must never inherit a live owner identity. PIDs and
+    // leases belong to the old OS process tree; a reused PID is not authority and
+    // is never signalled. Rotating the fencing token also means the copied token
+    // cannot claim ownership here. Historical attribution is retained separately
+    // as hashes in the restore report.
+    const priorOwners = db
+      .prepare(
+        `SELECT id, owner_pid, owner_token, lease_expires_at
+           FROM dispatch_runs
+          WHERE state IN ('claimed', 'dispatched', 'running', 'interrupted')
+          ORDER BY id ASC`,
+      )
+      .all() as unknown as Array<{
+      id: string;
+      owner_pid: number | null;
+      owner_token: string;
+      lease_expires_at: number | null;
+    }>;
+    const clearOwner = db.prepare(
+      `UPDATE dispatch_runs
+          SET state = 'interrupted',
+              owner_pid = NULL,
+              lease_expires_at = NULL,
+              owner_token = ?,
+              ownership_generation = ownership_generation + 1,
+              updated_at = ?
+        WHERE id = ?`,
+    );
+    const clearedOwners: Array<{
+      runId: string;
+      priorOwnerPid: number | null;
+      priorLeaseExpiresAt: number | null;
+      priorOwnerTokenSha256: string;
+    }> = [];
+    for (const row of priorOwners) {
+      clearOwner.run(randomUUID(), input.now, row.id);
+      clearedOwners.push({
+        runId: row.id,
+        priorOwnerPid: row.owner_pid,
+        priorLeaseExpiresAt: row.lease_expires_at,
+        priorOwnerTokenSha256: sha256Bytes(Buffer.from(row.owner_token, "utf8")),
+      });
+    }
 
     const heldControls = db
       .prepare(
@@ -1230,6 +1427,9 @@ export class BackupRestoreService {
       heldControlCount: Number(heldControls.changes ?? 0),
       pendingPublicationIntentCount: pendingIntents,
       rewrittenPathCount: worktreeRewrites.rewritten,
+      clearedOwnerCount: clearedOwners.length,
+      clearedOwners,
+      projectCheckouts: worktreeRewrites.projectCheckouts,
       worktreePathsNotResurrected: activeRuns.map((run) => ({
         run_id: run.id,
         branch: run.branch,
@@ -1251,7 +1451,16 @@ export class BackupRestoreService {
       targetArtifactRoot: string;
       targetHome: string;
     },
-  ): { rewritten: number } {
+  ): {
+    rewritten: number;
+    projectCheckouts: Array<{
+      projectId: string;
+      checkoutPath: string;
+      rewritten: boolean;
+      present: boolean;
+      rehomeRequired: boolean;
+    }>;
+  } {
     const pairs = (
       [
         [resolve(input.source.artifactRoot), resolve(input.targetArtifactRoot)],
@@ -1300,36 +1509,43 @@ export class BackupRestoreService {
       }
     }
 
-    return { rewritten };
+    // Project checkouts are absolute and may live outside the Animus home. Rehome
+    // only genuine home-local roots; otherwise report the surviving path and
+    // whether it is still readable so a restored home never silently pretends a
+    // deleted checkout exists.
+    const projectCheckouts: Array<{
+      projectId: string;
+      checkoutPath: string;
+      rewritten: boolean;
+      present: boolean;
+      rehomeRequired: boolean;
+    }> = [];
+    const projects = db
+      .prepare("SELECT id, checkout_path FROM projects ORDER BY id ASC")
+      .all() as unknown as Array<{ id: string; checkout_path: string }>;
+    const updateProject = db.prepare("UPDATE projects SET checkout_path = ? WHERE id = ?");
+    for (const project of projects) {
+      const next = rewrite(project.checkout_path);
+      const changed = next !== project.checkout_path;
+      if (changed) {
+        updateProject.run(next, project.id);
+        rewritten += 1;
+      }
+      const present = existsSync(next);
+      projectCheckouts.push({
+        projectId: project.id,
+        checkoutPath: next,
+        rewritten: changed,
+        present,
+        rehomeRequired: !changed && !present,
+      });
+    }
+
+    return { rewritten, projectCheckouts };
   }
 
-  private recordRestore(row: {
-    id: string;
-    sourcePath: string;
-    targetStateDir: string;
-    manifestHash: string;
-    status: "completed" | "failed";
-    report: Record<string, unknown>;
-    createdAt: number;
-    finishedAt: number;
-  }): RestoreOperationRecord {
-    this.db
-      .prepare(
-        `INSERT INTO restore_operations
-           (id, source_path, target_state_dir, manifest_hash, status, report, created_at, finished_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET status = excluded.status, report = excluded.report, finished_at = excluded.finished_at`,
-      )
-      .run(
-        row.id,
-        row.sourcePath,
-        row.targetStateDir,
-        row.manifestHash,
-        row.status,
-        JSON.stringify(row.report),
-        row.createdAt,
-        row.finishedAt,
-      );
+  private recordRestore(row: RestoreRecordInput): RestoreOperationRecord {
+    this.writeRestoreRecord(this.db, row);
     return {
       id: row.id,
       sourcePath: row.sourcePath,
@@ -1340,6 +1556,61 @@ export class BackupRestoreService {
       createdAt: row.createdAt,
       finishedAt: row.finishedAt,
     };
+  }
+
+  private writeRestoreRecord(db: DatabaseSync, row: RestoreRecordInput): void {
+    db.prepare(
+      `INSERT INTO restore_operations
+           (id, source_path, target_state_dir, manifest_hash, status, report, created_at, finished_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET status = excluded.status, report = excluded.report, finished_at = excluded.finished_at`,
+    ).run(
+      row.id,
+      row.sourcePath,
+      row.targetStateDir,
+      row.manifestHash,
+      row.status,
+      JSON.stringify(row.report),
+      row.createdAt,
+      row.finishedAt,
+    );
+  }
+}
+
+interface RestoreRecordInput {
+  id: string;
+  sourcePath: string;
+  targetStateDir: string;
+  manifestHash: string;
+  status: "completed" | "failed";
+  report: Record<string, unknown>;
+  createdAt: number;
+  finishedAt: number;
+}
+
+/**
+ * A restore never writes through a symlink planted at the target itself or at a
+ * path component the operator created. Ancestor symlinks that already exist
+ * (for example macOS `/var -> /private/var`) are resolved by the operating
+ * system and are not a destination escape; the target is created by this
+ * service, so the final component is the only new path segment that can be
+ * redirected.
+ */
+function assertNoSymlinkedComponents(target: string): void {
+  const resolved = resolve(target);
+  const parent = dirname(resolved);
+  for (const [label, candidate] of [
+    ["target", resolved],
+    ["target parent", parent],
+  ] as const) {
+    if (!existsSync(candidate)) continue;
+    const stats = lstatSync(candidate);
+    if (stats.isSymbolicLink()) {
+      throw new BackupRestoreError(
+        "restore_target_unavailable",
+        `Restore ${label} is a symbolic link and cannot be used as a destination: ${candidate}`,
+      );
+    }
   }
 }
 

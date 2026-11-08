@@ -1517,6 +1517,8 @@ export async function runBackupCommand(
     destination?: string;
     targetStateDir?: string;
     targetHome?: string;
+    releaseRuns?: string[];
+    releaseIntents?: string[];
     reason?: string;
     actor?: string;
     json?: boolean;
@@ -1611,23 +1613,70 @@ export async function runBackupCommand(
         console.log(`  Restored at:          ${status.installation.restoredAt ?? "unknown"}`);
         console.log(`  Interrupted runs:     ${status.heldRunCount}`);
         console.log(`  Pending publications: ${status.pendingPublicationIntentCount}`);
+        for (const run of status.unresolved.runs) {
+          console.log(
+            `  run  ${run.runId}  ${run.state}  owner-cleared=${run.ownerPidCleared && run.leaseCleared}  worktree-present=${run.worktreePresent}`,
+          );
+        }
+        for (const intent of status.unresolved.intents) {
+          console.log(
+            `  intent  ${intent.intentId}  ${intent.kind}  ${intent.state}  attempts=${intent.attempts}`,
+          );
+        }
       }
       return 0;
     }
 
     if (sub === "reconcile") {
+      const inspected = await client.restoreStatus(opts.targetStateDir);
+      const runs = parseRunDispositions(opts.releaseRuns);
+      const intents = parseIntentDispositions(opts.releaseIntents);
+      const missing: string[] = [];
+      const runIds = new Set(runs.map((run) => run.runId));
+      const intentIds = new Set(intents.map((intent) => intent.intentId));
+      for (const run of inspected.unresolved.runs) {
+        if (!runIds.has(run.runId)) missing.push(`--release-run ${run.runId}:<resolved|abandoned>`);
+      }
+      for (const intent of inspected.unresolved.intents) {
+        if (!intentIds.has(intent.intentId)) {
+          missing.push(`--release-intent ${intent.intentId}:<resolved|abandoned>`);
+        }
+      }
+      if (missing.length > 0) {
+        throw new Error(
+          [
+            "Cannot release the hold from a reason string alone. Every interrupted run and pending intent needs an explicit disposition:",
+            ...missing,
+            "`resolved` requires a positive remote readback; use `abandoned` for an effect verified absent or ambiguous.",
+          ].join("\n"),
+        );
+      }
+      if (
+        !inspected.installation.sourceRestoreId ||
+        inspected.installation.restoredAt === null
+      ) {
+        throw new Error("Held installation does not expose a reconcilable snapshot");
+      }
       const status = await client.reconcileRestore(
         {
           actor: opts.actor ?? "operator",
-          reason: opts.reason ?? "Operator reconciled ownership and pending external effects",
+          reason: opts.reason ?? "Operator verified restored ownership and external effects",
+          snapshot: {
+            sourceRestoreId: inspected.installation.sourceRestoreId,
+            restoredAt: inspected.installation.restoredAt,
+          },
+          runs,
+          intents,
         },
         opts.targetStateDir,
       );
       if (opts.json) {
         console.log(JSON.stringify(status, null, 2));
       } else {
-        console.log("Restored installation reconciliation recorded.");
+        console.log("Restored installation released after verified reconciliation.");
         console.log(`  Held: ${status.installation.held ? "yes" : "no"}`);
+        console.log(`  Runs released: ${runs.length}`);
+        console.log(`  Intents released: ${intents.length}`);
       }
       return 0;
     }
@@ -1730,4 +1779,40 @@ export async function runCommandLedgerCli(opts: {
       db.close();
     } catch {}
   }
+}
+
+function parseReleaseEntries(
+  entries: string[] | undefined,
+  kind: "run" | "intent",
+): Array<{ id: string; disposition: "resolved" | "abandoned" }> {
+  return (entries ?? []).map((entry) => {
+    const separator = entry.lastIndexOf(":");
+    if (separator <= 0) {
+      throw new Error(`--release-${kind} expects <id>:<resolved|abandoned>, got: ${entry}`);
+    }
+    const id = entry.slice(0, separator).trim();
+    const disposition = entry.slice(separator + 1).trim();
+    if (disposition !== "resolved" && disposition !== "abandoned") {
+      throw new Error(`--release-${kind} disposition must be resolved or abandoned: ${entry}`);
+    }
+    return { id, disposition };
+  });
+}
+
+function parseRunDispositions(
+  entries: string[] | undefined,
+): Array<{ runId: string; disposition: "resolved" | "abandoned" }> {
+  return parseReleaseEntries(entries, "run").map((entry) => ({
+    runId: entry.id,
+    disposition: entry.disposition,
+  }));
+}
+
+function parseIntentDispositions(
+  entries: string[] | undefined,
+): Array<{ intentId: string; disposition: "resolved" | "abandoned" }> {
+  return parseReleaseEntries(entries, "intent").map((entry) => ({
+    intentId: entry.id,
+    disposition: entry.disposition,
+  }));
 }

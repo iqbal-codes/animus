@@ -44,6 +44,9 @@ export const operatorErrorSchema = z.object({
     "restore_failed",
     "restore_validation_failed",
     "restore_target_unavailable",
+    "restore_reconcile_unresolved",
+    "restore_reconcile_conflict",
+    "restore_reconcile_unverified",
     "installation_held",
     "target_drift",
     "admission_rejected",
@@ -1498,8 +1501,57 @@ export const installationHoldSchema = z.object({
   sourceRestoreId: z.string().nullable(),
   restoredAt: z.number().int().nonnegative().nullable(),
   reconciledAt: z.number().int().nonnegative().nullable(),
+  /** Verified release record; null until a hold is released through reconciliation. */
+  reconciliation: z.record(z.string(), z.unknown()).nullable(),
 });
 export type InstallationHold = z.infer<typeof installationHoldSchema>;
+
+export const restoreRunFactSchema = z.object({
+  runId: z.string().min(1),
+  projectId: z.string().min(1),
+  issueNumber: z.number().int().positive().nullable(),
+  state: z.string().min(1),
+  branch: z.string(),
+  worktreePath: z.string(),
+  worktreePresent: z.boolean(),
+  ownerPidCleared: z.boolean(),
+  leaseCleared: z.boolean(),
+});
+export type RestoreRunFact = z.infer<typeof restoreRunFactSchema>;
+
+export const restoreIntentFactSchema = z.object({
+  intentId: z.string().min(1),
+  projectId: z.string().min(1),
+  kind: z.string().min(1),
+  operationKey: z.string().min(1),
+  state: z.enum(["queued", "attempting", "failed", "unknown"]),
+  attempts: z.number().int().nonnegative(),
+  /** Read-only remote observation; never inferred from intent state alone. */
+  remoteObservation: z.enum(["present", "absent", "unreadable", "unverified"]),
+  remoteDetail: z.string().nullable(),
+});
+export type RestoreIntentFact = z.infer<typeof restoreIntentFactSchema>;
+
+export const restoreUnresolvedSchema = z.object({
+  runs: z.array(restoreRunFactSchema),
+  intents: z.array(restoreIntentFactSchema),
+});
+export type RestoreUnresolved = z.infer<typeof restoreUnresolvedSchema>;
+
+export const restoreReleaseDispositionSchema = z.enum(["resolved", "abandoned"]);
+export type RestoreReleaseDisposition = z.infer<typeof restoreReleaseDispositionSchema>;
+
+const restoreRunDispositionSchema = z.object({
+  runId: z.string().min(1),
+  disposition: restoreReleaseDispositionSchema,
+  note: z.string().min(1).max(1000).optional(),
+});
+
+const restoreIntentDispositionSchema = z.object({
+  intentId: z.string().min(1),
+  disposition: restoreReleaseDispositionSchema,
+  note: z.string().min(1).max(1000).optional(),
+});
 
 export const restoreCreateResultSchema = z.object({
   operation: restoreOperationRecordSchema,
@@ -1512,12 +1564,21 @@ export const restoreStatusResultSchema = z.object({
   lastRestore: restoreOperationRecordSchema.nullable(),
   heldRunCount: z.number().int().nonnegative(),
   pendingPublicationIntentCount: z.number().int().nonnegative(),
+  /** Exact interrupted runs and pending/unknown external intents that block release. */
+  unresolved: restoreUnresolvedSchema,
 });
 export type RestoreStatusResult = z.infer<typeof restoreStatusResultSchema>;
 
 export const restoreReconcileSubmissionSchema = z.object({
   actor: z.string().min(1).max(200),
   reason: z.string().min(1).max(2000),
+  /** Fence to the exact held installation snapshot; a newer restore invalidates this. */
+  snapshot: z.object({
+    sourceRestoreId: z.string().min(1),
+    restoredAt: z.number().int().nonnegative(),
+  }),
+  runs: z.array(restoreRunDispositionSchema),
+  intents: z.array(restoreIntentDispositionSchema),
 });
 export type RestoreReconcileSubmission = z.infer<typeof restoreReconcileSubmissionSchema>;
 

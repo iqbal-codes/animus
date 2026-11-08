@@ -376,6 +376,7 @@ export class PublicationService {
   }
 
   async reconcileAll(projectId: string): Promise<PublicationStatus[]> {
+    this.assertInstallationReady();
     const rows = this.db
       .prepare(
         "SELECT id FROM publication_targets WHERE project_id = ? ORDER BY created_at ASC, id ASC",

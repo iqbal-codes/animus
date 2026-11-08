@@ -12,6 +12,9 @@ import { BackupRestoreError, type BackupRestoreService } from "./service";
 function statusFor(code: string): number {
   switch (code) {
     case "restore_target_unavailable":
+    case "restore_reconcile_unresolved":
+    case "restore_reconcile_conflict":
+    case "restore_reconcile_unverified":
       return 409;
     case "restore_validation_failed":
     case "restore_failed":
@@ -144,15 +147,17 @@ export async function handleRestoreRoute(
     const url = new URL(request.url);
     const stateDir = url.searchParams.get("state_dir") ?? undefined;
     try {
-      return Response.json(
-        restoreStatusResultSchema.parse({
-          ...service.restoreStatus(stateDir),
-          installation: service.reconcileRestore(
-            { actor: parsed.data.actor, reason: parsed.data.reason },
-            stateDir,
-          ),
-        }),
+      await service.reconcileRestore(
+        {
+          actor: parsed.data.actor,
+          reason: parsed.data.reason,
+          snapshot: parsed.data.snapshot,
+          runs: parsed.data.runs,
+          intents: parsed.data.intents,
+        },
+        stateDir,
       );
+      return Response.json(restoreStatusResultSchema.parse(service.restoreStatus(stateDir)));
     } catch (error) {
       return failure(error);
     }

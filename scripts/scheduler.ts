@@ -18,6 +18,7 @@ import { initializeDatabase, ProjectRegistryService } from "../apps/backend/src/
 import { PlanService } from "../apps/backend/src/plans";
 import { CommandLedger } from "../apps/backend/src/command/ledger";
 import { BrakeService } from "../apps/backend/src/command/brakes";
+import { assertInstallationNotHeldAtStateDir } from "../apps/backend/src/restore/hold";
 import {
   DispatchService,
   runLocalDispatchTick,
@@ -179,6 +180,7 @@ if (import.meta.main) {
   let db: ReturnType<typeof initializeDatabase> | null = null;
   try {
     const { once, dryRun, interval } = parseSchedulerCliArgs(process.argv.slice(2));
+    assertInstallationNotHeldAtStateDir();
     const root = resolve(import.meta.dir, "..");
     const workspace = resolveProjectWorkspace(root);
 

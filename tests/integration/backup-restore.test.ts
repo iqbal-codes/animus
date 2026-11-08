@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { createHash } from "node:crypto";
 import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
 import {
   ProjectRegistryService,
@@ -27,6 +28,9 @@ import {
   BACKUP_DATABASE_FILE,
   BACKUP_MANIFEST_FILE,
   BACKUP_MANIFEST_HASH_FILE,
+  backupManifestSchema,
+  canonicalJson,
+  manifestHash,
 } from "../../apps/backend/src/restore/manifest";
 import { runBackupCommand } from "../../scripts/cli/commands/operations";
 
@@ -79,6 +83,29 @@ function deferred<T>(): {
 
 async function json<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
+}
+
+interface UnresolvedRunFact {
+  runId: string;
+  state: string;
+  worktreePresent: boolean;
+  ownerPidCleared: boolean;
+  leaseCleared: boolean;
+}
+interface UnresolvedIntentFact {
+  intentId: string;
+  kind: string;
+  state: string;
+  attempts: number;
+}
+interface InspectedRestore {
+  installation: {
+    held: boolean;
+    status: string | null;
+    sourceRestoreId: string | null;
+    restoredAt: number | null;
+  };
+  unresolved: { runs: UnresolvedRunFact[]; intents: UnresolvedIntentFact[] };
 }
 
 interface SeedContext {
@@ -641,8 +668,22 @@ describe("workspace backup and isolated restore", () => {
       targetDb.close();
     }
 
-    // Explicit reconciliation clears the hold without touching budgets or history.
-    const reconcileResponse = await app.fetch(
+    // Verified release: every interrupted run and pending intent is enumerated and
+    // explicitly dispositioned; a bare reason cannot clear the hold.
+    const inspectedResponse = await app.fetch(
+      new Request(
+        `http://127.0.0.1/api/v1/restores/status?state_dir=${encodeURIComponent(restoredState)}`,
+      ),
+    );
+    const inspected = await json<InspectedRestore>(inspectedResponse);
+    expect(inspected.unresolved.runs.length).toBeGreaterThan(0);
+    expect(inspected.unresolved.intents.length).toBeGreaterThan(0);
+    for (const run of inspected.unresolved.runs) {
+      expect(run.ownerPidCleared).toBe(true);
+      expect(run.leaseCleared).toBe(true);
+    }
+
+    const bareReason = await app.fetch(
       new Request(
         `http://127.0.0.1/api/v1/restores/reconcile?state_dir=${encodeURIComponent(restoredState)}`,
         {
@@ -651,6 +692,37 @@ describe("workspace backup and isolated restore", () => {
           body: JSON.stringify({
             actor: "operator",
             reason: "Inspected the restored run owner and pending publication intents",
+            snapshot: {
+              sourceRestoreId: inspected.installation.sourceRestoreId,
+              restoredAt: inspected.installation.restoredAt,
+            },
+          }),
+        },
+      ),
+    );
+    expect(bareReason.status).toBe(400);
+
+    const reconcileResponse = await app.fetch(
+      new Request(
+        `http://127.0.0.1/api/v1/restores/reconcile?state_dir=${encodeURIComponent(restoredState)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            actor: "operator",
+            reason: "Verified restored ownership and remote intent state read-only",
+            snapshot: {
+              sourceRestoreId: inspected.installation.sourceRestoreId,
+              restoredAt: inspected.installation.restoredAt,
+            },
+            runs: inspected.unresolved.runs.map((run) => ({
+              runId: run.runId,
+              disposition: "resolved",
+            })),
+            intents: inspected.unresolved.intents.map((intent) => ({
+              intentId: intent.intentId,
+              disposition: "abandoned",
+            })),
           }),
         },
       ),
@@ -849,7 +921,18 @@ describe("workspace backup and isolated restore", () => {
     expect(restores.code).toBe(0);
     expect(JSON.parse(restores.logs.join("\n")).installation.held).toBe(true);
 
-    const reconcile = await capture(() =>
+    const inspectedCli = await capture(() =>
+      runBackupCommand({
+        ...base,
+        subcommand: "restores",
+        positionals: [],
+        targetStateDir: restoredState,
+      }),
+    );
+    const inspectedBody = JSON.parse(inspectedCli.logs.join("\n")) as InspectedRestore;
+    expect(inspectedBody.unresolved.runs.length).toBeGreaterThan(0);
+
+    const bareReconcile = await capture(() =>
       runBackupCommand({
         ...base,
         subcommand: "reconcile",
@@ -859,9 +942,614 @@ describe("workspace backup and isolated restore", () => {
         reason: "CLI operator inspected restored ownership",
       }),
     );
-    expect(reconcile.code).toBe(0);
+    expect(bareReconcile.code).toBe(1);
+    expect(bareReconcile.logs.join("\n")).toMatch(/explicit disposition/i);
+
+    const reconcile = await capture(() =>
+      runBackupCommand({
+        ...base,
+        subcommand: "reconcile",
+        positionals: [],
+        targetStateDir: restoredState,
+        actor: "operator",
+        reason: "CLI operator verified restored ownership and remote intent state",
+        releaseRuns: inspectedBody.unresolved.runs.map((run) => `${run.runId}:resolved`),
+        releaseIntents: inspectedBody.unresolved.intents.map(
+          (intent) => `${intent.intentId}:abandoned`,
+        ),
+      }),
+    );
+    expect(reconcile.code, reconcile.logs.join("\n")).toBe(0);
     expect(JSON.parse(reconcile.logs.join("\n")).installation.held).toBe(false);
 
     await seeded.finishActive();
   }, 20000);
+
+  async function backup(label: string): Promise<string> {
+    const bundle = join(root, "bundles", label);
+    const response = await app.fetch(
+      new Request("http://127.0.0.1/api/v1/backups", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ destinationPath: bundle, actor: "operator" }),
+      }),
+    );
+    expect(response.status).toBe(201);
+    return bundle;
+  }
+
+  async function restore(
+    bundle: string,
+    restoredHome: string,
+  ): Promise<{
+    state: string;
+    body: InspectedRestore & { operation: { report: Record<string, unknown> } };
+  }> {
+    const state = join(restoredHome, "state");
+    const response = await app.fetch(
+      new Request("http://127.0.0.1/api/v1/restores", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourcePath: bundle,
+          targetStateDir: state,
+          targetHome: restoredHome,
+          actor: "operator",
+        }),
+      }),
+    );
+    expect(response.status).toBe(201);
+    return { state, body: await json(response) };
+  }
+
+  async function inspect(state: string): Promise<InspectedRestore> {
+    const response = await app.fetch(
+      new Request(`http://127.0.0.1/api/v1/restores/status?state_dir=${encodeURIComponent(state)}`),
+    );
+    expect(response.status).toBe(200);
+    return (await json(response)) as InspectedRestore;
+  }
+
+  function releasePayload(
+    inspected: InspectedRestore,
+    overrides: {
+      runs?: Array<{ runId: string; disposition: "resolved" | "abandoned" }>;
+      intents?: Array<{ intentId: string; disposition: "resolved" | "abandoned" }>;
+      snapshot?: { sourceRestoreId: string; restoredAt: number };
+    } = {},
+  ) {
+    return {
+      actor: "operator",
+      reason: "Verified restored ownership and remote effect state",
+      snapshot: overrides.snapshot ?? {
+        sourceRestoreId: inspected.installation.sourceRestoreId as string,
+        restoredAt: inspected.installation.restoredAt as number,
+      },
+      runs:
+        overrides.runs ??
+        inspected.unresolved.runs.map((run) => ({
+          runId: run.runId,
+          disposition: "resolved" as const,
+        })),
+      intents:
+        overrides.intents ??
+        inspected.unresolved.intents.map((intent) => ({
+          intentId: intent.intentId,
+          disposition: "abandoned" as const,
+        })),
+    };
+  }
+
+  test("AC4: restored runs lose copied owner identity and a reason-only release is refused", async () => {
+    const seeded = await seed("owner-clear");
+    const before = app.db
+      .prepare(
+        "SELECT id, owner_pid, owner_token FROM dispatch_runs WHERE state IN ('claimed','dispatched','running','interrupted')",
+      )
+      .all() as Array<{ id: string; owner_pid: number | null; owner_token: string }>;
+    const beforeTokens = new Map(before.map((row) => [row.id, row.owner_token]));
+
+    const bundle = await backup("owner-clear");
+    const restored = await restore(bundle, join(root, "owner-clear-home"));
+    const report = restored.body.operation.report as Record<string, unknown>;
+    expect(report.clearedOwnerCount).toBeGreaterThan(0);
+
+    const restoredDb = new DatabaseSync(join(restored.state, BACKUP_DATABASE_FILE));
+    try {
+      restoredDb.exec("PRAGMA foreign_keys = ON;");
+      const runs = restoredDb
+        .prepare(
+          "SELECT id, owner_pid, owner_token, lease_expires_at FROM dispatch_runs WHERE state IN ('claimed','dispatched','running','interrupted')",
+        )
+        .all() as Array<{
+        id: string;
+        owner_pid: number | null;
+        owner_token: string;
+        lease_expires_at: number | null;
+      }>;
+      for (const run of runs) {
+        expect(run.owner_pid).toBeNull();
+        expect(run.lease_expires_at).toBeNull();
+        expect(run.owner_token).not.toBe(beforeTokens.get(run.id));
+      }
+      // Budget and lap history survive the identity clearing untouched.
+      expect(
+        restoredDb
+          .prepare(
+            "SELECT SUM(consumed_attempts) AS c, SUM(granted_attempts) AS g FROM execution_budget_scopes",
+          )
+          .get(),
+      ).toMatchObject(
+        app.db
+          .prepare(
+            "SELECT SUM(consumed_attempts) AS c, SUM(granted_attempts) AS g FROM execution_budget_scopes",
+          )
+          .get() as object,
+      );
+    } finally {
+      restoredDb.close();
+    }
+
+    const inspected = await inspect(restored.state);
+    for (const run of inspected.unresolved.runs) {
+      expect(run.ownerPidCleared).toBe(true);
+      expect(run.leaseCleared).toBe(true);
+    }
+
+    const reasonOnly = await app.fetch(
+      new Request(
+        `http://127.0.0.1/api/v1/restores/reconcile?state_dir=${encodeURIComponent(restored.state)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            actor: "operator",
+            reason: "Operator says everything is fine",
+            snapshot: {
+              sourceRestoreId: inspected.installation.sourceRestoreId,
+              restoredAt: inspected.installation.restoredAt,
+            },
+            runs: [],
+            intents: [],
+          }),
+        },
+      ),
+    );
+    expect(reasonOnly.status).toBe(409);
+    expect(await json<{ error: string }>(reasonOnly)).toMatchObject({
+      error: "restore_reconcile_unresolved",
+    });
+
+    const staleFence = await app.fetch(
+      new Request(
+        `http://127.0.0.1/api/v1/restores/reconcile?state_dir=${encodeURIComponent(restored.state)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            releasePayload(inspected, {
+              snapshot: {
+                sourceRestoreId: inspected.installation.sourceRestoreId!,
+                restoredAt: (inspected.installation.restoredAt ?? 0) + 1,
+              },
+            }),
+          ),
+        },
+      ),
+    );
+    expect(staleFence.status).toBe(409);
+
+    const released = await app.fetch(
+      new Request(
+        `http://127.0.0.1/api/v1/restores/reconcile?state_dir=${encodeURIComponent(restored.state)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(releasePayload(inspected)),
+        },
+      ),
+    );
+    expect(released.status).toBe(200);
+    const releaseBody = await json<{
+      installation: { held: boolean; reconciliation: { runs: unknown[] } };
+    }>(released);
+    expect(releaseBody.installation.held).toBe(false);
+    expect(releaseBody.installation.reconciliation.runs.length).toBe(
+      inspected.unresolved.runs.length,
+    );
+
+    await seeded.finishActive();
+  }, 30000);
+
+  test("AC4: reused PID, unreadable remote readback and a present remote effect block release", async () => {
+    const seeded = await seed("release-fences");
+    const bundle = await backup("release-fences");
+    const restored = await restore(bundle, join(root, "release-fences-home"));
+    const inspected = await inspect(restored.state);
+    const activeRun = inspected.unresolved.runs[0]!;
+
+    // A reused PID is never authority: the restored row must stay cleared.
+    const restoredDb = new DatabaseSync(join(restored.state, BACKUP_DATABASE_FILE));
+    try {
+      restoredDb
+        .prepare("UPDATE dispatch_runs SET owner_pid = 4242 WHERE id = ?")
+        .run(activeRun.runId);
+    } finally {
+      restoredDb.close();
+    }
+    const withPid = await app.fetch(
+      new Request(
+        `http://127.0.0.1/api/v1/restores/reconcile?state_dir=${encodeURIComponent(restored.state)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            releasePayload(await inspect(restored.state), {
+              runs: [{ runId: activeRun.runId, disposition: "resolved" }],
+            }),
+          ),
+        },
+      ),
+    );
+    expect(withPid.status).toBe(409);
+    expect(
+      (await json<{ details: { blocked: Array<{ reason: string }> } }>(withPid)).details.blocked,
+    ).toEqual(
+      expect.arrayContaining([expect.objectContaining({ reason: "owner_identity_not_cleared" })]),
+    );
+
+    const cleared = new DatabaseSync(join(restored.state, BACKUP_DATABASE_FILE));
+    try {
+      cleared
+        .prepare("UPDATE dispatch_runs SET owner_pid = NULL WHERE id = ?")
+        .run(activeRun.runId);
+    } finally {
+      cleared.close();
+    }
+
+    // An unreadable remote readback fails closed instead of guessing.
+    const failingForge = new SyntheticForgeAdapter({ [REPO]: 913 }, forgeOptions());
+    failingForge.failNextListPullRequests = true;
+    const failing = new BackupRestoreService(app.db, {
+      stateDir,
+      ledger,
+      forge: failingForge,
+    });
+    await expect(
+      failing.reconcileRestore(
+        releasePayload(await inspect(restored.state), {
+          intents: (await inspect(restored.state)).unresolved.intents.map((intent) => ({
+            intentId: intent.intentId,
+            disposition: "resolved" as const,
+          })),
+        }),
+        restored.state,
+      ),
+    ).rejects.toMatchObject({ code: "restore_reconcile_unverified", details: expect.anything() });
+
+    // A remote object that exists must be dispositioned `resolved`, not abandoned.
+    const remoteState = new DatabaseSync(join(restored.state, BACKUP_DATABASE_FILE));
+    let branch = "";
+    try {
+      const pr = remoteState
+        .prepare(
+          "SELECT target_id, head_branch, project_id FROM publication_pull_requests WHERE active = 1 LIMIT 1",
+        )
+        .get() as { target_id: string; head_branch: string; project_id: string } | undefined;
+      expect(pr).toBeTruthy();
+      branch = pr!.head_branch;
+      remoteState
+        .prepare(
+          `INSERT INTO publication_intents
+             (id, target_id, project_id, draft_publication_id, operation_key, kind, resource_kind,
+              state, request_json, attempts, remote_object_id, remote_url, last_error, created_at, updated_at)
+           VALUES (?, ?, ?, NULL, ?, 'create_pr', 'pull_request', 'queued', ?, 0, NULL, NULL, NULL, ?, ?)`,
+        )
+        .run(
+          "int_present_effect",
+          pr!.target_id,
+          pr!.project_id,
+          `create_pr:${branch}:present-probe`,
+          JSON.stringify({ sourceBranch: branch }),
+          Date.now(),
+          Date.now(),
+        );
+    } finally {
+      remoteState.close();
+    }
+
+    const presentInspected = await inspect(restored.state);
+    expect(
+      presentInspected.unresolved.intents.some((i) => i.intentId === "int_present_effect"),
+    ).toBe(true);
+    const abandonedPresent = await app.fetch(
+      new Request(
+        `http://127.0.0.1/api/v1/restores/reconcile?state_dir=${encodeURIComponent(restored.state)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            releasePayload(presentInspected, {
+              intents: presentInspected.unresolved.intents.map((intent) => ({
+                intentId: intent.intentId,
+                disposition: "abandoned" as const,
+              })),
+            }),
+          ),
+        },
+      ),
+    );
+    expect(abandonedPresent.status).toBe(409);
+    expect(
+      (await json<{ details: { blocked: Array<{ reason: string }> } }>(abandonedPresent)).details
+        .blocked,
+    ).toEqual(
+      expect.arrayContaining([expect.objectContaining({ reason: "remote_effect_present" })]),
+    );
+
+    const resolvedPresent = await app.fetch(
+      new Request(
+        `http://127.0.0.1/api/v1/restores/reconcile?state_dir=${encodeURIComponent(restored.state)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            releasePayload(presentInspected, {
+              intents: presentInspected.unresolved.intents.map((intent) => ({
+                intentId: intent.intentId,
+                disposition:
+                  intent.intentId === "int_present_effect"
+                    ? ("resolved" as const)
+                    : ("abandoned" as const),
+              })),
+            }),
+          ),
+        },
+      ),
+    );
+    expect(resolvedPresent.status).toBe(200);
+
+    await seeded.finishActive();
+  }, 30000);
+
+  test("AC1/AC3: duplicate owner artifact references back up once and restore intact", async () => {
+    const seeded = await seed("duplicate-artifact");
+    const artifact = app.db
+      .prepare(
+        "SELECT id, project_id, observation_id, name, relative_path, media_type, size_bytes, digest_sha256, created_at FROM execution_artifacts LIMIT 1",
+      )
+      .get() as {
+      id: string;
+      project_id: string;
+      observation_id: string;
+      name: string;
+      relative_path: string;
+      media_type: string;
+      size_bytes: number;
+      digest_sha256: string;
+      created_at: number;
+    };
+    app.db
+      .prepare(
+        `INSERT INTO execution_artifacts
+           (id, project_id, observation_id, owner_type, owner_id, name, relative_path, media_type,
+            size_bytes, digest_sha256, created_at)
+         VALUES (?, ?, ?, 'finding', 'dup-owner', ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        "art_duplicate_owner",
+        artifact.project_id,
+        artifact.observation_id,
+        artifact.name,
+        artifact.relative_path,
+        artifact.media_type,
+        artifact.size_bytes,
+        artifact.digest_sha256,
+        artifact.created_at,
+      );
+
+    const created = await app.fetch(
+      new Request("http://127.0.0.1/api/v1/backups", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          destinationPath: join(root, "bundles", "duplicate-artifact"),
+          actor: "operator",
+        }),
+      }),
+    );
+    expect(created.status).toBe(201);
+    const body = await json<{ artifactCount: number }>(created);
+    expect(body.artifactCount).toBe(1);
+
+    const restored = await restore(
+      join(root, "bundles", "duplicate-artifact"),
+      join(root, "dup-home"),
+    );
+    const restoredDb = new DatabaseSync(join(restored.state, BACKUP_DATABASE_FILE), {
+      readOnly: true,
+    });
+    try {
+      expect(
+        (
+          restoredDb
+            .prepare("SELECT COUNT(*) AS c FROM execution_artifacts WHERE relative_path = ?")
+            .get(artifact.relative_path) as { c: number }
+        ).c,
+      ).toBe(2);
+    } finally {
+      restoredDb.close();
+    }
+    await seeded.finishActive();
+  }, 30000);
+
+  test("AC3: manifest completeness counts are cross-checked before activation", async () => {
+    const seeded = await seed("completeness");
+    const bundle = await backup("completeness");
+    const manifestPath = join(bundle, BACKUP_MANIFEST_FILE);
+    const manifest = backupManifestSchema.parse(
+      JSON.parse(readFileSync(manifestPath, "utf8")) as unknown,
+    );
+    const tampered = {
+      ...manifest,
+      completeness: {
+        ...manifest.completeness,
+        tables: {
+          ...manifest.completeness.tables,
+          work_items: manifest.completeness.tables.work_items + 1,
+        },
+      },
+    };
+    writeFileSync(manifestPath, canonicalJson(tampered));
+    writeFileSync(
+      join(bundle, BACKUP_MANIFEST_HASH_FILE),
+      `${manifestHash(backupManifestSchema.parse(tampered))}\n`,
+    );
+
+    const response = await app.fetch(
+      new Request("http://127.0.0.1/api/v1/restores", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourcePath: bundle,
+          targetStateDir: join(root, "completeness-home", "state"),
+          targetHome: join(root, "completeness-home"),
+        }),
+      }),
+    );
+    expect(response.status).toBe(400);
+    expect((await json<{ message: string }>(response)).message).toMatch(/manifest recorded/);
+    expect(existsSync(join(root, "completeness-home", "state"))).toBe(false);
+    await seeded.finishActive();
+  }, 30000);
+
+  test("AC1/AC3: artifactRoot defaults to the service state directory", async () => {
+    const seeded = await seed("artifact-root");
+    const service = new BackupRestoreService(app.db, { stateDir, ledger });
+    const bundle = join(root, "bundles", "artifact-root");
+    const created = service.createBackup(bundle, "operator");
+    expect(created.artifactCount).toBe(1);
+    expect(
+      existsSync(join(bundle, "artifacts", seeded.projectId, seeded.artifactRelativePath)),
+    ).toBe(true);
+    await seeded.finishActive();
+  }, 30000);
+
+  test("AC3: restored home references are rehomed, checkouts are reported and bundles are not required", async () => {
+    const seeded = await seed("rehome");
+    const bundle = await backup("rehome");
+    const restoredHome = join(root, "rehome-home");
+    const restored = await restore(bundle, restoredHome);
+    const report = restored.body.operation.report as {
+      projectCheckouts: Array<{ checkoutPath: string; present: boolean; rehomeRequired: boolean }>;
+    };
+    expect(report.projectCheckouts.length).toBeGreaterThan(0);
+    expect(report.projectCheckouts[0]!.checkoutPath).toBe(checkoutPath);
+    expect(report.projectCheckouts[0]!.present).toBe(true);
+
+    const restoredDb = new DatabaseSync(join(restored.state, BACKUP_DATABASE_FILE));
+    try {
+      const runs = restoredDb.prepare("SELECT worktree_path FROM dispatch_runs").all() as Array<{
+        worktree_path: string;
+      }>;
+      for (const run of runs) {
+        expect(run.worktree_path.startsWith(restoredHome + "/")).toBe(true);
+        expect(run.worktree_path.includes(join(root, "animus-home"))).toBe(false);
+      }
+      expect(restoredDb.prepare("SELECT checkout_path FROM projects").get()).toMatchObject({
+        checkout_path: checkoutPath,
+      });
+    } finally {
+      restoredDb.close();
+    }
+
+    // Restored artifacts are independent of the source bundle.
+    rmSync(bundle, { recursive: true, force: true });
+    const restoredArtifact = join(
+      restored.state,
+      "artifacts",
+      seeded.projectId,
+      seeded.artifactRelativePath,
+    );
+    expect(existsSync(restoredArtifact)).toBe(true);
+    expect(createHash("sha256").update(readFileSync(restoredArtifact)).digest("hex")).toBe(
+      seeded.artifactSha,
+    );
+    await seeded.finishActive();
+  }, 30000);
+
+  test("AC3: a v11-only snapshot restores into the combined v8+v10+v11 registry", async () => {
+    const seeded = await seed("lineage");
+    const bundle = await backup("lineage");
+    const snapshotPath = join(bundle, BACKUP_DATABASE_FILE);
+    const snapshot = new DatabaseSync(snapshotPath);
+    try {
+      snapshot.exec("PRAGMA foreign_keys = OFF;");
+      snapshot.exec("DROP TABLE child_integration_events;");
+      snapshot.exec("DROP TABLE child_integrations;");
+      snapshot.prepare("DELETE FROM schema_migrations WHERE version = 8").run();
+      expect(
+        (
+          snapshot
+            .prepare("SELECT COUNT(*) AS c FROM schema_migrations WHERE version = 8")
+            .get() as {
+            c: number;
+          }
+        ).c,
+      ).toBe(0);
+      snapshot.exec("PRAGMA journal_mode = DELETE;");
+    } finally {
+      snapshot.close();
+    }
+    const manifestPath = join(bundle, BACKUP_MANIFEST_FILE);
+    const manifest = backupManifestSchema.parse(
+      JSON.parse(readFileSync(manifestPath, "utf8")) as unknown,
+    );
+    const bytes = readFileSync(snapshotPath);
+    const updated = {
+      ...manifest,
+      database: {
+        ...manifest.database,
+        sizeBytes: bytes.byteLength,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      },
+      completeness: {
+        ...manifest.completeness,
+        tables: {
+          ...manifest.completeness.tables,
+          dispatch_runs: manifest.completeness.tables.dispatch_runs,
+        },
+      },
+    };
+    writeFileSync(manifestPath, canonicalJson(updated));
+    writeFileSync(
+      join(bundle, BACKUP_MANIFEST_HASH_FILE),
+      `${manifestHash(backupManifestSchema.parse(updated))}\n`,
+    );
+
+    const restored = await restore(bundle, join(root, "lineage-home"));
+    const restoredDb = new DatabaseSync(join(restored.state, BACKUP_DATABASE_FILE), {
+      readOnly: true,
+    });
+    try {
+      const versions = (
+        restoredDb
+          .prepare("SELECT version FROM schema_migrations ORDER BY version")
+          .all() as Array<{
+          version: number;
+        }>
+      ).map((row) => row.version);
+      expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 10, 11]);
+      expect(
+        restoredDb
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='child_integrations'",
+          )
+          .get(),
+      ).toBeTruthy();
+    } finally {
+      restoredDb.close();
+    }
+    await seeded.finishActive();
+  }, 30000);
 });

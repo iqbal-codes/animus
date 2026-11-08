@@ -9,13 +9,14 @@ import { PlanService } from "../../apps/backend/src/plans";
 import { CommandLedger } from "../../apps/backend/src/command/ledger";
 import { BrakeService } from "../../apps/backend/src/command/brakes";
 import { DispatchService } from "../../apps/backend/src/dispatch";
+import { ExecutionObservationService } from "../../apps/backend/src/evidence";
 import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
 
 // Manual UI/persistence verification for workspace backup/restore. The harness
 // uses real SQLite, real files and a local bare git origin; it never touches a
 // live Animus home outside its temporary root.
 const root = mkdtempSync(join(tmpdir(), "animus-backup-ui-"));
-process.env.ANIMUS_HOME = join(root, "home");
+process.env.ANIMUS_HOME = root;
 writeExecutionAuthority("local");
 const checkout = join(root, "checkout");
 mkdirSync(checkout);
@@ -71,6 +72,14 @@ forge.addIssue("owner/backup-ui", {
   labels: [{ name: "ready-for-agent" }],
   comments: [],
 });
+forge.addIssue("owner/backup-ui", {
+  number: 901,
+  title: "Interrupted run for the held restore surface",
+  body,
+  state: "OPEN",
+  labels: [{ name: "ready-for-agent" }],
+  comments: [],
+});
 
 const app = await createBackendApp({
   stateDir: join(root, "state"),
@@ -99,7 +108,70 @@ const dispatch = new DispatchService(app.db, {
     return { success: true, headSha: git(["rev-parse", "HEAD"], context.worktree_path) };
   },
 });
-await dispatch.dispatch(project.id, { plan_id: plan.id, actor: "operator" });
+const completedRun = await dispatch.dispatch(project.id, {
+  plan_id: plan.id,
+  actor: "operator",
+});
+
+// Real candidate-bound evidence creates durable pending publication intents, so
+// a held restore has external intents for the operator to disposition.
+const observations = new ExecutionObservationService(app.db);
+const reviewer = observations.registerTrustedProducer(project.id, {
+  id: "ui-reviewer",
+  role: "peer_reviewer",
+});
+const artifactRelativePath = "evidence/ui-review.log";
+mkdirSync(join(root, "state", "artifacts", project.id, "evidence"), { recursive: true });
+writeFileSync(
+  join(root, "state", "artifacts", project.id, artifactRelativePath),
+  "held restore review artifact\n",
+);
+observations.recordRunObservation(project.id, completedRun.id, {
+  stage: "independent_review",
+  status: "failed",
+  producer: reviewer.producer,
+  checks: [{ name: "review", command: "review", result: "FAIL", detail: "needs work" }],
+  findings: [
+    {
+      severity: "blocking",
+      acKey: "AC1",
+      fileContext: "backup.txt:1",
+      summary: "ui harness blocking finding",
+    },
+  ],
+  artifacts: [
+    {
+      ownerType: "finding",
+      ownerFindingIndex: 0,
+      name: "ui review log",
+      relativePath: artifactRelativePath,
+      mediaType: "text/plain",
+    },
+  ],
+});
+
+// A genuinely active run is captured by the backup and interrupted by restore.
+const interruptedPlan = await plans.importPlan(project.id, {
+  issue_number: 901,
+  kind: "standalone",
+});
+const interruptedDispatch = new DispatchService(app.db, {
+  plans,
+  ledger: new CommandLedger(app.db),
+  brakes: new BrakeService(app.db),
+  processAlive: () => true,
+  ownerPid: () => 4242,
+  runner: () => new Promise(() => {}),
+});
+void interruptedDispatch.dispatch(project.id, {
+  plan_id: interruptedPlan.id,
+  actor: "operator",
+});
+for (let attempt = 0; attempt < 200; attempt += 1) {
+  const run = interruptedDispatch.listRuns(project.id, { plan_id: interruptedPlan.id })[0];
+  if (run?.state === "running" || run?.state === "dispatched") break;
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
 
 const bundle = join(root, "bundles", "runtime");
 const backupResponse = await app.fetch(

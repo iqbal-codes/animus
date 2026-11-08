@@ -39,6 +39,8 @@ export interface ParsedCliArgs {
     destination?: string;
     "target-state-dir"?: string;
     "target-home"?: string;
+    "release-run"?: string[];
+    "release-intent"?: string[];
     state?: string;
     limit?: string;
     provider?: string;
@@ -114,6 +116,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       destination: { type: "string" },
       "target-state-dir": { type: "string" },
       "target-home": { type: "string" },
+      "release-run": { type: "string", multiple: true },
+      "release-intent": { type: "string", multiple: true },
       state: { type: "string" },
       limit: { type: "string" },
       provider: { type: "string" },

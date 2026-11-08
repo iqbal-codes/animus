@@ -20,6 +20,7 @@ import { loadScheduleConfig } from "./scheduler";
 import { LoopPublisher } from "./publisher";
 import { runBoundedRole } from "./role-runner";
 import { resolveProjectWorkspace } from "../../packages/contracts/src/paths";
+import { assertInstallationNotHeldAtStateDir } from "../../apps/backend/src/restore/hold";
 import type {
   LocalIssue,
   LocalLoopOptions,
@@ -1543,6 +1544,13 @@ export async function runAnimusLoop(
     };
   } = {},
 ): Promise<LocalLoopResult> {
+  // A restored installation is held: no native builder lap may start until the
+  // installation hold is released through verified reconciliation. The CLI and
+  // scheduler assert the installation state before calling here; only an
+  // explicitly resolved state root is read from this generic seam so library
+  // callers stay hermetic.
+  const installationStateDir = options.stateRoot ?? options.stateDirectory;
+  if (installationStateDir) assertInstallationNotHeldAtStateDir(installationStateDir);
   const session = await LapSession.init(root, issue, options);
   return await session.run();
 }

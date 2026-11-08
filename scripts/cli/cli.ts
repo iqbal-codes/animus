@@ -347,6 +347,8 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         destination: values.destination,
         targetStateDir: values["target-state-dir"],
         targetHome: values["target-home"],
+        releaseRuns: values["release-run"],
+        releaseIntents: values["release-intent"],
         reason: values.reason,
         actor: values.actor,
         factoryUrl: values["factory-url"],

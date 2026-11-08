@@ -367,8 +367,11 @@ export type FactoryErrorCode =
   | "invalid_operator_response";
 
 export class FactoryClientError extends Error {
-  constructor(public readonly code: FactoryErrorCode) {
-    super(code);
+  constructor(
+    public readonly code: FactoryErrorCode,
+    public readonly detail?: string,
+  ) {
+    super(detail ?? code);
     this.name = "FactoryClientError";
   }
 }
@@ -404,7 +407,16 @@ export function createFactoryClient(options: {
 
     if (!response.ok) {
       const error = operatorErrorSchema.safeParse(body);
-      throw new FactoryClientError(error.success ? error.data.error : "invalid_operator_response");
+      const detail =
+        body &&
+        typeof body === "object" &&
+        typeof (body as { message?: unknown }).message === "string"
+          ? (body as { message: string }).message
+          : undefined;
+      throw new FactoryClientError(
+        error.success ? error.data.error : "invalid_operator_response",
+        detail,
+      );
     }
 
     const result = schema.safeParse(body);
@@ -440,7 +452,16 @@ export function createFactoryClient(options: {
 
     if (!response.ok) {
       const error = operatorErrorSchema.safeParse(body);
-      throw new FactoryClientError(error.success ? error.data.error : "invalid_operator_response");
+      const detail =
+        body &&
+        typeof body === "object" &&
+        typeof (body as { message?: unknown }).message === "string"
+          ? (body as { message: string }).message
+          : undefined;
+      throw new FactoryClientError(
+        error.success ? error.data.error : "invalid_operator_response",
+        detail,
+      );
     }
 
     const result = schema.safeParse(body);
@@ -473,7 +494,16 @@ export function createFactoryClient(options: {
 
     if (!response.ok) {
       const error = operatorErrorSchema.safeParse(body);
-      throw new FactoryClientError(error.success ? error.data.error : "invalid_operator_response");
+      const detail =
+        body &&
+        typeof body === "object" &&
+        typeof (body as { message?: unknown }).message === "string"
+          ? (body as { message: string }).message
+          : undefined;
+      throw new FactoryClientError(
+        error.success ? error.data.error : "invalid_operator_response",
+        detail,
+      );
     }
 
     const result = schema.safeParse(body);

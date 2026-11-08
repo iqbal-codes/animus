@@ -332,6 +332,7 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
   const backupService = new BackupRestoreService(db, {
     stateDir: options?.stateDir ?? resolveStateDir(),
     ledger: commandService.ledger,
+    forge: registryService.getForge(),
   });
 
   const monitorRuntime =
