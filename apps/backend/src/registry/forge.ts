@@ -1222,6 +1222,38 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
       );
     }
   }
+
+  async mergePullRequest(
+    repo: string,
+    prNumber: number,
+    input?: MergePullRequestInput,
+  ): Promise<MergePullRequestResult> {
+    const cleanRepo = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+    const [owner, name] = cleanRepo.split("/");
+    if (!owner || !name) throw new Error(`Invalid repository '${repo}'`);
+    const args = [
+      "api",
+      `repos/${owner}/${name}/pulls/${prNumber}/merge`,
+      "--method",
+      "PUT",
+      "-f",
+      `merge_method=${input?.mergeMethod ?? "merge"}`,
+    ];
+    if (input?.expectedHeadSha) args.push("-f", `sha=${input.expectedHeadSha}`);
+    try {
+      const output = await this.runner(["gh", ...args]);
+      const parsed = JSON.parse(output || "{}");
+      return {
+        merged: Boolean(parsed.merged),
+        ...(typeof parsed.sha === "string" ? { sha: parsed.sha } : {}),
+        ...(typeof parsed.message === "string" ? { message: parsed.message } : {}),
+      };
+    } catch (error: any) {
+      throw new Error(
+        `Failed to merge pull request ${prNumber} for ${cleanRepo}: ${error?.message || String(error)}`,
+      );
+    }
+  }
 }
 
 export interface SyntheticForgeOptions {
