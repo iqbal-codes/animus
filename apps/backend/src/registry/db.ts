@@ -8,6 +8,7 @@ import {
 import { applyCommandMigrations } from "../command/db";
 import { applyCoordinationMigrations } from "../coordination/db";
 import { applyEvidenceMigrations } from "../evidence/db";
+import { applyWorkMigrations } from "../work/db";
 
 export function resolveStateDir(): string {
   const custom = process.env.ANIMUS_STATE_DIR || process.env.FACTORY_STATE_DIR;
@@ -31,8 +32,10 @@ export function initializeDatabase(dbPath?: string): DatabaseSync {
 
   // Configure SQLite WAL mode and strict integrity
   db.exec("PRAGMA journal_mode = WAL;");
-  db.exec("PRAGMA synchronous = NORMAL;");
+  db.exec("PRAGMA synchronous = FULL;");
   db.exec("PRAGMA foreign_keys = ON;");
+  db.exec("PRAGMA busy_timeout = 5000;");
+  verifyDatabasePragmas(db, resolvedPath);
 
   // Migration: create projects table
   db.exec(`
@@ -82,6 +85,27 @@ export function initializeDatabase(dbPath?: string): DatabaseSync {
   applyCommandMigrations(db);
   applyCoordinationMigrations(db);
   applyEvidenceMigrations(db);
+  applyWorkMigrations(db);
 
   return db;
+}
+
+function verifyDatabasePragmas(db: DatabaseSync, resolvedPath: string): void {
+  const journal = db.prepare("PRAGMA journal_mode;").get() as { journal_mode?: string } | undefined;
+  const synchronous = db.prepare("PRAGMA synchronous;").get() as
+    | { synchronous?: number }
+    | undefined;
+  const foreignKeys = db.prepare("PRAGMA foreign_keys;").get() as
+    | { foreign_keys?: number }
+    | undefined;
+
+  if (resolvedPath !== ":memory:" && String(journal?.journal_mode).toLowerCase() !== "wal") {
+    throw new Error("SQLite WAL journal mode is unavailable");
+  }
+  if (Number(synchronous?.synchronous) !== 2) {
+    throw new Error("SQLite FULL synchronous mode is unavailable");
+  }
+  if (Number(foreignKeys?.foreign_keys) !== 1) {
+    throw new Error("SQLite foreign key enforcement is unavailable");
+  }
 }

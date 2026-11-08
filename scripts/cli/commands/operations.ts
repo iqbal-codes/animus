@@ -15,7 +15,7 @@ import {
   type FactoryConnectionOptions,
 } from "./onboarding-registration";
 import { CommandService } from "../../../apps/backend/src/command";
-import type { ControlAction, Project } from "@animus/contracts/operator";
+import type { ControlAction, Project, WorkRecord } from "@animus/contracts/operator";
 
 export async function runControlCommand(opts: {
   subcommand?: string;
@@ -438,6 +438,78 @@ export async function runIntakeCommand(opts: IntakeCommandOptions): Promise<numb
     if (opts.json) console.log(JSON.stringify({ ok: false, error: msg }));
     else console.error(`Error: ${msg}`);
     return 1;
+  }
+}
+
+export async function runWorkCommand(
+  opts: FactoryConnectionOptions & {
+    subcommand?: string;
+    positionals: string[];
+    projectId?: string;
+    json?: boolean;
+  },
+): Promise<number> {
+  const sub = opts.subcommand ?? "list";
+  try {
+    if (!opts.projectId) {
+      throw new Error("Usage: factory work <list|get> --project <project-id>");
+    }
+    const scoped = createRegistrationClient(opts).forProject(opts.projectId);
+
+    if (sub === "list") {
+      const items = await scoped.work();
+      if (opts.json) {
+        console.log(JSON.stringify(items, null, 2));
+      } else if (items.length === 0) {
+        console.log("No imported work.");
+      } else {
+        console.log(`Imported Work (${items.length}):`);
+        for (const item of items) {
+          console.log(
+            `  ${item.id}  #${item.issue_number}  rev=${item.revision.revision_number}  ${item.revision.source.title}`,
+          );
+        }
+      }
+      return 0;
+    }
+
+    if (sub === "get") {
+      const workId = opts.positionals[2];
+      if (!workId) throw new Error("Usage: factory work get <work-id> --project <project-id>");
+      const record = await scoped.workItem(workId);
+      if (opts.json) {
+        console.log(JSON.stringify(record, null, 2));
+      } else {
+        printWork(record);
+      }
+      return 0;
+    }
+
+    throw new Error(`Unknown work subcommand: ${sub}. Expected list or get.`);
+  } catch (err: any) {
+    const msg = err?.message ?? String(err);
+    if (opts.json) console.log(JSON.stringify({ ok: false, error: msg }));
+    else console.error(`Error: ${msg}`);
+    return 1;
+  }
+}
+
+function printWork(record: WorkRecord): void {
+  console.log(`Work ${record.id} (${record.repo_name}#${record.issue_number})`);
+  console.log(`  Revision:  ${record.revision.revision_number} (${record.revision.id})`);
+  console.log(`  Hash:      ${record.revision.content_hash}`);
+  console.log(`  Imported:  ${new Date(record.revision.imported_at).toISOString()}`);
+  console.log(`  State:     ${record.revision.source.state}`);
+  console.log(`  Labels:    ${record.revision.source.labels.join(", ") || "none"}`);
+  console.log(`  Source:    ${record.revision.provenance.source_url}`);
+  console.log(`  Title:     ${record.revision.source.title}`);
+  console.log("  Body:");
+  console.log(record.revision.source.body || "(empty)");
+  if (record.revision.source.comments.length > 0) {
+    console.log(`  Comments (${record.revision.source.comments.length}):`);
+    for (const comment of record.revision.source.comments) {
+      console.log(`    ${comment.author ?? "unknown"}: ${comment.body}`);
+    }
   }
 }
 

@@ -1003,6 +1003,7 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
     }
     repoMap.set(issue.number, {
       ...issue,
+      body: issue.body === undefined ? "" : issue.body,
       labels: issue.labels ? [...issue.labels] : [],
       comments: issue.comments ? issue.comments.map((c) => ({ ...c })) : [],
     });

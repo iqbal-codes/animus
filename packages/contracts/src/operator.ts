@@ -93,6 +93,7 @@ export const operatorErrorSchema = z.object({
     "release_policy_incomplete",
     "verification_not_found",
     "invalid_signature",
+    "work_not_found",
   ]),
 });
 export type OperatorErrorCode = z.infer<typeof operatorErrorSchema>["error"];
@@ -115,6 +116,58 @@ export const controlStateSchema = z.object({
 });
 export type ControlState = z.infer<typeof controlStateSchema>;
 
+export const workSourceCommentSchema = z.object({
+  id: z.string().nullable(),
+  author: z.string().nullable(),
+  body: z.string(),
+});
+export type WorkSourceComment = z.infer<typeof workSourceCommentSchema>;
+
+export const workSourceSnapshotSchema = z.object({
+  title: z.string().min(1),
+  body: z.string(),
+  state: z.enum(["OPEN", "CLOSED"]),
+  labels: z.array(z.string()),
+  comments: z.array(workSourceCommentSchema),
+});
+export type WorkSourceSnapshot = z.infer<typeof workSourceSnapshotSchema>;
+
+export const workProvenanceSchema = z.object({
+  repo_id: z.number().int().positive(),
+  repo_name: z.string().min(1),
+  issue_number: z.number().int().positive(),
+  source_url: z.string().min(1),
+  captured_at: z.number().int().nonnegative(),
+});
+export type WorkProvenance = z.infer<typeof workProvenanceSchema>;
+
+export const workRevisionSchema = z.object({
+  id: z.string().min(1),
+  work_id: z.string().min(1),
+  project_id: z.string().min(1),
+  revision_number: z.number().int().positive(),
+  content_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  source: workSourceSnapshotSchema,
+  provenance: workProvenanceSchema,
+  imported_at: z.number().int().nonnegative(),
+});
+export type WorkRevision = z.infer<typeof workRevisionSchema>;
+
+export const workRecordSchema = z.object({
+  id: z.string().min(1),
+  project_id: z.string().min(1),
+  repo_id: z.number().int().positive(),
+  repo_name: z.string().min(1),
+  issue_number: z.number().int().positive(),
+  created_at: z.number().int().nonnegative(),
+  updated_at: z.number().int().nonnegative(),
+  revision: workRevisionSchema,
+});
+export type WorkRecord = z.infer<typeof workRecordSchema>;
+
+export const workListSchema = z.array(workRecordSchema);
+export type WorkList = z.infer<typeof workListSchema>;
+
 export const evaluatedIssueSchema = z.object({
   number: z.number().int().positive(),
   title: z.string(),
@@ -126,6 +179,7 @@ export const evaluatedIssueSchema = z.object({
   unsatisfied_dependencies: z.array(z.number().int()),
   body: z.string().nullable().optional(),
   integrated_to_branch: z.string().nullable().optional(),
+  work: workRecordSchema.nullable().optional(),
 });
 export type EvaluatedIssue = z.infer<typeof evaluatedIssueSchema>;
 

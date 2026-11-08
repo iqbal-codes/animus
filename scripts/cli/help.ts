@@ -149,6 +149,11 @@ export const orderedFlags: readonly FlagHelp[] = [
     commands: ["project"],
   },
   {
+    spec: "--project <project-id>",
+    description: "Registered project ID for work reads",
+    commands: ["work"],
+  },
+  {
     spec: "--provider <id>",
     description: "Default agent harness provider (pi, claude, omp, commandcode; codex, opencode coming soon)",
     commands: ["setup", "config"],

@@ -13,6 +13,7 @@ import {
   runIntakeCommand,
   runProjectCommand,
   runPromotionCommand,
+  runWorkCommand,
 } from "./commands/operations";
 import { runLoopCliCommand, runSchedulerCliCommand } from "./commands/loop";
 import { runConfigCliCommand, runSetupCommand } from "./commands/setup";
@@ -271,6 +272,16 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         dryRun: values["dry-run"],
         stateDir: values["state-dir"],
         refresh: values.refresh,
+        json: values.json,
+      });
+
+    case "work":
+      return await runWorkCommand({
+        subcommand,
+        positionals,
+        projectId: values.project,
+        factoryUrl: values["factory-url"],
+        factoryToken: values["factory-token"],
         json: values.json,
       });
 

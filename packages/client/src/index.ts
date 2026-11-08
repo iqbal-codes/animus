@@ -10,6 +10,8 @@ import {
   launchAckSchema,
   intakeResultSchema,
   evaluatedIssueSchema,
+  workListSchema,
+  workRecordSchema,
   controlStateSchema,
   controlSubmissionSchema,
   lapEvidenceSchema,
@@ -101,6 +103,8 @@ import {
   type LaunchAck,
   type IntakeResult,
   type EvaluatedIssue,
+  type WorkList,
+  type WorkRecord,
   type ControlState,
   type ControlAction,
   type OperatorErrorCode,
@@ -580,6 +584,12 @@ export function createFactoryClient(options: {
             `${scopedBase}/intake/${encodeURIComponent(number)}/integration`,
             branchIntegrationResultSchema,
           );
+        },
+        async work(): Promise<WorkList> {
+          return getJson(`${scopedBase}/work`, workListSchema);
+        },
+        async workItem(workId: string): Promise<WorkRecord> {
+          return getJson(`${scopedBase}/work/${encodeURIComponent(workId)}`, workRecordSchema);
         },
         async laps(): Promise<LapList> {
           return getJson(`${scopedBase}/laps`, lapListSchema);

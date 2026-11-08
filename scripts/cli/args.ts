@@ -34,6 +34,7 @@ export interface ParsedCliArgs {
     name?: string;
     path?: string;
     repo?: string;
+    project?: string;
     destination?: string;
     state?: string;
     limit?: string;
@@ -96,6 +97,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       name: { type: "string" },
       path: { type: "string" },
       repo: { type: "string" },
+      project: { type: "string" },
       destination: { type: "string" },
       state: { type: "string" },
       limit: { type: "string" },

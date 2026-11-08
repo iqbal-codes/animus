@@ -21,6 +21,7 @@ import {
 } from "@animus/contracts/operator";
 import { configuration, hostOrigin, type Configuration } from "./config";
 import { IntakeService, handleProjectIntakeRoute } from "./intake";
+import { WorkService, handleProjectWorkRoute } from "./work";
 import {
   initializeDatabase,
   ProjectRegistryService,
@@ -130,6 +131,7 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     registryService.getDb(),
     registryService.getForge(),
   );
+  const workService = new WorkService(registryService.getDb());
   const onboardingService = new ProjectOnboardingService(registryService);
   const harnessService = new HarnessService();
 
@@ -705,6 +707,12 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
           sharedIntakeService,
         );
         if (intakeRes) return intakeRes;
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
+      if (scopedAction === "work") {
+        const workRes = await handleProjectWorkRoute(request, projectId, parts, workService);
+        if (workRes) return workRes;
         return Response.json({ error: "not_found" }, { status: 404 });
       }
 
