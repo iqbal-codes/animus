@@ -523,6 +523,7 @@ export async function runPlanCommand(
     deliveryBranch?: string;
     reason?: string;
     actor?: string;
+    expectedSequence?: string;
     json?: boolean;
   },
 ): Promise<number> {
@@ -590,12 +591,24 @@ export async function runPlanCommand(
       const planId = opts.positionals[2];
       if (!planId) {
         throw new Error(
-          `Usage: factory plan ${sub} <plan-id> --project <project-id> [--reason <text>]`,
+          `Usage: factory plan ${sub} <plan-id> --project <project-id> [--reason <text>] [--expected-sequence <n>]`,
+        );
+      }
+      const expectedSequence = opts.expectedSequence
+        ? Number(opts.expectedSequence)
+        : undefined;
+      if (
+        expectedSequence !== undefined &&
+        (!Number.isSafeInteger(expectedSequence) || expectedSequence <= 0)
+      ) {
+        throw new Error(
+          `--expected-sequence must be a positive integer, got: ${opts.expectedSequence}`,
         );
       }
       const submission = {
         ...(opts.actor ? { actor: opts.actor } : {}),
         ...(opts.reason ? { reason: opts.reason } : {}),
+        ...(expectedSequence !== undefined ? { expected_sequence: expectedSequence } : {}),
       };
       const plan =
         sub === "approve"

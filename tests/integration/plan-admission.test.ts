@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { IntakeService } from "../../apps/backend/src/intake";
@@ -9,20 +9,26 @@ import {
   ProjectRegistryService,
   SyntheticForgeAdapter,
 } from "../../apps/backend/src/registry";
-import { PlanService } from "../../apps/backend/src/plans";
+import { computeGraphHash, graphFromManifest, PlanService } from "../../apps/backend/src/plans";
 
 const REPO = "owner/repo";
+const ORIGINAL_ANIMUS_HOME = process.env.ANIMUS_HOME;
 
 interface TicketBodyOptions {
   partOf?: number | null;
   criteria?: string[];
+  rawCriteria?: string[];
   coverage?: string;
   dependsOn?: number[];
   extra?: string;
 }
 
 function ticketBody(options: TicketBodyOptions = {}): string {
-  const criteria = options.criteria ?? ["first criterion", "second criterion"];
+  const criteriaLines =
+    options.rawCriteria ??
+    (options.criteria ?? ["first criterion", "second criterion"]).map(
+      (criterion, index) => `AC${index + 1}: ${criterion}`,
+    );
   const lines = [];
   if (options.partOf) lines.push(`Part of #${options.partOf}`, "");
   if (options.coverage) lines.push(`Source acceptance coverage: ${options.coverage}`, "");
@@ -41,7 +47,7 @@ function ticketBody(options: TicketBodyOptions = {}): string {
     "",
     "## Acceptance criteria",
     "",
-    ...criteria.map((criterion, index) => `- [ ] AC${index + 1}: ${criterion}`),
+    ...criteriaLines.map((criterionLine) => `- [ ] ${criterionLine}`),
     "",
     "## Boundary",
     "",
@@ -93,6 +99,7 @@ describe("prepared spec and ticket plan admission", () => {
 
   beforeEach(async () => {
     root = mkdtempSync(join(tmpdir(), "animus-plan-"));
+    process.env.ANIMUS_HOME = join(root, "animus-home");
     dbPath = join(root, "state", "console.db");
     db = initializeDatabase(dbPath);
     forge = new SyntheticForgeAdapter({ [REPO]: 901 });
@@ -111,6 +118,7 @@ describe("prepared spec and ticket plan admission", () => {
     execFileSync("git", ["-C", checkoutPath, "config", "user.email", "test@example.com"]);
     execFileSync("git", ["-C", checkoutPath, "config", "user.name", "Test"]);
     execFileSync("git", ["-C", checkoutPath, "commit", "--allow-empty", "-q", "-m", "base"]);
+    execFileSync("git", ["-C", checkoutPath, "branch", "-M", "main"]);
     const project = await registry.registerProject({
       method: "local_checkout",
       name: "Product",
@@ -125,8 +133,18 @@ describe("prepared spec and ticket plan admission", () => {
     try {
       db.close();
     } catch {}
+    if (ORIGINAL_ANIMUS_HOME === undefined) delete process.env.ANIMUS_HOME;
+    else process.env.ANIMUS_HOME = ORIGINAL_ANIMUS_HOME;
     rmSync(root, { recursive: true, force: true });
   });
+
+  function writeSchedule(maxLaps: number): void {
+    mkdirSync(join(checkoutPath, ".factory"), { recursive: true });
+    writeFileSync(
+      join(checkoutPath, ".factory", "schedule.json"),
+      JSON.stringify({ max_laps: maxLaps }),
+    );
+  }
 
   function addIssue(
     number: number,
@@ -199,6 +217,7 @@ describe("prepared spec and ticket plan admission", () => {
     const manifest = plan.manifest;
     expect(manifest).not.toBeNull();
     expect(manifest!.graph_hash).toBe(plan.graph_hash);
+    expect(computeGraphHash(graphFromManifest(manifest!))).toBe(manifest!.graph_hash);
     expect(manifest!.members).toHaveLength(3);
     for (const row of imported) {
       const member = manifest!.members.find((item) => item.issue_number === row.issue_number)!;
@@ -642,5 +661,242 @@ describe("prepared spec and ticket plan admission", () => {
     expect(() => db.prepare("DELETE FROM plan_members WHERE plan_id = ?").run(first.id)).toThrow(
       /plan_members_immutable/,
     );
+  });
+
+  test("B1: duplicate acceptance-criterion keys hold explicitly instead of aborting storage", async () => {
+    addIssue(1020, ticketBody({ rawCriteria: ["AC1: first copy", "AC1: second copy"] }), [
+      "ready-for-agent",
+    ]);
+    await importAll();
+
+    const plan = await plans.importPlan(projectId, {
+      work_id: await workIdFor(1020),
+      kind: "standalone",
+    });
+
+    expect(plan.authority).toBe("held");
+    expect(plan.dispatchable).toBe(false);
+    expect(plan.holds).toContainEqual(
+      expect.objectContaining({
+        code: "duplicate_acceptance_criteria",
+        severity: "blocking",
+        detail: expect.stringContaining("AC1"),
+      }),
+    );
+    expect(
+      plan.acceptance_criteria.filter((criterion) => criterion.work_id === plan.root_work_id),
+    ).toHaveLength(1);
+    expect(
+      db
+        .prepare("SELECT COUNT(*) AS count FROM plan_acceptance_criteria WHERE plan_id = ?")
+        .get(plan.id),
+    ).toEqual({ count: 1 });
+    expect(plans.listPlans(projectId).map((summary) => summary.id)).toContain(plan.id);
+  });
+
+  test("B2: approving a held standalone plan preserves the import-time budget and graph identity", async () => {
+    writeSchedule(7);
+    addIssue(1030, ticketBody({ criteria: ["only criterion"] }), []);
+    await importAll();
+
+    const held = await plans.importPlan(projectId, {
+      work_id: await workIdFor(1030),
+      kind: "standalone",
+    });
+    expect(held.authority).toBe("held");
+    expect(held.manifest).toBeNull();
+    expect(held.holds).toContainEqual(
+      expect.objectContaining({ code: "unlabeled_awaiting_triage", severity: "blocking" }),
+    );
+
+    writeSchedule(3);
+    const approved = plans.approvePlan(projectId, held.id, { actor: "operator" });
+    expect(approved.authority).toBe("admitted");
+    expect(approved.dispatchable).toBe(true);
+    const manifest = approved.manifest!;
+    expect(manifest.budgets).toEqual({ child_max_laps: 7, final_max_laps: 7 });
+    expect(manifest.graph_hash).toBe(approved.graph_hash);
+    expect(computeGraphHash(graphFromManifest(manifest))).toBe(manifest.graph_hash);
+  });
+
+  test("B2: approving a held spec plan preserves coverage, budget and graph identity", async () => {
+    writeSchedule(7);
+    addIssue(1040, specBody(["first", "second"]), ["ready-for-agent", "spec"]);
+    addIssue(1041, ticketBody({ partOf: 1040, coverage: "AC1" }), ["ready-for-agent"]);
+    addIssue(1042, ticketBody({ partOf: 1040, coverage: "AC2" }), []);
+    await importAll();
+
+    const held = await plans.importPlan(projectId, {
+      work_id: await workIdFor(1040),
+      kind: "spec",
+    });
+    expect(held.authority).toBe("held");
+    expect(held.manifest).toBeNull();
+
+    writeSchedule(3);
+    const approved = plans.approvePlan(projectId, held.id, { actor: "operator" });
+    expect(approved.authority).toBe("admitted");
+    expect(approved.dispatchable).toBe(true);
+    const manifest = approved.manifest!;
+    expect(manifest.budgets).toEqual({ child_max_laps: 7, final_max_laps: 7 });
+    expect(manifest.graph_hash).toBe(approved.graph_hash);
+    expect(manifest.ac_coverage.map((group) => group.parent_ac_key)).toEqual(["AC1", "AC2"]);
+    expect(computeGraphHash(graphFromManifest(manifest))).toBe(manifest.graph_hash);
+  });
+
+  test("B4: a spec with undiscoverable native children is held instead of admitted", async () => {
+    addIssue(1050, specBody(["only criterion"]), ["ready-for-agent", "spec"]);
+    addIssue(1051, ticketBody({ partOf: 1050, coverage: "AC1" }), ["ready-for-agent"]);
+    addIssue(1052, ticketBody({ criteria: ["native child criterion"] }), ["ready-for-agent"]);
+    await forge.addSubIssue(REPO, 1050, 1052);
+    await importAll();
+
+    const original = forge.getSubIssues.bind(forge);
+    (forge as { getSubIssues?: unknown }).getSubIssues = undefined;
+    try {
+      const plan = await plans.importPlan(projectId, {
+        work_id: await workIdFor(1050),
+        kind: "spec",
+      });
+      expect(plan.authority).toBe("held");
+      expect(plan.dispatchable).toBe(false);
+      expect(plan.members.map((member) => member.issue_number)).toEqual([1050, 1051]);
+      expect(plan.holds).toContainEqual(
+        expect.objectContaining({
+          code: "incomplete_child_discovery",
+          severity: "blocking",
+          detail: expect.stringContaining("Native sub-issue discovery is unavailable"),
+        }),
+      );
+    } finally {
+      forge.getSubIssues = original;
+    }
+  });
+
+  test("B4: a native child discovery transport failure holds the spec", async () => {
+    addIssue(1060, specBody(["only criterion"]), ["ready-for-agent", "spec"]);
+    addIssue(1061, ticketBody({ partOf: 1060, coverage: "AC1" }), ["ready-for-agent"]);
+    await importAll();
+
+    const original = forge.getSubIssues.bind(forge);
+    forge.getSubIssues = async () => {
+      throw new Error("native discovery offline");
+    };
+    try {
+      const plan = await plans.importPlan(projectId, {
+        work_id: await workIdFor(1060),
+        kind: "spec",
+      });
+      expect(plan.authority).toBe("held");
+      expect(plan.dispatchable).toBe(false);
+      expect(plan.holds).toContainEqual(
+        expect.objectContaining({
+          code: "incomplete_child_discovery",
+          severity: "blocking",
+          detail: expect.stringContaining("Native sub-issue discovery failed"),
+        }),
+      );
+    } finally {
+      forge.getSubIssues = original;
+    }
+  });
+
+  test("AC5: prerequisite integration must reach the plan's frozen target, not an arbitrary branch", async () => {
+    addIssue(1070, ticketBody({ dependsOn: [1071] }), ["ready-for-agent"]);
+    addIssue(1071, ticketBody({ criteria: ["prerequisite criterion"] }), ["ready-for-agent"]);
+    await importAll();
+
+    const dependent = await plans.importPlan(projectId, {
+      work_id: await workIdFor(1070),
+      kind: "standalone",
+    });
+    expect(dependent.dispatchable).toBe(false);
+
+    execFileSync("git", ["-C", checkoutPath, "checkout", "-q", "-b", "random/isolated"]);
+    writeFileSync(join(checkoutPath, "isolated.txt"), "isolated");
+    execFileSync("git", ["-C", checkoutPath, "add", "isolated.txt"]);
+    execFileSync("git", ["-C", checkoutPath, "commit", "-q", "-m", "isolated"]);
+    const isolatedSha = execFileSync("git", ["-C", checkoutPath, "rev-parse", "HEAD"], {
+      encoding: "utf-8",
+    }).trim();
+    execFileSync("git", ["-C", checkoutPath, "checkout", "-q", "main"]);
+    work.recordBranchIntegration(projectId, 1071, "random/isolated", isolatedSha);
+
+    const stillHeld = plans.getPlan(projectId, dependent.id);
+    expect(stillHeld.dispatchable).toBe(false);
+    expect(stillHeld.holds).toContainEqual(
+      expect.objectContaining({
+        code: "dependency_pending_integration",
+        severity: "conditional",
+      }),
+    );
+
+    writeFileSync(join(checkoutPath, "integrated.txt"), "integrated");
+    execFileSync("git", ["-C", checkoutPath, "add", "integrated.txt"]);
+    execFileSync("git", ["-C", checkoutPath, "commit", "-q", "-m", "integrated"]);
+    const mainSha = execFileSync("git", ["-C", checkoutPath, "rev-parse", "HEAD"], {
+      encoding: "utf-8",
+    }).trim();
+    work.recordBranchIntegration(projectId, 1071, "main", mainSha);
+
+    const released = plans.getPlan(projectId, dependent.id);
+    expect(released.dispatchable).toBe(true);
+    expect(released.holds).toEqual([]);
+  });
+
+  test("AC4: revocation cannot be resurrected by history replay, re-import or stale approval", async () => {
+    addIssue(1080, specBody(["first", "second"]), ["ready-for-agent", "spec"]);
+    addIssue(1081, ticketBody({ partOf: 1080, coverage: "AC1" }), ["ready-for-agent"]);
+    addIssue(1082, ticketBody({ partOf: 1080, coverage: "AC2" }), ["ready-for-agent"]);
+    await importAll();
+
+    const admitted = await plans.importPlan(projectId, {
+      work_id: await workIdFor(1080),
+      kind: "spec",
+    });
+    expect(admitted.authority).toBe("admitted");
+
+    const revoked = plans.revokePlan(projectId, admitted.id, {
+      actor: "operator",
+      reason: "withdrawn",
+    });
+    expect(revoked.authority).toBe("revoked");
+    expect(revoked.dispatchable).toBe(false);
+
+    const stale = plans.approvePlan(projectId, admitted.id, {
+      actor: "operator",
+      reason: "replayed approval",
+    });
+    expect(stale.authority).toBe("revoked");
+    expect(stale.decisions.map((decision) => decision.action)).toEqual(["import", "revoke"]);
+
+    addIssue(1081, ticketBody({ partOf: 1080, coverage: "AC1" }), ["ready-for-agent"]);
+    await importAll();
+    const reimported = await plans.importPlan(projectId, {
+      work_id: await workIdFor(1080),
+      kind: "spec",
+    });
+    expect(reimported.id).toBe(admitted.id);
+    expect(reimported.authority).toBe("revoked");
+    expect(reimported.dispatchable).toBe(false);
+
+    const reauthorized = plans.approvePlan(projectId, admitted.id, {
+      actor: "operator",
+      reason: "new scope authorization",
+      expected_sequence: revoked.decisions.at(-1)!.sequence,
+    });
+    expect(reauthorized.authority).toBe("admitted");
+    expect(reauthorized.dispatchable).toBe(true);
+    expect(reauthorized.decisions.map((decision) => decision.action)).toEqual([
+      "import",
+      "revoke",
+      "approve",
+    ]);
+    expect(reauthorized.decisions.at(-1)).toMatchObject({
+      sequence: 3,
+      action: "approve",
+      outcome: "admitted",
+      source: "operator",
+    });
   });
 });

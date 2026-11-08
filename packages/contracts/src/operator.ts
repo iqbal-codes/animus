@@ -403,6 +403,7 @@ export const planDecisionSubmissionSchema = z
   .object({
     actor: z.string().min(1).max(200).optional(),
     reason: z.string().min(1).max(2000).optional(),
+    expected_sequence: z.number().int().positive().optional(),
   })
   .strict();
 export type PlanDecisionSubmission = z.infer<typeof planDecisionSubmissionSchema>;

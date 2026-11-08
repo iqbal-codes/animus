@@ -198,7 +198,11 @@ export class PlanService {
     const now = Date.now();
     const admitted = !draft.holds.some((item) => item.severity === "blocking");
     const decisionHolds = admitted
-      ? this.dynamicDependencyHolds(project, draft.dependencies)
+      ? this.dynamicDependencyHolds(
+          project,
+          draft.dependencies,
+          draft.integrationBranch ?? draft.deliveryBranch,
+        )
       : draft.holds;
 
     try {
@@ -307,7 +311,7 @@ export class PlanService {
         members: draft.evidenceMembers,
         holds: draft.holds,
       });
-      const manifestId = admitted ? this.insertManifest(planId, project.id, draft) : null;
+      const manifestId = this.insertManifest(planId, project.id, draft);
       this.insertDecision({
         planId,
         sequence: 1,
@@ -318,7 +322,7 @@ export class PlanService {
         reason: admitted
           ? "Imported with initial ready-for-agent authorization"
           : "Imported with explicit holds",
-        manifestId,
+        manifestId: admitted ? manifestId : null,
         holds: decisionHolds,
         evidence,
         recordedAt: now,
@@ -383,6 +387,16 @@ export class PlanService {
         this.db.exec("COMMIT;");
         return refreshed;
       }
+      // Re-authorizing a revoked plan is a new operator decision, but it must bind to
+      // the exact revocation the operator observed. A bare or stale approval (for
+      // example an HTTP retry queued before revocation) never resurrects the plan.
+      if (
+        refreshedLatest?.outcome === "revoked" &&
+        submission.expected_sequence !== refreshedLatest.sequence
+      ) {
+        this.db.exec("COMMIT;");
+        return refreshed;
+      }
       const sequence = (refreshedLatest?.sequence ?? 0) + 1;
       const manifestId = admitted
         ? this.ensureManifestFromStored(project, refreshed)
@@ -405,6 +419,11 @@ export class PlanService {
           rules_version: "prepared-plan-v1",
           remaining_holds: this.storedHolds(planId),
           overridable_holds: [...APPROVABLE_HOLDS],
+          prior_sequence: refreshedLatest?.sequence ?? null,
+          prior_outcome: refreshedLatest?.outcome ?? null,
+          expected_sequence: submission.expected_sequence ?? null,
+          graph_hash: refreshed.graph_hash,
+          accepted_revision_id: refreshed.root_revision_id,
         }),
         recordedAt: now,
       });
@@ -774,7 +793,10 @@ export class PlanService {
           text: criterion.text,
         })),
       ),
-      coverage,
+      coverage: coverage.map((row) => ({
+        parent_ac_key: row.parent_ac_key,
+        child_work_id: row.child_work_id,
+      })),
       dependencies: dependencies.map((dependency) => ({
         work_id: dependency.work.id,
         target_issue_number: dependency.target,
@@ -847,7 +869,6 @@ export class PlanService {
     for (const member of members) {
       const sections = parseTicketSections(member.work.revision.source.body);
       const criteria = normalizeAcceptanceCriteria(sections.acceptanceCriteria);
-      member.criteria = criteria;
       if (criteria.length === 0) {
         holds.push(
           hold(
@@ -867,6 +888,16 @@ export class PlanService {
           ),
         );
       }
+      // Persist one row per addressable key so the relational identity stays strict;
+      // the malformed source is diagnosed by the hold above rather than by a storage abort.
+      const uniqueCriteria: NormalizedCriterion[] = [];
+      const seenKeys = new Set<string>();
+      for (const criterion of criteria) {
+        if (seenKeys.has(criterion.key)) continue;
+        seenKeys.add(criterion.key);
+        uniqueCriteria.push(criterion);
+      }
+      member.criteria = uniqueCriteria;
       if (member.role === "ticket")
         member.coverage = parseCoverageClauses(member.work.revision.source.body);
     }
@@ -1177,6 +1208,17 @@ export class PlanService {
           );
         }
       }
+    } else {
+      discoveryFailed = true;
+      if (!standaloneProbe) {
+        holds.push(
+          hold(
+            "incomplete_child_discovery",
+            `Native sub-issue discovery is unavailable for spec #${rootIssue}; child completeness cannot be verified`,
+            { member: root },
+          ),
+        );
+      }
     }
 
     if (standaloneProbe && discoveryFailed) {
@@ -1379,13 +1421,12 @@ export class PlanService {
   }
 
   private ensureManifestFromStored(project: ProjectRow, record: PlanRecord): string {
-    const existing = record.manifest;
-    if (existing) {
-      const row = this.db
-        .prepare("SELECT id FROM plan_manifests WHERE plan_id = ? AND graph_hash = ?")
-        .get(record.id, existing.graph_hash) as { id: string } | undefined;
-      if (row) return row.id;
-    }
+    // The manifest is persisted at import for held plans too, so approval reuses the
+    // exact frozen graph identity instead of re-materializing a default budget.
+    const row = this.db
+      .prepare("SELECT id FROM plan_manifests WHERE plan_id = ? AND graph_hash = ?")
+      .get(record.id, record.graph_hash) as { id: string } | undefined;
+    if (row) return row.id;
     const stored = this.loadDraftFromStored(project, record);
     return this.insertManifest(record.id, project.id, stored);
   }
@@ -1470,11 +1511,16 @@ export class PlanService {
       );
   }
 
-  private dynamicDependencyHolds(project: ProjectRow, dependencies: DependencyDraft[]): PlanHold[] {
+  private dynamicDependencyHolds(
+    project: ProjectRow,
+    dependencies: DependencyDraft[],
+    targetRef: string,
+  ): PlanHold[] {
     const verified = readVerifiedBranchIntegrations({
       db: this.db,
       projectId: project.id,
       root: project.checkout_path,
+      integrationRef: targetRef,
     });
     const holds: PlanHold[] = [];
     for (const dependency of dependencies) {
@@ -1514,7 +1560,11 @@ export class PlanService {
     }));
     return dedupeHolds([
       ...this.storedHolds(planId),
-      ...this.dynamicDependencyHolds(project, dependencies),
+      ...this.dynamicDependencyHolds(
+        project,
+        dependencies,
+        record.integration_branch ?? record.delivery_branch,
+      ),
     ]);
   }
 
@@ -1557,7 +1607,8 @@ export class PlanService {
     const decisions = this.readDecisions(row.id);
     const latest = decisions.at(-1);
     const authority = latest?.outcome ?? "held";
-    const manifest = this.readManifest(row.id);
+    const everAdmitted = decisions.some((decision) => decision.outcome === "admitted");
+    const manifest = everAdmitted ? this.readManifest(row.id) : null;
     const dynamicDependencies: DependencyDraft[] = storedDependencies.map((dependency) => ({
       work: this.work.getWorkById(project.id, dependency.work_id),
       target: dependency.target_issue_number,
@@ -1569,7 +1620,11 @@ export class PlanService {
     const stored = this.storedHolds(row.id);
     const holds = dedupeHolds([
       ...stored.filter((item) => authority === "held" || !APPROVABLE_HOLDS.has(item.code)),
-      ...this.dynamicDependencyHolds(project, dynamicDependencies),
+      ...this.dynamicDependencyHolds(
+        project,
+        dynamicDependencies,
+        row.integration_branch ?? row.delivery_branch,
+      ),
     ]);
     const acceptedRevision: PlanAcceptedRevision | null = manifest
       ? {

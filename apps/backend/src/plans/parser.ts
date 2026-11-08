@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { PlanManifest } from "@animus/contracts/operator";
 
 export interface NormalizedCriterion {
   key: string;
@@ -88,4 +89,50 @@ export function canonicalJson(value: unknown): string {
 
 export function computeGraphHash(value: unknown): string {
   return createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
+}
+
+/**
+ * Rebuilds the canonical graph identity that `graph_hash` commits to, using only the
+ * frozen manifest. Downstream verification can therefore recompute the hash without
+ * re-reading mutable source revisions.
+ */
+export function graphFromManifest(manifest: PlanManifest): unknown {
+  return {
+    version: 1,
+    kind: manifest.kind,
+    root: {
+      work_id: manifest.root.work_id,
+      revision_id: manifest.root.revision_id,
+      issue_number: manifest.root.issue_number,
+      content_hash: manifest.root.content_hash,
+    },
+    members: manifest.members.map((member) => ({
+      work_id: member.work_id,
+      revision_id: member.revision_id,
+      issue_number: member.issue_number,
+      content_hash: member.content_hash,
+      role: member.role,
+      gate_profile: member.gate_profile,
+    })),
+    acceptance_criteria: manifest.acceptance_criteria.map((criterion) => ({
+      work_id: criterion.work_id,
+      ac_key: criterion.ac_key,
+      text: criterion.text,
+    })),
+    coverage: manifest.ac_coverage.flatMap((group) =>
+      group.child_work_ids.map((childWorkId) => ({
+        parent_ac_key: group.parent_ac_key,
+        child_work_id: childWorkId,
+      })),
+    ),
+    dependencies: manifest.dependencies.map((dependency) => ({
+      work_id: dependency.work_id,
+      target_issue_number: dependency.target_issue_number,
+      source: dependency.source,
+      internal: dependency.internal,
+    })),
+    targets: manifest.targets,
+    merge_policy: manifest.merge_policy,
+    budgets: manifest.budgets,
+  };
 }

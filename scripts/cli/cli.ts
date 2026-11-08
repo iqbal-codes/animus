@@ -296,6 +296,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         deliveryBranch: values["base-branch"],
         reason: values.reason,
         actor: values.actor,
+        expectedSequence: values["expected-sequence"],
         factoryUrl: values["factory-url"],
         factoryToken: values["factory-token"],
         json: values.json,

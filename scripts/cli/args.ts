@@ -29,6 +29,7 @@ export interface ParsedCliArgs {
     refresh?: boolean;
     reason?: string;
     actor?: string;
+    "expected-sequence"?: string;
     title?: string;
     body?: string;
     name?: string;
@@ -93,6 +94,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       refresh: { type: "boolean", default: false },
       reason: { type: "string" },
       actor: { type: "string" },
+      "expected-sequence": { type: "string" },
       title: { type: "string" },
       body: { type: "string" },
       name: { type: "string" },

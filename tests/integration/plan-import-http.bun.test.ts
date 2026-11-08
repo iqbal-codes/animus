@@ -15,8 +15,10 @@ function ticketBody(
     partOf?: number | null;
     coverage?: string;
     dependsOn?: number[];
+    criteria?: string[];
   } = {},
 ): string {
+  const criteriaLines = options.criteria ?? ["AC1: prepared criterion"];
   const lines: string[] = [];
   if (options.partOf) lines.push(`Part of #${options.partOf}`, "");
   if (options.coverage) lines.push(`Source acceptance coverage: ${options.coverage}`, "");
@@ -35,7 +37,7 @@ function ticketBody(
     "",
     "## Acceptance criteria",
     "",
-    "- [ ] AC1: prepared criterion",
+    ...criteriaLines.map((criterionLine) => `- [ ] ${criterionLine}`),
     "",
     "## Boundary",
     "",
@@ -343,5 +345,44 @@ describe("prepared plan admission through backend, client and CLI", () => {
       }),
     );
     expect(rejected.status).toBe(400);
+  });
+
+  test("B1: duplicate acceptance criteria import as a held plan over HTTP, not a 500", async () => {
+    forge.addIssue(REPO, {
+      number: 400,
+      title: "Duplicate acceptance criteria ticket",
+      body: ticketBody({ criteria: ["AC1: first copy", "AC1: second copy"] }),
+      state: "OPEN",
+      labels: [{ name: "ready-for-agent" }],
+      comments: [],
+    });
+    const intake = await importIssues();
+
+    const response = await app.fetch(
+      new Request(`http://127.0.0.1/api/v1/projects/${projectId}/plans/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ work_id: workId(intake, 400), kind: "standalone" }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    const plan = (await response.json()) as {
+      id: string;
+      authority: string;
+      dispatchable: boolean;
+      holds: Array<{ code: string; severity: string }>;
+    };
+    expect(plan.authority).toBe("held");
+    expect(plan.dispatchable).toBe(false);
+    expect(plan.holds).toContainEqual(
+      expect.objectContaining({ code: "duplicate_acceptance_criteria", severity: "blocking" }),
+    );
+
+    const listResponse = await app.fetch(
+      new Request(`http://127.0.0.1/api/v1/projects/${projectId}/plans`),
+    );
+    expect(listResponse.status).toBe(200);
+    const listed = (await listResponse.json()) as Array<{ id: string; authority: string }>;
+    expect(listed.find((item) => item.id === plan.id)).toMatchObject({ authority: "held" });
   });
 });
