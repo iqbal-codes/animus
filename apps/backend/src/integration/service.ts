@@ -516,9 +516,57 @@ export class ChildIntegrationService {
       }
 
       let mergeSha: string | null = null;
+      let effectiveChecks = checks;
       try {
         // Re-check immediately before the forge merge; the fence may have been set
         // while the earlier verification/awaits were in flight.
+        this.assertInstallationReady();
+
+        // Refresh every local candidate-bound gate after the remote/CI/target
+        // awaits. A late failed/inconclusive review, a revoked authorization, an
+        // exhausted budget, a new finding, an incomplete audit or a changed
+        // artifact must invalidate the merge before any forge effect. Acceptance
+        // was snapshotted before those awaits; re-read the latest result now.
+        const freshChecks = await this.requiredChecks(run);
+        const freshRemoteTarget = await this.readRemoteTarget(run);
+        const freshBlockerList: IntegrationBlocker[] = [];
+        if (freshRemoteTarget === null || freshRemoteTarget !== targetBefore) {
+          freshBlockerList.push({
+            code: "integration_target_drift",
+            message: `Integration branch ${run.target_branch} changed before the merge effect`,
+            details: { expected: targetBefore, actual: freshRemoteTarget },
+          });
+        }
+        freshBlockerList.push(...freshChecks.blockers);
+
+        const freshAcceptance = this.observations.evaluateAcceptance(projectId, run.id);
+        const freshPublication = this.safePublication(projectId, run.id);
+        if (freshAcceptance.candidateHeadSha !== run.head_sha) {
+          freshBlockerList.push({
+            code: "integration_candidate_mismatch",
+            message: `Candidate ${freshAcceptance.candidateHeadSha} no longer matches ${run.head_sha}`,
+          });
+        }
+        if (freshAcceptance.targetTipSha && freshAcceptance.targetTipSha !== targetBefore) {
+          freshBlockerList.push({
+            code: "integration_target_drift",
+            message: `Acceptance target tip ${freshAcceptance.targetTipSha} no longer matches ${targetBefore}`,
+          });
+        }
+        freshBlockerList.push(...this.localBlockers(run, freshAcceptance, freshPublication));
+
+        if (freshBlockerList.length > 0) {
+          return await this.block(
+            run,
+            freshBlockerList,
+            freshAcceptance,
+            freshPublication,
+            targetBefore,
+            submission,
+          );
+        }
+
+        effectiveChecks = freshChecks;
         this.assertInstallationReady();
         const merged = await this.forge.mergePullRequest(run.repo_name, activePullRequest.number, {
           expectedHeadSha: run.head_sha!,
@@ -535,8 +583,8 @@ export class ChildIntegrationService {
                   `Remote refused to merge pull request #${activePullRequest.number}`,
               },
             ],
-            acceptance,
-            publication,
+            freshAcceptance,
+            freshPublication,
             targetBefore,
             submission,
           );
@@ -599,7 +647,7 @@ export class ChildIntegrationService {
         actor: submission.actor ?? "operator",
         mergeShaHint: mergeSha,
         reconciliation: false,
-        checks: checks.checks,
+        checks: effectiveChecks.checks,
       });
     } finally {
       release();

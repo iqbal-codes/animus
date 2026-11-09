@@ -224,6 +224,14 @@ export class DeliveryRoleClaimService {
         return { status: "acquired", claim };
       }
       if (existing.state === "running") {
+        // A crash can leave a claim running after its role result was durably
+        // recorded with the claim's unique attempt key. Terminalize it from that
+        // existing observation instead of re-executing the role.
+        const reconciled = this.reconcileFromObservation(existing, now);
+        if (reconciled) {
+          this.db.exec("COMMIT;");
+          return { status: "terminal", claim: mapClaim(reconciled) };
+        }
         const probe = this.probeOwner(existing);
         if (probe !== "dead") {
           this.db.exec("COMMIT;");
@@ -296,6 +304,19 @@ export class DeliveryRoleClaimService {
     observationId: string,
     error: string | null,
   ): boolean {
+    return this.completeWithinTransaction(claim, state, observationId, error);
+  }
+
+  /**
+   * Claim CAS completion used inside the caller's observation/claim transaction.
+   * Returns false when another tick already terminalized or reclaimed the claim.
+   */
+  completeWithinTransaction(
+    claim: DeliveryRoleClaim,
+    state: "completed" | "failed",
+    observationId: string,
+    error: string | null,
+  ): boolean {
     const now = this.clock();
     const result = this.db
       .prepare(
@@ -314,7 +335,7 @@ export class DeliveryRoleClaimService {
         claim.id,
         claim.claimToken,
       ) as { changes: number };
-    return result.changes > 0;
+    return Number(result.changes) > 0;
   }
 
   interrupt(claim: DeliveryRoleClaim, error: string): void {
@@ -334,18 +355,109 @@ export class DeliveryRoleClaimService {
   }
 
   /**
-   * Refresh the lease while the role runs. The returned release function is
-   * idempotent and never throws; expiry is a fence, not a crash surface.
+   * Refresh the lease while the role runs. A renewal failure is reported to the
+   * caller instead of being silently swallowed; it never crashes the role.
    */
-  startHeartbeat(claim: DeliveryRoleClaim): () => void {
+  startHeartbeat(claim: DeliveryRoleClaim, onError?: (error: unknown) => void): () => void {
     const interval = Math.max(1000, Math.floor(this.leaseMs / 3));
     const timer = setInterval(() => {
       try {
         this.renew(claim);
-      } catch {}
+      } catch (error) {
+        onError?.(error);
+      }
     }, interval);
     timer.unref?.();
     return () => clearInterval(timer);
+  }
+
+  /** Persist a non-fatal heartbeat failure so it is visible, not swallowed. */
+  noteHeartbeatError(claim: DeliveryRoleClaim, message: string): void {
+    this.db
+      .prepare(
+        `UPDATE delivery_role_claims
+         SET error = ?, updated_at = ?
+         WHERE id = ? AND claim_token = ? AND state = 'running'`,
+      )
+      .run(`heartbeat_failed: ${message}`, this.clock(), claim.id, claim.claimToken);
+  }
+
+  /**
+   * Operator/CAS reconciliation for an owner-unverified claim. It never signals a
+   * PID and never fabricates a PASS: `interrupt` marks the row interrupted, while
+   * `complete` requires an existing observation id for the claim's attempt key.
+   */
+  reconcile(
+    input: AcquireDeliveryClaimInput & {
+      action: "interrupt" | "complete";
+      actor: string;
+      reason: string;
+      observationId?: string;
+    },
+  ): DeliveryRoleClaim {
+    const now = this.clock();
+    this.db.exec("BEGIN IMMEDIATE;");
+    try {
+      const existing = this.load(input);
+      if (!existing) throw new Error("delivery claim not found for reconciliation");
+      if (existing.state !== "running") {
+        this.db.exec("COMMIT;");
+        return mapClaim(existing);
+      }
+      if (input.action === "interrupt") {
+        const result = this.db
+          .prepare(
+            `UPDATE delivery_role_claims
+             SET state = 'interrupted', error = ?, updated_at = ?
+             WHERE id = ? AND claim_generation = ? AND state = 'running'`,
+          )
+          .run(
+            `operator_interrupt: ${input.actor}: ${input.reason}`,
+            now,
+            existing.id,
+            existing.claim_generation,
+          ) as {
+          changes: number;
+        };
+        if (Number(result.changes) === 0) {
+          throw new Error("delivery claim changed before operator reconciliation");
+        }
+      } else {
+        const observation = input.observationId
+          ? this.loadObservationById(input.observationId)
+          : this.findObservationForClaim(existing);
+        if (!observation) {
+          throw new Error("operator reconciliation requires an existing role observation");
+        }
+        const state = observation.status === "passed" ? "completed" : "failed";
+        const result = this.db
+          .prepare(
+            `UPDATE delivery_role_claims
+             SET state = ?, result_observation_id = ?, error = ?, updated_at = ?
+             WHERE id = ? AND claim_generation = ? AND state = 'running'`,
+          )
+          .run(
+            state,
+            observation.id,
+            `operator_complete: ${input.actor}: ${input.reason}`,
+            now,
+            existing.id,
+            existing.claim_generation,
+          ) as { changes: number };
+        if (Number(result.changes) === 0) {
+          throw new Error("delivery claim changed before operator reconciliation");
+        }
+      }
+      const updated = this.loadById(existing.id);
+      if (!updated) throw new Error("delivery claim disappeared during reconciliation");
+      this.db.exec("COMMIT;");
+      return mapClaim(updated);
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK;");
+      } catch {}
+      throw error;
+    }
   }
 
   private insert(input: AcquireDeliveryClaimInput, now: number): DeliveryRoleClaim {
@@ -465,5 +577,60 @@ export class DeliveryRoleClaimService {
       )
       .get(input.projectId, input.runId, input.stage, input.lap);
     return row === undefined ? null : parseRow(row);
+  }
+
+  private loadById(id: string): ClaimRow | null {
+    const row = this.db.prepare("SELECT * FROM delivery_role_claims WHERE id = ?").get(id);
+    return row === undefined ? null : parseRow(row);
+  }
+
+  private loadObservationById(id: string): { id: string; status: string } | null {
+    const row = this.db
+      .prepare("SELECT id, status FROM execution_observations WHERE id = ?")
+      .get(id) as { id: string; status: string } | undefined;
+    return row ?? null;
+  }
+
+  private findObservationForClaim(row: ClaimRow): { id: string; status: string } | null {
+    const observation = this.db
+      .prepare(
+        `SELECT id, status FROM execution_observations
+          WHERE project_id = ? AND run_id = ? AND stage = ? AND lap = ? AND attempt_key = ?
+          ORDER BY created_at DESC, id DESC LIMIT 1`,
+      )
+      .get(row.project_id, row.run_id, row.stage, row.lap, row.attempt_key) as
+      | { id: string; status: string }
+      | undefined;
+    return observation ?? null;
+  }
+
+  /**
+   * Terminalize a running claim whose role result is already durable. The
+   * observation was recorded under the claim's unique attempt key, so this is
+   * recovery of an existing result, not a second execution.
+   */
+  private reconcileFromObservation(row: ClaimRow, now: number): ClaimRow | null {
+    const observation = this.findObservationForClaim(row);
+    if (!observation) return null;
+    const state = observation.status === "passed" ? "completed" : "failed";
+    const result = this.db
+      .prepare(
+        `UPDATE delivery_role_claims
+         SET state = ?, result_observation_id = ?, error = ?, heartbeat_at = ?,
+             lease_expires_at = ?, updated_at = ?
+         WHERE id = ? AND claim_token = ? AND state = 'running'`,
+      )
+      .run(
+        state,
+        observation.id,
+        state === "failed" ? `reconciled_from_observation:${observation.status}` : null,
+        now,
+        now + this.leaseMs,
+        now,
+        row.id,
+        row.claim_token,
+      ) as { changes: number };
+    if (Number(result.changes) === 0) return null;
+    return this.loadById(row.id);
   }
 }

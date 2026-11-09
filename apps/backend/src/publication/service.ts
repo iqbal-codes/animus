@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
   publicationStatusSchema,
@@ -13,6 +14,7 @@ import {
   type PublicationTarget,
 } from "@animus/contracts/operator";
 import { ReportSanitizer } from "@animus/contracts/sanitizer";
+import { resolveAnimusStateDir } from "@animus/contracts/paths";
 import {
   AmbiguousEvidenceBoundaryError,
   EVIDENCE_SECTION_END,
@@ -26,7 +28,9 @@ import { processRun } from "../../../../scripts/loop/process";
 import type { ForgeAdapter, ForgePullRequest } from "../registry/forge";
 import { assertInstallationNotHeld } from "@animus/contracts/installation-hold";
 import { assertExternalWriterAllowed } from "../authority/guard";
+import { verifyInlineArtifactEvidence } from "../evidence/inline-artifact";
 import { PublicationError } from "./errors";
+import { sanitizePublicationText } from "./sanitizer";
 
 interface TargetRow {
   id: string;
@@ -134,6 +138,7 @@ interface ObservationRow {
 
 interface ArtifactRow {
   id: string;
+  project_id: string;
   name: string;
   relative_path: string;
   media_type: string;
@@ -170,6 +175,10 @@ export interface PublicationServiceOptions {
   /** Bounded remote git transport (push/ls-remote); injectable for offline tests. */
   gitRemote?: PublicationRemoteRunner;
   sanitizer?: ReportSanitizer;
+  /** Root holding project-scoped finalized artifacts; must match the observation service. */
+  artifactRoot?: string;
+  /** Largest artifact that may be published as bounded inline audit text. */
+  inlineArtifactMaxBytes?: number;
 }
 
 /**
@@ -182,12 +191,6 @@ export const defaultGitRemote: PublicationRemoteRunner = async (args, cwd) => {
 
 const RETIRE_FAILED = "superseded_pull_request_retire_failed";
 
-const LOCAL_PATH_PATTERNS: RegExp[] = [
-  /file:\/\/[^\s)\]"'`]+/g,
-  /(?:\/(?:Users|home|opt|tmp|private|var|mnt|workspace|root|etc))(?:\/[^\s)\]"'`]+)+/g,
-  /[A-Za-z]:\\[^\s)\]"'`]+/g,
-];
-
 function isAmbiguousTransportError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /timeout|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|aborted|killed|signal|socket hang up|network/i.test(
@@ -195,25 +198,7 @@ function isAmbiguousTransportError(error: unknown): boolean {
   );
 }
 
-function localPathSanitize(value: string): string {
-  let next = value;
-  for (const pattern of LOCAL_PATH_PATTERNS) {
-    next = next.replace(pattern, "[LOCAL_PATH]");
-  }
-  return next;
-}
-
-/**
- * Canonical publication sanitation policy shared by PR audit and issue
- * publication: scrub credentials/holdouts, unsafe HTML, and local-only paths
- * before any text crosses the remote boundary.
- */
-export function sanitizePublicationText(
-  value: string,
-  sanitizer: ReportSanitizer = new ReportSanitizer(),
-): string {
-  return localPathSanitize(sanitizer.sanitizeMarkdown(value).report);
-}
+export { sanitizePublicationText };
 
 export function publicationMarker(operationKey: string): string {
   return `<!-- animus-publication:${operationKey} -->`;
@@ -231,6 +216,8 @@ export class PublicationService {
   private readonly gitRunner: (cmd: string[], cwd: string) => string;
   private readonly gitRemote: PublicationRemoteRunner;
   private readonly sanitizer: ReportSanitizer;
+  private readonly artifactRoot: string;
+  private readonly inlineArtifactMaxBytes: number;
   private readonly locks = new Map<string, Promise<unknown>>();
 
   constructor(
@@ -249,6 +236,8 @@ export class PublicationService {
         }).trim());
     this.sanitizer = options.sanitizer ?? new ReportSanitizer();
     this.gitRemote = options.gitRemote ?? defaultGitRemote;
+    this.artifactRoot = options.artifactRoot ?? join(resolveAnimusStateDir(), "artifacts");
+    this.inlineArtifactMaxBytes = options.inlineArtifactMaxBytes ?? 131_072;
   }
 
   // -------------------------------------------------------------------------
@@ -1394,7 +1383,7 @@ export class PublicationService {
   private listTargetArtifacts(target: TargetRow): ArtifactRow[] {
     return this.db
       .prepare(
-        `SELECT a.id, a.name, a.relative_path, a.media_type, a.size_bytes,
+        `SELECT a.id, a.project_id, a.name, a.relative_path, a.media_type, a.size_bytes,
                 a.digest_sha256, a.observation_id
            FROM execution_artifacts a
            JOIN execution_observations o ON o.id = a.observation_id
@@ -1435,23 +1424,29 @@ export class PublicationService {
   }
 
   /**
-   * Returns the accepted audit event that carries the bounded inline copy of an
-   * artifact. Requires the exact artifact id, full-file digest and the inline
-   * excerpt digest marker on the event bound to the artifact's own immutable
-   * observation, so earlier-lap artifacts stay complete after a correction
-   * replaces the target candidate.
+   * Returns the accepted audit event that carries the exact canonical inline
+   * payload for an artifact. The strict marker is parsed, the immutable local
+   * artifact is re-read, its full digest/size/media/path are re-verified, the
+   * sanitized excerpt digest is recomputed and the published block must match
+   * byte-for-byte. A forged or self-reported marker never counts as complete.
+   *
+   * The accepted event must be bound to the artifact's own observation and to
+   * the same run/candidate the observation was recorded for, so an earlier-lap
+   * artifact stays complete only while its provenance is consistent.
    */
   private inlineArtifactEvent(
     target: TargetRow,
     artifact: ArtifactRow,
   ): { id: string; sequence: number } | null {
-    const needle = `<!-- animus-inline-artifact artifact=${artifact.id} sha256=${artifact.digest_sha256} `;
     const rows = this.db
       .prepare(
-        `SELECT e.id, e.sequence, e.body
+        `SELECT e.id, e.sequence, e.body,
+                e.run_id AS event_run_id, e.candidate_head_sha AS event_candidate,
+                o.run_id AS observation_run_id, o.candidate_head_sha AS observation_candidate
            FROM publication_events e
            JOIN publication_intents i
              ON i.target_id = e.target_id AND i.operation_key = 'event:' || e.id
+           JOIN execution_observations o ON o.id = e.observation_id
           WHERE e.target_id = ? AND e.observation_id = ?
             AND i.state = 'accepted'
           ORDER BY e.sequence ASC`,
@@ -1460,11 +1455,39 @@ export class PublicationService {
       id: string;
       sequence: number;
       body: string;
+      event_run_id: string | null;
+      event_candidate: string;
+      observation_run_id: string;
+      observation_candidate: string;
     }>;
-    const row = rows.find(
-      (candidate) => candidate.body.includes(needle) && candidate.body.includes("inline_sha256="),
-    );
-    return row ? { id: row.id, sequence: row.sequence } : null;
+    for (const row of rows) {
+      if (
+        row.event_run_id !== row.observation_run_id ||
+        row.event_candidate !== row.observation_candidate
+      ) {
+        continue;
+      }
+      const verified = verifyInlineArtifactEvidence({
+        artifactRoot: this.artifactRoot,
+        projectId: artifact.project_id,
+        artifact: {
+          id: artifact.id,
+          name: artifact.name,
+          relativePath: artifact.relative_path,
+          mediaType: artifact.media_type,
+          sizeBytes: artifact.size_bytes,
+          digestSha256: artifact.digest_sha256,
+        },
+        binding: {
+          runId: row.observation_run_id,
+          candidateHeadSha: row.observation_candidate,
+        },
+        maxBytes: this.inlineArtifactMaxBytes,
+        body: row.body,
+      });
+      if (verified.ok) return { id: row.id, sequence: row.sequence };
+    }
+    return null;
   }
 
   private activePullRequest(target: TargetRow): PullRequestRow | null {
@@ -1805,7 +1828,7 @@ export class PublicationService {
       .all(target.project_id, target.delivery_id, target.work_id) as unknown as FindingRow[];
     const artifacts = this.db
       .prepare(
-        `SELECT a.id, a.name, a.relative_path, a.media_type, a.size_bytes,
+        `SELECT a.id, a.project_id, a.name, a.relative_path, a.media_type, a.size_bytes,
                 a.digest_sha256, a.observation_id
            FROM execution_artifacts a
            JOIN execution_observations o ON o.id = a.observation_id

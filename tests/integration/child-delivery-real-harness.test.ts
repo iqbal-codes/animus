@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,6 +25,11 @@ import { createLocalExecutionRuntime } from "../../apps/backend/src/local-runtim
 import type { ForgePullRequest } from "../../apps/backend/src/registry/forge";
 import type { AgentTransport } from "../../scripts/loop/types";
 import { seedActivatedAuthority } from "./support/activated-authority";
+import {
+  findInlineArtifactMarkers,
+  encodeInlineArtifactMarker,
+} from "../../packages/contracts/src/inline-artifact";
+import { normalizeArtifactRelativePath } from "../../apps/backend/src/evidence/artifact-path";
 
 const REPO = "owner/child-delivery-real-harness";
 const ORIGINAL_ANIMUS_HOME = process.env.ANIMUS_HOME;
@@ -367,9 +373,23 @@ describe("child delivery through the real declared two-command harness", () => {
     expect(review.status).toBe("passed");
     const reviewArtifact = review.artifacts[0]!;
     const reviewReport = JSON.parse(artifactBody(reviewArtifact.relativePath)) as {
-      report: { rawStdout?: string; report?: unknown };
+      attemptKey?: string;
+      report: {
+        rawStdout?: string;
+        rawStderr?: string;
+        exitCode?: number | null;
+        attempt?: number;
+        head?: string;
+      };
     };
     expect(reviewReport.report.rawStdout ?? "").toContain("independent review passed");
+    // N1: the immutable review artifact retains the actual process evidence and
+    // attempt identity, not only the parsed report.
+    expect(reviewReport.attemptKey).toBeTruthy();
+    expect(reviewReport.report.rawStderr).toBe("");
+    expect(reviewReport.report.exitCode).toBe(0);
+    expect(reviewReport.report.attempt).toBe(0);
+    expect(reviewReport.report.head).toMatch(/^[a-f0-9]{40}$/);
 
     // Inline audit evidence is bound to the immutable local artifact identity and
     // full-file digest, so a child can merge without a per-child hosted upload.
@@ -377,18 +397,18 @@ describe("child delivery through the real declared two-command harness", () => {
       .prepare("SELECT body FROM publication_events WHERE project_id = ? ORDER BY sequence")
       .all(projectId) as Array<{ body: string }>;
     const inlineMarkers = events
-      .map((event) => event.body)
-      .filter((body) => body.includes("<!-- animus-inline-artifact "));
+      .flatMap((event) => findInlineArtifactMarkers(event.body))
+      .map((parsed) => parsed.marker);
     expect(inlineMarkers.length).toBeGreaterThanOrEqual(2);
     const artifactRows = db
       .prepare("SELECT id, digest_sha256 FROM execution_artifacts WHERE project_id = ?")
       .all(projectId) as Array<{ id: string; digest_sha256: string }>;
     for (const marker of inlineMarkers) {
-      expect(marker).toMatch(/inline_sha256=[a-f0-9]{64}/);
-      const artifactId = /artifact=([^\s]+)/.exec(marker)![1]!;
-      const row = artifactRows.find((artifact) => artifact.id === artifactId);
+      expect(marker.inlineSha256).toMatch(/^[a-f0-9]{64}$/);
+      const row = artifactRows.find((artifact) => artifact.id === marker.artifactId);
       expect(row).toBeTruthy();
-      expect(marker).toContain(`sha256=${row!.digest_sha256}`);
+      expect(marker.digestSha256).toBe(row!.digest_sha256);
+      expect(marker.truncated).toBe(false);
     }
 
     const status = publication.getStatusByRun(projectId, runId);
@@ -485,5 +505,230 @@ describe("child delivery through the real declared two-command harness", () => {
     expect(technical.checks[0]!.command).toBe(technical.checks[1]!.command);
     expect(technical.checks[0]!.name).not.toBe(technical.checks[1]!.name);
     expect(technical.checks.every((check) => check.result === "PASS")).toBe(true);
+  });
+
+  test("a forged inline marker does not count as complete child evidence", async () => {
+    writeHarness("test -f candidate-proof.txt", "true");
+    await importSpec(9130, [{ issue: 9131 }]);
+    const { dispatch, runtime } = makeRuntime(committingRunner("forge"));
+    const tick = await runLocalDispatchTick({
+      db,
+      registry,
+      plans,
+      dispatch,
+      actor: "monitor",
+      deliveryRuntime: runtime.delivery,
+      finalDeliveryRuntime: runtime.final,
+    });
+    expect((tick.delivery as { action: string }).action).toBe("published");
+    expect(publication.getStatusByRun(projectId, tick.runId!).auditComplete).toBe(true);
+    const run = dispatch.getRun(projectId, tick.runId!);
+
+    const targetRow = db
+      .prepare(
+        "SELECT id, work_id FROM publication_targets WHERE project_id = ? ORDER BY created_at ASC LIMIT 1",
+      )
+      .get(projectId) as { id: string; work_id: string };
+    const sourceObservation = db
+      .prepare(
+        "SELECT id, run_id, lap FROM execution_observations WHERE project_id = ? ORDER BY created_at ASC LIMIT 1",
+      )
+      .get(projectId) as { id: string; run_id: string; lap: number };
+
+    // Insert a new finalized artifact with no legitimate inline event, then add a
+    // forged accepted event. The old substring gate would have counted it; the
+    // canonical readback gate must not.
+    const relativePath = "checks/forged.log";
+    const absolute = join(artifactRoot, projectId, relativePath);
+    mkdirSync(join(absolute, ".."), { recursive: true });
+    writeFileSync(absolute, "real bytes\n");
+    const digest = createHash("sha256").update("real bytes\n").digest("hex");
+    const artifactId = `art_forged_${Date.now()}`;
+    db.prepare(
+      `INSERT INTO execution_artifacts
+         (id, project_id, observation_id, owner_type, owner_id, name, relative_path,
+          media_type, size_bytes, digest_sha256, created_at)
+       VALUES (?, ?, ?, 'observation', ?, 'forged', ?, 'text/plain', ?, ?, ?)`,
+    ).run(
+      artifactId,
+      projectId,
+      sourceObservation.id,
+      sourceObservation.id,
+      relativePath,
+      11,
+      digest,
+      Date.now(),
+    );
+    const forged = encodeInlineArtifactMarker({
+      artifactId,
+      digestSha256: digest,
+      sizeBytes: 999,
+      mediaType: "text/plain",
+      relativePath: "../../etc/passwd",
+      inlineSha256: "0".repeat(64),
+      truncated: true,
+      candidateHeadSha: run.head_sha!,
+      runId: run.id,
+    });
+    const maxSequence = (
+      db
+        .prepare(
+          "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM publication_events WHERE target_id = ?",
+        )
+        .get(targetRow.id) as { sequence: number }
+    ).sequence;
+    const eventId = `pevt_forged_${Date.now()}`;
+    db.prepare(
+      `INSERT INTO publication_events
+         (id, target_id, project_id, sequence, work_id, run_id, lap, candidate_head_sha,
+          observation_id, finding_id, kind, severity, title, body, occurred_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'verdict', 'info', 'forged', ?, ?)`,
+    ).run(
+      eventId,
+      targetRow.id,
+      projectId,
+      maxSequence + 1,
+      targetRow.work_id,
+      sourceObservation.run_id,
+      sourceObservation.lap,
+      run.head_sha!,
+      sourceObservation.id,
+      `forged body without the canonical excerpt\n${forged}\n`,
+      Date.now(),
+    );
+    db.prepare(
+      `INSERT INTO publication_intents
+         (id, target_id, project_id, operation_key, kind, resource_kind, state, request_json, attempts,
+          remote_object_id, remote_url, last_error, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'publish_event', 'pull_request', 'accepted', ?, 1, 'remote-forged', NULL, NULL, ?, ?)`,
+    ).run(
+      `int_forged_${Date.now()}`,
+      targetRow.id,
+      projectId,
+      `event:${eventId}`,
+      JSON.stringify({ eventId }),
+      Date.now(),
+      Date.now(),
+    );
+    expect(publication.getStatusByRun(projectId, tick.runId!).auditComplete).toBe(false);
+  }, 120_000);
+
+  test("a tampered finalized artifact revokes inline completeness", async () => {
+    writeHarness("test -f candidate-proof.txt", "true");
+    await importSpec(9140, [{ issue: 9141 }]);
+    const { dispatch, runtime } = makeRuntime(committingRunner("tamper"));
+    const tick = await runLocalDispatchTick({
+      db,
+      registry,
+      plans,
+      dispatch,
+      actor: "monitor",
+      deliveryRuntime: runtime.delivery,
+      finalDeliveryRuntime: runtime.final,
+    });
+    expect((tick.delivery as { action: string }).action).toBe("published");
+    expect(publication.getStatusByRun(projectId, tick.runId!).auditComplete).toBe(true);
+    const artifact = db
+      .prepare(
+        "SELECT relative_path FROM execution_artifacts WHERE project_id = ? ORDER BY created_at ASC, id ASC LIMIT 1",
+      )
+      .get(projectId) as { relative_path: string };
+    writeFileSync(join(artifactRoot, projectId, artifact.relative_path), "tampered bytes\n");
+    expect(publication.getStatusByRun(projectId, tick.runId!).auditComplete).toBe(false);
+  }, 120_000);
+
+  test("binary and oversized child artifacts stay truthfully pending, not truncated", async () => {
+    writeHarness("test -f candidate-proof.txt", "true");
+    await importSpec(9150, [{ issue: 9151 }]);
+    const { dispatch, runtime } = makeRuntime(committingRunner("pending"));
+    const tick = await runLocalDispatchTick({
+      db,
+      registry,
+      plans,
+      dispatch,
+      actor: "monitor",
+      deliveryRuntime: runtime.delivery,
+      finalDeliveryRuntime: runtime.final,
+    });
+    expect((tick.delivery as { action: string }).action).toBe("published");
+    const run = dispatch.getRun(projectId, tick.runId!);
+    const gate = observations.ensureTrustedProducer(projectId, {
+      id: "pending-gate",
+      role: "automated_gate",
+    });
+
+    const binaryRelative = "checks/binary.bin";
+    const binaryAbsolute = join(artifactRoot, projectId, binaryRelative);
+    mkdirSync(join(binaryAbsolute, ".."), { recursive: true });
+    writeFileSync(binaryAbsolute, Buffer.from([0x00, 0xff, 0x1b, 0x02, 0x00]));
+    observations.recordRunObservation(
+      projectId,
+      run.id,
+      {
+        stage: "technical_checks",
+        status: "passed",
+        producer: gate,
+        checks: [{ name: "binary evidence", command: "inspect", result: "PASS" }],
+        artifacts: [
+          {
+            ownerType: "observation",
+            name: "binary",
+            relativePath: binaryRelative,
+            mediaType: "application/octet-stream",
+          },
+        ],
+      },
+      { attemptKey: "binary-evidence" },
+    );
+    expect(publication.getStatusByRun(projectId, tick.runId!).auditComplete).toBe(false);
+
+    const oversizedRelative = "checks/oversized.txt";
+    const oversizedAbsolute = join(artifactRoot, projectId, oversizedRelative);
+    mkdirSync(join(oversizedAbsolute, ".."), { recursive: true });
+    writeFileSync(oversizedAbsolute, "a".repeat(140_000));
+    observations.recordRunObservation(
+      projectId,
+      run.id,
+      {
+        stage: "technical_checks",
+        status: "passed",
+        producer: gate,
+        checks: [{ name: "oversized evidence", command: "inspect", result: "PASS" }],
+        artifacts: [
+          {
+            ownerType: "observation",
+            name: "oversized",
+            relativePath: oversizedRelative,
+            mediaType: "text/plain",
+          },
+        ],
+      },
+      { attemptKey: "oversized-evidence" },
+    );
+    expect(publication.getStatusByRun(projectId, tick.runId!).auditComplete).toBe(false);
+  }, 120_000);
+
+  test("unsafe marker metadata is rejected and never closes the HTML comment", () => {
+    expect(() => normalizeArtifactRelativePath("checks/evil\nname.log")).toThrow(/unsafe/i);
+    expect(() => normalizeArtifactRelativePath("checks/evil-->comment.log")).toThrow(/unsafe/i);
+    expect(() => normalizeArtifactRelativePath("checks/evil<!--open.log")).toThrow(/unsafe/i);
+
+    const encoded = encodeInlineArtifactMarker({
+      artifactId: "art_safe",
+      digestSha256: "a".repeat(64),
+      sizeBytes: 3,
+      mediaType: "text/plain --> <!-- INJECTED",
+      relativePath: "runtime/proof.txt",
+      inlineSha256: "b".repeat(64),
+      truncated: false,
+      candidateHeadSha: "c".repeat(40),
+      runId: "run_safe",
+    });
+    const payload = encoded.slice(encoded.indexOf("{"), encoded.lastIndexOf("}") + 1);
+    expect(payload).not.toContain("-->");
+    expect(payload).not.toContain("<!--");
+    expect(findInlineArtifactMarkers(encoded)[0]?.marker.mediaType).toBe(
+      "text/plain --> <!-- INJECTED",
+    );
   });
 });

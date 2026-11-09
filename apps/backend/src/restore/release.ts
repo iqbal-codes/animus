@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { CommandLedger } from "../command/ledger";
 import { DatabaseSync } from "node:sqlite";
 import type {
+  RestoreClaimFact,
   RestoreIntentFact,
   RestoreReleaseDisposition,
   RestoreRunFact,
@@ -74,6 +75,21 @@ interface IntentRow {
   repo_name: string;
 }
 
+interface ClaimRow {
+  id: string;
+  project_id: string;
+  run_id: string;
+  stage: string;
+  lap: number;
+  state: string;
+  owner_pid: number | null;
+  owner_process_start: string | null;
+  role_pid: number | null;
+  role_pgid: number | null;
+  role_process_start: string | null;
+  lease_expires_at: number;
+}
+
 const UNRESOLVED_RUN_STATES = "('claimed', 'dispatched', 'running', 'interrupted')";
 const UNRESOLVED_INTENT_STATES = "('queued', 'attempting', 'failed', 'unknown')";
 
@@ -116,6 +132,50 @@ export function enumerateRestoreUnresolved(db: DatabaseSync): RestoreUnresolved 
       remoteObservation: "unverified",
       remoteDetail: "Remote readback runs when the installation hold is released",
     })),
+    claims: listUnresolvedClaims(db).map(toClaimFact),
+  };
+}
+
+/**
+ * Claims that could still act as authority in a restored installation: a
+ * running row, or any non-terminal row that still carries owner/role identity.
+ * A restored hold clears all of these, so the set is empty on a healthy release.
+ */
+export function listUnresolvedClaims(db: DatabaseSync): ClaimRow[] {
+  return db
+    .prepare(
+      `SELECT id, project_id, run_id, stage, lap, state, owner_pid, owner_process_start,
+              role_pid, role_pgid, role_process_start, lease_expires_at
+         FROM delivery_role_claims
+        WHERE state IN ('running', 'interrupted')
+        ORDER BY project_id ASC, run_id ASC, stage ASC, lap ASC`,
+    )
+    .all() as unknown as ClaimRow[];
+}
+
+function claimCarriesAuthority(row: ClaimRow): boolean {
+  return (
+    row.state === "running" ||
+    row.owner_pid !== null ||
+    row.owner_process_start !== null ||
+    row.role_pid !== null ||
+    row.role_pgid !== null ||
+    row.role_process_start !== null
+  );
+}
+
+function toClaimFact(row: ClaimRow): RestoreClaimFact {
+  return {
+    claimId: row.id,
+    projectId: row.project_id,
+    runId: row.run_id,
+    stage: row.stage,
+    lap: row.lap,
+    state: row.state,
+    ownerIdentityPresent: row.owner_pid !== null || row.owner_process_start !== null,
+    roleIdentityPresent:
+      row.role_pid !== null || row.role_pgid !== null || row.role_process_start !== null,
+    leaseCleared: row.lease_expires_at <= 0,
   };
 }
 
@@ -547,6 +607,7 @@ function parseRequest(raw: string): Record<string, unknown> {
 export interface VerifiedRestoreRelease {
   runs: RunRow[];
   intents: IntentRow[];
+  claims: ClaimRow[];
   observations: Map<string, RemoteObservation>;
   report: Record<string, unknown>;
 }
@@ -587,6 +648,23 @@ export async function verifyRestoreRelease(input: {
         message: `Run is still ${fact.state}; only an interrupted or terminal run can be released`,
       });
     }
+  }
+
+  // A restored role claim must not retain copied coordinator/role identity. A
+  // running claim, or any non-terminal claim with a PID/start/lease, is an
+  // unresolved writer and blocks release until it is reconciled.
+  const claims = listUnresolvedClaims(input.db).filter(claimCarriesAuthority);
+  const claimFacts = claims.map(toClaimFact);
+  for (const fact of claimFacts) {
+    blocked.push({
+      claimId: fact.claimId,
+      runId: fact.runId,
+      stage: fact.stage,
+      lap: fact.lap,
+      reason: fact.state === "running" ? "claim_still_running" : "claim_owner_not_cleared",
+      message:
+        "Restored delivery role claim still carries copied owner/role identity; reconcile it before release",
+    });
   }
 
   const intentFacts: (RestoreIntentFact & {
@@ -706,13 +784,16 @@ export async function verifyRestoreRelease(input: {
   return {
     runs,
     intents,
+    claims,
     observations,
     report: {
       verifiedAt: input.now,
       runs: runReport,
       intents: intentReport,
+      claims: claimFacts,
       unresolvedRunCount: runReport.length,
       unresolvedIntentCount: intentReport.length,
+      unresolvedClaimCount: claimFacts.length,
     },
   };
 }
@@ -761,6 +842,7 @@ export function settleRestoreRelease(input: {
 
     const currentRuns = listUnresolvedRuns(db);
     const currentIntents = listUnresolvedIntents(db);
+    const currentClaims = listUnresolvedClaims(db).filter(claimCarriesAuthority);
     assertSameSet(
       "run",
       currentRuns.map((run) => run.id),
@@ -771,6 +853,17 @@ export function settleRestoreRelease(input: {
       currentIntents.map((intent) => intent.id),
       verification.intents.map((intent) => intent.id),
     );
+    assertSameSet(
+      "claim",
+      currentClaims.map((claim) => claim.id),
+      verification.claims.map((claim) => claim.id),
+    );
+    if (currentClaims.length > 0) {
+      throw new RestoreReleaseError(
+        "restore_reconcile_conflict",
+        `Delivery role claim ${currentClaims[0]!.id} still carries copied owner identity; reconcile it before release`,
+      );
+    }
 
     for (const run of currentRuns) {
       if (!runDispositions.has(run.id)) {
@@ -855,7 +948,11 @@ export function settleRestoreRelease(input: {
   }
 }
 
-function assertSameSet(kind: "run" | "intent", current: string[], verified: string[]): void {
+function assertSameSet(
+  kind: "run" | "intent" | "claim",
+  current: string[],
+  verified: string[],
+): void {
   const currentSet = new Set(current);
   const verifiedSet = new Set(verified);
   const added = current.filter((id) => !verifiedSet.has(id));

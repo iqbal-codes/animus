@@ -51,6 +51,8 @@ export interface BoundedRoleResult {
   rawStdout: string;
   artifact: string;
   head: string;
+  /** Zero-based attempt index actually executed by this bounded run. */
+  attempt: number;
   /** Provider-issued session id observed in this attempt's stdout, when reported. */
   sessionId?: string;
 }
@@ -265,6 +267,7 @@ export async function runBoundedRole(opts: BoundedRoleOptions): Promise<BoundedR
       rawStdout: result.stdout,
       artifact,
       head,
+      attempt,
       sessionId: extractSessionId(result.stdout),
     };
   }

@@ -32,9 +32,9 @@ import {
 } from "@animus/contracts/operator";
 import { resolveAnimusStateDir } from "@animus/contracts/paths";
 import { enqueuePublicationEvent, ensurePublicationTarget } from "../publication/outbox";
-import { sanitizePublicationText } from "../publication/service";
 import { ExecutionBudgetService } from "../work/budget";
 import { ArtifactPathError, normalizeArtifactRelativePath } from "./artifact-path";
+import { renderInlineArtifactEvidence } from "./inline-artifact";
 import { EvidenceError } from "./errors";
 
 interface RunRow {
@@ -160,17 +160,6 @@ const REQUIRED_STAGES: Record<PlanGateProfile, readonly ExecutionStage[]> = {
  * present (for example `final_acceptance` on a standalone run) is additionally
  * treated as authorizing and re-verified when the gate consumes it.
  */
-const INLINE_ARTIFACT_MAX_CHARS = 8_000;
-
-function longestBacktickRun(value: string): number {
-  let longest = 0;
-  let current = 0;
-  for (const char of value) {
-    current = char === "`" ? current + 1 : 0;
-    if (current > longest) longest = current;
-  }
-  return longest;
-}
 
 const AUTHORIZING_INDEPENDENT_STAGES: Record<PlanGateProfile, readonly ExecutionStage[]> = {
   child: ["technical_checks"],
@@ -566,34 +555,22 @@ export class ExecutionObservationService {
   private renderInlineArtifactEvidence(
     projectId: string,
     artifact: ArtifactRow,
+    binding: { runId: string; candidateHeadSha: string },
   ): { marker: string; block: string } | null {
-    if (artifact.size_bytes > this.inlineArtifactMaxBytes) return null;
-    let bytes: Buffer;
-    try {
-      bytes = readFileSync(this.resolveArtifactAbsolute(projectId, artifact.relative_path));
-    } catch {
-      return null;
-    }
-    if (bytes.byteLength > this.inlineArtifactMaxBytes) return null;
-    const sanitized = sanitizePublicationText(bytes.toString("utf-8"));
-    const truncated = sanitized.length > INLINE_ARTIFACT_MAX_CHARS;
-    const excerpt = truncated
-      ? `${sanitized.slice(0, INLINE_ARTIFACT_MAX_CHARS)}\n...[truncated]`
-      : sanitized;
-    const inlineSha = createHash("sha256").update(excerpt).digest("hex");
-    const marker = `<!-- animus-inline-artifact artifact=${artifact.id} sha256=${artifact.digest_sha256} size=${artifact.size_bytes} media=${artifact.media_type} path=${artifact.relative_path} inline_sha256=${inlineSha} truncated=${truncated ? 1 : 0} -->`;
-    const fence = "`".repeat(Math.max(3, longestBacktickRun(excerpt) + 1));
-    const block = [
-      marker,
-      `<details><summary>${artifact.name} — bounded inline evidence (full artifact ${artifact.size_bytes}B, sha256 ${artifact.digest_sha256.slice(0, 16)}…)</summary>`,
-      "",
-      `${fence}text`,
-      excerpt,
-      fence,
-      "",
-      "</details>",
-    ].join("\n");
-    return { marker, block };
+    return renderInlineArtifactEvidence(
+      this.artifactRoot,
+      projectId,
+      {
+        id: artifact.id,
+        name: artifact.name,
+        relativePath: artifact.relative_path,
+        mediaType: artifact.media_type,
+        sizeBytes: artifact.size_bytes,
+        digestSha256: artifact.digest_sha256,
+      },
+      binding,
+      this.inlineArtifactMaxBytes,
+    );
   }
 
   private queueObservationAudit(
@@ -639,7 +616,12 @@ export class ExecutionObservationService {
     const inlineEvidence =
       run.gate_profile === "child"
         ? observationArtifacts
-            .map((artifact) => this.renderInlineArtifactEvidence(run.project_id, artifact))
+            .map((artifact) =>
+              this.renderInlineArtifactEvidence(run.project_id, artifact, {
+                runId: run.id,
+                candidateHeadSha,
+              }),
+            )
             .filter((evidence): evidence is { marker: string; block: string } => evidence !== null)
         : [];
     const body = [

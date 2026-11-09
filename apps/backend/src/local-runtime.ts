@@ -53,9 +53,20 @@ export interface LocalExecutionRuntime {
 export function createLocalExecutionRuntime(
   options: LocalExecutionRuntimeOptions,
 ): LocalExecutionRuntime {
-  const observations = options.observations ?? new ExecutionObservationService(options.db);
+  const observations =
+    options.observations ??
+    new ExecutionObservationService(
+      options.db,
+      options.artifactRoot ? { artifactRoot: options.artifactRoot } : {},
+    );
   const budget = options.budget ?? new ExecutionBudgetService(options.db);
-  const publication = options.publication ?? new PublicationService(options.db, options.forge);
+  const publication =
+    options.publication ??
+    new PublicationService(
+      options.db,
+      options.forge,
+      options.artifactRoot ? { artifactRoot: options.artifactRoot } : {},
+    );
   const gate = new DeliveryGateService(options.db, {
     observations,
     publication,

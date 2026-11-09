@@ -55,6 +55,7 @@ const GROUP_BY_TABLE: Record<string, CutoverTableGroup> = {
   factory_findings: "evidence",
   factory_finding_events: "evidence",
   execution_artifacts: "evidence",
+  delivery_role_claims: "delivery",
   project_spec_coordinations: "coordination",
   child_integrations: "integration",
   child_integration_events: "integration",
@@ -666,6 +667,21 @@ function isRunLikeActive(table: string, row: Record<string, unknown>): boolean {
   }
   if (table === "run_processes") return status === "running";
   if (table === "dispatch_runs") return ["claimed", "dispatched", "running"].includes(status);
+  if (table === "delivery_role_claims") {
+    // Only an active role writer blocks quiescence. A completed/failed claim
+    // legitimately retains historical owner identity and is never authority.
+    if (status === "running") return true;
+    if (status === "interrupted") {
+      return (
+        typeof row.owner_pid === "number" ||
+        typeof row.owner_process_start === "string" ||
+        typeof row.role_pid === "number" ||
+        typeof row.role_pgid === "number" ||
+        typeof row.role_process_start === "string"
+      );
+    }
+    return false;
+  }
   if (table === "execution_controls") return ["active", "stopping"].includes(status);
   if (table === "project_spec_coordinations") return status === "active";
   if (table === "final_deliveries") return ["active", "running", "repairing"].includes(status);

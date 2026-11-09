@@ -767,4 +767,62 @@ describe("child gate integration", () => {
     );
     expect(integrationRow(run.id)).toBeUndefined();
   });
+
+  test("AC3: a late failed review recorded during the pre-merge remote read blocks the merge", async () => {
+    const { plan, branch } = await importSpec(1020, [{ issue: 1021 }]);
+    const dispatch = makeDispatch(committingRunner("impl-late-review.txt"));
+    const integration = makeIntegration();
+    const run = await dispatch.dispatch(projectId, {
+      plan_id: plan.id,
+      issue_number: 1021,
+      actor: "operator",
+    });
+    await recordPassingGates(run.id, "late");
+    await publication.publishByRun(projectId, run.id);
+
+    // A concurrent reviewer records a blocking failure after acceptance was
+    // snapshotted but before the forge merge. The freshness fence must see it.
+    const lateReviewer = register("late-concurrent-reviewer", "peer_reviewer");
+    const originalGetPullRequest = forge.getPullRequest.bind(forge);
+    let fired = false;
+    forge.getPullRequest = async (repo, number) => {
+      const result = await originalGetPullRequest(repo, number);
+      if (!fired) {
+        fired = true;
+        observations.recordRunObservation(
+          projectId,
+          run.id,
+          {
+            stage: "independent_review",
+            status: "failed",
+            producer: lateReviewer.producer,
+            checks: [{ name: "late review", command: "review diff", result: "FAIL" }],
+            findings: [
+              {
+                severity: "blocking",
+                fileContext: "impl-late-review.txt:1",
+                summary: "late concurrent blocking defect",
+              },
+            ],
+          },
+          { attemptKey: "late-review-attempt" },
+        );
+      }
+      return result;
+    };
+
+    const status = await integration.land(projectId, run.id);
+    expect(status.state).toBe("blocked");
+    expect(status.acceptance.authorized).toBe(false);
+    expect(status.blockers.map((blocker) => blocker.code)).toEqual(
+      expect.arrayContaining(["integration_acceptance_blocked"]),
+    );
+    expect(integrationRow(run.id)).toBeUndefined();
+    expect(remoteHead(branch)).toBeTruthy();
+    const reviews = observations
+      .listObservations(projectId, { runId: run.id })
+      .filter((observation) => observation.stage === "independent_review");
+    expect(reviews.map((review) => review.status)).toContain("failed");
+    expect(reviews).toHaveLength(2);
+  });
 });

@@ -1519,6 +1519,20 @@ export const restoreRunFactSchema = z.object({
 });
 export type RestoreRunFact = z.infer<typeof restoreRunFactSchema>;
 
+/** Non-terminal delivery-role claims that still carry a copied writer identity. */
+export const restoreClaimFactSchema = z.object({
+  claimId: z.string().min(1),
+  projectId: z.string().min(1),
+  runId: z.string().min(1),
+  stage: z.string().min(1),
+  lap: z.number().int().positive(),
+  state: z.string().min(1),
+  ownerIdentityPresent: z.boolean(),
+  roleIdentityPresent: z.boolean(),
+  leaseCleared: z.boolean(),
+});
+export type RestoreClaimFact = z.infer<typeof restoreClaimFactSchema>;
+
 export const restoreIntentFactSchema = z.object({
   intentId: z.string().min(1),
   projectId: z.string().min(1),
@@ -1535,6 +1549,7 @@ export type RestoreIntentFact = z.infer<typeof restoreIntentFactSchema>;
 export const restoreUnresolvedSchema = z.object({
   runs: z.array(restoreRunFactSchema),
   intents: z.array(restoreIntentFactSchema),
+  claims: z.array(restoreClaimFactSchema),
 });
 export type RestoreUnresolved = z.infer<typeof restoreUnresolvedSchema>;
 

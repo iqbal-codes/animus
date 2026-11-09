@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -131,6 +131,12 @@ export interface DeliveryRuntimeOptions {
   integration?: ChildIntegrationService;
   /** Root holding project-scoped finalized artifacts; must match the observation service. */
   artifactRoot?: string;
+  /**
+   * Scratch root for role sessions/checkpoints/attempt transcripts. It must stay
+   * outside the immutable artifact root so the cutover/backup artifact digest is
+   * a stable closure of registered evidence only.
+   */
+  roleScratchRoot?: string;
   /** Production role execution engine (real provider/process transport by default). */
   engine?: DeliveryRuntimeEngine;
   /** Override for narrower tests; production uses the bounded role runner below. */
@@ -236,6 +242,7 @@ const GATE_ROLE: ProducerRole = "automated_gate";
 export class DeliveryRuntimeCoordinator {
   private readonly executor: DeliveryRuntimeRoleExecutor;
   private readonly artifactRoot: string;
+  private readonly roleScratchRoot: string;
   private readonly maxCorrections: number;
   private readonly claims: DeliveryRoleClaimService;
 
@@ -250,6 +257,8 @@ export class DeliveryRuntimeCoordinator {
   ) {
     this.executor = options.executor ?? createDeliveryRoleExecutor(options.engine ?? {});
     this.artifactRoot = options.artifactRoot ?? join(resolveAnimusStateDir(), "artifacts");
+    this.roleScratchRoot =
+      options.roleScratchRoot ?? join(dirname(this.artifactRoot), "role-runtime");
     this.maxCorrections = options.maxCorrections ?? 2;
     this.claims = options.claims ?? new DeliveryRoleClaimService(db);
   }
@@ -621,7 +630,11 @@ export class DeliveryRuntimeCoordinator {
     }
 
     const claim = acquired.claim;
-    const stopHeartbeat = this.claims.startHeartbeat(claim);
+    const stopHeartbeat = this.claims.startHeartbeat(claim, (error) => {
+      this.claims.noteHeartbeatError(claim, error instanceof Error ? error.message : String(error));
+    });
+    let artifactPath: string | null = null;
+    let observationCommitted = false;
     try {
       // Revalidate the gate inputs before the external effect, not only at entry.
       this.assertInstallationReady();
@@ -638,16 +651,38 @@ export class DeliveryRuntimeCoordinator {
       // before recording or releasing anything.
       this.assertInstallationReady();
       const stillOwned = this.claims.isCurrent(claim);
-      const recorded = await this.recordRoleResult(run, stage, result, {
+      const prepared = await this.prepareRoleResult(run, stage, result, {
         attemptKey: claim.attemptKey,
+        claimCandidateHeadSha: claim.candidateHeadSha,
       });
-      this.claims.complete(
-        claim,
-        result.status === "passed" ? "completed" : "failed",
-        recorded.observationId,
-        result.status === "passed" ? null : result.summary || `${stage} ${result.status}`,
-      );
-      if (!stillOwned) {
+      artifactPath = prepared.artifactPath;
+
+      // The observation receipt and the claim CAS completion are one durable
+      // SQLite transaction: a crash cannot leave a recorded result with a claim
+      // that still looks owned. A stale owner still commits its late result (so a
+      // late failure revokes an older pass) but the claim CAS is a no-op.
+      let recorded: { observationId: string };
+      let completed: boolean;
+      this.db.exec("BEGIN IMMEDIATE;");
+      try {
+        recorded = this.recordRoleObservation(run, prepared.submission, {
+          attemptKey: claim.attemptKey,
+        });
+        completed = this.claims.completeWithinTransaction(
+          claim,
+          result.status === "passed" ? "completed" : "failed",
+          recorded.observationId,
+          result.status === "passed" ? null : result.summary || `${stage} ${result.status}`,
+        );
+        this.db.exec("COMMIT;");
+        observationCommitted = true;
+      } catch (error) {
+        try {
+          this.db.exec("ROLLBACK;");
+        } catch {}
+        throw error;
+      }
+      if (!completed || !stillOwned) {
         // A stale owner's result is still persisted (so a late failure revokes an
         // older pass), but this tick must not advance publication/merge.
         return { status: "stale", stage };
@@ -657,6 +692,13 @@ export class DeliveryRuntimeCoordinator {
       }
       return { status: "recorded", stage, observationId: recorded.observationId, result };
     } catch (error) {
+      if (artifactPath && !observationCommitted) {
+        // The transaction rolled back, so this file has no owning row. Remove it
+        // rather than leaving unregistered state under the immutable artifact root.
+        try {
+          await unlink(join(this.artifactRoot, run.project_id, artifactPath));
+        } catch {}
+      }
       this.claims.interrupt(claim, error instanceof Error ? error.message : String(error));
       throw error;
     } finally {
@@ -1011,13 +1053,26 @@ export class DeliveryRuntimeCoordinator {
     };
   }
 
-  private async recordRoleResult(
+  private async prepareRoleResult(
     run: RuntimeRunRow,
     stage: "technical_checks" | "independent_review" | "final_acceptance",
     result: DeliveryRuntimeRoleResult,
-    options: { finalizedArtifact?: boolean; attemptKey?: string } = {},
-  ): Promise<{ observationId: string }> {
+    options: {
+      finalizedArtifact?: boolean;
+      attemptKey?: string;
+      claimCandidateHeadSha?: string;
+    } = {},
+  ): Promise<{ submission: ExecutionObservationSubmissionInput; artifactPath: string | null }> {
     this.assertInstallationReady();
+    const candidateHeadSha = run.head_sha ?? run.base_sha;
+    if (
+      options.claimCandidateHeadSha !== undefined &&
+      options.claimCandidateHeadSha !== candidateHeadSha
+    ) {
+      throw new Error(
+        `delivery role result candidate ${candidateHeadSha} does not match the claim candidate ${options.claimCandidateHeadSha}`,
+      );
+    }
     const producer = this.ensureProducer(
       run,
       stage === "independent_review"
@@ -1042,6 +1097,7 @@ export class DeliveryRuntimeCoordinator {
             lap: run.lap,
             candidateHeadSha: run.head_sha,
             gateProfileVersion: GATE_PROFILE_VERSION,
+            attemptKey: options.attemptKey ?? null,
             report: result.rawReport,
           },
           null,
@@ -1093,6 +1149,14 @@ export class DeliveryRuntimeCoordinator {
           ]
         : [],
     };
+    return { submission, artifactPath: relativePath };
+  }
+
+  private recordRoleObservation(
+    run: RuntimeRunRow,
+    submission: ExecutionObservationSubmissionInput,
+    options: { attemptKey?: string } = {},
+  ): { observationId: string } {
     const observation = this.options.observations.recordRunObservation(
       run.project_id,
       run.id,
@@ -1133,7 +1197,7 @@ export class DeliveryRuntimeCoordinator {
       contractBody: run.contract_body ?? "",
       acceptanceCriteria: this.acceptanceCriteria(run),
       findings: this.openBlockingFindings(run),
-      runDirectory: join(this.artifactRoot, run.project_id, "runtime", run.id),
+      runDirectory: join(this.roleScratchRoot, run.project_id, run.id),
       ...(claim
         ? {
             onSpawn: (pid: number) => {
@@ -1232,8 +1296,16 @@ export function createDeliveryRoleExecutor(
     });
     const rawReport = {
       report: result.report,
-      rawStdout: boundRawStream(result.rawStdout),
-      artifact: result.artifact,
+      // The finalized artifact is the immutable local record: keep the full raw
+      // stdout/stderr and the attempt/exit identity so a reviewer can audit the
+      // exact process that produced the verdict. PR inlining re-verifies and
+      // bounds this payload separately.
+      rawStdout: result.rawStdout,
+      rawStderr: typeof result.result?.stderr === "string" ? result.result.stderr : "",
+      exitCode: typeof result.result?.exitCode === "number" ? result.result.exitCode : null,
+      timedOut: result.result?.timedOut === true,
+      attempt: result.attempt,
+      sessionId: result.sessionId ?? null,
       head: result.head,
     };
     if (request.stage === "independent_review") {
