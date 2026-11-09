@@ -1,6 +1,12 @@
-import { deliveryGateStatusSchema } from "@animus/contracts/operator";
+import {
+  deliveryGateStatusSchema,
+  deliveryClaimReconcileSubmissionSchema,
+  deliveryRoleClaimSchema,
+} from "@animus/contracts/operator";
+import type { DatabaseSync } from "node:sqlite";
 import { DeliveryError } from "./errors";
 import type { DeliveryGateService } from "./service";
+import { reconcileDeliveryClaim, toDeliveryRoleClaimRecord } from "./claims";
 
 function errorStatus(code: DeliveryError["code"]): number {
   switch (code) {
@@ -40,8 +46,52 @@ export async function handleProjectDeliveryRoute(
   projectId: string,
   parts: string[],
   service: DeliveryGateService,
+  db: DatabaseSync,
 ): Promise<Response | null> {
   if (parts[1] !== "delivery") return null;
+
+  if (
+    parts.length === 7 &&
+    parts[2] === "runs" &&
+    parts[4] === "claims" &&
+    parts[6] === "reconcile" &&
+    request.method === "POST"
+  ) {
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return Response.json({ error: "invalid_payload" }, { status: 400 });
+    }
+    const parsed = deliveryClaimReconcileSubmissionSchema.safeParse(body);
+    if (!parsed.success) {
+      return Response.json({ error: "invalid_payload" }, { status: 400 });
+    }
+    try {
+      const claim = reconcileDeliveryClaim(db, {
+        projectId,
+        runId: decodeURIComponent(parts[3]!),
+        stage: decodeURIComponent(parts[5]!) as
+          | "technical_checks"
+          | "independent_review"
+          | "final_acceptance",
+        lap: parsed.data.lap,
+        action: parsed.data.action,
+        actor: parsed.data.actor,
+        reason: parsed.data.reason,
+        ...(parsed.data.observationId ? { observationId: parsed.data.observationId } : {}),
+      });
+      return Response.json(deliveryRoleClaimSchema.parse(toDeliveryRoleClaimRecord(claim)));
+    } catch (error) {
+      return Response.json(
+        {
+          error: "delivery_claim_reconcile_failed",
+          message: error instanceof Error ? error.message : String(error),
+        },
+        { status: 409 },
+      );
+    }
+  }
 
   if (parts.length === 4 && parts[2] === "runs" && request.method === "GET") {
     try {

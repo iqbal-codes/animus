@@ -2592,6 +2592,65 @@ export const dispatchRunDetailSchema = z.object({
 });
 export type DispatchRunDetail = z.infer<typeof dispatchRunDetailSchema>;
 
+export const deliveryClaimStageSchema = z.enum([
+  "technical_checks",
+  "independent_review",
+  "final_acceptance",
+]);
+export type DeliveryClaimStage = z.infer<typeof deliveryClaimStageSchema>;
+
+export const deliveryRoleClaimStateSchema = z.enum([
+  "running",
+  "completed",
+  "failed",
+  "interrupted",
+]);
+export type DeliveryRoleClaimStateRecord = z.infer<typeof deliveryRoleClaimStateSchema>;
+
+/** Public projection of a durable delivery-role claim. The fencing token is never exposed. */
+export const deliveryRoleClaimSchema = z.object({
+  id: z.string().min(1),
+  projectId: z.string().min(1),
+  deliveryId: z.string().min(1),
+  runId: z.string().min(1),
+  lap: z.number().int().positive(),
+  stage: deliveryClaimStageSchema,
+  candidateHeadSha: z.string().min(1),
+  attemptKey: z.string().min(1),
+  claimGeneration: z.number().int().positive(),
+  ownerPid: z.number().int().positive().nullable(),
+  ownerProcessStart: z.string().nullable(),
+  rolePid: z.number().int().positive().nullable(),
+  rolePgid: z.number().int().positive().nullable(),
+  roleProcessStart: z.string().nullable(),
+  leaseExpiresAt: z.number().int(),
+  heartbeatAt: z.number().int(),
+  state: deliveryRoleClaimStateSchema,
+  resultObservationId: z.string().min(1).nullable(),
+  error: z.string().nullable(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type DeliveryRoleClaimRecord = z.infer<typeof deliveryRoleClaimSchema>;
+
+/**
+ * Operator CAS reconciliation for an owner-unverified claim. `interrupt` releases
+ * the role without inventing a result; `complete` requires an existing role
+ * observation for the claim's attempt key. The actor/reason are audited.
+ */
+export const deliveryClaimReconcileSubmissionSchema = z
+  .object({
+    actor: z.string().min(1).max(200),
+    reason: z.string().min(1).max(2000),
+    action: z.enum(["interrupt", "complete"]),
+    lap: z.number().int().positive(),
+    observationId: z.string().min(1).optional(),
+  })
+  .strict();
+export type DeliveryClaimReconcileSubmission = z.infer<
+  typeof deliveryClaimReconcileSubmissionSchema
+>;
+
 export const findingFixSubmissionSchema = z
   .object({
     actor: z.string().min(1).max(200),

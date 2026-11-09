@@ -22,7 +22,10 @@ import { ExecutionObservationService } from "../../apps/backend/src/evidence";
 import { ExecutionBudgetService } from "../../apps/backend/src/work/budget";
 import { PublicationService } from "../../apps/backend/src/publication";
 import { createLocalExecutionRuntime } from "../../apps/backend/src/local-runtime";
-import { DeliveryRoleClaimService } from "../../apps/backend/src/delivery/claims";
+import {
+  DeliveryRoleClaimService,
+  reconcileDeliveryClaim,
+} from "../../apps/backend/src/delivery/claims";
 import { BackupRestoreService } from "../../apps/backend/src/restore/service";
 import { inventoryInstallation } from "../../apps/backend/src/cutover/inventory";
 import { AuthorityCutoverService } from "../../apps/backend/src/cutover/service";
@@ -515,5 +518,82 @@ describe("delivery role claims: cutover, restore and recovery", () => {
       expect(recovered.claim.state).toBe("completed");
       expect(recovered.claim.resultObservationId).toBe(observation.id);
     }
+  }, 120_000);
+
+  test("an operator CAS reconcile releases an owner-unverified claim with an audited reason", async () => {
+    writeHarness();
+    await importTicket(9709);
+    const { dispatch, runtime } = makeRuntime(committingRunner());
+    const tick = await runLocalDispatchTick({
+      db,
+      registry,
+      plans,
+      dispatch,
+      actor: "monitor",
+      deliveryRuntime: runtime.delivery,
+    });
+    expect(tick.action).toBe("launched");
+    const runId = tick.runId!;
+    const run = dispatch.getRun(projectId, runId);
+    const claims = new DeliveryRoleClaimService(db);
+    const acquired = claims.acquire({
+      projectId,
+      deliveryId: run.delivery_id,
+      runId,
+      lap: run.lap,
+      stage: "final_acceptance",
+      candidateHeadSha: run.head_sha ?? run.base_sha,
+    });
+    expect(acquired.status).toBe("acquired");
+    if (acquired.status !== "acquired") throw new Error("expected claim");
+    // Make the owner unprovable: an operator must be able to release the role.
+    db.prepare("UPDATE delivery_role_claims SET owner_process_start = NULL WHERE id = ?").run(
+      acquired.claim.id,
+    );
+    const blocked = claims.acquire({
+      projectId,
+      deliveryId: run.delivery_id,
+      runId,
+      lap: run.lap,
+      stage: "final_acceptance",
+      candidateHeadSha: run.head_sha ?? run.base_sha,
+    });
+    expect(blocked.status).toBe("already_running");
+    if (blocked.status === "already_running") expect(blocked.reason).toBe("owner_unverified");
+
+    const reconciled = reconcileDeliveryClaim(db, {
+      projectId,
+      runId,
+      stage: "final_acceptance",
+      lap: run.lap,
+      action: "interrupt",
+      actor: "operator",
+      reason: "owner identity is not verifiable on this host",
+    });
+    expect(reconciled.state).toBe("interrupted");
+    expect(reconciled.error).toContain("operator_interrupt: operator");
+
+    const reacquired = claims.acquire({
+      projectId,
+      deliveryId: run.delivery_id,
+      runId,
+      lap: run.lap,
+      stage: "final_acceptance",
+      candidateHeadSha: run.head_sha ?? run.base_sha,
+    });
+    expect(reacquired.status).toBe("acquired");
+
+    // `complete` cannot fabricate a result without an existing observation.
+    expect(() =>
+      reconcileDeliveryClaim(db, {
+        projectId,
+        runId,
+        stage: "final_acceptance",
+        lap: run.lap,
+        action: "complete",
+        actor: "operator",
+        reason: "no receipt exists",
+      }),
+    ).toThrow(/requires an existing role observation/i);
   }, 120_000);
 });

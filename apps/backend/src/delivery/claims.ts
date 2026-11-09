@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { isPidAlive } from "@animus/contracts/paths";
+import type { DeliveryRoleClaimRecord } from "@animus/contracts/operator";
 import { pidOrGroupAlive, processStartIdentity } from "../dispatch/ownership";
 
 export type DeliveryClaimStage = "technical_checks" | "independent_review" | "final_acceptance";
@@ -633,4 +634,76 @@ export class DeliveryRoleClaimService {
     if (Number(result.changes) === 0) return null;
     return this.loadById(row.id);
   }
+}
+
+/** Public projection for operator surfaces: never includes the fencing token. */
+export function toDeliveryRoleClaimRecord(claim: DeliveryRoleClaim): DeliveryRoleClaimRecord {
+  return {
+    id: claim.id,
+    projectId: claim.projectId,
+    deliveryId: claim.deliveryId,
+    runId: claim.runId,
+    lap: claim.lap,
+    stage: claim.stage,
+    candidateHeadSha: claim.candidateHeadSha,
+    attemptKey: claim.attemptKey,
+    claimGeneration: claim.claimGeneration,
+    ownerPid: claim.ownerPid,
+    ownerProcessStart: claim.ownerProcessStart,
+    rolePid: claim.rolePid,
+    rolePgid: claim.rolePgid,
+    roleProcessStart: claim.roleProcessStart,
+    leaseExpiresAt: claim.leaseExpiresAt,
+    heartbeatAt: claim.heartbeatAt,
+    state: claim.state,
+    resultObservationId: claim.resultObservationId,
+    error: claim.error,
+    createdAt: claim.createdAt,
+    updatedAt: claim.updatedAt,
+  };
+}
+
+export interface ReconcileDeliveryClaimRequest {
+  projectId: string;
+  runId: string;
+  stage: DeliveryClaimStage;
+  lap: number;
+  action: "interrupt" | "complete";
+  actor: string;
+  reason: string;
+  observationId?: string;
+}
+
+/**
+ * Operator-facing entry point used by the delivery HTTP command surface. It
+ * resolves the run's delivery/candidate from durable state (never from the
+ * caller) and delegates to the audited CAS reconcile.
+ */
+export function reconcileDeliveryClaim(
+  db: DatabaseSync,
+  input: ReconcileDeliveryClaimRequest,
+): DeliveryRoleClaim {
+  const run = db
+    .prepare(
+      "SELECT delivery_id, head_sha, base_sha FROM dispatch_runs WHERE project_id = ? AND id = ?",
+    )
+    .get(input.projectId, input.runId) as
+    | { delivery_id: string; head_sha: string | null; base_sha: string }
+    | undefined;
+  if (!run) {
+    throw new Error(`Run ${input.runId} not found for project ${input.projectId}`);
+  }
+  const claims = new DeliveryRoleClaimService(db);
+  return claims.reconcile({
+    projectId: input.projectId,
+    deliveryId: run.delivery_id,
+    runId: input.runId,
+    lap: input.lap,
+    stage: input.stage,
+    candidateHeadSha: run.head_sha ?? run.base_sha,
+    action: input.action,
+    actor: input.actor,
+    reason: input.reason,
+    ...(input.observationId ? { observationId: input.observationId } : {}),
+  });
 }

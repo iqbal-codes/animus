@@ -988,6 +988,7 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
           projectId,
           parts,
           deliveryService,
+          registryService.getDb(),
         );
         if (deliveryRes) return deliveryRes;
         return Response.json({ error: "not_found" }, { status: 404 });
