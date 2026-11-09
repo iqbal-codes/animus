@@ -22,7 +22,9 @@ Read current state directly from GitHub:
 
 Choose the single most valuable work item following this strict precedence:
 1. **Continue an open PR owned by this loop:** Select an existing PR (`animus/` or `local-loop/` branch, or bearing loop review comments) that has unaddressed review findings, failing CI, merge conflicts, draft status, or a `Loop review: not merged` gate refusal.
-2. **Start the highest-leverage open issue:** Select an open issue whose dependencies are closed:
+2. **Start the highest-leverage open issue:** Select an open issue whose dependency outcomes are satisfied:
+   - After local authority activation, a dependency is satisfied only by verified inclusion in the required integration lineage or verified final-target merge. Issue closure is not lineage proof.
+   - The pre-cutover legacy loop may treat closed prerequisites as a triage approximation only; never rely on that after activation.
    - First, issues labeled `priority` in ascending number order.
    - Second, issues that unblock the greatest number of downstream open tickets.
    - Third, the lowest issue number.

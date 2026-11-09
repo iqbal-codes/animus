@@ -14,6 +14,32 @@ export const DEFAULT_PROTECTED_PATHS = [
   "harness/**",
 ];
 
+/** Reads the repository's declared ordinary checks and protected paths. */
+export function readHarnessChecks(root: string): {
+  checks: string[];
+  protectedPaths: string[];
+} {
+  const harnessPath = join(root, "harness/harness.config.json");
+  if (!existsSync(harnessPath)) {
+    throw new Error(`Harness config not found at ${harnessPath}`);
+  }
+  const raw = JSON.parse(readFileSync(harnessPath, "utf8"));
+  const checks = [raw.static, raw.unit].filter(
+    (c): c is string => typeof c === "string" && c.trim().length > 0,
+  );
+  if (checks.length === 0) {
+    throw new Error("No declared ordinary project checks in harness/harness.config.json");
+  }
+  const protectedPaths =
+    typeof raw.protected_paths === "string"
+      ? raw.protected_paths
+          .split(",")
+          .map((p: string) => p.trim())
+          .filter(Boolean)
+      : [...DEFAULT_PROTECTED_PATHS];
+  return { checks, protectedPaths };
+}
+
 export interface PrepareLoopWorktreeOptions {
   root: string;
   worktreePath: string;

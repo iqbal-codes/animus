@@ -4,9 +4,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runBoundedRole, RoleInterrupted } from "../../scripts/loop/role-runner";
-import { runAnimusLoop } from "../../scripts/animus-loop";
+import { runAnimusLoop } from "./support/loop-harness";
 import * as loopExports from "../../scripts/loop/index";
-import * as animusExports from "../../scripts/animus-loop";
+import * as animusExports from "./support/loop-harness";
 import { git } from "../../scripts/loop/worktree";
 import type { LocalIssue } from "../../scripts/loop/types";
 

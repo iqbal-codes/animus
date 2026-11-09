@@ -64,11 +64,15 @@ export function InboxScreen({
   backendState,
   includeFailed,
   onOpenJobs,
+  loading = false,
+  error = null,
 }: {
   board: JobsBoardModel;
   backendState: BackendState;
   includeFailed: boolean;
   onOpenJobs: () => void;
+  loading?: boolean;
+  error?: string | null;
 }) {
   const items = useMemo(() => selectInbox(board, { includeFailed }), [board, includeFailed]);
   const [filter, setFilter] = useState<"all" | InboxKind>("all");
@@ -130,6 +134,20 @@ export function InboxScreen({
       <JobsHeader board={board} title="Inbox" showViewMode={false} showNotifications={false} />
 
       <div className="flex min-h-0 flex-1 flex-col gap-[22px] px-7 pt-7 pb-5">
+        {loading && (
+          <p role="status" data-testid="inbox-loading" className="text-xs text-text-secondary">
+            Loading the attention queue from canonical factory state…
+          </p>
+        )}
+        {error && !loading && (
+          <p
+            role="alert"
+            data-testid="inbox-error"
+            className="break-words text-xs text-[var(--error)]"
+          >
+            Attention queue unavailable: {error}
+          </p>
+        )}
         <div className="flex flex-col gap-2">
           <h2 className="text-2xl leading-[1.4] font-medium text-foreground">
             Needs your attention
@@ -396,9 +414,7 @@ function IssuePane({ item, onClose }: { item: InboxItem; onClose: () => void }) 
         <section className="flex flex-col gap-3 border-b border-[var(--border-subtle)] py-[18px]">
           <h3 className="text-[13px] leading-[1.4] font-medium text-foreground">Original issue</h3>
           <p className="text-[13px] leading-[1.45] text-text-secondary">
-            {job.id === "153"
-              ? "Improve onboarding so new users understand how to connect a repository and start their first job."
-              : (item.context ?? job.summary?.text ?? "—")}
+            {item.context ?? job.detail ?? job.summary?.text ?? "—"}
           </p>
           <p className="text-[11px] leading-[1.4] text-text-secondary">
             Created {item.since} · {job.ref}

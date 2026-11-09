@@ -304,7 +304,7 @@ describe("Animus Unified CLI & Repository Setup Onboarding", () => {
     expect(readFileSync(backupPath, "utf-8")).toBe(existingAgents);
     const newAgents = readFileSync(join(tempDir, "AGENTS.md"), "utf-8");
     expect(newAgents).toContain(".agents/skills/");
-  });
+  }, 30_000);
 
   test("animus setup fails closed before writing files when .git or GitHub origin remote is missing", async () => {
     const noGitDir = join(

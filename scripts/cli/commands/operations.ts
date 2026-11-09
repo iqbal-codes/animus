@@ -1,12 +1,18 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { applyControlAction, readControlState } from "../../../apps/engine-host/src/native";
 import { PromotionService } from "../../../apps/engine-host/src/promotion";
 import { IntakeService } from "../../../apps/backend/src/intake";
 import { initializeDatabase } from "../../../apps/backend/src/registry";
+import { BackupRestoreService } from "../../../apps/backend/src/restore";
 import { ProjectRegistryService } from "../../../apps/backend/src/registry/service";
 import { BrakeService } from "../../../apps/backend/src/command/brakes";
-import { resolveAnimusStateDir, resolveProjectWorkspace, evaluateWorkspacePreflight, resolveTriageStateRoot } from "../../../packages/contracts/src/paths";
+import {
+  resolveAnimusStateDir,
+  resolveProjectWorkspace,
+  evaluateWorkspacePreflight,
+  resolveTriageStateRoot,
+} from "../../../packages/contracts/src/paths";
 import type { RunTriagePassOptions, TriagePassResult } from "../../loop/triage";
 import {
   createRegistrationClient,
@@ -15,7 +21,26 @@ import {
   type FactoryConnectionOptions,
 } from "./onboarding-registration";
 import { CommandService } from "../../../apps/backend/src/command";
-import type { ControlAction, Project } from "@animus/contracts/operator";
+import type {
+  ControlAction,
+  DispatchRunDetail,
+  DeliveryGateStatus,
+  ExecutionObservationRecord,
+  FactoryFindingRecord,
+  PlanDispatchRun,
+  DraftAnswerInput,
+  DeliveryRoleClaimRecord,
+  DraftRecord,
+  DraftPublication,
+  PlanKind,
+  PlanRecord,
+  Project,
+  PublicationStatus,
+  IntegrationStatus,
+  FinalDeliveryStatus,
+  RunEvidenceReport,
+  WorkRecord,
+} from "@animus/contracts/operator";
 
 export async function runControlCommand(opts: {
   subcommand?: string;
@@ -238,13 +263,7 @@ async function handleIntakeTriage(opts: IntakeCommandOptions): Promise<number> {
         ? "invalid_work_window_timezone"
         : "invalid_schedule_config";
       if (opts.json) {
-        console.log(
-          JSON.stringify(
-            { ok: false, action: "skipped", reason, error },
-            null,
-            2,
-          ),
-        );
+        console.log(JSON.stringify({ ok: false, action: "skipped", reason, error }, null, 2));
       } else {
         console.error(`Error: ${error}`);
       }
@@ -269,13 +288,7 @@ async function handleIntakeTriage(opts: IntakeCommandOptions): Promise<number> {
       }
 
       if (opts.json) {
-        console.log(
-          JSON.stringify(
-            { ok: false, action: "skipped", reason, error },
-            null,
-            2,
-          ),
-        );
+        console.log(JSON.stringify({ ok: false, action: "skipped", reason, error }, null, 2));
       } else {
         console.error(`Error: ${error}`);
       }
@@ -441,6 +454,1153 @@ export async function runIntakeCommand(opts: IntakeCommandOptions): Promise<numb
   }
 }
 
+export async function runWorkCommand(
+  opts: FactoryConnectionOptions & {
+    subcommand?: string;
+    positionals: string[];
+    projectId?: string;
+    json?: boolean;
+  },
+): Promise<number> {
+  const sub = opts.subcommand ?? "list";
+  try {
+    if (!opts.projectId) {
+      throw new Error("Usage: factory work <list|get> --project <project-id>");
+    }
+    const scoped = createRegistrationClient(opts).forProject(opts.projectId);
+
+    if (sub === "list") {
+      const items = await scoped.work();
+      if (opts.json) {
+        console.log(JSON.stringify(items, null, 2));
+      } else if (items.length === 0) {
+        console.log("No imported work.");
+      } else {
+        console.log(`Imported Work (${items.length}):`);
+        for (const item of items) {
+          console.log(
+            `  ${item.id}  #${item.issue_number}  rev=${item.revision.revision_number}  ${item.revision.source.title}`,
+          );
+        }
+      }
+      return 0;
+    }
+
+    if (sub === "get") {
+      const workId = opts.positionals[2];
+      if (!workId) throw new Error("Usage: factory work get <work-id> --project <project-id>");
+      const record = await scoped.workItem(workId);
+      if (opts.json) {
+        console.log(JSON.stringify(record, null, 2));
+      } else {
+        printWork(record);
+      }
+      return 0;
+    }
+
+    throw new Error(`Unknown work subcommand: ${sub}. Expected list or get.`);
+  } catch (err: any) {
+    const msg = err?.message ?? String(err);
+    if (opts.json) console.log(JSON.stringify({ ok: false, error: msg }));
+    else console.error(`Error: ${msg}`);
+    return 1;
+  }
+}
+
+export async function runDraftCommand(
+  opts: FactoryConnectionOptions & {
+    subcommand?: string;
+    positionals: string[];
+    projectId?: string;
+    answers?: string;
+    instructions?: string;
+    revision?: string;
+    reason?: string;
+    json?: boolean;
+  },
+): Promise<number> {
+  const sub = opts.subcommand ?? "list";
+  try {
+    if (!opts.projectId) {
+      throw new Error(
+        "Usage: factory draft <list|get|refine|revise|approve|reject|request-changes|publish|publication|publications|reconcile-publication> --project <project-id>",
+      );
+    }
+    const scoped = createRegistrationClient(opts).forProject(opts.projectId);
+
+    if (sub === "list") {
+      const items = await scoped.drafts();
+      if (opts.json) {
+        console.log(JSON.stringify(items, null, 2));
+      } else if (items.length === 0) {
+        console.log("No drafts.");
+      } else {
+        console.log(`Drafts (${items.length}):`);
+        for (const item of items) {
+          console.log(
+            `  ${item.id}  ${item.status.padEnd(19)} kind=${item.latest_revision.kind} rev=${item.latest_revision.revision_number}  ${item.source.title}`,
+          );
+        }
+      }
+      return 0;
+    }
+
+    if (sub === "get") {
+      const draftId = opts.positionals[2];
+      if (!draftId) throw new Error("Usage: factory draft get <draft-id> --project <project-id>");
+      const record = await scoped.draft(draftId);
+      if (opts.json) console.log(JSON.stringify(record, null, 2));
+      else printDraft(record);
+      return 0;
+    }
+
+    if (sub === "refine") {
+      const workId = opts.positionals[2];
+      if (!workId) throw new Error("Usage: factory draft refine <work-id> --project <project-id>");
+      const record = await scoped.refineDraft({
+        work_id: workId,
+        answers: parseDraftAnswers(opts.answers),
+        ...(opts.instructions ? { instructions: opts.instructions } : {}),
+      });
+      if (opts.json) console.log(JSON.stringify(record, null, 2));
+      else printDraft(record);
+      return 0;
+    }
+
+    if (sub === "revise") {
+      const draftId = opts.positionals[2];
+      if (!draftId)
+        throw new Error("Usage: factory draft revise <draft-id> --project <project-id>");
+      const record = await scoped.reviseDraft(draftId, {
+        answers: parseDraftAnswers(opts.answers),
+        ...(opts.instructions ? { instructions: opts.instructions } : {}),
+      });
+      if (opts.json) console.log(JSON.stringify(record, null, 2));
+      else printDraft(record);
+      return 0;
+    }
+
+    if (sub === "approve" || sub === "reject" || sub === "request-changes") {
+      const draftId = opts.positionals[2];
+      if (!draftId)
+        throw new Error(`Usage: factory draft ${sub} <draft-id> --project <project-id>`);
+      const revisionNumber = Number(opts.revision);
+      if (!Number.isInteger(revisionNumber) || revisionNumber <= 0) {
+        throw new Error("A positive --revision <number> is required for a draft decision");
+      }
+      const reason = opts.reason?.trim();
+      if (!reason) throw new Error("A --reason is required for a draft decision");
+      const decision = sub === "approve" ? "approve" : sub === "reject" ? "reject" : "revise";
+      const record = await scoped.decideDraft(draftId, {
+        revision_number: revisionNumber,
+        decision,
+        reason,
+        ...(opts.instructions ? { instructions: opts.instructions } : {}),
+      });
+      if (opts.json) console.log(JSON.stringify(record, null, 2));
+      else printDraft(record);
+      return 0;
+    }
+
+    if (sub === "publish") {
+      const draftId = opts.positionals[2];
+      if (!draftId)
+        throw new Error("Usage: factory draft publish <draft-id> --project <project-id>");
+      const publication = await scoped.publishDraft(draftId);
+      if (opts.json) console.log(JSON.stringify(publication, null, 2));
+      else printDraftPublication(publication);
+      return publication.state === "failed" || publication.state === "unknown" ? 1 : 0;
+    }
+
+    if (sub === "reconcile-publication") {
+      const publicationId = opts.positionals[2];
+      if (!publicationId)
+        throw new Error(
+          "Usage: factory draft reconcile-publication <publication-id> --project <project-id>",
+        );
+      const publication = await scoped.reconcileDraftPublication(publicationId);
+      if (opts.json) console.log(JSON.stringify(publication, null, 2));
+      else printDraftPublication(publication);
+      return publication.state === "failed" || publication.state === "unknown" ? 1 : 0;
+    }
+
+    if (sub === "publication") {
+      const draftId = opts.positionals[2];
+      if (!draftId)
+        throw new Error("Usage: factory draft publication <draft-id> --project <project-id>");
+      const publication = await scoped.draftPublicationByDraft(draftId);
+      if (opts.json) console.log(JSON.stringify(publication, null, 2));
+      else printDraftPublication(publication);
+      return 0;
+    }
+
+    if (sub === "publications") {
+      const items = await scoped.draftPublications();
+      if (opts.json) {
+        console.log(JSON.stringify(items, null, 2));
+      } else if (items.length === 0) {
+        console.log("No draft publications.");
+      } else {
+        console.log(`Draft publications (${items.length}):`);
+        for (const item of items) {
+          console.log(
+            `  ${item.id}  ${item.state.padEnd(11)} kind=${item.kind} draft=${item.draftId} rev=${item.revisionNumber} source=#${item.sourceIssueNumber}`,
+          );
+        }
+      }
+      return 0;
+    }
+
+    throw new Error(
+      `Unknown draft subcommand: ${sub}. Expected list, get, refine, revise, approve, reject, request-changes, publish, publication, publications, or reconcile-publication.`,
+    );
+  } catch (err: any) {
+    const msg = err?.message ?? String(err);
+    if (opts.json) console.log(JSON.stringify({ ok: false, error: msg }));
+    else console.error(`Error: ${msg}`);
+    return 1;
+  }
+}
+
+function parseDraftAnswers(raw?: string): DraftAnswerInput[] {
+  if (!raw) return [];
+  const text = raw.startsWith("@") ? readFileSync(raw.slice(1), "utf-8") : raw;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error("--answers must be a JSON array or @file containing one");
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error("--answers must be a JSON array");
+  }
+  return parsed as DraftAnswerInput[];
+}
+
+function printDraft(record: DraftRecord): void {
+  console.log(`Draft ${record.id} (${record.status})`);
+  console.log(
+    `  Work:        ${record.work_id} (${record.source_provenance.repo_name}#${record.source_provenance.issue_number})`,
+  );
+  console.log(`  Source:      ${record.source_provenance.source_url}`);
+  console.log(`  Source hash: ${record.source_content_hash}`);
+  console.log(
+    `  Revision:    ${record.latest_revision.revision_number} (${record.latest_revision.id})`,
+  );
+  console.log(`  Kind:        ${record.latest_revision.kind}`);
+  console.log(`  Publishable: ${record.authorization.can_publish}`);
+  console.log(`  Dispatch:    requires publication, read-back and execution admission`);
+  console.log(`  Title:       ${record.source.title}`);
+  const plan = record.latest_revision.plan;
+  if (plan.kind === "clarification") {
+    console.log("  Questions:");
+    for (const question of plan.questions) {
+      console.log(`    ${question.id}: ${question.question}`);
+      console.log(`      reason: ${question.reason}`);
+    }
+    console.log(`  Reason:      ${plan.reason}`);
+  } else {
+    console.log(`  Plan title:  ${plan.title}`);
+    console.log(`  Scope:       ${plan.scope}`);
+    console.log(`  Outcome:     ${plan.outcome}`);
+    console.log("  Acceptance criteria:");
+    for (const criterion of plan.acceptance_criteria) {
+      console.log(`    ${criterion.id}: ${criterion.description} (${criterion.verification})`);
+    }
+    console.log("  Verification requirements:");
+    for (const requirement of plan.verification_requirements) {
+      console.log(`    - ${requirement}`);
+    }
+    if (plan.kind === "spec") {
+      console.log(`  Children (${plan.children.length}):`);
+      plan.children.forEach((child) => {
+        const deps = child.depends_on_indices.map((dep) => plan.children[dep]?.id ?? String(dep));
+        console.log(
+          `    ${child.id}: ${child.title}${deps.length ? ` (depends on ${deps.join(", ")})` : ""} covers ${child.covers_parent_ac_ids.join(", ")}`,
+        );
+      });
+    }
+  }
+  if (record.latest_revision.questions.length > 0) {
+    console.log("  Unresolved questions:");
+    for (const question of record.latest_revision.questions) {
+      console.log(`    ${question.id}: ${question.question}`);
+    }
+  }
+  if (record.latest_revision.answers.length > 0) {
+    console.log("  Answers:");
+    for (const answer of record.latest_revision.answers) {
+      console.log(`    ${answer.question_id}: ${answer.answer}`);
+    }
+  }
+  if (record.latest_decision) {
+    console.log(
+      `  Decision:    ${record.latest_decision.decision} rev=${record.latest_decision.revision_number} (${record.latest_decision.reason})`,
+    );
+  }
+}
+
+function printDraftPublication(publication: DraftPublication): void {
+  console.log(`Draft publication ${publication.id} (${publication.state})`);
+  console.log(`  Draft:       ${publication.draftId} revision ${publication.revisionNumber}`);
+  console.log(`  Kind:        ${publication.kind}`);
+  console.log(`  Source:      #${publication.sourceIssueNumber} (original request preserved)`);
+  console.log(
+    `  Contract:    ${publication.specIssueNumber ? `#${publication.specIssueNumber}` : "not published"}`,
+  );
+  console.log(`  Plan:        ${publication.planId ?? "not admitted"}`);
+  if (publication.integrationBranch) {
+    console.log(`  Integration: ${publication.integrationBranch}`);
+  }
+  if (publication.lastError) console.log(`  Error:       ${publication.lastError}`);
+  if (publication.members.length > 0) {
+    console.log("  Members:");
+    for (const member of publication.members) {
+      console.log(
+        `    ${member.nodeKey.padEnd(16)} ${member.role.padEnd(6)} ${member.state.padEnd(8)} ${member.issueNumber ? `#${member.issueNumber}` : "(pending)"}  ${member.title}`,
+      );
+    }
+  }
+  if (publication.relationships.length > 0) {
+    console.log("  Relationships:");
+    for (const relationship of publication.relationships) {
+      console.log(
+        `    ${relationship.kind.padEnd(12)} ${relationship.fromNodeKey} -> ${relationship.toNodeKey}  ${relationship.source} ${relationship.state}${relationship.detail ? ` (${relationship.detail})` : ""}`,
+      );
+    }
+  }
+  const failed = publication.intents.filter(
+    (intent) => intent.state === "failed" || intent.state === "unknown",
+  );
+  if (failed.length > 0) {
+    console.log("  Unresolved operations:");
+    for (const intent of failed) {
+      console.log(
+        `    ${intent.kind} ${intent.operationKey} state=${intent.state} ${intent.lastError ?? ""}`,
+      );
+    }
+  }
+  if (publication.holds.length > 0) {
+    console.log("  Admission holds:");
+    for (const hold of publication.holds) {
+      console.log(`    ${hold.code} (${hold.severity}): ${hold.detail}`);
+    }
+  }
+  console.log(
+    `  Admitted:    ${publication.planAuthority === "admitted" ? "yes" : "no"} (${publication.planAuthority ?? "not evaluated"})`,
+  );
+}
+
+function printWork(record: WorkRecord): void {
+  console.log(`Work ${record.id} (${record.repo_name}#${record.issue_number})`);
+  console.log(`  Revision:  ${record.revision.revision_number} (${record.revision.id})`);
+  console.log(`  Hash:      ${record.revision.content_hash}`);
+  console.log(`  Imported:  ${new Date(record.revision.imported_at).toISOString()}`);
+  console.log(`  State:     ${record.revision.source.state}`);
+  console.log(`  Labels:    ${record.revision.source.labels.join(", ") || "none"}`);
+  console.log(`  Source:    ${record.revision.provenance.source_url}`);
+  console.log(`  Title:     ${record.revision.source.title}`);
+  console.log("  Body:");
+  console.log(record.revision.source.body || "(empty)");
+  if (record.revision.source.comments.length > 0) {
+    console.log(`  Comments (${record.revision.source.comments.length}):`);
+    for (const comment of record.revision.source.comments) {
+      console.log(`    ${comment.author ?? "unknown"}: ${comment.body}`);
+    }
+  }
+}
+
+export async function runPlanCommand(
+  opts: FactoryConnectionOptions & {
+    subcommand?: string;
+    positionals: string[];
+    projectId?: string;
+    issue?: string;
+    kind?: string;
+    deliveryBranch?: string;
+    reason?: string;
+    actor?: string;
+    expectedSequence?: string;
+    url?: string;
+    reconcile?: boolean;
+    amount?: string;
+    idempotencyKey?: string;
+    signal?: string;
+    stage?: string;
+    lap?: string;
+    expectedGeneration?: string;
+    expectedCandidate?: string;
+    expectedState?: string;
+    observation?: string;
+    ackUnknownOwner?: boolean;
+    json?: boolean;
+  },
+): Promise<number> {
+  const sub = opts.subcommand ?? "list";
+  try {
+    if (!opts.projectId) {
+      throw new Error(
+        "Usage: factory plan <list|get|import|approve|revoke|dispatch|runs|run|detail|evidence|findings|grants|grant|hold|resume|stop|takeover|claims|claim-interrupt|claim-complete|reconcile|publication|audit|publish|bind-evidence|integration|integrations|land|gate|verify-merge|final|final-advance|final-verify> --project <project-id>",
+      );
+    }
+    const scoped = createRegistrationClient(opts).forProject(opts.projectId);
+
+    if (sub === "list") {
+      const plans = await scoped.plans();
+      if (opts.json) {
+        console.log(JSON.stringify(plans, null, 2));
+      } else if (plans.length === 0) {
+        console.log("No admitted plans.");
+      } else {
+        console.log(`Plans (${plans.length}):`);
+        for (const plan of plans) {
+          console.log(
+            `  ${plan.id}  ${plan.kind}  #${plan.root_issue_number}  ${plan.authority}  tickets=${plan.ticket_count}  holds=${plan.hold_count}`,
+          );
+        }
+      }
+      return 0;
+    }
+
+    if (sub === "get") {
+      const planId = opts.positionals[2];
+      if (!planId) throw new Error("Usage: factory plan get <plan-id> --project <project-id>");
+      const plan = await scoped.plan(planId);
+      if (opts.json) console.log(JSON.stringify(plan, null, 2));
+      else printPlan(plan);
+      return 0;
+    }
+
+    if (sub === "import") {
+      const kind = opts.kind;
+      if (kind !== "standalone" && kind !== "spec") {
+        throw new Error("Usage: factory plan import <work-id> --kind <standalone|spec>");
+      }
+      const workId = opts.positionals[2];
+      const issueNumber = opts.issue ? Number(opts.issue) : undefined;
+      if (issueNumber !== undefined && (!Number.isSafeInteger(issueNumber) || issueNumber <= 0)) {
+        throw new Error(`--issue must be a positive integer, got: ${opts.issue}`);
+      }
+      if (Boolean(workId) === Boolean(issueNumber)) {
+        throw new Error(
+          "Provide exactly one work id positional or --issue <number> when importing a plan.",
+        );
+      }
+      const plan = await scoped.importPlan({
+        ...(workId ? { work_id: workId } : { issue_number: issueNumber }),
+        kind: kind as PlanKind,
+        ...(opts.deliveryBranch ? { delivery_branch: opts.deliveryBranch } : {}),
+      });
+      if (opts.json) console.log(JSON.stringify(plan, null, 2));
+      else printPlan(plan);
+      return 0;
+    }
+
+    if (sub === "approve" || sub === "revoke") {
+      const planId = opts.positionals[2];
+      if (!planId) {
+        throw new Error(
+          `Usage: factory plan ${sub} <plan-id> --project <project-id> [--reason <text>] [--expected-sequence <n>]`,
+        );
+      }
+      const expectedSequence = opts.expectedSequence ? Number(opts.expectedSequence) : undefined;
+      if (
+        expectedSequence !== undefined &&
+        (!Number.isSafeInteger(expectedSequence) || expectedSequence <= 0)
+      ) {
+        throw new Error(
+          `--expected-sequence must be a positive integer, got: ${opts.expectedSequence}`,
+        );
+      }
+      const submission = {
+        ...(opts.actor ? { actor: opts.actor } : {}),
+        ...(opts.reason ? { reason: opts.reason } : {}),
+        ...(expectedSequence !== undefined ? { expected_sequence: expectedSequence } : {}),
+      };
+      const plan =
+        sub === "approve"
+          ? await scoped.approvePlan(planId, submission)
+          : await scoped.revokePlan(planId, submission);
+      if (opts.json) console.log(JSON.stringify(plan, null, 2));
+      else printPlan(plan);
+      return 0;
+    }
+
+    if (sub === "dispatch") {
+      const planId = opts.positionals[2];
+      const workId = opts.positionals[3];
+      const issueNumber = opts.issue ? Number(opts.issue) : undefined;
+      if (!planId) {
+        throw new Error(
+          "Usage: factory plan dispatch <plan-id> [work-id] [--issue <n>] --project <project-id>",
+        );
+      }
+      if (issueNumber !== undefined && (!Number.isSafeInteger(issueNumber) || issueNumber <= 0)) {
+        throw new Error(`--issue must be a positive integer, got: ${opts.issue}`);
+      }
+      if (workId && issueNumber !== undefined) {
+        throw new Error("Provide either a work id positional or --issue, not both.");
+      }
+      const run = await scoped.dispatchPlan({
+        plan_id: planId,
+        ...(workId ? { work_id: workId } : {}),
+        ...(issueNumber !== undefined ? { issue_number: issueNumber } : {}),
+        ...(opts.actor ? { actor: opts.actor } : {}),
+      });
+      if (opts.json) console.log(JSON.stringify(run, null, 2));
+      else printRun(run);
+      return 0;
+    }
+
+    if (sub === "runs") {
+      const planId = opts.positionals[2];
+      const runs = await scoped.dispatchRuns(planId ? { planId } : undefined);
+      if (opts.json) {
+        console.log(JSON.stringify(runs, null, 2));
+      } else if (runs.length === 0) {
+        console.log("No dispatch runs.");
+      } else {
+        console.log(`Dispatch runs (${runs.length}):`);
+        for (const run of runs) printRun(run, "  ");
+      }
+      return 0;
+    }
+
+    if (sub === "run") {
+      const runId = opts.positionals[2];
+      if (!runId) throw new Error("Usage: factory plan run <run-id> --project <project-id>");
+      const run = await scoped.dispatchRun(runId);
+      if (opts.json) {
+        console.log(JSON.stringify(run, null, 2));
+      } else {
+        printRun(run);
+        printEvidence(await scoped.runEvidence(runId));
+      }
+      return 0;
+    }
+
+    if (sub === "evidence") {
+      const runId = opts.positionals[2];
+      if (!runId) throw new Error("Usage: factory plan evidence <run-id> --project <project-id>");
+      const report = await scoped.runEvidence(runId);
+      if (opts.json) console.log(JSON.stringify(report, null, 2));
+      else printEvidence(report);
+      return 0;
+    }
+
+    if (sub === "findings") {
+      const runId = opts.positionals[2];
+      const findings = await scoped.findings(runId ? { runId } : undefined);
+      if (opts.json) {
+        console.log(JSON.stringify(findings, null, 2));
+      } else if (findings.length === 0) {
+        console.log("No findings.");
+      } else {
+        console.log(`Findings (${findings.length}):`);
+        for (const finding of findings) printFinding(finding, "  ");
+      }
+      return 0;
+    }
+
+    if (sub === "publication" || sub === "audit") {
+      const runId = opts.positionals[2];
+      if (!runId) {
+        throw new Error(`Usage: factory plan ${sub} <run-id> --project <project-id>`);
+      }
+      const status = opts.reconcile
+        ? await scoped.publishPublication(runId)
+        : await scoped.publication(runId);
+      if (opts.json) console.log(JSON.stringify(status, null, 2));
+      else printPublication(status);
+      return 0;
+    }
+
+    if (sub === "publish") {
+      const runId = opts.positionals[2];
+      if (!runId) {
+        throw new Error("Usage: factory plan publish <run-id> --project <project-id>");
+      }
+      const status = await scoped.publishPublication(runId);
+      if (opts.json) console.log(JSON.stringify(status, null, 2));
+      else printPublication(status);
+      return 0;
+    }
+
+    if (sub === "gate" || sub === "verify-merge") {
+      const runId = opts.positionals[2];
+      if (!runId) {
+        throw new Error(`Usage: factory plan ${sub} <run-id> --project <project-id>`);
+      }
+      const status =
+        sub === "verify-merge"
+          ? await scoped.verifyDeliveryMerge(runId, opts.actor ?? "operator")
+          : await scoped.deliveryGate(runId);
+      if (opts.json) console.log(JSON.stringify(status, null, 2));
+      else printDeliveryGate(status);
+      return 0;
+    }
+
+    if (sub === "final" || sub === "final-advance" || sub === "final-verify") {
+      const planId = opts.positionals[2];
+      if (!planId) {
+        throw new Error(`Usage: factory plan ${sub} <plan-id> --project <project-id>`);
+      }
+      const status =
+        sub === "final-advance"
+          ? await scoped.advanceFinalDelivery(
+              planId,
+              opts.actor ? { actor: opts.actor } : {},
+            )
+          : sub === "final-verify"
+            ? await scoped.verifyFinalMerge(planId, opts.actor ?? "operator")
+            : await scoped.finalDelivery(planId);
+      if (opts.json) console.log(JSON.stringify(status, null, 2));
+      else printFinalDelivery(status);
+      return 0;
+    }
+
+    if (sub === "bind-evidence") {
+      const targetId = opts.positionals[2];
+      const artifactId = opts.positionals[3];
+      if (!targetId || !artifactId || !opts.url) {
+        throw new Error(
+          "Usage: factory plan bind-evidence <target-id> <artifact-id> --url <https-url> --project <project-id>",
+        );
+      }
+      const status = await scoped.bindPublicationEvidence(targetId, artifactId, opts.url);
+      if (opts.json) console.log(JSON.stringify(status, null, 2));
+      else printPublication(status);
+      return 0;
+    }
+
+    if (sub === "integration") {
+      const runId = opts.positionals[2];
+      if (!runId) throw new Error("Usage: factory plan integration <run-id> --project <project-id>");
+      const status = await scoped.integrationStatus(runId);
+      if (opts.json) console.log(JSON.stringify(status, null, 2));
+      else printIntegration(status);
+      return 0;
+    }
+
+    if (sub === "integrations") {
+      const statuses = await scoped.integrations();
+      if (opts.json) {
+        console.log(JSON.stringify(statuses, null, 2));
+      } else if (statuses.length === 0) {
+        console.log("No child integrations.");
+      } else {
+        console.log(`Child integrations (${statuses.length}):`);
+        for (const status of statuses) printIntegration(status, "  ");
+      }
+      return 0;
+    }
+
+    if (sub === "land") {
+      const runId = opts.positionals[2];
+      if (!runId) throw new Error("Usage: factory plan land <run-id> --project <project-id>");
+      const status = await scoped.landChild(runId, {
+        ...(opts.actor ? { actor: opts.actor } : {}),
+        ...(opts.reason ? { reason: opts.reason } : {}),
+      });
+      if (opts.json) console.log(JSON.stringify(status, null, 2));
+      else {
+        printIntegration(status);
+      }
+      return status.state === "integrated" ? 0 : 2;
+    }
+
+    if (sub === "reconcile") {
+      const runId = opts.positionals[2];
+      if (runId) {
+        const run = await scoped.reconcileDispatchRun(runId);
+        if (opts.json) console.log(JSON.stringify(run, null, 2));
+        else printRun(run);
+        return 0;
+      }
+      const result = await scoped.reconcileDispatch();
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(
+          `Dispatch reconciliation: retained=${result.retained.length} terminal=${result.reconciled.length}`,
+        );
+        for (const run of result.retained) printRun(run, "  ");
+      }
+      return 0;
+    }
+
+    if (sub === "detail") {
+      const runId = opts.positionals[2];
+      if (!runId) throw new Error("Usage: factory plan detail <run-id> --project <project-id>");
+      const detail = await scoped.dispatchRunDetail(runId);
+      if (opts.json) console.log(JSON.stringify(detail, null, 2));
+      else printRunDetail(detail);
+      return 0;
+    }
+
+    if (sub === "grants") {
+      const runId = opts.positionals[2];
+      const grants = await scoped.dispatchGrants(runId ? { runId } : undefined);
+      if (opts.json) {
+        console.log(JSON.stringify(grants, null, 2));
+      } else if (grants.length === 0) {
+        console.log("No budget grants.");
+      } else {
+        console.log(`Budget grants (${grants.length}):`);
+        for (const grant of grants) printGrant(grant, "  ");
+      }
+      return 0;
+    }
+
+    if (sub === "grant") {
+      const runId = opts.positionals[2];
+      if (!runId) {
+        throw new Error(
+          "Usage: factory plan grant <run-id> --amount <n> --reason <text> [--actor <name>] [--idempotency-key <key>]",
+        );
+      }
+      const amount = opts.amount ? Number(opts.amount) : NaN;
+      if (!Number.isSafeInteger(amount) || amount <= 0) {
+        throw new Error(`--amount must be a positive integer, got: ${opts.amount ?? "(missing)"}`);
+      }
+      if (!opts.reason) throw new Error("A budget grant requires --reason");
+      const result = await scoped.grantDispatchBudget(runId, {
+        amount,
+        reason: opts.reason,
+        actor: opts.actor ?? "operator",
+        ...(opts.idempotencyKey ? { idempotency_key: opts.idempotencyKey } : {}),
+      });
+      if (opts.json) console.log(JSON.stringify(result, null, 2));
+      else {
+        console.log(
+          `Grant ${result.grant.id} +${result.grant.amount} (${result.replayed ? "replayed" : "new"}) `,
+        );
+        printBudget(result.budget, "  ");
+      }
+      return 0;
+    }
+
+    if (sub === "claims") {
+      const runId = opts.positionals[2];
+      if (!runId) throw new Error("Usage: factory plan claims <run-id> --project <project-id>");
+      const claims = await scoped.deliveryClaims(runId);
+      if (opts.json) console.log(JSON.stringify(claims, null, 2));
+      else if (claims.length === 0) console.log("No delivery role claims.");
+      else {
+        console.log(`Delivery role claims (${claims.length}):`);
+        for (const claim of claims) printClaim(claim, "  ");
+      }
+      return 0;
+    }
+
+    if (sub === "claim-interrupt" || sub === "claim-complete") {
+      const runId = opts.positionals[2];
+      const stage = opts.stage;
+      if (!runId || !stage) {
+        throw new Error(
+          `Usage: factory plan ${sub} <run-id> --stage <technical_checks|independent_review|final_acceptance> --lap <n> --expected-generation <n> [--expected-candidate <sha>] [--expected-state running|interrupted] --reason <text> [--observation <id>] [--ack-unknown-owner] [--project <project-id>]`,
+        );
+      }
+      if (
+        stage !== "technical_checks" &&
+        stage !== "independent_review" &&
+        stage !== "final_acceptance"
+      ) {
+        throw new Error(`--stage must be technical_checks, independent_review or final_acceptance`);
+      }
+      const lap = opts.lap ? Number(opts.lap) : NaN;
+      const expectedGeneration = opts.expectedGeneration ? Number(opts.expectedGeneration) : NaN;
+      if (!Number.isSafeInteger(lap) || lap <= 0) {
+        throw new Error(`--lap must be a positive integer, got: ${opts.lap ?? "(missing)"}`);
+      }
+      if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration <= 0) {
+        throw new Error(
+          `--expected-generation must be a positive integer, got: ${opts.expectedGeneration ?? "(missing)"}`,
+        );
+      }
+      if (!opts.reason) throw new Error(`Plan ${sub} requires --reason`);
+      // Read the claim so the caller always CASes against a freshly-read state and
+      // never supplies a stale candidate/state from memory.
+      const claims = await scoped.deliveryClaims(runId);
+      const claim = claims.find((entry) => entry.stage === stage && entry.lap === lap);
+      if (!claim) {
+        throw new Error(
+          `No delivery claim exists for run ${runId} stage ${stage} lap ${lap}; run 'plan claims' first`,
+        );
+      }
+      const expectedCandidateHeadSha = opts.expectedCandidate ?? claim.candidateHeadSha;
+      if (claim.claimGeneration !== expectedGeneration) {
+        const msg = `Claim is at generation ${claim.claimGeneration}, not ${expectedGeneration} (held: ${claim.hold.disposition})`;
+        if (opts.json) console.log(JSON.stringify({ ok: false, error: "delivery_claim_stale", message: msg }));
+        else console.error(`Error: ${msg}`);
+        return 1;
+      }
+      const updated = await scoped.reconcileDeliveryClaim(runId, stage, {
+        action: sub === "claim-interrupt" ? "interrupt" : "complete",
+        actor: opts.actor ?? "operator",
+        reason: opts.reason,
+        lap,
+        expectedGeneration,
+        expectedCandidateHeadSha,
+        expectedState: (opts.expectedState as "running" | "interrupted") ?? claim.state,
+        ...(opts.ackUnknownOwner ? { acknowledgeUnknownOwner: true } : {}),
+        ...(opts.observation ? { observationId: opts.observation } : {}),
+      });
+      if (opts.json) console.log(JSON.stringify(updated, null, 2));
+      else printClaim(updated, "");
+      return 0;
+    }
+
+    if (["hold", "resume", "stop", "takeover"].includes(sub)) {
+      const runId = opts.positionals[2];
+      if (!runId) {
+        throw new Error(
+          `Usage: factory plan ${sub} <run-id> --project <project-id> [--reason <text>] [--actor <name>] [--signal SIGTERM|SIGKILL]`,
+        );
+      }
+      const result = await scoped.controlDispatchRun(runId, {
+        action: sub as "hold" | "resume" | "stop" | "takeover",
+        actor: opts.actor ?? "operator",
+        ...(opts.reason ? { reason: opts.reason } : {}),
+        ...(opts.signal ? { signal: opts.signal as "SIGTERM" | "SIGKILL" } : {}),
+      });
+      if (opts.json) console.log(JSON.stringify(result, null, 2));
+      else {
+        console.log(`Control ${sub} -> ${result.control.status} (${result.detail})`);
+        console.log(`  confirmed=${result.confirmed} command=${result.commandRequestId}`);
+        printRun(result.run, "  ");
+        if (result.budget) printBudget(result.budget, "  ");
+      }
+      return 0;
+    }
+
+    throw new Error(
+      `Unknown plan subcommand: ${sub}. Expected list, get, import, approve, revoke, dispatch, runs, run, detail, evidence, findings, grants, grant, hold, resume, stop, takeover, claims, claim-interrupt, claim-complete, reconcile, publication, audit, publish, bind-evidence, integration, integrations, land, gate, verify-merge, final, final-advance, final-verify.`,
+    );
+  } catch (err: any) {
+    const msg = err?.message ?? String(err);
+    if (opts.json) console.log(JSON.stringify({ ok: false, error: msg }));
+    else console.error(`Error: ${msg}`);
+    return 1;
+  }
+}
+
+function printClaim(claim: DeliveryRoleClaimRecord, indent = ""): void {
+  console.log(
+    `${indent}${claim.id}  ${claim.stage}  lap=${claim.lap}  ${claim.state}  gen=${claim.claimGeneration}`,
+  );
+  console.log(
+    `${indent}  hold=${claim.hold.disposition} (${claim.hold.ownerProbe}) ${claim.hold.reason}`,
+  );
+  console.log(
+    `${indent}  owner=${claim.ownerPid ?? "none"} role=${claim.rolePid ?? "none"}/${claim.rolePgid ?? "none"} candidate=${claim.candidateHeadSha.slice(0, 12)} receipt=${claim.resultObservationId ?? "none"}`,
+  );
+}
+
+function printRun(run: PlanDispatchRun, indent = ""): void {
+  console.log(
+    `${indent}${run.id}  #${run.issue_number}  ${run.gate_profile}  ${run.state}  lap=${run.lap}  gen=${run.ownership_generation}`,
+  );
+  console.log(`${indent}  Plan:      ${run.plan_id}  delivery=${run.delivery_id}`);
+  console.log(`${indent}  Revision:  ${run.revision_id} (${run.content_hash})`);
+  console.log(
+    `${indent}  Owner:     ${run.owner_pid ?? "none"}  target=${run.target_branch}  merge=${run.merge_policy}`,
+  );
+  console.log(`${indent}  Worktree:  ${run.worktree_path}  branch=${run.branch}`);
+  if (run.head_sha) console.log(`${indent}  Head:      ${run.head_sha}`);
+  if (run.error) console.log(`${indent}  Error:     ${run.error}`);
+}
+
+function printRunDetail(detail: DispatchRunDetail): void {
+  printRun(detail.run);
+  printBudget(detail.budget, "  ");
+  const control = detail.control;
+  console.log(
+    `  Control:   ${control ? `${control.status} (${control.reason ?? "no reason"}, by ${control.actor ?? "unknown"})` : "none"}`,
+  );
+  console.log(
+    `  Process:   owner_pid=${detail.process.ownerPid ?? "none"} alive=${detail.process.ownerAlive} worker=${detail.process.workerPid ?? "none"}/${detail.process.workerPgid ?? "none"} alive=${detail.process.workerAlive} lock=${detail.process.worktreeLockPid ?? "none"} alive=${detail.process.worktreeLockAlive}`,
+  );
+  console.log(`  Delivery claims (${detail.claims.length}):`);
+  for (const claim of detail.claims) printClaim(claim, "    ");
+  console.log(`  Attempts (${detail.attempts.length}):`);
+  for (const attempt of detail.attempts) {
+    console.log(
+      `    lap ${attempt.lap} ${attempt.state} #${attempt.issueNumber} gen=${attempt.ownershipGeneration} head=${attempt.headSha ?? "none"}${attempt.error ? ` error=${attempt.error}` : ""}`,
+    );
+  }
+  console.log(`  Acceptance criteria (${detail.acceptanceCriteria.length}):`);
+  for (const criterion of detail.acceptanceCriteria) {
+    console.log(
+      `    ${criterion.acKey}${criterion.openFindingIds.length > 0 ? ` OPEN findings=${criterion.openFindingIds.length}` : ""}: ${criterion.text}`,
+    );
+  }
+  console.log(`  Open findings (${detail.openFindings.length}):`);
+  for (const finding of detail.openFindings) printFinding(finding, "    ");
+  console.log(
+    `  Acceptance: ${detail.acceptance.authorized ? "AUTHORIZED" : "BLOCKED"}${detail.acceptance.reasons.length > 0 ? ` (${detail.acceptance.reasons.join(", ")})` : ""}`,
+  );
+  if (detail.grants.length > 0) {
+    console.log(`  Grants (${detail.grants.length}):`);
+    for (const grant of detail.grants) printGrant(grant, "    ");
+  }
+}
+
+function printBudget(budget: DispatchRunDetail["budget"], indent: string): void {
+  if (!budget) {
+    console.log(`${indent}Budget:    none (no attempt allocated yet)`);
+    return;
+  }
+  console.log(
+    `${indent}Budget:    ${budget.status.toUpperCase()} laps ${budget.consumedAttempts}/${budget.allowedAttempts} (base=${budget.baseLimit}, granted=${budget.grantedAttempts}, remaining=${budget.remainingAttempts})`,
+  );
+  if (budget.lastRejection) console.log(`${indent}  Last rejection: ${budget.lastRejection}`);
+  if (budget.retainedWorktreePath) {
+    console.log(
+      `${indent}  Retained:  ${budget.retainedWorktreePath} branch=${budget.retainedBranch}`,
+    );
+  }
+}
+
+function printGrant(grant: DispatchRunDetail["grants"][number], indent: string): void {
+  console.log(
+    `${indent}${grant.id} +${grant.amount} by ${grant.actor} (${grant.reason}) key=${grant.idempotencyKey} cmd=${grant.commandRequestId}`,
+  );
+}
+
+function printEvidence(report: RunEvidenceReport): void {
+  console.log("  Checks & findings:");
+  console.log(`  Observations (${report.observations.length}):`);
+  for (const observation of report.observations) printObservation(observation, "    ");
+  console.log(`  Findings (${report.findings.length}):`);
+  for (const finding of report.findings) printFinding(finding, "    ");
+  const acceptance = report.acceptance;
+  console.log(
+    `  Acceptance: ${acceptance.authorized ? "AUTHORIZED" : "BLOCKED"}  candidate=${acceptance.candidateHeadSha ?? "none"} target=${acceptance.targetTipSha ?? "none"}`,
+  );
+  for (const reason of acceptance.reasons) console.log(`    blocked: ${reason}`);
+}
+
+function printObservation(observation: ExecutionObservationRecord, indent: string): void {
+  console.log(
+    `${indent}${observation.stage} [${observation.status}] lap=${observation.lap} producer=${observation.producer.id}(${observation.producer.role}) profile=${observation.gateProfile}@v${observation.gateProfileVersion}`,
+  );
+  console.log(
+    `${indent}  candidate=${observation.candidateHeadSha} target=${observation.targetTipSha} merge-base=${observation.mergeBaseSha}`,
+  );
+  console.log(
+    `${indent}  tested=${observation.testedIdentity} lineage=${observation.integrationLineage}`,
+  );
+  for (const check of observation.checks) {
+    console.log(`${indent}  check ${check.result} ${check.name}: ${check.command}`);
+    if (check.detail) console.log(`${indent}    ${check.detail}`);
+  }
+  for (const artifact of observation.artifacts) {
+    console.log(
+      `${indent}  artifact ${artifact.ownerType}:${artifact.ownerId} ${artifact.relativePath} ${artifact.sizeBytes}B sha256=${artifact.digestSha256}`,
+    );
+  }
+}
+
+function printFinding(finding: FactoryFindingRecord, indent: string): void {
+  console.log(
+    `${indent}${finding.id} [${finding.severity}/${finding.status}] #${finding.issueNumber}${finding.acKey ? ` ${finding.acKey}` : ""} ${finding.fileContext}`,
+  );
+  console.log(`${indent}  ${finding.summary}`);
+  for (const event of finding.events) {
+    console.log(
+      `${indent}  ${event.sequence}. ${event.action} by ${event.actor} (${event.actorRole})${event.observationId ? ` obs=${event.observationId}` : ""}${event.detail ? `: ${event.detail}` : ""}`,
+    );
+  }
+}
+
+function printIntegration(status: IntegrationStatus, indent = ""): void {
+  console.log(
+    `${indent}Integration run ${status.runId} — ticket #${status.issueNumber} (${status.gateProfile}, merge=${status.mergePolicy})`,
+  );
+  console.log(`${indent}  State:      ${status.state}`);
+  console.log(`${indent}  Target:     ${status.targetBranch}`);
+  if (status.blockers.length > 0) {
+    console.log(`${indent}  Blockers (${status.blockers.length}):`);
+    for (const blocker of status.blockers) {
+      console.log(`${indent}    ${blocker.code}: ${blocker.message}`);
+    }
+  }
+  if (status.requiredChecks.length > 0) {
+    console.log(`${indent}  Required checks:`);
+    for (const check of status.requiredChecks) {
+      console.log(
+        `${indent}    ${check.name}: ${check.status}${check.conclusion ? `/${check.conclusion}` : ""}`,
+      );
+    }
+  }
+  const active = status.publication?.pullRequests.find((pr) => pr.active);
+  console.log(
+    active
+      ? `${indent}  Pull request: #${active.number ?? "?"} ${active.url ?? ""} (${active.state}${active.draft ? ", draft" : ""})`
+      : `${indent}  Pull request: none`,
+  );
+  if (status.integration) {
+    console.log(
+      `${indent}  Integrated: candidate=${status.integration.candidateHeadSha.slice(0, 8)} merge=${status.integration.mergeSha.slice(0, 8)} before=${status.integration.targetTipBeforeSha.slice(0, 8)} after=${status.integration.targetTipAfterSha.slice(0, 8)}`,
+    );
+  }
+  if (status.events.length > 0) {
+    console.log(`${indent}  Attempts (${status.events.length}):`);
+    for (const event of status.events) {
+      console.log(`${indent}    ${event.kind} ${event.reasons.join("; ") || "-"}`);
+    }
+  }
+}
+
+function printPublication(status: PublicationStatus): void {
+  const { target } = status;
+  console.log(`Publication ${target.id} — ticket #${target.issueNumber} (${target.gateProfile})`);
+  console.log(
+    `  State:      ${target.state}  audit=${status.auditComplete ? "complete" : "incomplete"}`,
+  );
+  console.log(
+    `  Candidate:  ${target.candidateHeadSha}  source=${target.sourceBranch}  target=${target.targetBranch}`,
+  );
+  const active = status.pullRequests.find((pr) => pr.active);
+  console.log(
+    active
+      ? `  Pull request: #${active.number ?? "?"} ${active.url ?? ""} (${active.state}${active.draft ? ", draft" : ""})`
+      : "  Pull request: none yet",
+  );
+  console.log(
+    `  Audit:      ${status.publishedEventCount} published / ${status.queuedEventCount} queued; failed=${status.failedIntentCount} unknown=${status.unknownIntentCount}`,
+  );
+  if (target.lastError) console.log(`  Last error: ${target.lastError}`);
+  if (status.remoteStale)
+    console.log("  REMOTE:     PR head/base no longer matches the candidate; evidence is stale");
+  if (status.events.length > 0) {
+    console.log(`  Events (${status.events.length}):`);
+    for (const event of status.events) {
+      const intent = status.intents.find((item) => item.operationKey === `event:${event.id}`);
+      console.log(
+        `    ${event.sequence}. ${event.kind} ${event.severity} lap=${event.lap ?? "-"} candidate=${event.candidateHeadSha.slice(0, 8)} ${intent?.state ?? "queued"} — ${event.title}`,
+      );
+    }
+  }
+  if (status.intents.some((intent) => intent.state !== "accepted")) {
+    console.log("  Outgoing intents:");
+    for (const intent of status.intents) {
+      if (intent.state === "accepted") continue;
+      console.log(
+        `    ${intent.kind} ${intent.state} attempts=${intent.attempts} ${intent.operationKey}${intent.lastError ? ` — ${intent.lastError}` : ""}`,
+      );
+    }
+  }
+}
+
+function printDeliveryGate(status: DeliveryGateStatus): void {
+  console.log(`Delivery gate ${status.runId} — #${status.issueNumber} (${status.gateProfile})`);
+  console.log(
+    `  State:      ${status.state}${status.manualMergeRequired ? " · manual merge required" : ""}`,
+  );
+  console.log(
+    `  Candidate:  ${status.candidateHeadSha ?? "none"}  source=${status.sourceBranch}  target=${status.targetBranch}`,
+  );
+  console.log(
+    `  Publication: ${status.publication.state ?? "none"} audit=${status.publication.auditComplete ? "complete" : "incomplete"}${
+      status.publication.prNumber
+        ? ` PR #${status.publication.prNumber} ${status.publication.url ?? ""} (${status.publication.remoteState ?? "unknown"}${status.publication.draft ? ", draft" : ""})`
+        : ""
+    }`,
+  );
+  console.log(
+    `  Merge:      ${status.merge.state}${status.merge.verified ? ` verified at ${status.merge.verification?.verifiedAt}` : ""}${status.merge.remoteTargetTipSha ? ` target-tip=${status.merge.remoteTargetTipSha}` : ""}`,
+  );
+  if (status.merge.detail) console.log(`  Merge note: ${status.merge.detail}`);
+  console.log(`  Stages (${status.stages.length}):`);
+  for (const stage of status.stages) {
+    console.log(`    ${stage.status.padEnd(12)} ${stage.name}: ${stage.detail}`);
+  }
+  if (status.reasons.length > 0) {
+    console.log(`  Blockers (${status.reasons.length}):`);
+    for (const reason of status.reasons) console.log(`    - ${reason}`);
+  }
+}
+
+function printFinalDelivery(status: FinalDeliveryStatus): void {
+  console.log(`Final delivery ${status.planId} — spec graph ${status.graphHash.slice(0, 12)}`);
+  console.log(`  State:      ${status.state}${status.delivered ? " · delivered" : ""}`);
+  console.log(`  Children:   ${status.integratedCount}/${status.requiredCount} integrated`);
+  console.log(`  Branch:     ${status.integrationBranch} -> ${status.deliveryBranch}`);
+  console.log(
+    `  Candidate:  ${status.candidateHeadSha ?? "none"}  tested-target=${status.targetTipSha ?? "none"}`,
+  );
+  if (status.runId) console.log(`  Final run:  ${status.runId}`);
+  if (status.pullRequest) {
+    console.log(
+      `  Pull request: #${status.pullRequest.number} ${status.pullRequest.url ?? ""} (${status.pullRequest.state}${status.pullRequest.draft ? ", draft" : ""}) ${status.pullRequest.headBranch}->${status.pullRequest.baseBranch}`,
+    );
+  }
+  if (status.merge) {
+    console.log(
+      `  Merge:      ${status.merge.state}${status.merge.verified ? " verified" : ""}${status.merge.remoteTargetTipSha ? ` target-tip=${status.merge.remoteTargetTipSha}` : ""}`,
+    );
+  }
+  if (status.budget) {
+    console.log(
+      `  Budget:     ${status.budget.consumedAttempts}/${status.budget.allowedAttempts} final attempts (${status.budget.status})`,
+    );
+  }
+  if (status.children.length > 0) {
+    console.log("  Children:");
+    for (const child of status.children) {
+      console.log(
+        `    #${child.issueNumber} ${child.integrated ? "integrated" : "pending"}${child.candidateHeadSha ? ` candidate=${child.candidateHeadSha.slice(0, 8)} merge=${child.mergeSha?.slice(0, 8) ?? "-"}` : ""}${child.reasons.length > 0 ? ` — ${child.reasons.join(", ")}` : ""}`,
+      );
+    }
+  }
+  if (status.reasons.length > 0) {
+    console.log(`  Reasons (${status.reasons.length}):`);
+    for (const reason of status.reasons) console.log(`    - ${reason}`);
+  }
+  if (status.haltReason) console.log(`  Needs owner: ${status.haltReason}`);
+}
+
+function printPlan(plan: PlanRecord): void {  console.log(`Plan ${plan.id} (${plan.kind})`);
+  console.log(`  Authority:  ${plan.authority}`);
+  console.log(`  Dispatch:   ${plan.dispatchable ? "eligible" : "held"}`);
+  console.log(
+    `  Root:       #${plan.members.find((m) => m.work_id === plan.root_work_id)?.issue_number ?? "?"}`,
+  );
+  console.log(`  Graph:      ${plan.graph_hash}`);
+  console.log(`  Delivery:   ${plan.delivery_branch}`);
+  console.log(`  Integration:${plan.integration_branch ? ` ${plan.integration_branch}` : " none"}`);
+  if (plan.accepted_revision) {
+    console.log(
+      `  Accepted:   ${plan.accepted_revision.revision_id} (rev ${plan.accepted_revision.revision_number}, ${plan.accepted_revision.content_hash})`,
+    );
+  } else {
+    console.log("  Accepted:   none");
+  }
+  console.log(`  Members (${plan.members.length}):`);
+  for (const member of plan.members) {
+    console.log(
+      `    #${member.issue_number}  ${member.role}  ${member.gate_profile}  ${member.revision_id}  ${member.title}`,
+    );
+  }
+  if (plan.holds.length > 0) {
+    console.log(`  Holds (${plan.holds.length}):`);
+    for (const item of plan.holds) {
+      const member = item.issue_number ? ` #${item.issue_number}` : "";
+      console.log(`    [${item.severity}] ${item.code}${member}: ${item.detail}`);
+    }
+  } else {
+    console.log("  Holds:      none");
+  }
+  console.log(`  Decisions (${plan.decisions.length}):`);
+  for (const decision of plan.decisions) {
+    console.log(
+      `    ${decision.sequence}. ${decision.action} -> ${decision.outcome} by ${decision.actor} (${decision.source})${decision.reason ? `: ${decision.reason}` : ""}`,
+    );
+  }
+}
+
 export async function runProjectCommand(
   opts: FactoryConnectionOptions & {
     subcommand?: string;
@@ -546,6 +1706,284 @@ export async function runProjectCommand(
   }
 }
 
+async function runLocalBackupCommand(opts: {
+  subcommand: string;
+  positionals: string[];
+  stateDir: string;
+  destination?: string;
+  targetStateDir?: string;
+  targetHome?: string;
+  actor?: string;
+  json?: boolean;
+}): Promise<number> {
+  const stateDir = resolveAnimusStateDir(opts.stateDir);
+  const db = initializeDatabase(join(stateDir, "console.db"));
+  try {
+    const service = new BackupRestoreService(db, { stateDir });
+    if (opts.subcommand === "status") {
+      const status = service.backupStatus();
+      if (opts.json) {
+        console.log(JSON.stringify(status, null, 2));
+      } else if (!status.lastBackup) {
+        console.log("No completed workspace backup recorded.");
+      } else {
+        console.log(`Last backup: ${status.lastBackup.destinationPath}`);
+        console.log(`  Restorable: ${status.restorable ? "yes" : "no"}`);
+        console.log(`  Schema:     v${status.lastBackup.schemaVersion}`);
+        console.log(`  Artifacts:  ${status.artifactCount}`);
+      }
+      return 0;
+    }
+    if (opts.subcommand === "create") {
+      const destination = opts.destination ?? opts.positionals[2];
+      if (!destination) throw new Error("Usage: animus backup create <destination> [--actor <name>]");
+      const result = service.createBackup(resolve(destination), opts.actor ?? "operator");
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(`Verified workspace backup written to ${result.destinationPath}`);
+        console.log(`  Schema v${result.schemaVersion}; ${result.artifactCount} artifact(s)`);
+        console.log(`  Manifest SHA-256: ${result.manifestHash}`);
+      }
+      return 0;
+    }
+    if (opts.subcommand === "restore") {
+      const source = opts.positionals[2];
+      const targetStateDir = opts.targetStateDir;
+      if (!source || !targetStateDir) {
+        throw new Error(
+          "Usage: animus backup restore <source> --target-state-dir <path> [--target-home <path>] [--actor <name>]",
+        );
+      }
+      const result = service.restoreBackup({
+        sourcePath: resolve(source),
+        targetStateDir: resolve(targetStateDir),
+        targetHome: opts.targetHome ? resolve(opts.targetHome) : undefined,
+        actor: opts.actor ?? "operator",
+      });
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(`Restored workspace into ${result.operation.targetStateDir}`);
+        console.log(`  Held: ${result.installation.held ? "yes" : "no"}`);
+      }
+      return 0;
+    }
+    if (opts.subcommand === "restores") {
+      const status = service.restoreStatus(opts.targetStateDir ? resolve(opts.targetStateDir) : undefined);
+      if (opts.json) console.log(JSON.stringify(status, null, 2));
+      else console.log(`Restored installation held: ${status.installation.held ? "yes" : "no"}`);
+      return 0;
+    }
+    throw new Error(
+      `Unknown backup subcommand: ${opts.subcommand}. Expected status, create, restore, or restores in local mode.`,
+    );
+  } finally {
+    try {
+      db.close();
+    } catch {}
+  }
+}
+
+export async function runBackupCommand(
+  opts: FactoryConnectionOptions & {
+    subcommand?: string;
+    positionals: string[];
+    stateDir?: string;
+    destination?: string;
+    targetStateDir?: string;
+    targetHome?: string;
+    releaseRuns?: string[];
+    releaseIntents?: string[];
+    reason?: string;
+    actor?: string;
+    json?: boolean;
+  },
+): Promise<number> {
+  const sub = opts.subcommand ?? "status";
+  try {
+    // Supported offline packaged path: the compiled CLI operates the same
+    // BackupRestoreService directly against the real installation database. No
+    // server/network transport is involved, so a packaged binary can prove
+    // backup + isolated held restore on the build host.
+    if (opts.stateDir) {
+      return await runLocalBackupCommand({
+        subcommand: sub,
+        positionals: opts.positionals,
+        stateDir: opts.stateDir,
+        destination: opts.destination,
+        targetStateDir: opts.targetStateDir,
+        targetHome: opts.targetHome,
+        actor: opts.actor,
+        json: opts.json,
+      });
+    }
+    const client = createRegistrationClient(opts);
+
+    if (sub === "status") {
+      const status = await client.backupStatus();
+      if (opts.json) {
+        console.log(JSON.stringify(status, null, 2));
+      } else if (!status.lastBackup) {
+        console.log("No completed workspace backup recorded.");
+        console.log(`Credentials in backup: no. ${status.credentials.note}`);
+      } else {
+        console.log(`Last backup: ${status.lastBackup.destinationPath}`);
+        console.log(`  Status:       ${status.lastBackup.status}`);
+        console.log(`  Restorable:   ${status.restorable ? "yes" : "no"}`);
+        console.log(`  Created:      ${new Date(status.lastBackup.createdAt).toISOString()}`);
+        console.log(`  Schema:       v${status.lastBackup.schemaVersion}`);
+        console.log(`  Artifacts:    ${status.artifactCount}`);
+        console.log(`  DB SHA-256:   ${status.lastBackup.databaseSha256}`);
+        if (status.reasons.length > 0) {
+          console.log(`  Problems:     ${status.reasons.join(", ")}`);
+        }
+        console.log(`  Credentials:  not included. ${status.credentials.note}`);
+        console.log(`  Limitation:   ${status.sameDiskWarning}`);
+      }
+      return 0;
+    }
+
+    if (sub === "create") {
+      const destination = opts.destination ?? opts.positionals[2];
+      if (!destination) {
+        throw new Error("Usage: animus backup create <destination> [--actor <name>]");
+      }
+      const result = await client.createWorkspaceBackup({
+        destinationPath: destination,
+        ...(opts.actor ? { actor: opts.actor } : {}),
+      });
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(`Verified workspace backup written to ${result.destinationPath}`);
+        console.log(`  Schema v${result.schemaVersion}; ${result.artifactCount} artifact(s)`);
+        console.log(`  Manifest SHA-256: ${result.manifestHash}`);
+        console.log(`  Database SHA-256: ${result.databaseSha256}`);
+        console.log("  Credentials are not included; reconfigure them in a restored home.");
+      }
+      return 0;
+    }
+
+    if (sub === "restore") {
+      const source = opts.positionals[2];
+      const targetStateDir = opts.targetStateDir;
+      if (!source || !targetStateDir) {
+        throw new Error(
+          "Usage: animus backup restore <source> --target-state-dir <path> [--target-home <path>] [--actor <name>]",
+        );
+      }
+      const result = await client.restoreWorkspace({
+        sourcePath: source,
+        targetStateDir,
+        ...(opts.targetHome ? { targetHome: opts.targetHome } : {}),
+        ...(opts.actor ? { actor: opts.actor } : {}),
+      });
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        const report = result.operation.report as Record<string, unknown>;
+        console.log(`Restored workspace into ${result.operation.targetStateDir}`);
+        console.log(`  Held:                 ${result.installation.held ? "yes" : "no"}`);
+        console.log(`  Interrupted runs:     ${report.interruptedRunCount ?? 0}`);
+        console.log(`  Held controls:        ${report.heldControlCount ?? 0}`);
+        console.log(`  Pending publications: ${report.pendingPublicationIntentCount ?? 0}`);
+        console.log("  Dispatch and publication are disabled until explicit reconciliation.");
+        console.log("  Live processes and uncommitted worktree edits are not resumed.");
+      }
+      return 0;
+    }
+
+    if (sub === "restores") {
+      const status = await client.restoreStatus(opts.targetStateDir);
+      if (opts.json) {
+        console.log(JSON.stringify(status, null, 2));
+      } else if (!status.installation.held) {
+        console.log("No held restored installation.");
+      } else {
+        console.log("Restored installation is HELD pending reconciliation.");
+        console.log(`  Restored at:          ${status.installation.restoredAt ?? "unknown"}`);
+        console.log(`  Interrupted runs:     ${status.heldRunCount}`);
+        console.log(`  Pending publications: ${status.pendingPublicationIntentCount}`);
+        for (const run of status.unresolved.runs) {
+          console.log(
+            `  run  ${run.runId}  ${run.state}  owner-cleared=${run.ownerPidCleared && run.leaseCleared}  worktree-present=${run.worktreePresent}`,
+          );
+        }
+        for (const intent of status.unresolved.intents) {
+          console.log(
+            `  intent  ${intent.intentId}  ${intent.kind}  ${intent.state}  attempts=${intent.attempts}`,
+          );
+        }
+      }
+      return 0;
+    }
+
+    if (sub === "reconcile") {
+      const inspected = await client.restoreStatus(opts.targetStateDir);
+      const runs = parseRunDispositions(opts.releaseRuns);
+      const intents = parseIntentDispositions(opts.releaseIntents);
+      const missing: string[] = [];
+      const runIds = new Set(runs.map((run) => run.runId));
+      const intentIds = new Set(intents.map((intent) => intent.intentId));
+      for (const run of inspected.unresolved.runs) {
+        if (!runIds.has(run.runId)) missing.push(`--release-run ${run.runId}:<resolved|abandoned>`);
+      }
+      for (const intent of inspected.unresolved.intents) {
+        if (!intentIds.has(intent.intentId)) {
+          missing.push(`--release-intent ${intent.intentId}:<resolved|abandoned>`);
+        }
+      }
+      if (missing.length > 0) {
+        throw new Error(
+          [
+            "Cannot release the hold from a reason string alone. Every interrupted run and pending intent needs an explicit disposition:",
+            ...missing,
+            "`resolved` requires a positive remote readback; use `abandoned` for an effect verified absent or ambiguous.",
+          ].join("\n"),
+        );
+      }
+      if (
+        !inspected.installation.sourceRestoreId ||
+        inspected.installation.restoredAt === null
+      ) {
+        throw new Error("Held installation does not expose a reconcilable snapshot");
+      }
+      const status = await client.reconcileRestore(
+        {
+          actor: opts.actor ?? "operator",
+          reason: opts.reason ?? "Operator verified restored ownership and external effects",
+          snapshot: {
+            sourceRestoreId: inspected.installation.sourceRestoreId,
+            restoredAt: inspected.installation.restoredAt,
+          },
+          runs,
+          intents,
+        },
+        opts.targetStateDir,
+      );
+      if (opts.json) {
+        console.log(JSON.stringify(status, null, 2));
+      } else {
+        console.log("Restored installation released after verified reconciliation.");
+        console.log(`  Held: ${status.installation.held ? "yes" : "no"}`);
+        console.log(`  Runs released: ${runs.length}`);
+        console.log(`  Intents released: ${intents.length}`);
+      }
+      return 0;
+    }
+
+    throw new Error(
+      `Unknown backup subcommand: ${sub}. Expected status, create, restore, restores, or reconcile.`,
+    );
+  } catch (err: any) {
+    const msg = err?.message ?? String(err);
+    if (opts.json) console.log(JSON.stringify({ ok: false, error: msg }));
+    else console.error(`Error: ${msg}`);
+    return 1;
+  }
+}
+
 export async function runCommandLedgerCli(opts: {
   subcommand?: string;
   positionals: string[];
@@ -633,4 +2071,40 @@ export async function runCommandLedgerCli(opts: {
       db.close();
     } catch {}
   }
+}
+
+function parseReleaseEntries(
+  entries: string[] | undefined,
+  kind: "run" | "intent",
+): Array<{ id: string; disposition: "resolved" | "abandoned" }> {
+  return (entries ?? []).map((entry) => {
+    const separator = entry.lastIndexOf(":");
+    if (separator <= 0) {
+      throw new Error(`--release-${kind} expects <id>:<resolved|abandoned>, got: ${entry}`);
+    }
+    const id = entry.slice(0, separator).trim();
+    const disposition = entry.slice(separator + 1).trim();
+    if (disposition !== "resolved" && disposition !== "abandoned") {
+      throw new Error(`--release-${kind} disposition must be resolved or abandoned: ${entry}`);
+    }
+    return { id, disposition };
+  });
+}
+
+function parseRunDispositions(
+  entries: string[] | undefined,
+): Array<{ runId: string; disposition: "resolved" | "abandoned" }> {
+  return parseReleaseEntries(entries, "run").map((entry) => ({
+    runId: entry.id,
+    disposition: entry.disposition,
+  }));
+}
+
+function parseIntentDispositions(
+  entries: string[] | undefined,
+): Array<{ intentId: string; disposition: "resolved" | "abandoned" }> {
+  return parseReleaseEntries(entries, "intent").map((entry) => ({
+    intentId: entry.id,
+    disposition: entry.disposition,
+  }));
 }

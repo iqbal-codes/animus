@@ -840,6 +840,7 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
         defaultBaseBranch: "main",
         push: false,
         dbPath: join(tempDir, "nonexistent-dir-for-db", "console.db"),
+        installationStateDir: join(tempDir, "state"),
         projectId,
         autoMergeEval: {
           authorized: true,
@@ -932,6 +933,7 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
         defaultBaseBranch: "main",
         push: false,
         db,
+        installationStateDir: join(tempDir, "state"),
         projectId,
         autoMergeEval: {
           authorized: true,

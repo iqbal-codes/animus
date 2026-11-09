@@ -8,14 +8,19 @@ import { runServeCommand, runStandaloneBackend, runStatusCommand } from "./comma
 import { runEngineCommand, runLapCommand } from "./commands/engine";
 import { runDoctorCommand } from "./commands/doctor";
 import {
+  runBackupCommand,
   runCommandLedgerCli,
   runControlCommand,
   runIntakeCommand,
   runProjectCommand,
+  runDraftCommand,
   runPromotionCommand,
+  runPlanCommand,
+  runWorkCommand,
 } from "./commands/operations";
 import { runLoopCliCommand, runSchedulerCliCommand } from "./commands/loop";
 import { runConfigCliCommand, runSetupCommand } from "./commands/setup";
+import { runAuthorityCommand } from "./commands/authority";
 
 export function resolveRepoRoot(cwdOverride?: string): string {
   if (cwdOverride) return resolve(cwdOverride);
@@ -274,6 +279,59 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         json: values.json,
       });
 
+    case "work":
+      return await runWorkCommand({
+        subcommand,
+        positionals,
+        projectId: values.project,
+        factoryUrl: values["factory-url"],
+        factoryToken: values["factory-token"],
+        json: values.json,
+      });
+
+    case "draft":
+    case "drafts":
+      return await runDraftCommand({
+        subcommand,
+        positionals,
+        projectId: values.project,
+        answers: values.answers,
+        instructions: values.instructions,
+        revision: values.revision,
+        reason: values.reason,
+        factoryUrl: values["factory-url"],
+        factoryToken: values["factory-token"],
+        json: values.json,
+      });
+
+    case "plan":
+      return await runPlanCommand({
+        subcommand,
+        positionals,
+        projectId: values.project,
+        issue: values.issue,
+        kind: values.kind,
+        deliveryBranch: values["base-branch"],
+        reason: values.reason,
+        actor: values.actor,
+        expectedSequence: values["expected-sequence"],
+        url: values.url,
+        reconcile: values.reconcile,
+        amount: values.amount,
+        idempotencyKey: values["idempotency-key"],
+        signal: values.signal,
+        stage: values.stage,
+        lap: values.lap,
+        expectedGeneration: values["expected-generation"],
+        expectedCandidate: values["expected-candidate"],
+        expectedState: values["expected-state"],
+        observation: values.observation,
+        ackUnknownOwner: values["ack-unknown-owner"],
+        factoryUrl: values["factory-url"],
+        factoryToken: values["factory-token"],
+        json: values.json,
+      });
+
     case "project":
     case "projects":
       return await runProjectCommand({
@@ -284,6 +342,42 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         name: values.name,
         path: values.path,
         repo: values.repo,
+        factoryUrl: values["factory-url"],
+        factoryToken: values["factory-token"],
+        json: values.json,
+      });
+
+    case "authority":
+      return await runAuthorityCommand({
+        subcommand,
+        positionals,
+        repoRoot,
+        stateDir: values["state-dir"],
+        cutoverId: values["cutover-id"],
+        inventorySha256: values["inventory-sha256"],
+        backupManifestSha256: values["backup-manifest-sha256"],
+        actor: values.actor,
+        reason: values.reason,
+        destination: values.destination,
+        targetStateDir: values["target-state-dir"],
+        factoryUrl: values["factory-url"],
+        factoryToken: values["factory-token"],
+        json: values.json,
+      });
+
+    case "backup":
+    case "backups":
+      return await runBackupCommand({
+        subcommand,
+        positionals,
+        stateDir: values["state-dir"],
+        destination: values.destination,
+        targetStateDir: values["target-state-dir"],
+        targetHome: values["target-home"],
+        releaseRuns: values["release-run"],
+        releaseIntents: values["release-intent"],
+        reason: values.reason,
+        actor: values.actor,
         factoryUrl: values["factory-url"],
         factoryToken: values["factory-token"],
         json: values.json,

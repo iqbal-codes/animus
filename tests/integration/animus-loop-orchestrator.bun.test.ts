@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { runAnimusLoop, runLocalLoop } from "../../scripts/animus-loop";
+import { runAnimusLoop, runLocalLoop } from "./support/loop-harness";
 import * as animusLoopMod from "../../scripts/animus-loop";
 import * as localLoopMod from "../../scripts/local-loop";
 import type { LocalIssue, AgentTransport } from "../../scripts/animus-loop";

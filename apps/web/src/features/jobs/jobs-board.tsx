@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Search, SlidersHorizontal } from "lucide-react";
 import { cn } from "cn";
+import { Button } from "@/components/ui/button";
 import type { JobsBoardModel } from "./jobs-model";
 import { HEALTH, type BackendState } from "./factory-status";
 import { KanbanLane } from "./kanban-lane";
@@ -15,10 +16,18 @@ export function JobsBoard({
   board,
   backendState,
   density,
+  loading = false,
+  error = null,
+  onRefresh,
+  onOpenWork,
 }: {
   board: JobsBoardModel;
   backendState: BackendState;
   density?: CardDensity;
+  loading?: boolean;
+  error?: string | null;
+  onRefresh?: () => void;
+  onOpenWork?: (workId: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -72,14 +81,49 @@ export function JobsBoard({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-[26px] pt-7 pb-5">
-      <div className="flex shrink-0 items-stretch gap-3 px-7">
+      {(loading || error || board.totalJobs === 0) && (
+        <div className="mx-7 flex flex-wrap items-center gap-3 rounded-[10px] border border-[var(--border-subtle)] px-3 py-2">
+          {loading ? (
+            <p role="status" data-testid="board-loading" className="text-xs text-text-secondary">
+              Loading the project board from canonical factory state…
+            </p>
+          ) : error ? (
+            <>
+              <p
+                role="alert"
+                data-testid="board-error"
+                className="min-w-0 break-words text-xs text-[var(--error)]"
+              >
+                Board unavailable: {error}
+              </p>
+              {onRefresh && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="min-h-11 sm:min-h-8"
+                  onClick={onRefresh}
+                >
+                  Retry
+                </Button>
+              )}
+            </>
+          ) : (
+            <p data-testid="board-empty" className="text-xs text-text-secondary">
+              No work is recorded for this project yet. Import and approve a plan to populate the
+              existing columns.
+            </p>
+          )}
+        </div>
+      )}
+
+      <div className="grid shrink-0 grid-cols-2 items-stretch gap-3 px-7 sm:grid-cols-5">
         {board.kpis.map((kpi) => (
           <KpiCard key={kpi.label} kpi={kpi} />
         ))}
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-4">
-        <div className="flex h-8 shrink-0 items-center gap-3 px-7">
+        <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-3 px-7">
           <h2 className="text-sm leading-[1.45] font-medium text-foreground">All jobs</h2>
           <span className="text-xs leading-[1.45] text-text-muted">{board.totalJobs}</span>
           <span className="flex-1" />
@@ -127,7 +171,15 @@ export function JobsBoard({
                       `${job.ref} ${job.title}`.toLowerCase().includes(needle),
                     )
                   : lane.cards;
-                return <KanbanLane key={lane.id} lane={lane} cards={cards} density={density} />;
+                return (
+                  <KanbanLane
+                    key={lane.id}
+                    lane={lane}
+                    cards={cards}
+                    density={density}
+                    onOpenWork={onOpenWork}
+                  />
+                );
               })}
             </div>
           </div>

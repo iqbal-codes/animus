@@ -29,12 +29,21 @@ export interface ParsedCliArgs {
     refresh?: boolean;
     reason?: string;
     actor?: string;
+    "expected-sequence"?: string;
     title?: string;
     body?: string;
     name?: string;
     path?: string;
     repo?: string;
+    project?: string;
     destination?: string;
+    "target-state-dir"?: string;
+    "target-home"?: string;
+    "cutover-id"?: string;
+    "inventory-sha256"?: string;
+    "backup-manifest-sha256"?: string;
+    "release-run"?: string[];
+    "release-intent"?: string[];
     state?: string;
     limit?: string;
     provider?: string;
@@ -58,6 +67,22 @@ export interface ParsedCliArgs {
     mapping?: string;
     publish?: boolean;
     candidate?: string;
+    answers?: string;
+    instructions?: string;
+    revision?: string;
+    kind?: string;
+    url?: string;
+    reconcile?: boolean;
+    amount?: string;
+    "idempotency-key"?: string;
+    signal?: string;
+    stage?: string;
+    lap?: string;
+    "expected-generation"?: string;
+    "expected-candidate"?: string;
+    "expected-state"?: string;
+    observation?: string;
+    "ack-unknown-owner"?: boolean;
   };
 }
 
@@ -91,12 +116,21 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       refresh: { type: "boolean", default: false },
       reason: { type: "string" },
       actor: { type: "string" },
+      "expected-sequence": { type: "string" },
       title: { type: "string" },
       body: { type: "string" },
       name: { type: "string" },
       path: { type: "string" },
       repo: { type: "string" },
+      project: { type: "string" },
       destination: { type: "string" },
+      "target-state-dir": { type: "string" },
+      "target-home": { type: "string" },
+      "cutover-id": { type: "string" },
+      "inventory-sha256": { type: "string" },
+      "backup-manifest-sha256": { type: "string" },
+      "release-run": { type: "string", multiple: true },
+      "release-intent": { type: "string", multiple: true },
       state: { type: "string" },
       limit: { type: "string" },
       provider: { type: "string" },
@@ -120,6 +154,22 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       mapping: { type: "string" },
       publish: { type: "boolean", default: false },
       candidate: { type: "string" },
+      answers: { type: "string" },
+      instructions: { type: "string" },
+      revision: { type: "string" },
+      kind: { type: "string" },
+      url: { type: "string" },
+      reconcile: { type: "boolean", default: false },
+      amount: { type: "string" },
+      "idempotency-key": { type: "string" },
+      signal: { type: "string" },
+      stage: { type: "string" },
+      lap: { type: "string" },
+      "expected-generation": { type: "string" },
+      "expected-candidate": { type: "string" },
+      "expected-state": { type: "string" },
+      observation: { type: "string" },
+      "ack-unknown-owner": { type: "boolean", default: false },
     },
   });
 

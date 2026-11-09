@@ -82,14 +82,37 @@ export const helpEntries: readonly HelpEntry[] = [
     description: "Evaluate GitHub issue backlog and run on-demand triage passes",
   },
   {
+    command: "draft",
+    spec: "draft <list|get|refine|revise|approve|reject|request-changes> --project <project-id>",
+    description:
+      "Refine imported work into local drafts, answer questions, and record operator decisions",
+  },
+  {
     command: "promotion",
     spec: "promotion <status|prepare>",
     description: "Inspect unpromoted commits or prepare batch promotion PR",
   },
   {
+    command: "plan",
+    spec: "plan <list|get|import|approve|revoke|dispatch|runs|run|detail|evidence|findings|grants|grant|hold|resume|stop|takeover|claims|claim-interrupt|claim-complete|reconcile|publication|audit|publish|bind-evidence|integration|integrations|land> --project <project-id>",
+    description: "Inspect, decide and dispatch frozen local execution plans with budgets, run controls and publication audit",
+  },
+  {
     command: "project",
     spec: "project <list|get|register|remove|monitoring>",
     description: "Manage projects through the selected factory API",
+  },
+  {
+    command: "authority",
+    spec: "authority <status|stage|activate|abort|mappings>",
+    description:
+      "Inspect, stage, activate or abort the validated local execution-authority cutover with backup and held-restore proof",
+  },
+  {
+    command: "backup",
+    spec: "backup <status|create|restore|restores|reconcile> [destination|source] [--target-state-dir <path>] [--target-home <path>] [--state-dir <path>]",
+    description:
+      "Create verified workspace backups, report restorability, and restore isolated held installations; with --state-dir the compiled CLI runs the same backend service offline",
   },
   {
     command: "command",
@@ -149,8 +172,60 @@ export const orderedFlags: readonly FlagHelp[] = [
     commands: ["project"],
   },
   {
+    spec: "--project <project-id>",
+    description: "Registered project ID for work, draft, or plan reads",
+    commands: ["work", "draft", "plan"],
+  },
+  {
+    spec: "--reason <text>",
+    description: "Reason for a draft, plan decision, or cutover abort",
+    commands: ["draft", "plan", "authority"],
+  },
+  {
+    spec: "--cutover-id <id>",
+    description: "Exact authority cutover operation",
+    commands: ["authority"],
+  },
+  {
+    spec: "--answers <json>",
+    description: "Answers to draft clarification questions as a JSON array or @file",
+    commands: ["draft"],
+  },
+  {
+    spec: "--instructions <text>",
+    description: "Operator revision instructions for the next draft revision",
+    commands: ["draft"],
+  },
+  {
+    spec: "--stage <technical_checks|independent_review|final_acceptance>",
+    description: "Delivery role claim stage for claim-interrupt/claim-complete",
+    commands: ["plan"],
+  },
+  {
+    spec: "--expected-generation <n>",
+    description: "Opaque claim generation CAS version the operator observed",
+    commands: ["plan"],
+  },
+  {
+    spec: "--ack-unknown-owner",
+    description: "Acknowledge unknown-owner effects when interrupting a claim",
+    commands: ["plan"],
+  },
+  {
+    spec: "--revision <number>",
+    description: "Exact draft revision number a decision targets",
+    commands: ["draft"],
+  },
+  {
+    spec: "--kind <standalone|spec>",
+    description:
+      "Prepared plan kind for import; standalone tickets stay standalone, specs never fall back",
+    commands: ["plan"],
+  },
+  {
     spec: "--provider <id>",
-    description: "Default agent harness provider (pi, claude, omp, commandcode; codex, opencode coming soon)",
+    description:
+      "Default agent harness provider (pi, claude, omp, commandcode; codex, opencode coming soon)",
     commands: ["setup", "config"],
   },
   {
@@ -240,8 +315,8 @@ export const orderedFlags: readonly FlagHelp[] = [
   },
   {
     spec: "--issue, -i <number>",
-    description: "Target GitHub issue number for loop run/watch or intake",
-    commands: ["loop", "intake"],
+    description: "Target GitHub issue number for loop run/watch, intake or plan import",
+    commands: ["loop", "intake", "plan"],
   },
   {
     spec: "--run, -r <id>",
@@ -277,6 +352,16 @@ export const orderedFlags: readonly FlagHelp[] = [
     spec: "--refresh",
     description: "Force fresh GitHub API lookup bypassing intake cache",
     commands: ["intake"],
+  },
+  {
+    spec: "--target-state-dir <path>",
+    description: "Isolated target state directory for backup restore, status and reconciliation",
+    commands: ["backup"],
+  },
+  {
+    spec: "--target-home <path>",
+    description: "Isolated target Animus home used to rewrite legitimate home-local worktree paths",
+    commands: ["backup"],
   },
   {
     spec: "--mapping <path>",

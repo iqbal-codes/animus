@@ -20,11 +20,28 @@ import {
   type OperatorErrorCode,
 } from "@animus/contracts/operator";
 import { configuration, hostOrigin, type Configuration } from "./config";
+import { readExecutionAuthority } from "@animus/contracts/execution-authority";
+import { evaluateExecutionAuthority } from "./authority/guard";
 import { IntakeService, handleProjectIntakeRoute } from "./intake";
+import { WorkService, handleProjectWorkRoute } from "./work";
+import { PlanService, handleProjectPlanRoute } from "./plans";
+import {
+  DispatchService,
+  handleProjectDispatchRoute,
+  runLocalDispatchTick,
+  type DispatchServiceOptions,
+} from "./dispatch";
+import {
+  DraftService,
+  handleProjectDraftRoute,
+  defaultDraftPlannerAdapter,
+  type DraftPlanner,
+} from "./draft";
 import {
   initializeDatabase,
   ProjectRegistryService,
   ProjectRegistryError,
+  resolveStateDir,
   type ForgeAdapter,
 } from "./registry";
 import { CommandService } from "./command";
@@ -32,7 +49,24 @@ import { ProjectOnboardingService } from "./registry/onboarding";
 import { RegisteredProjectMonitor } from "./monitor/service";
 import { loadMonitorRuntime, type MonitorRuntime } from "./monitor/runtime";
 import { SpecCoordinatorService, handleProjectCoordinationRoute } from "./coordination";
-import { EvidenceService, handleProjectEvidenceRoute } from "./evidence";
+import {
+  EvidenceService,
+  ExecutionObservationService,
+  handleProjectEvidenceRoute,
+} from "./evidence";
+import { PublicationService, handleProjectPublicationRoute } from "./publication";
+import { handleProjectIntegrationRoute } from "./integration";
+import { BackupRestoreService, handleBackupRoute, handleRestoreRoute } from "./restore";
+import { AuthorityCutoverService, handleAuthorityRoute } from "./cutover";
+import { DraftPublicationService, handleProjectDraftPublicationRoute } from "./publication";
+import {
+  DeliveryGateService,
+  DeliveryRuntimeCoordinator,
+  handleProjectDeliveryRoute,
+} from "./delivery";
+import { FinalDeliveryService, handleProjectFinalRoute } from "./final";
+import { createLocalExecutionRuntime } from "./local-runtime";
+import { OperatorBoardService, handleProjectBoardRoute } from "./board";
 import { HarnessService, handleHarnessRoute } from "./harness";
 import {
   validateCsrfProtection,
@@ -68,6 +102,9 @@ export interface BackendAppOptions {
   monitorIntervalMs?: number;
   monitorRuntime?: MonitorRuntime;
   forge?: ForgeAdapter;
+  dispatch?: Omit<DispatchServiceOptions, "plans" | "ledger" | "brakes">;
+  draftPlanner?: DraftPlanner;
+  deliveryRuntime?: DeliveryRuntimeCoordinator;
 }
 
 export interface BackendApp {
@@ -79,6 +116,13 @@ export interface BackendApp {
   };
   monitor: RegisteredProjectMonitor;
   db: DatabaseSync;
+  publication: PublicationService;
+  backup: BackupRestoreService;
+  authority: AuthorityCutoverService;
+  draftPublication: DraftPublicationService;
+  delivery: DeliveryGateService;
+  final: FinalDeliveryService;
+  board: OperatorBoardService;
   stop(): Promise<void>;
 }
 
@@ -130,6 +174,12 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     registryService.getDb(),
     registryService.getForge(),
   );
+  const workService = new WorkService(registryService.getDb());
+  const draftService = new DraftService(registryService.getDb(), {
+    planner: options?.draftPlanner ?? defaultDraftPlannerAdapter,
+    stateRoot: options?.stateDir ?? resolveStateDir(),
+  });
+  const planService = new PlanService(registryService.getDb(), registryService.getForge());
   const onboardingService = new ProjectOnboardingService(registryService);
   const harnessService = new HarnessService();
 
@@ -244,6 +294,23 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     } catch {}
   });
 
+  const observationService =
+    options?.dispatch?.observations ?? new ExecutionObservationService(registryService.getDb());
+
+  const dispatchService = new DispatchService(registryService.getDb(), {
+    ...options?.dispatch,
+    plans: planService,
+    ledger: commandService.ledger,
+    brakes: commandService.brakes,
+    observations: observationService,
+  });
+  // Preserve interrupted/unknown ownership on startup instead of freeing claims by lease age.
+  void Promise.resolve().then(() => {
+    try {
+      dispatchService.reconcile();
+    } catch {}
+  });
+
   const coordinationService = new SpecCoordinatorService(
     registryService.getDb(),
     registryService.getForge(),
@@ -257,7 +324,57 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     registryService.getDb(),
     registryService.getForge(),
     commandService.ledger,
+    observationService,
   );
+
+  const publicationService = new PublicationService(
+    registryService.getDb(),
+    registryService.getForge(),
+  );
+  const draftPublicationService = new DraftPublicationService(
+    registryService.getDb(),
+    registryService.getForge(),
+    draftService,
+    planService,
+  );
+
+  const localRuntime = createLocalExecutionRuntime({
+    db: registryService.getDb(),
+    plans: planService,
+    dispatch: dispatchService,
+    forge: registryService.getForge(),
+    observations: observationService,
+    publication: publicationService,
+    ...(options?.dispatch?.gitRunner ? { gitRunner: options.dispatch.gitRunner } : {}),
+    ...(options?.deliveryRuntime ? { deliveryRuntime: options.deliveryRuntime } : {}),
+  });
+  const integrationService = localRuntime.integration;
+  const deliveryService = localRuntime.gate;
+  const finalService = localRuntime.final;
+  const deliveryRuntime = localRuntime.delivery;
+
+  const backupService = new BackupRestoreService(db, {
+    stateDir: options?.stateDir ?? resolveStateDir(),
+    ledger: commandService.ledger,
+    forge: registryService.getForge(),
+  });
+
+  const authorityService = new AuthorityCutoverService(db, {
+    stateDir: options?.stateDir ?? resolveStateDir(),
+    backup: backupService,
+  });
+
+  const boardService = new OperatorBoardService({
+    projects: registryService,
+    work: workService,
+    plans: planService,
+    dispatch: dispatchService,
+    observations: observationService,
+    publication: publicationService,
+    integration: integrationService,
+    gate: deliveryService,
+    final: finalService,
+  });
 
   const monitorRuntime =
     options?.monitorRuntime ?? (await loadMonitorRuntime({ forge: options?.forge }));
@@ -270,10 +387,22 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
   const monitor = new RegisteredProjectMonitor(registryService, {
     runtime: monitorRuntime,
     intervalMs: monitorInterval,
+    authority: () => readExecutionAuthority().authority,
+    localDispatch: () =>
+      runLocalDispatchTick({
+        db: registryService.getDb(),
+        registry: registryService,
+        plans: planService,
+        dispatch: dispatchService,
+        actor: "monitor",
+        deliveryRuntime,
+        finalDeliveryRuntime: finalService,
+      }),
   });
 
   const githubWebhookService = new GitHubWebhookService(registryService, {
     onProjectWake: (projectId) => monitor.wakeProject(projectId),
+    authority: () => readExecutionAuthority().authority,
   });
 
   const wsClients = new Set<ServerWebSocket<WsClientData>>();
@@ -501,6 +630,21 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
       return handleCommandsRoute(request, parts, routeContext);
     }
 
+    if (path === "/api/v1/authority" || path.startsWith("/api/v1/authority/")) {
+      const authorityRes = await handleAuthorityRoute(request, path, authorityService);
+      if (authorityRes) return authorityRes;
+    }
+
+    if (path === "/api/v1/backups" || path.startsWith("/api/v1/backups/")) {
+      const backupRes = await handleBackupRoute(request, path, backupService);
+      if (backupRes) return backupRes;
+    }
+
+    if (path === "/api/v1/restores" || path.startsWith("/api/v1/restores/")) {
+      const restoreRes = await handleRestoreRoute(request, path, backupService);
+      if (restoreRes) return restoreRes;
+    }
+
     if (path === "/api/v1/intake") {
       if (request.method !== "GET")
         return Response.json(
@@ -697,6 +841,22 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
 
       const scopedAction = parts[1];
 
+      // One shared external-writer preflight for every scoped action. A cutover
+      // in progress (or a local marker not yet backed by an activated row) is
+      // refused before any route handler can push, mutate or write.
+      const authorityPreflight = (): Response | null => {
+        if (request.method === "GET") return null;
+        const decision = evaluateExecutionAuthority(registryService.getDb());
+        if (decision.settled) return null;
+        return Response.json(
+          {
+            error: "execution_authority_moving",
+            message: `Execution authority is not settled (${decision.reason ?? "migrating"}); retry after the cutover settles`,
+          },
+          { status: 409 },
+        );
+      };
+
       if (scopedAction === "intake") {
         const intakeRes = await handleProjectIntakeRoute(
           request,
@@ -708,7 +868,58 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
         return Response.json({ error: "not_found" }, { status: 404 });
       }
 
+      if (scopedAction === "work") {
+        const workRes = await handleProjectWorkRoute(request, projectId, parts, workService);
+        if (workRes) return workRes;
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
+      if (scopedAction === "drafts") {
+        const draftRes = await handleProjectDraftRoute(request, projectId, parts, draftService);
+        if (draftRes) return draftRes;
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
+      if (scopedAction === "plans") {
+        const planRes = await handleProjectPlanRoute(request, projectId, parts, planService);
+        if (planRes) return planRes;
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
+      if (scopedAction === "dispatch") {
+        const dispatchRes = await handleProjectDispatchRoute(
+          request,
+          projectId,
+          parts,
+          dispatchService,
+        );
+        if (dispatchRes) return dispatchRes;
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
       if (scopedAction === "coordination") {
+        if (request.method !== "GET") {
+          const decision = evaluateExecutionAuthority(registryService.getDb());
+          if (!decision.settled) {
+            return Response.json(
+              {
+                error: "execution_authority_moving",
+                message: `Execution authority is not settled (${decision.reason ?? "migrating"}); retry after the cutover settles`,
+              },
+              { status: 409 },
+            );
+          }
+          if (decision.marker.authority !== "legacy") {
+            return Response.json(
+              {
+                error: "execution_authority_moved",
+                message:
+                  "Legacy live-forge coordination dispatch is disabled after local authority activation; use the frozen plan dispatch routes",
+              },
+              { status: 409 },
+            );
+          }
+        }
         const coordRes = await handleProjectCoordinationRoute(
           request,
           projectId,
@@ -727,6 +938,73 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
           evidenceService,
         );
         if (evidenceRes) return evidenceRes;
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
+      if (scopedAction === "publication") {
+        const preflight = authorityPreflight();
+        if (preflight) return preflight;
+        const publicationRes = await handleProjectPublicationRoute(
+          request,
+          projectId,
+          parts,
+          publicationService,
+        );
+        if (publicationRes) return publicationRes;
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
+      if (scopedAction === "integration") {
+        const preflight = authorityPreflight();
+        if (preflight) return preflight;
+        const integrationRes = await handleProjectIntegrationRoute(
+          request,
+          projectId,
+          parts,
+          integrationService,
+        );
+        if (integrationRes) return integrationRes;
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
+      if (scopedAction === "draft-publications") {
+        const preflight = authorityPreflight();
+        if (preflight) return preflight;
+        const draftPublicationRes = await handleProjectDraftPublicationRoute(
+          request,
+          projectId,
+          parts,
+          draftPublicationService,
+        );
+        if (draftPublicationRes) return draftPublicationRes;
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
+      if (scopedAction === "delivery") {
+        const preflight = authorityPreflight();
+        if (preflight) return preflight;
+        const deliveryRes = await handleProjectDeliveryRoute(
+          request,
+          projectId,
+          parts,
+          deliveryService,
+          registryService.getDb(),
+        );
+        if (deliveryRes) return deliveryRes;
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
+      if (scopedAction === "final") {
+        const preflight = authorityPreflight();
+        if (preflight) return preflight;
+        const finalRes = await handleProjectFinalRoute(request, projectId, parts, finalService);
+        if (finalRes) return finalRes;
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
+      if (scopedAction === "board") {
+        const boardRes = await handleProjectBoardRoute(request, projectId, parts, boardService);
+        if (boardRes) return boardRes;
         return Response.json({ error: "not_found" }, { status: 404 });
       }
 
@@ -803,6 +1081,13 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
   };
 
   return {
+    publication: publicationService,
+    backup: backupService,
+    authority: authorityService,
+    draftPublication: draftPublicationService,
+    delivery: deliveryService,
+    final: finalService,
+    board: boardService,
     fetch: appFetch,
     websocket,
     monitor,

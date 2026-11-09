@@ -1,12 +1,4 @@
-/**
- * Jobs surface model.
- *
- * Content is transcribed verbatim from `animus.pen` frame `TAufE`
- * ("Animus / Jobs / Kanban / Sidebar expanded", 1440 × 1080). No jobs API
- * exists yet, so `JOBS_BOARD` is the single seam to replace when the engine
- * feed lands: swap this constant for parsed operator data and the components
- * below stay unchanged.
- */
+import type { OperatorBoard, OperatorBoardCard } from "@animus/contracts/operator";
 
 export type Ink =
   | "foreground"
@@ -38,6 +30,13 @@ export type ExecutionIcon =
 
 export type StageChip = { label: string; surface: Surface; ink: Ink };
 
+export type SpecProgress = {
+  integrated: number;
+  required: number;
+  delivered: boolean;
+  finalState: string | null;
+};
+
 export type TaskCardJob = {
   id: string;
   ref: string;
@@ -53,7 +52,7 @@ export type TaskCardJob = {
   execution?: { icon: ExecutionIcon; ink: Ink };
   /**
    * Inbox metadata, transcribed from `Ht4rv`. Present only for jobs that stop
-   * until a person acts: the six jobs the Inbox queues.
+   * until a person acts.
    */
   attention?: {
     kind: "clarification" | "review" | "failed";
@@ -65,6 +64,11 @@ export type TaskCardJob = {
     since: string;
   };
   metrics?: { harness: string; lapSpend?: string; totalSpend?: string };
+  /** Projection metadata: spec parent and progress, or a child's parent reference. */
+  kind?: "spec" | "ticket" | "unplanned";
+  workId?: string;
+  parentRef?: { issueNumber: number; title: string };
+  specProgress?: SpecProgress;
 };
 
 export type LaneIcon =
@@ -103,341 +107,318 @@ export type JobsBoardModel = {
   lanes: KanbanLaneModel[];
 };
 
-const ready = (label: string): StageChip => ({ label, surface: "background", ink: "foreground" });
+/**
+ * The established Kanban columns, in their existing order and styling. Lane ids
+ * match the backend projection; the board never adds or reorders columns.
+ */
+export const BOARD_LANE_TEMPLATE: readonly {
+  id: string;
+  title: string;
+  icon: LaneIcon;
+  iconInk: Ink;
+}[] = [
+  { id: "triage", title: "Triage", icon: "inbox", iconInk: "secondary" },
+  { id: "ready", title: "Ready", icon: "circle-dashed", iconInk: "secondary" },
+  { id: "working", title: "Working", icon: "code", iconInk: "accent" },
+  { id: "approval", title: "Approval", icon: "git-pull-request", iconInk: "warning" },
+  { id: "needs-owner", title: "Needs owner", icon: "circle-alert", iconInk: "error" },
+  { id: "parked", title: "Parked", icon: "pause", iconInk: "muted" },
+  { id: "merged", title: "Merged", icon: "git-merge", iconInk: "success" },
+  { id: "failed", title: "Failed", icon: "circle-alert", iconInk: "error" },
+];
 
-export const JOBS_BOARD: JobsBoardModel = {
-  repository: "animus/platform",
-  totalJobs: 18,
-  freshness: "Updated just now",
-  kpis: [
-    { label: "Total jobs", value: "18", description: "Across all stages", icon: "layers" },
+const LANE_SURFACE: Record<string, Surface> = {
+  triage: "surface",
+  ready: "background",
+  working: "accent-bg",
+  approval: "accent-bg",
+  "needs-owner": "error-bg",
+  parked: "surface",
+  merged: "success-bg",
+  failed: "error-bg",
+};
+
+const LANE_INK: Record<string, Ink> = {
+  triage: "secondary",
+  ready: "foreground",
+  working: "accent",
+  approval: "accent",
+  "needs-owner": "error",
+  parked: "muted",
+  merged: "success",
+  failed: "error",
+};
+
+const EXECUTION: Record<string, { icon: ExecutionIcon; ink: Ink } | undefined> = {
+  working: { icon: "loader-circle", ink: "success" },
+  approval: { icon: "git-pull-request", ink: "warning" },
+  "needs-owner": { icon: "circle-alert", ink: "error" },
+  parked: { icon: "pause", ink: "muted" },
+  merged: { icon: "git-merge", ink: "success" },
+  failed: { icon: "circle-alert", ink: "error" },
+};
+
+const FINAL_STATE_LABEL: Record<string, string> = {
+  waiting_children: "waiting for children",
+  blocked: "blocked",
+  verifying: "final verification",
+  needs_owner: "needs owner",
+  awaiting_manual_merge: "awaiting manual merge",
+  awaiting_merge_verification: "awaiting merge verification",
+  remote_unavailable: "remote unavailable",
+  delivered: "delivered",
+};
+
+export function formatRelative(epoch: number, now = Date.now()): string {
+  if (!Number.isFinite(epoch) || epoch <= 0) return "unknown";
+  const delta = Math.max(0, now - epoch);
+  const minutes = Math.floor(delta / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+export function specProgressLabel(progress: SpecProgress): string {
+  const base = `${progress.integrated}/${progress.required} tickets integrated`;
+  if (progress.delivered) return `${base} · delivered`;
+  if (progress.finalState && FINAL_STATE_LABEL[progress.finalState]) {
+    return `${base} · ${FINAL_STATE_LABEL[progress.finalState]}`;
+  }
+  return base;
+}
+
+function attentionOf(card: OperatorBoardCard, since: string): TaskCardJob["attention"] {
+  if (card.lane === "needs-owner") {
+    return {
+      kind: "failed",
+      icon: "circle-x",
+      reason: "Needs owner",
+      context: card.detail,
+      since,
+    };
+  }
+  if (card.lane === "failed") {
+    return {
+      kind: "failed",
+      icon: "circle-x",
+      reason: "Failed",
+      context: card.detail,
+      since,
+    };
+  }
+  if (card.lane === "approval") {
+    const evidence: { text: string; ink: Ink }[] = [];
+    if (card.pullRequest) {
+      evidence.push({
+        text: `PR #${card.pullRequest.number}`,
+        ink: card.pullRequest.state === "merged" ? "success" : "secondary",
+      });
+    }
+    if (card.specProgress) {
+      evidence.push({ text: specProgressLabel(card.specProgress), ink: "secondary" });
+    }
+    return {
+      kind: "review",
+      icon: "git-pull-request",
+      reason: card.stageLabel,
+      evidence: evidence.length > 0 ? evidence : undefined,
+      context: evidence.length > 0 ? undefined : card.detail,
+      since,
+    };
+  }
+  if (card.lane === "triage") {
+    return {
+      kind: "clarification",
+      icon: card.planKind === null ? "message-circle" : "file-text",
+      reason: card.stageLabel,
+      context: card.detail,
+      since,
+    };
+  }
+  return undefined;
+}
+
+export function mapBoardCard(card: OperatorBoardCard, now = Date.now()): TaskCardJob {
+  const since = formatRelative(card.updatedAt, now);
+  const specProgress = card.specProgress
+    ? {
+        integrated: card.specProgress.integrated,
+        required: card.specProgress.required,
+        delivered: card.specProgress.delivered,
+        finalState: card.specProgress.finalState,
+      }
+    : undefined;
+  return {
+    id: card.id,
+    ref: card.ref,
+    stage: {
+      label: card.stageLabel,
+      surface: LANE_SURFACE[card.lane] ?? "surface",
+      ink: LANE_INK[card.lane] ?? "secondary",
+    },
+    pullRequest: card.pullRequest
+      ? {
+          label: `PR #${card.pullRequest.number}`,
+          ink: card.pullRequest.state === "merged" ? "success" : "secondary",
+        }
+      : undefined,
+    lap: card.latestRun ? `Lap ${card.latestRun.lap}` : undefined,
+    title: card.title,
+    summary: card.detail
+      ? { text: card.detail, ink: LANE_INK[card.lane] ?? "secondary" }
+      : undefined,
+    timestamp: since,
+    execution: EXECUTION[card.lane],
+    attention: attentionOf(card, since),
+    kind: card.kind,
+    workId: card.workId,
+    parentRef: card.parent
+      ? { issueNumber: card.parent.issueNumber, title: card.parent.title }
+      : undefined,
+    specProgress,
+  };
+}
+
+function formatTokens(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  return String(value);
+}
+
+function formatCost(micros: number): string {
+  return `$${(micros / 1_000_000).toFixed(2)}`;
+}
+
+/**
+ * Project the canonical backend board into the existing Kanban model. Columns,
+ * ordering and card styling are preserved; only real facts fill the cells.
+ */
+export function mapOperatorBoard(board: OperatorBoard, now = Date.now()): JobsBoardModel {
+  const needsOwner = board.lanes.find((lane) => lane.id === "needs-owner")?.count ?? 0;
+  const approval = board.lanes.find((lane) => lane.id === "approval")?.count ?? 0;
+  const totalJobs = board.lanes.reduce((sum, lane) => sum + lane.count, 0);
+  const availableSlots = Math.max(0, board.counts.capacity - board.counts.workers);
+  const usage = board.usage;
+  const tokens =
+    usage.available && usage.tokensIn !== null && usage.tokensOut !== null
+      ? usage.tokensIn + usage.tokensOut
+      : null;
+
+  const kpis: KpiModel[] = [
+    {
+      label: "Executable tickets",
+      value: String(board.counts.tickets),
+      description: `${board.counts.specs} specs · ${board.counts.unplanned} unplanned`,
+      icon: "layers",
+    },
     {
       label: "Active workers",
-      value: "3 / 8",
-      description: "5 slots available",
-      ink: "success",
+      value: `${board.counts.workers} / ${board.counts.capacity}`,
+      description:
+        board.counts.workers > board.counts.capacity
+          ? "Above configured capacity"
+          : `${availableSlots} slots available`,
+      ink: board.counts.workers > 0 ? "success" : "secondary",
       icon: "cpu",
     },
     {
       label: "Needs you",
-      value: "3",
-      description: "2 approval · 1 escalated",
-      ink: "warning",
+      value: String(needsOwner + approval),
+      description: `${approval} approval · ${needsOwner} escalated`,
+      ink: needsOwner + approval > 0 ? "warning" : "secondary",
       icon: "git-pull-request",
     },
     {
       label: "Tokens used",
-      value: "120.0M",
-      description: "Input + output tokens",
+      value: tokens === null ? "Unavailable" : formatTokens(tokens),
+      description: usage.available ? "Recorded input + output tokens" : usage.detail,
+      ink: "secondary",
       icon: "chart-no-axes-column",
     },
-    { label: "Total cost", value: "$35.60", description: "Usage this period", icon: "wallet" },
-  ],
-  lanes: [
     {
-      id: "triage",
-      title: "Triage",
-      icon: "inbox",
-      iconInk: "secondary",
-      count: 2,
-      cards: [
-        {
-          id: "153",
-          ref: "#153",
-          attention: {
-            kind: "clarification",
-            reason: "Needs clarification",
-            icon: "message-circle",
-            context: "Define the user flow and acceptance criteria.",
-            since: "4m ago",
-          },
-          stage: { label: "Needs info", surface: "info-bg", ink: "info" },
-          title: "Improve onboarding",
-          summary: { text: "Needs clarification", ink: "warning" },
-          detail: "Define the user flow and acceptance criteria.",
-          timestamp: "New job · 4m ago",
-        },
-        {
-          id: "152",
-          ref: "#152",
-          attention: {
-            kind: "clarification",
-            reason: "Needs a specification",
-            icon: "file-text",
-            context: "Identify the failure cases and expected behavior.",
-            since: "16m ago",
-          },
-          stage: { label: "Needs triage", surface: "surface", ink: "secondary" },
-          title: "Make jobs easier to debug",
-          summary: { text: "Needs a specification", ink: "warning" },
-          detail: "Identify the failure cases and expected behavior.",
-          timestamp: "New job · 16m ago",
-        },
-      ],
+      label: "Total cost",
+      value:
+        usage.available && usage.costMicros !== null ? formatCost(usage.costMicros) : "Unavailable",
+      description: usage.available ? "Recorded usage cost" : usage.detail,
+      ink: "secondary",
+      icon: "wallet",
     },
-    {
-      id: "ready",
-      title: "Ready",
-      icon: "circle-dashed",
-      iconInk: "secondary",
-      count: 4,
-      cards: [
-        {
-          id: "149",
-          ref: "#149",
-          stage: ready("Ready"),
-          title: "Add repository webhooks",
-          summary: { text: "Brake: pause set", ink: "warning" },
-          timestamp: "Queued · 12m ago",
-        },
-        {
-          id: "148",
-          ref: "#148",
-          stage: ready("Ready"),
-          title: "Retry failed workflow steps",
-          summary: { text: "Waiting for a free slot", ink: "secondary" },
-          detail: "Capacity 1 / 1 active",
-          timestamp: "Queued · 24m ago",
-        },
-        {
-          id: "147",
-          ref: "#147",
-          stage: ready("Ready"),
-          title: "Cache dependency installs",
-          summary: { text: "Blocked by #146", ink: "warning" },
-          timestamp: "Queued · 36m ago",
-        },
-        {
-          id: "146",
-          ref: "#146",
-          stage: ready("Ready"),
-          title: "Fix timezone in job history",
-          summary: { text: "Outside work window", ink: "secondary" },
-          timestamp: "Queued · 1h ago",
-        },
-      ],
-    },
-    {
-      id: "working",
-      title: "Working",
-      icon: "code",
-      iconInk: "accent",
-      count: 3,
-      cards: [
-        {
-          id: "145",
-          ref: "#145",
-          execution: { icon: "loader-circle", ink: "success" },
-          stage: { label: "Build", surface: "surface", ink: "secondary" },
-          pullRequest: { label: "PR #145", ink: "secondary" },
-          lap: "Lap 1/3",
-          title: "Add organization-level API keys",
-          metrics: { harness: "pi · 8m 42s", lapSpend: "$1.24", totalSpend: "$4.21" },
-        },
-        {
-          id: "144",
-          ref: "#144",
-          execution: { icon: "loader-circle", ink: "success" },
-          stage: { label: "QA", surface: "warning-bg", ink: "warning" },
-          title: "Stream live job logs",
-          metrics: { harness: "pi · 5m 18s" },
-        },
-        {
-          id: "143",
-          ref: "#143",
-          execution: { icon: "loader-circle", ink: "success" },
-          stage: { label: "Review", surface: "accent-bg", ink: "accent" },
-          title: "Fix concurrent job scheduling",
-          metrics: { harness: "claude · 4m 02s" },
-        },
-      ],
-    },
-    {
-      id: "approval",
-      title: "Approval",
-      icon: "git-pull-request",
-      iconInk: "warning",
-      count: 2,
-      cards: [
-        {
-          id: "142",
-          ref: "#142",
-          attention: {
-            kind: "review",
-            reason: "Review changes",
-            icon: "git-pull-request",
-            evidence: [
-              { text: "PR #87", ink: "secondary" },
-              { text: "18 / 18 checks passed", ink: "success" },
-              { text: "+248 −32", ink: "secondary" },
-            ],
-            since: "18m ago",
-          },
-          execution: { icon: "git-pull-request", ink: "warning" },
-          stage: { label: "Approval", surface: "accent-bg", ink: "accent" },
-          pullRequest: { label: "PR #87", ink: "secondary" },
-          lap: "Lap 1/3",
-          title: "Add usage limits per workspace",
-          summary: { text: "18 / 18 checks passed", ink: "success" },
-          detail: "+248 −32",
-          timestamp: "Opened 18m ago",
-          action: { label: "Review changes", ink: "warning" },
-        },
-        {
-          id: "141",
-          ref: "#141",
-          attention: {
-            kind: "review",
-            reason: "Review changes",
-            icon: "git-pull-request",
-            evidence: [
-              { text: "PR #86", ink: "secondary" },
-              { text: "12 / 12 checks passed", ink: "success" },
-              { text: "+96 −14", ink: "secondary" },
-            ],
-            since: "42m ago",
-          },
-          execution: { icon: "git-pull-request", ink: "warning" },
-          stage: { label: "Approval", surface: "accent-bg", ink: "accent" },
-          pullRequest: { label: "PR #86", ink: "secondary" },
-          lap: "Lap 1/3",
-          title: "Persist repository preferences",
-          summary: { text: "12 / 12 checks passed", ink: "success" },
-          detail: "+96 −14",
-          timestamp: "Opened 42m ago",
-          action: { label: "Review changes", ink: "warning" },
-        },
-      ],
-    },
-    {
-      id: "needs-owner",
-      title: "Needs owner",
-      icon: "circle-alert",
-      iconInk: "error",
-      count: 1,
-      cards: [
-        {
-          id: "137",
-          ref: "#137",
-          execution: { icon: "circle-alert", ink: "error" },
-          stage: { label: "Needs owner", surface: "error-bg", ink: "error" },
-          pullRequest: { label: "PR #91", ink: "secondary" },
-          lap: "Lap 3/3",
-          title: "Consolidate retry policy across workers",
-          summary: { text: "Review rejected · lap budget exhausted", ink: "error" },
-          detail: "Standards axis: 2 blocking findings left open.",
-          timestamp: "Escalated · 6m ago",
-          action: { label: "Take over", ink: "error" },
-        },
-      ],
-    },
-    {
-      id: "parked",
-      title: "Parked",
-      icon: "pause",
-      iconInk: "muted",
-      count: 1,
-      cards: [
-        {
-          id: "136",
-          ref: "#136",
-          execution: { icon: "pause", ink: "muted" },
-          stage: ready("Parked"),
-          lap: "Lap 1/3",
-          title: "Reindex symbol graph on branch switch",
-          summary: { text: "Run cancelled · deadline reached", ink: "warning" },
-          detail: "Worktree local-loop/issue-136 kept for resume.",
-          timestamp: "Parked · 22m ago",
-          action: { label: "Resume", ink: "foreground" },
-        },
-      ],
-    },
-    {
-      id: "merged",
-      title: "Merged",
-      icon: "git-merge",
-      iconInk: "success",
-      count: 3,
-      cards: [
-        {
-          id: "140",
-          ref: "#140",
-          execution: { icon: "git-merge", ink: "success" },
-          stage: { label: "Merged", surface: "success-bg", ink: "success" },
-          pullRequest: { label: "PR #85", ink: "success" },
-          title: "Add job cancellation support",
-          summary: { text: "On develop · not promoted", ink: "warning" },
-          timestamp: "Merged · 1h ago",
-        },
-        {
-          id: "139",
-          ref: "#139",
-          execution: { icon: "git-merge", ink: "success" },
-          stage: { label: "Merged", surface: "success-bg", ink: "success" },
-          pullRequest: { label: "PR #84", ink: "success" },
-          title: "Fix token usage aggregation",
-          timestamp: "Merged · 2h ago",
-        },
-        {
-          id: "138",
-          ref: "#138",
-          execution: { icon: "git-merge", ink: "success" },
-          stage: { label: "Merged", surface: "success-bg", ink: "success" },
-          pullRequest: { label: "PR #83", ink: "success" },
-          title: "Show worker health in settings",
-          summary: { text: "Released to main", ink: "success" },
-          timestamp: "Merged · 3h ago",
-        },
-      ],
-    },
-    {
-      id: "failed",
-      title: "Failed",
-      icon: "circle-alert",
-      iconInk: "error",
-      count: 2,
-      cards: [
-        {
-          id: "151",
-          ref: "#151",
-          attention: {
-            kind: "failed",
-            reason: "Max laps reached",
-            icon: "circle-x",
-            context: "Delivery ordering is still unresolved after the final lap.",
-            since: "8m ago",
-          },
-          execution: { icon: "circle-alert", ink: "error" },
-          stage: { label: "Failed", surface: "error-bg", ink: "error" },
-          lap: "Lap 2/3",
-          title: "Stabilize webhook delivery",
-          summary: { text: "Transport error · stream aborted", ink: "error" },
-          detail: "Provider stream ended before the candidate was committed.",
-          timestamp: "Stopped · 8m ago",
-          action: { label: "View failure", ink: "foreground" },
-        },
-        {
-          id: "150",
-          ref: "#150",
-          attention: {
-            kind: "failed",
-            reason: "CI gate error",
-            icon: "circle-x",
-            context: "Migration checks failed. Merge is blocked.",
-            since: "22m ago",
-          },
-          execution: { icon: "circle-alert", ink: "error" },
-          stage: { label: "Failed", surface: "error-bg", ink: "error" },
-          title: "Upgrade database client",
-          summary: { text: "Tool error · build step crashed", ink: "error" },
-          detail: "Migration checks failed. Merge is blocked.",
-          timestamp: "Stopped · 22m ago",
-          action: { label: "View failure", ink: "foreground" },
-        },
-      ],
-    },
-  ],
-};
+  ];
+
+  const lanes: KanbanLaneModel[] = BOARD_LANE_TEMPLATE.map((template) => {
+    const projected = board.lanes.find((lane) => lane.id === template.id);
+    return {
+      id: template.id,
+      title: template.title,
+      icon: template.icon,
+      iconInk: template.iconInk,
+      count: projected?.count ?? 0,
+      cards: (projected?.cards ?? []).map((card) => mapBoardCard(card, now)),
+    };
+  });
+
+  return {
+    repository: board.repository,
+    totalJobs,
+    freshness: `Updated ${formatRelative(board.generatedAt, now)}`,
+    kpis,
+    lanes,
+  };
+}
+
+export function emptyBoard(repository = "No repository selected"): JobsBoardModel {
+  return {
+    repository,
+    totalJobs: 0,
+    freshness: "Not loaded",
+    kpis: [
+      {
+        label: "Executable tickets",
+        value: "0",
+        description: "0 specs · 0 unplanned",
+        icon: "layers",
+      },
+      {
+        label: "Active workers",
+        value: "0 / 1",
+        description: "No project data",
+        ink: "secondary",
+        icon: "cpu",
+      },
+      {
+        label: "Needs you",
+        value: "0",
+        description: "0 approval · 0 escalated",
+        ink: "secondary",
+        icon: "git-pull-request",
+      },
+      {
+        label: "Tokens used",
+        value: "Unavailable",
+        description: "No usage records available",
+        ink: "secondary",
+        icon: "chart-no-axes-column",
+      },
+      {
+        label: "Total cost",
+        value: "Unavailable",
+        description: "No usage records available",
+        ink: "secondary",
+        icon: "wallet",
+      },
+    ],
+    lanes: BOARD_LANE_TEMPLATE.map((template) => ({
+      id: template.id,
+      title: template.title,
+      icon: template.icon,
+      iconInk: template.iconInk,
+      count: 0,
+      cards: [],
+    })),
+  };
+}
 
 export type InboxKind = NonNullable<TaskCardJob["attention"]>["kind"];
 
@@ -468,9 +449,9 @@ const MINUTES_AGO = (since: string): number => {
 };
 
 /**
- * Jobs that stay blocked until a person acts, newest first — the six rows of
- * `Ht4rv`'s attention queue. Reading or archiving never changes job status, so
- * this is a projection of the board rather than a second source of truth.
+ * Jobs that stay blocked until a person acts, newest first. Reading or archiving
+ * never changes job status, so this is a projection of the board rather than a
+ * second source of truth.
  */
 export function selectInbox(
   board: JobsBoardModel,

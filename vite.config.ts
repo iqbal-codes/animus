@@ -67,6 +67,46 @@ export default defineConfig({
         },
       },
       {
+        // Delivery runtime reuses the existing bounded role runner and process
+        // transport instead of forking a second execution engine.
+        files: ["apps/backend/src/delivery/runtime.ts"],
+        rules: {
+          "no-restricted-imports": [
+            "error",
+            {
+              patterns: [
+                "@animus/backend",
+                "@animus/backend/*",
+                "@animus/engine-host",
+                "@animus/engine-host/*",
+                "**/apps/**",
+                "**/packages/**",
+              ],
+            },
+          ],
+        },
+      },
+      {
+        // Publication reuses the existing evidence-body/PR-reporting helpers
+        // instead of forking a second reporting convention.
+        files: ["apps/backend/src/publication/**/*.{ts,tsx,js,jsx}"],
+        rules: {
+          "no-restricted-imports": [
+            "error",
+            {
+              patterns: [
+                "@animus/backend",
+                "@animus/backend/*",
+                "@animus/engine-host",
+                "@animus/engine-host/*",
+                "**/apps/**",
+                "**/packages/**",
+              ],
+            },
+          ],
+        },
+      },
+      {
         files: [
           "apps/web/src/**/*.{ts,tsx,js,jsx}",
           "packages/client/src/**/*.{ts,js}",
@@ -108,25 +148,39 @@ export default defineConfig({
   test: {
     include: ["tests/integration/*.test.ts", "tests/integration/*.test.tsx"],
     exclude: ["**/*.bun.test.ts"],
+    // Integration files share git worktrees, SQLite and process transports. Run
+    // files sequentially so aggregate verification cannot starve a legitimately
+    // responsive test past the default 5s per-test timeout. This isolates load;
+    // it does not raise or suppress any test timeout.
+    fileParallelism: false,
   },
   run: {
     tasks: {
+      // The verification chain is intentionally sequential. The deterministic
+      // checks and both test suites are git/SQLite/process heavy; running them at
+      // the same time starves default 5s per-test timeouts. A linear dependency
+      // chain isolates load without raising or suppressing any timeout.
       "neutral-suite": { command: "vp test run", cache: false },
       "bun-suite": {
         command:
-          "bun test --timeout 30000 tests/integration/animus-loop-orchestrator.bun.test.ts tests/integration/cli-intake-triage.bun.test.ts tests/integration/harness-memory-safety.bun.test.ts tests/integration/health.bun.test.ts tests/integration/learning-delivery.bun.test.ts tests/integration/learning-evaluator.bun.test.ts tests/integration/learning-reflection.bun.test.ts tests/integration/local-loop-deadlines.bun.test.ts tests/integration/local-loop.bun.test.ts tests/integration/loop-blast-radius.bun.test.ts tests/integration/loop-ci.bun.test.ts tests/integration/loop-dossier-findings.bun.test.ts tests/integration/loop-evidence-cli.bun.test.ts tests/integration/loop-lifecycle.bun.test.ts tests/integration/loop-mandate.bun.test.ts tests/integration/loop-merge-queue-and-reflector.bun.test.ts tests/integration/loop-modules.bun.test.ts tests/integration/loop-pr-reporting.bun.test.ts tests/integration/loop-prompt-context.bun.test.ts tests/integration/loop-publication.bun.test.ts tests/integration/loop-report-schema.bun.test.ts tests/integration/loop-resume-builder-session.bun.test.ts tests/integration/loop-role-runner.bun.test.ts tests/integration/loop-script.bun.test.ts tests/integration/loop-verification.bun.test.ts tests/integration/loop-watch.bun.test.ts tests/integration/loop-worktree.bun.test.ts tests/integration/onboarding-http.bun.test.ts tests/integration/onboarding-monitor.bun.test.ts tests/integration/project-workspace.bun.test.ts tests/integration/reflection-lifecycle.bun.test.ts tests/integration/scheduler-discovery.bun.test.ts tests/integration/triage-agent.bun.test.ts tests/integration/triage-containment.bun.test.ts tests/integration/triage-guard.bun.test.ts tests/integration/webhooks-http.bun.test.ts",
+          "bun test --timeout 30000 --max-concurrency=8 tests/integration/animus-loop-orchestrator.bun.test.ts tests/integration/authority-cutover-fs.bun.test.ts tests/integration/authority-cutover-race.bun.test.ts tests/integration/authority-runtime.bun.test.ts tests/integration/cli-intake-triage.bun.test.ts tests/integration/delivery-claim-cross-process.bun.test.ts tests/integration/dispatch-authority.bun.test.ts tests/integration/dispatch-http.bun.test.ts tests/integration/execution-evidence-http.bun.test.ts tests/integration/harness-memory-safety.bun.test.ts tests/integration/health.bun.test.ts tests/integration/learning-delivery.bun.test.ts tests/integration/learning-evaluator.bun.test.ts tests/integration/learning-reflection.bun.test.ts tests/integration/local-loop-deadlines.bun.test.ts tests/integration/local-loop.bun.test.ts tests/integration/loop-blast-radius.bun.test.ts tests/integration/loop-ci.bun.test.ts tests/integration/loop-dossier-findings.bun.test.ts tests/integration/loop-evidence-cli.bun.test.ts tests/integration/loop-lifecycle.bun.test.ts tests/integration/loop-mandate.bun.test.ts tests/integration/loop-merge-queue-and-reflector.bun.test.ts tests/integration/loop-modules.bun.test.ts tests/integration/loop-pr-reporting.bun.test.ts tests/integration/loop-prompt-context.bun.test.ts tests/integration/loop-publication.bun.test.ts tests/integration/loop-report-schema.bun.test.ts tests/integration/loop-resume-builder-session.bun.test.ts tests/integration/loop-role-runner.bun.test.ts tests/integration/loop-script.bun.test.ts tests/integration/loop-verification.bun.test.ts tests/integration/loop-watch.bun.test.ts tests/integration/loop-worktree.bun.test.ts tests/integration/onboarding-http.bun.test.ts tests/integration/onboarding-monitor.bun.test.ts tests/integration/project-workspace.bun.test.ts tests/integration/reflection-lifecycle.bun.test.ts tests/integration/scheduler-discovery.bun.test.ts tests/integration/triage-agent.bun.test.ts tests/integration/triage-containment.bun.test.ts tests/integration/triage-guard.bun.test.ts tests/integration/webhooks-http.bun.test.ts tests/integration/work-import-http.bun.test.ts tests/integration/plan-import-http.bun.test.ts tests/integration/publication-http.bun.test.ts tests/integration/standalone-delivery-http.bun.test.ts",
         cache: false,
+        dependsOn: ["static-check"],
       },
       "toolchain-check": { command: "node scripts/health/check-toolchain.mjs", cache: false },
-      "static-check": { command: "bun run check", cache: false },
+      "static-check": {
+        command: "bun run check",
+        cache: false,
+        dependsOn: ["toolchain-check", "neutral-suite"],
+      },
       "verify-all": {
         command: "node -e \"console.log('Verification passed')\"",
-        dependsOn: ["toolchain-check", "static-check", "test-all"],
+        dependsOn: ["bun-suite"],
         cache: false,
       },
       "test-all": {
         command: "node -e \"console.log('All suites passed')\"",
-        dependsOn: ["neutral-suite", "bun-suite"],
+        dependsOn: ["bun-suite"],
         cache: false,
       },
     },

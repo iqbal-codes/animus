@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { git, assertCandidate, type AssertCandidateOptions } from "./worktree";
 import { resolveAnimusStateDir } from "../../packages/contracts/src/paths";
@@ -15,6 +15,40 @@ import type {
   ReviewerReport,
 } from "./types";
 import { loadPrompt, renderPrompt } from "./prompts";
+import { assertInstallationNotHeldAtStateDir } from "@animus/contracts/installation-hold";
+import { readExecutionAuthority } from "@animus/contracts/execution-authority";
+
+/**
+ * The legacy loop's direct SQLite integration writer is an authority writer.
+ * Once the durable fence is set it must record nothing, even if the process
+ * passed the startup check before staging began.
+ */
+function legacyIntegrationAuthorityError(stateDir?: string): string | null {
+  const authority = readExecutionAuthority(stateDir);
+  if (authority.error) {
+    return `execution_authority_moved: authority marker is unreadable (${authority.error})`;
+  }
+  if (authority.authority !== "legacy") {
+    return `execution_authority_moved: legacy integration recording is disabled under '${authority.authority}' authority`;
+  }
+  return null;
+}
+
+function assertLegacyIntegrationWriterAllowed(stateDir?: string): void {
+  const error = legacyIntegrationAuthorityError(stateDir);
+  if (error) throw new Error(error);
+}
+
+/**
+ * Resolves the canonical installation state dir for the hold, authority and
+ * journal re-checks. Test harnesses pass an explicit dir; production uses the
+ * ambient installation state dir. The project database path is deliberately not
+ * used here: the authority marker and installation hold live at installation
+ * scope, not at a per-project database directory.
+ */
+function installationStateDirFor(options: { installationStateDir?: string }): string {
+  return options.installationStateDir ?? resolveAnimusStateDir();
+}
 
 export type { AutoMergeExecutionResult };
 
@@ -38,7 +72,13 @@ export function assessMergeBatchDeterministic(
   repo: string,
   baseBranch: string,
   liveBaseSha: string,
-  candidates: { number: number; url: string; headSha: string; changedFiles: string[]; reviewApproved: boolean }[],
+  candidates: {
+    number: number;
+    url: string;
+    headSha: string;
+    changedFiles: string[];
+    reviewApproved: boolean;
+  }[],
   options: AssessBatchOptions = {},
 ): MergeQueuePlan {
   const method = options.method ?? "squash";
@@ -60,7 +100,9 @@ export function assessMergeBatchDeterministic(
       continue;
     }
 
-    const protectedFilesTouched = pr.changedFiles.filter((f) => isPathProtected(f, protectedPatterns));
+    const protectedFilesTouched = pr.changedFiles.filter((f) =>
+      isPathProtected(f, protectedPatterns),
+    );
     if (protectedFilesTouched.length > 0) {
       reasons.push(
         `PR #${pr.number} modifies protected path (${protectedFilesTouched.join(", ")}): human merge required.`,
@@ -91,7 +133,13 @@ export function assessMergeBatchDeterministic(
 
 export async function generateMergePlan(
   root: string,
-  candidates: { number: number; url: string; headSha: string; changedFiles: string[]; reviewApproved: boolean }[],
+  candidates: {
+    number: number;
+    url: string;
+    headSha: string;
+    changedFiles: string[];
+    reviewApproved: boolean;
+  }[],
   options: AssessBatchOptions = {},
 ): Promise<{ plan: MergeQueuePlan; prompt: string }> {
   const configPath = join(root, "harness/harness.config.json");
@@ -108,18 +156,20 @@ export async function generateMergePlan(
     try {
       const cfg = JSON.parse(readFileSync(configPath, "utf-8"));
       if (cfg.protected_paths) {
-        protectedPaths = [...protectedPaths, ...String(cfg.protected_paths).split(",").map((s) => s.trim())];
+        protectedPaths = [
+          ...protectedPaths,
+          ...String(cfg.protected_paths)
+            .split(",")
+            .map((s) => s.trim()),
+        ];
       }
     } catch {}
   }
 
-  const plan = assessMergeBatchDeterministic(
-    "animus",
-    options.base ?? "main",
-    "HEAD",
-    candidates,
-    { ...options, protectedPaths },
-  );
+  const plan = assessMergeBatchDeterministic("animus", options.base ?? "main", "HEAD", candidates, {
+    ...options,
+    protectedPaths,
+  });
 
   const promptTemplate = loadPrompt("assess-merge-queue", root);
   const prompt = renderPrompt(
@@ -174,7 +224,10 @@ function extractDomainBucket(filePath: string): string | null {
     return null;
   }
   const parts = normalized.split("/");
-  if (parts.length >= 2 && (parts[0] === "apps" || parts[0] === "packages" || parts[0] === "scripts")) {
+  if (
+    parts.length >= 2 &&
+    (parts[0] === "apps" || parts[0] === "packages" || parts[0] === "scripts")
+  ) {
     return `${parts[0]}/${parts[1]}`;
   }
   return parts[0] || null;
@@ -323,7 +376,9 @@ export function evaluateSubticketAutoMerge(
   }
 
   const reviewerRisk: AutoMergeRiskLevel = judgement?.risk_level ?? "high";
-  const deterministicMinRisk: AutoMergeRiskLevel = diffImpact.hasCriticalImpact ? "high" : "trivial";
+  const deterministicMinRisk: AutoMergeRiskLevel = diffImpact.hasCriticalImpact
+    ? "high"
+    : "trivial";
   const riskLevel: AutoMergeRiskLevel =
     RISK_ORDER[reviewerRisk] >= RISK_ORDER[deterministicMinRisk]
       ? reviewerRisk
@@ -420,6 +475,8 @@ export interface ExecuteSubticketAutoMergeOptions {
   db?: DatabaseSync;
   dbPath?: string;
   projectId?: string;
+  /** Installation state dir for hold/authority re-checks; defaults to ambient. */
+  installationStateDir?: string;
 }
 
 export interface RecordSubticketIntegrationOptions {
@@ -432,16 +489,29 @@ export interface RecordSubticketIntegrationOptions {
   db?: DatabaseSync;
   dbPath?: string;
   projectId?: string;
+  /** Installation state dir for fallback DB lookup; defaults to ambient. */
+  installationStateDir?: string;
 }
 
 /**
  * Record verified subticket integration into SQLite project_issue_integrations
  * and synchronize project_spec_coordinations truth when a project DB is attached.
  */
-export function recordSubticketIntegration(
-  options: RecordSubticketIntegrationOptions,
-): { integrated: boolean; projectId?: string; error?: string } {
+export function recordSubticketIntegration(options: RecordSubticketIntegrationOptions): {
+  integrated: boolean;
+  projectId?: string;
+  error?: string;
+} {
   const { root, issueNumber, branch, candidate, partOf, finalIntegrationPr } = options;
+
+  // This function writes project_issue_integrations directly with its own
+  // DatabaseSync connection. Gate it at the same authority boundary as the
+  // startup checks so a pre-fence legacy lap cannot become a post-fence writer.
+  const stateDir = installationStateDirFor(options);
+  const authorityError = legacyIntegrationAuthorityError(stateDir);
+  if (authorityError) {
+    return { integrated: false, error: authorityError };
+  }
 
   let db = options.db;
   let shouldClose = false;
@@ -450,7 +520,7 @@ export function recordSubticketIntegration(
   if (!db) {
     let resolvedDbPath = options.dbPath;
     if (!resolvedDbPath) {
-      const candidates = [join(resolveAnimusStateDir(), "console.db")];
+      const candidates = [join(stateDir, "console.db")];
       for (const cand of candidates) {
         if (existsSync(cand)) {
           resolvedDbPath = cand;
@@ -515,12 +585,11 @@ export function recordSubticketIntegration(
           .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='projects'")
           .get();
         if (projectsTable) {
-          const allProjects = db
-            .prepare("SELECT id, checkout_path FROM projects")
-            .all() as Array<{ id: string; checkout_path: string }>;
-          const match = allProjects.find(
-            (p) => resolve(p.checkout_path) === resolve(root),
-          );
+          const allProjects = db.prepare("SELECT id, checkout_path FROM projects").all() as Array<{
+            id: string;
+            checkout_path: string;
+          }>;
+          const match = allProjects.find((p) => resolve(p.checkout_path) === resolve(root));
           if (match) {
             projectId = match.id;
           }
@@ -682,6 +751,9 @@ export function recordSubticketIntegration(
 export async function executeSubticketAutoMerge(
   options: ExecuteSubticketAutoMergeOptions,
 ): Promise<AutoMergeExecutionResult> {
+  const stateDir = installationStateDirFor(options);
+  assertInstallationNotHeldAtStateDir(stateDir);
+  assertLegacyIntegrationWriterAllowed(stateDir);
   const {
     root,
     candidate,
@@ -703,11 +775,19 @@ export async function executeSubticketAutoMerge(
   const parsePartOfCmd = options.parsePartOfFn ?? parsePartOf;
 
   let finalIntegrationPr: string | undefined;
-  const journalDir = join(resolveAnimusStateDir(), "integration-recovery");
+  const journalDir = join(stateDir, "integration-recovery");
   const journalPath = join(journalDir, `${crypto.randomUUID()}.json`);
   const journal = {
-    root, candidate, integrationBranch, targetBaseTip, issueNumber, partOf, pr,
-    phase: "prepared", updatedAt: new Date().toISOString(), error: undefined as string | undefined,
+    root,
+    candidate,
+    integrationBranch,
+    targetBaseTip,
+    issueNumber,
+    partOf,
+    pr,
+    phase: "prepared",
+    updatedAt: new Date().toISOString(),
+    error: undefined as string | undefined,
   };
   const persistPhase = (phase: string, error?: string) => {
     journal.phase = phase;
@@ -759,6 +839,7 @@ export async function executeSubticketAutoMerge(
         db: options.db,
         dbPath: options.dbPath,
         projectId: options.projectId,
+        installationStateDir: stateDir,
       });
       if (syncResult.error && isDbAttached) {
         syncError = syncResult.error;
@@ -787,7 +868,10 @@ export async function executeSubticketAutoMerge(
           observedSha = (await gitCmd(root, "rev-parse", cleanRef)).trim();
         } catch {}
 
-        persistPhase("manual_intervention_required", `${syncError}; rollback: ${rollbackErr.message}`);
+        persistPhase(
+          "manual_intervention_required",
+          `${syncError}; rollback: ${rollbackErr.message}`,
+        );
         const errDetail = `Attached database synchronization failed (${syncError}) AND Git ref rollback failed: ${rollbackErr.message}. Observed ref at SHA ${observedSha}; explicit manual intervention required.`;
         return {
           success: false,
@@ -821,6 +905,10 @@ export async function executeSubticketAutoMerge(
     }
 
     persistPhase("publication_pending");
+    // Re-check immediately before the irreversible remote publication. A role,
+    // CI or earlier await may have allowed a cutover fence to appear since the
+    // startup check; the push/PR merge/issue close must then not happen.
+    assertLegacyIntegrationWriterAllowed(stateDir);
     // 3. Irreversible Remote Publication (only after CAS and DB sync succeeded)
     let publicationError: string | undefined;
     if (push !== false) {
@@ -991,12 +1079,12 @@ export async function executeSubticketAutoMerge(
     return {
       success: false,
       evaluation: updatedEval,
-      finalStatus: journal.phase === "prepared" || journal.phase === "ref_update_pending"
-        ? "waiting_approval"
-        : "manual_intervention_required",
+      finalStatus:
+        journal.phase === "prepared" || journal.phase === "ref_update_pending"
+          ? "waiting_approval"
+          : "manual_intervention_required",
       reviewOutcome: "approved",
       error: msg,
     };
   }
 }
-

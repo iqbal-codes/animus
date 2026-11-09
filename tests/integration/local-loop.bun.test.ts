@@ -15,7 +15,7 @@ import {
   annotateDiffWithLineNumbers,
   type LocalIssue,
   type PiTransport,
-} from "../../scripts/local-loop";
+} from "./support/loop-harness";
 import { loadPrompt } from "../../scripts/loop/prompts";
 import { loadIssueDossier } from "../../scripts/loop/dossier";
 

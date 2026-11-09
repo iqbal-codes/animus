@@ -63,6 +63,8 @@ export type AgentTransport = (request: {
   appendSystemPrompts?: string[];
   timeoutMs: number;
   env?: Record<string, string>;
+  /** Observer for the detached child pid (equal to its process group id). */
+  onSpawn?: (pid: number) => void;
 }) => Promise<ProcessResult>;
 
 export type PiTransport = AgentTransport;
@@ -92,10 +94,16 @@ export interface LocalLoopOptions {
   checkPrCi?: (pr: string | number, options?: any) => Promise<any>;
   /** Injectable GitHub CLI runner port for offline testing and forge mocking. */
   ghRunner?: GhRunner;
-  /** Optional custom state root directory override. */
+  /** Optional custom state root directory override for per-project worktree state. */
   stateRoot?: string;
   /** Alias for stateRoot */
   stateDirectory?: string;
+  /**
+   * Canonical Animus installation state directory used for the restore hold
+   * check. Defaults to the environment-resolved Animus state dir and is never
+   * the per-project worktree state root.
+   */
+  installationStateDir?: string;
   /** Optional custom runs directory override. */
   runsDir?: string;
   customRunsDir?: string;

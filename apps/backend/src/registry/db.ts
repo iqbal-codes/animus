@@ -8,6 +8,54 @@ import {
 import { applyCommandMigrations } from "../command/db";
 import { applyCoordinationMigrations } from "../coordination/db";
 import { applyEvidenceMigrations } from "../evidence/db";
+import { EVIDENCE_MIGRATIONS } from "../evidence/schema";
+import { PUBLICATION_MIGRATIONS } from "../publication/schema";
+import { INTEGRATION_MIGRATIONS } from "../integration/schema";
+import { DRAFT_PUBLICATION_MIGRATIONS } from "../publication/issue-schema";
+import { WORK_MIGRATIONS } from "../work/db";
+import { BUDGET_MIGRATIONS } from "../work/budget-schema";
+import { DRAFT_MIGRATIONS } from "../draft/db";
+import { DISPATCH_MIGRATIONS } from "../dispatch/db";
+import { DELIVERY_MIGRATIONS } from "../delivery/schema";
+import { RESTORE_MIGRATIONS } from "../restore/schema";
+import { CUTOVER_MIGRATIONS } from "../cutover/schema";
+import { FINAL_DELIVERY_MIGRATIONS } from "../final/schema";
+import { DELIVERY_CLAIM_MIGRATIONS } from "../delivery/claim-schema";
+import { applyMigrations, type Migration } from "./migrations";
+
+/**
+ * Single ordered migration registry for the schema-migrated subsystem.
+ *
+ * Versions are owned here, not by the feature modules that contribute them.
+ * Work identity (#152) owns version 1, prepared plan admission (#153) owns
+ * version 2, local draft authoring (#161) owns version 3, delivery dispatch
+ * ownership (#154) owns version 4, execution evidence (#155) owns version 5,
+ * bounded attempt budgets/operator controls (#156) owns version 6, PR
+ * publication audit (#157) owns version 7, child gate integration (#158)
+ * owns version 8, standalone full-delivery gates (#159) own version 9,
+ * approved-draft issue publication (#162) owns version 10, workspace
+ * backup/restore (#164) owns versions 11 and 13, and final-spec delivery
+ * coordination (#160) owns version 12, the authority cutover (#165) owns
+ * version 15, and the final-spec-review remediation owns version 16 for the
+ * durable delivery-role claim. Version 14 stays unassigned; a future lane
+ * appends the next version instead of claiming an existing one.
+ */
+export const SCHEMA_MIGRATIONS: Migration[] = [
+  ...WORK_MIGRATIONS,
+  ...DRAFT_MIGRATIONS,
+  ...DISPATCH_MIGRATIONS,
+  ...EVIDENCE_MIGRATIONS,
+  ...BUDGET_MIGRATIONS,
+  ...PUBLICATION_MIGRATIONS,
+  ...INTEGRATION_MIGRATIONS,
+  ...DELIVERY_MIGRATIONS,
+  ...DRAFT_PUBLICATION_MIGRATIONS,
+  ...RESTORE_MIGRATIONS.filter((migration) => migration.version < 12),
+  ...FINAL_DELIVERY_MIGRATIONS,
+  ...RESTORE_MIGRATIONS.filter((migration) => migration.version > 12),
+  ...CUTOVER_MIGRATIONS,
+  ...DELIVERY_CLAIM_MIGRATIONS,
+];
 
 export function resolveStateDir(): string {
   const custom = process.env.ANIMUS_STATE_DIR || process.env.FACTORY_STATE_DIR;
@@ -31,8 +79,10 @@ export function initializeDatabase(dbPath?: string): DatabaseSync {
 
   // Configure SQLite WAL mode and strict integrity
   db.exec("PRAGMA journal_mode = WAL;");
-  db.exec("PRAGMA synchronous = NORMAL;");
+  db.exec("PRAGMA synchronous = FULL;");
   db.exec("PRAGMA foreign_keys = ON;");
+  db.exec("PRAGMA busy_timeout = 5000;");
+  verifyDatabasePragmas(db, resolvedPath);
 
   // Migration: create projects table
   db.exec(`
@@ -82,6 +132,79 @@ export function initializeDatabase(dbPath?: string): DatabaseSync {
   applyCommandMigrations(db);
   applyCoordinationMigrations(db);
   applyEvidenceMigrations(db);
+  applyMigrations(db, SCHEMA_MIGRATIONS);
 
   return db;
+}
+
+function verifyDatabasePragmas(db: DatabaseSync, resolvedPath: string): void {
+  const journal = db.prepare("PRAGMA journal_mode;").get() as { journal_mode?: string } | undefined;
+  const synchronous = db.prepare("PRAGMA synchronous;").get() as
+    | { synchronous?: number }
+    | undefined;
+  const foreignKeys = db.prepare("PRAGMA foreign_keys;").get() as
+    | { foreign_keys?: number }
+    | undefined;
+  const busyTimeout = db.prepare("PRAGMA busy_timeout;").get() as { timeout?: number } | undefined;
+
+  if (resolvedPath !== ":memory:" && String(journal?.journal_mode).toLowerCase() !== "wal") {
+    throw new Error("SQLite WAL journal mode is unavailable");
+  }
+  if (Number(synchronous?.synchronous) !== 2) {
+    throw new Error("SQLite FULL synchronous mode is unavailable");
+  }
+  if (Number(foreignKeys?.foreign_keys) !== 1) {
+    throw new Error("SQLite foreign key enforcement is unavailable");
+  }
+  if (Number(busyTimeout?.timeout) !== 5000) {
+    throw new Error("SQLite busy timeout is unavailable");
+  }
+}
+
+export interface DatabasePragmaSnapshot {
+  journalMode: string;
+  /** SQLite synchronous enum: 2 = FULL. */
+  synchronous: number;
+  /** 1 when foreign-key enforcement is ON for this connection. */
+  foreignKeys: number;
+  /** Per-connection busy timeout in milliseconds. */
+  busyTimeout: number;
+}
+
+/** Reads the effective PRAGMAs from an already open connection. */
+export function readDatabasePragmas(db: DatabaseSync): DatabasePragmaSnapshot {
+  const journal = db.prepare("PRAGMA journal_mode;").get() as { journal_mode?: string } | undefined;
+  const synchronous = db.prepare("PRAGMA synchronous;").get() as
+    | { synchronous?: number }
+    | undefined;
+  const foreignKeys = db.prepare("PRAGMA foreign_keys;").get() as
+    | { foreign_keys?: number }
+    | undefined;
+  const busyTimeout = db.prepare("PRAGMA busy_timeout;").get() as { timeout?: number } | undefined;
+  return {
+    journalMode: String(journal?.journal_mode ?? "").toLowerCase(),
+    synchronous: Number(synchronous?.synchronous ?? -1),
+    foreignKeys: Number(foreignKeys?.foreign_keys ?? -1),
+    busyTimeout: Number(busyTimeout?.timeout ?? -1),
+  };
+}
+
+/**
+ * Opens the installation database read-only and configures the connection-scoped
+ * PRAGMAs that are legitimately settable without a write. This does not run
+ * migrations and must never be reported as an `initializeDatabase` call: WAL is a
+ * persistent database property that is read, while foreign keys, synchronous and
+ * busy timeout are configured/observed on this connection.
+ */
+export function openReadOnlyDatabase(dbPath: string): {
+  db: DatabaseSync;
+  pragmas: DatabasePragmaSnapshot;
+} {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    db.exec("PRAGMA busy_timeout = 5000;");
+    db.exec("PRAGMA foreign_keys = ON;");
+    db.exec("PRAGMA synchronous = FULL;");
+  } catch {}
+  return { db, pragmas: readDatabasePragmas(db) };
 }

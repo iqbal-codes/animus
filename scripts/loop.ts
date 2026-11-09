@@ -1,4 +1,6 @@
 import { parseArgs } from "node:util";
+import { readExecutionAuthority } from "@animus/contracts/execution-authority";
+import { assertInstallationNotHeldAtStateDir } from "@animus/contracts/installation-hold";
 import { join, resolve } from "node:path";
 import { inspectLocalLoop, runAnimusLoop, type LocalIssue } from "./animus-loop";
 import { getMergedIssueNumbers, resolveProjectWorkspace } from "../packages/contracts/src/paths";
@@ -90,6 +92,11 @@ export function readIssueContract(
 
 if (import.meta.main) {
   try {
+    // Fail closed before any GitHub read, worktree, forge or builder spawn.
+    assertInstallationNotHeldAtStateDir();
+    if (readExecutionAuthority().authority !== "legacy") {
+      throw new Error("execution_authority_moved: use animus plan dispatch with an admitted plan");
+    }
     const { issue, dryRun, push } = parseIssueArgs(process.argv.slice(2));
     const root = resolve(import.meta.dir, "..");
     const repository = githubJson(["repo", "view", "--json", "nameWithOwner"], root) as {

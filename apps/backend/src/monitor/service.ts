@@ -13,6 +13,12 @@ import {
   withLockMutation,
 } from "@animus/contracts/paths";
 import type { MonitorRuntime } from "./runtime";
+import type { LocalDispatchTickResult } from "../dispatch/scheduler";
+import type { ExecutionAuthority } from "@animus/contracts/execution-authority";
+import {
+  assertInstallationNotHeld,
+  readInstallationHold,
+} from "@animus/contracts/installation-hold";
 
 export class RegisteredProjectMonitor {
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -29,7 +35,14 @@ export class RegisteredProjectMonitor {
 
   constructor(
     private registry: ProjectRegistryService,
-    private options: { runtime: MonitorRuntime; intervalMs?: number },
+    private options: {
+      runtime: MonitorRuntime;
+      intervalMs?: number;
+      /** Present only when the validated local execution authority is active. */
+      localDispatch?: () => Promise<LocalDispatchTickResult>;
+      /** Read the durable authority for each tick so activation is exact. */
+      authority?: () => ExecutionAuthority;
+    },
   ) {
     this.intervalMs = options.intervalMs ?? 1000;
     if (!Number.isSafeInteger(this.intervalMs) || this.intervalMs < 1)
@@ -277,6 +290,9 @@ export class RegisteredProjectMonitor {
 
   private assertDispatch(project: Project): void {
     if (this.stopped) throw new Error("monitor_stopped");
+    // A restored installation must never dispatch, launch a lap or publish while
+    // held. An unreadable hold database fails closed as well.
+    assertInstallationNotHeld(this.registry.getDb());
     const current = this.registry.getProject(project.id);
     if (
       current.status !== "active" ||
@@ -307,6 +323,13 @@ export class RegisteredProjectMonitor {
 
     const runtime = this.options.runtime;
     if (!runtime.triage) return;
+
+    // A held or unreadable installation must not refine/publish intake work.
+    try {
+      if (readInstallationHold(this.registry.getDb()).held) return;
+    } catch {
+      return;
+    }
 
     // Isolate all sync checks per project into caught status
     try {
@@ -462,6 +485,20 @@ export class RegisteredProjectMonitor {
         status.reason = project.status_reason ?? project.status;
         return;
       }
+      try {
+        const hold = readInstallationHold(this.registry.getDb());
+        if (hold.held) {
+          status.state = "held";
+          status.reason = hold.reason ?? "restored_installation_pending_reconciliation";
+          return;
+        }
+      } catch (error) {
+        // An unreadable installation database is never treated as unheld.
+        status.state = "error";
+        status.reason = "installation_hold_unavailable";
+        status.error = error instanceof Error ? error.message : String(error);
+        return;
+      }
       if (this.registry.getActiveRunCount(project.id) > 0) {
         status.state = "held";
         status.reason = "project_has_active_runs";
@@ -479,6 +516,40 @@ export class RegisteredProjectMonitor {
         status.reason = permitted.reason ?? "brake_state_unknown";
         return;
       }
+
+      // Any non-legacy authority dispatches from the frozen plan manifest and
+      // never fetches or rebinds GitHub backlog content. While `migrating` the
+      // local tick fails closed with authority_not_activated instead of falling
+      // through to the legacy GitHub/filesystem path.
+      const authority = this.options.authority?.() ?? "legacy";
+      if (authority !== "legacy") {
+        if (!this.options.localDispatch) {
+          status.state = "held";
+          status.reason = "authority_not_activated";
+          return;
+        }
+        this.assertDispatch(project);
+        const result = await this.options.localDispatch();
+        status.tick = {
+          action: result.action,
+          reason: result.reason,
+          activeLapsCount: 0,
+          ...(result.issueNumber !== undefined ? { targetIssueNumber: result.issueNumber } : {}),
+          ...(result.runId ? { runId: result.runId } : {}),
+          ...(result.detail ? { detail: result.detail } : {}),
+          ...(result.error ? { error: result.error } : {}),
+        };
+        status.reason = result.reason;
+        status.state =
+          result.action === "launched" ? "completed" : result.error ? "error" : "skipped";
+        if (result.error) status.error = result.error;
+        if (result.reason === "capacity_full") {
+          this.pendingWake.add(project.id);
+          status.pending_wake = true;
+        }
+        return;
+      }
+
       await this.verifyCheckout(project);
       const runtime = this.options.runtime;
       try {

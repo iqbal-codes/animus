@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { readExecutionAuthority } from "@animus/contracts/execution-authority";
 import { git } from "./worktree";
 import { checkPrCiStatus, pollPrCiStatus, type PrCiAssessment } from "./ci";
 import {
@@ -37,6 +38,24 @@ export interface LoopPublisherOptions {
   issueNumber: number;
   push?: boolean;
   runner?: GhRunner;
+  /**
+   * Canonical installation state directory used to re-check the execution
+   * authority immediately before any outward publication. Omitted only by
+   * pure local/no-push embedders, which cannot publish anyway.
+   */
+  installationStateDir?: string;
+}
+
+function assertLegacyPublisherState(stateDir?: string): void {
+  if (!stateDir) return;
+  const authority = readExecutionAuthority(stateDir);
+  if (authority.error || authority.authority !== "legacy") {
+    throw new Error(
+      `execution_authority_moved: legacy publisher is disabled under '${
+        authority.error ? "unreadable marker" : authority.authority
+      }' authority`,
+    );
+  }
 }
 
 export class LoopPublisher {
@@ -46,6 +65,7 @@ export class LoopPublisher {
   readonly issueNumber: number;
   readonly push: boolean;
   readonly runner: GhRunner;
+  readonly installationStateDir?: string;
   private pushRejected = false;
 
   constructor(options: LoopPublisherOptions) {
@@ -55,6 +75,12 @@ export class LoopPublisher {
     this.issueNumber = options.issueNumber;
     this.push = options.push !== false;
     this.runner = options.runner || defaultGhRunner;
+    this.installationStateDir = options.installationStateDir;
+  }
+
+  /** Re-check immediately before an outward GitHub/git effect. */
+  private guardWriter(): void {
+    assertLegacyPublisherState(this.installationStateDir);
   }
 
   getRunner(): GhRunner {
@@ -146,6 +172,7 @@ export class LoopPublisher {
     if (this.push === false || this.isPushRejected()) {
       return { created: false };
     }
+    this.guardWriter();
 
     // Check if PR already exists remotely on this branch
     try {
@@ -247,6 +274,7 @@ export class LoopPublisher {
     if (this.push === false || this.isPushRejected()) {
       return { ok: true, prUrl: options.pr, readbackVerified: false };
     }
+    this.guardWriter();
     return publishPrEvidenceUpdate({
       repoRoot: this.worktree,
       pr: options.pr,
@@ -266,6 +294,7 @@ export class LoopPublisher {
     if (this.push === false || this.isPushRejected()) {
       return { ok: true, message: "Push disabled or rejected; skipping comment publication." };
     }
+    this.guardWriter();
     return publishComment({
       repoRoot: this.worktree,
       target: options.target,
@@ -287,6 +316,7 @@ export class LoopPublisher {
     if (this.push === false || this.isPushRejected()) {
       return { ok: true, inlineCount: 0, message: "Push disabled or rejected; skipping review publication." };
     }
+    this.guardWriter();
     return publishPrReview({
       repoRoot: this.worktree,
       pr: options.pr,
@@ -306,6 +336,7 @@ export class LoopPublisher {
     if (this.push === false || this.isPushRejected()) {
       return { ok: true, escalated: false };
     }
+    this.guardWriter();
 
     // Check deduplication
     if (this.isDeduplicated("label_escalation", targetStr, cand, "escalation")) {
@@ -364,6 +395,7 @@ export class LoopPublisher {
     candidate: string;
   }): Promise<void> {
     if (this.push === false || this.isPushRejected()) return;
+    this.guardWriter();
     if (options.pr) {
       try {
         await this.publishComment({
@@ -470,6 +502,7 @@ export class LoopPublisher {
 
     if (this.push === false || this.isPushRejected()) return;
 
+    this.guardWriter();
     try {
       await git(this.worktree, "push", "-u", "origin", branch);
     } catch (pushErr: unknown) {
@@ -536,6 +569,7 @@ export class LoopPublisher {
   }
 
   async checkPrCiStatus(pr: string | number): Promise<PrCiAssessment> {
+    this.guardWriter();
     return checkPrCiStatus(pr, { cwd: this.worktree, run: this.runner });
   }
 
@@ -543,6 +577,7 @@ export class LoopPublisher {
     pr: string | number,
     options?: { maxWaitSeconds?: number; pollIntervalSeconds?: number },
   ): Promise<PrCiAssessment> {
+    this.guardWriter();
     return pollPrCiStatus(pr, {
       cwd: this.worktree,
       run: this.runner,

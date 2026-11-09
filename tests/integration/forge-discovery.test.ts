@@ -36,6 +36,52 @@ function query(cmd: string[]) {
   return cmd.find((arg) => arg.startsWith("query="))!.slice(6);
 }
 
+describe("SystemForgeAdapter remote merge", () => {
+  test("merges the exact candidate through the real adapter's argv transport", async () => {
+    const head = "a".repeat(40);
+    const sha = "b".repeat(40);
+    const mock = transport([{ merged: true, sha, message: "Merged" }]);
+    const forge: ForgeAdapter = new SystemForgeAdapter(mock.runner);
+    expect(typeof forge.mergePullRequest).toBe("function");
+    await expect(
+      forge.mergePullRequest!("https://github.com/owner/repo.git", 27, {
+        expectedHeadSha: head,
+        mergeMethod: "merge",
+      }),
+    ).resolves.toEqual({ merged: true, sha, message: "Merged" });
+    expect(mock.calls).toEqual([
+      [
+        "gh",
+        "api",
+        "repos/owner/repo/pulls/27/merge",
+        "--method",
+        "PUT",
+        "-f",
+        "merge_method=merge",
+        "-f",
+        `sha=${head}`,
+      ],
+    ]);
+  });
+
+  test("preserves a remote refusal instead of fabricating merge success", async () => {
+    const mock = transport([{ merged: false, message: "Head changed" }]);
+    const forge: ForgeAdapter = new SystemForgeAdapter(mock.runner);
+    expect(typeof forge.mergePullRequest).toBe("function");
+    await expect(forge.mergePullRequest!("owner/repo", 27)).resolves.toEqual({
+      merged: false,
+      message: "Head changed",
+    });
+  });
+
+  test("propagates transport failure without a synthetic merge SHA", async () => {
+    const mock = transport([new Error("GitHub unavailable")]);
+    const forge: ForgeAdapter = new SystemForgeAdapter(mock.runner);
+    expect(typeof forge.mergePullRequest).toBe("function");
+    await expect(forge.mergePullRequest!("owner/repo", 27)).rejects.toThrow("GitHub unavailable");
+  });
+});
+
 describe("SystemForgeAdapter discovery", () => {
   test("ALL explicitly includes closed issues across pages with complete comments", async () => {
     const mock = transport([

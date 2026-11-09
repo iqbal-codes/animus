@@ -27,11 +27,11 @@ export function JobsHeader({
   showViewMode?: boolean;
   showNotifications?: boolean;
 }) {
-  const { state } = useSidebar();
+  const { state, isMobile } = useSidebar();
 
   return (
-    <header className="flex h-[76px] shrink-0 items-center gap-5 border-b border-[var(--border-subtle)] px-7">
-      {state === "collapsed" && <SidebarTrigger className="-ml-2" />}
+    <header className="flex min-h-[76px] shrink-0 flex-wrap items-center gap-3 border-b border-[var(--border-subtle)] px-7 py-3 sm:gap-5">
+      {(isMobile || state === "collapsed") && <SidebarTrigger className="-ml-2" />}
 
       <h1 className="text-[20px] leading-[1.4] font-medium text-foreground">{title}</h1>
 

@@ -27,6 +27,7 @@ import {
 import type { ForgeAdapter, IssueForgeAdapter } from "../registry/forge";
 import { SystemForgeAdapter, assertIssueForge } from "../registry/forge";
 import { ProjectRegistryError } from "../registry/service";
+import { WorkPersistenceError, WorkService } from "../work";
 import { evaluateBacklogAdmission, type RawIssue } from "./admission";
 import { parseDependencies, isActiveClaim, computeDiff, computeLabelEffects } from "./parser";
 import { verifyTargetBinding, TargetBindingError } from "./binding";
@@ -53,6 +54,7 @@ export class IntakeService {
   private readonly defaultRepo: string;
   private forge: ForgeAdapter;
   private db?: DatabaseSync;
+  private work: WorkService | null = null;
 
   constructor(
     dbOrOptions?: DatabaseSync | IntakeServiceOptions,
@@ -70,6 +72,7 @@ export class IntakeService {
     this.forge = forge ?? new SystemForgeAdapter(resolvedOptions?.runner);
     this.defaultRepo = resolvedOptions?.repo || "animus";
     this.ttlSeconds = resolvedOptions?.ttlSeconds ?? 60.0;
+    this.work = this.db ? new WorkService(this.db) : null;
   }
 
   setForge(forge: ForgeAdapter): void {
@@ -78,6 +81,7 @@ export class IntakeService {
 
   setDb(db: DatabaseSync): void {
     this.db = db;
+    this.work = new WorkService(db);
   }
 
   private getIssueForge(): IssueForgeAdapter {
@@ -117,6 +121,7 @@ export class IntakeService {
       project.checkout_path,
       projectId,
     );
+    this.attachWork(project, rawIssues, evaluated);
 
     evaluated.sort((a, b) => a.number - b.number);
 
@@ -148,6 +153,7 @@ export class IntakeService {
     if (!found) {
       throw new ProjectRegistryError("issue_not_found", `Issue #${issueNumber} not found`);
     }
+    if (raw) this.attachWork(project, [raw], [found]);
     return found;
   }
 
@@ -379,6 +385,52 @@ export class IntakeService {
     return admissionResult.issues;
   }
 
+  private findProjectByRepoName(repoName: string): ProjectRow | null {
+    if (!this.db) return null;
+    const row = this.db
+      .prepare("SELECT * FROM projects WHERE LOWER(repo_name) = LOWER(?) AND status != 'tombstone'")
+      .get(repoName) as unknown as ProjectRow | undefined;
+    return row ?? null;
+  }
+
+  private attachWork(
+    project: ProjectRow,
+    issues: Array<{
+      number?: unknown;
+      title?: unknown;
+      state?: unknown;
+      body?: unknown;
+      labels?: unknown;
+      comments?: unknown;
+    }>,
+    evaluated: EvaluatedIssue[],
+  ): void {
+    if (!this.work) return;
+    const sources = new Map<number, (typeof issues)[number]>();
+    for (const issue of issues) {
+      if (typeof issue.number === "number") sources.set(issue.number, issue);
+    }
+    for (const item of evaluated) {
+      const source = sources.get(item.number);
+      if (!source) continue;
+      try {
+        item.work = this.work.importIssue(
+          { id: project.id, repo_id: project.repo_id, repo_name: project.repo_name },
+          source,
+        );
+      } catch (error) {
+        if (!(error instanceof WorkPersistenceError) || error.code === "work_storage_failed") {
+          throw error;
+        }
+        const existing = this.work.getWorkByIssue(project.id, item.number);
+        if (existing) item.work = existing;
+        item.admission_status = "held";
+        item.unsatisfied_dependencies = [];
+        item.reason = `work_import_held:${error.code}:${error.message}`;
+      }
+    }
+  }
+
   async evaluateBacklog(forceRefresh = false): Promise<IntakeResult> {
     const now = Date.now() / 1000;
     const cacheKey = `legacy:${this.defaultRepo}`;
@@ -390,6 +442,8 @@ export class IntakeService {
 
     const rawIssues = await this.fetchRawIssues();
     const evaluated = await this.evaluateIssues(this.repoName(), rawIssues);
+    const project = this.findProjectByRepoName(this.repoName());
+    if (project) this.attachWork(project, rawIssues, evaluated);
 
     evaluated.sort((a, b) => a.number - b.number);
 

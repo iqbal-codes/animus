@@ -12,7 +12,7 @@ import {
 } from "../../scripts/loop/ci";
 import { runSchedulerTick, type BacklogCandidate } from "../../scripts/loop/scheduler";
 import { loadIssueDossier } from "../../scripts/loop/dossier";
-import { runLocalLoop } from "../../scripts/local-loop";
+import { runLocalLoop } from "./support/loop-harness";
 import type { LocalIssue, PiTransport } from "../../scripts/loop/types";
 
 test("parseGhChecksOutput classifies passing, failing, pending, and empty states cleanly", () => {

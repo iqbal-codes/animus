@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { cn } from "cn";
 import type { ExecutionIcon, TaskCardJob } from "./jobs-model";
+import { specProgressLabel } from "./jobs-model";
 import { INK_TEXT, SURFACE_BG } from "./tone";
 import type { CardDensity } from "@/lib/preferences";
 
@@ -27,9 +28,11 @@ const EXECUTION_ICONS: Record<ExecutionIcon, LucideIcon> = {
 export function TaskCard({
   job,
   density = "comfortable",
+  onOpen,
 }: {
   job: TaskCardJob;
   density?: CardDensity;
+  onOpen?: () => void;
 }) {
   const ExecutionIcon = job.execution ? EXECUTION_ICONS[job.execution.icon] : null;
 
@@ -78,7 +81,42 @@ export function TaskCard({
         )}
       </div>
 
-      <h3 className="text-sm leading-[1.45] font-medium text-foreground">{job.title}</h3>
+      <h3 className="text-sm leading-[1.45] font-medium text-foreground">
+        {onOpen ? (
+          <button
+            type="button"
+            onClick={onOpen}
+            aria-label={`Open details for ${job.ref} ${job.title}`}
+            className="inline-flex min-h-11 items-center text-left underline-offset-2 transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)] sm:min-h-0"
+          >
+            {job.title}
+          </button>
+        ) : (
+          job.title
+        )}
+      </h3>
+
+      {(job.parentRef || job.specProgress) && (
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          {job.parentRef && (
+            <span
+              data-testid="card-parent"
+              title={job.parentRef.title}
+              className="inline-flex max-w-full items-center rounded-full border border-[var(--border-subtle)] px-2 py-0.5 text-[10px] leading-[1.4] text-text-secondary"
+            >
+              Part of #{job.parentRef.issueNumber}
+            </span>
+          )}
+          {job.specProgress && (
+            <span
+              data-testid="card-spec-progress"
+              className="inline-flex min-w-0 items-center text-[10px] leading-[1.4] text-text-secondary"
+            >
+              {specProgressLabel(job.specProgress)}
+            </span>
+          )}
+        </div>
+      )}
 
       {job.summary && (
         <p className={cn("text-[11px] leading-[1.45]", INK_TEXT[job.summary.ink])}>

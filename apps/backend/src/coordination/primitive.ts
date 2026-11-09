@@ -1,4 +1,6 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { join } from "node:path";
+import { resolveAnimusStateDir } from "@animus/contracts/paths";
 import {
   type FrozenContract,
   type TargetedImplementSubmission,
@@ -7,6 +9,7 @@ import {
   targetedImplementResultSchema,
 } from "@animus/contracts/operator";
 import { parseTicketSections } from "../intake/parser";
+import { runFrozenBuilder } from "./frozen-builder";
 import { CoordinationError } from "./errors";
 
 export type ImplementRunner = (
@@ -76,52 +79,27 @@ export async function executeTargetedImplement(
     });
   }
 
-  // Default execution via Bun subprocess if runner is not provided
-  try {
-    const proc = Bun.spawnSync(
-      [
-        "bun",
-        "animus",
-        "workflow",
-        "run",
-        "animus-implement",
-        "--cwd",
-        submission.worktreePath,
-        "--branch",
-        submission.branch,
-        "--input",
-        `contract_digest=${submission.contract.digest}`,
-        "--input",
-        `child_issue=${submission.childIssueNumber}`,
-        "--",
-        submission.contract.rawBody,
-      ],
-      {
-        cwd: submission.worktreePath,
-        env: process.env,
-      },
-    );
+  // Default execution through the real bounded builder role. The legacy
+  // `bun animus workflow` subprocess never existed in this repository; a
+  // fabricated success with no commit is not a valid targeted result.
+  const runId = `targeted_${randomUUID()}`;
+  const result = await runFrozenBuilder({
+    projectRoot: submission.worktreePath,
+    worktreePath: submission.worktreePath,
+    branch: submission.branch,
+    baseSha: submission.startSha,
+    issueNumber: submission.childIssueNumber,
+    specIssueNumber: submission.specIssueNumber,
+    contractBody: submission.contract.rawBody,
+    runId,
+    runDirectory: join(resolveAnimusStateDir(), "dispatch", runId),
+  });
 
-    if (proc.exitCode !== 0) {
-      return {
-        success: false,
-        childIssueNumber: submission.childIssueNumber,
-        error: `Subprocess exited with code ${proc.exitCode}: ${proc.stderr.toString()}`,
-        exitCode: proc.exitCode,
-      };
-    }
-
-    return {
-      success: true,
-      childIssueNumber: submission.childIssueNumber,
-      commitMessage: `feat: implement child #${submission.childIssueNumber}`,
-      exitCode: 0,
-    };
-  } catch (err: any) {
-    return {
-      success: false,
-      childIssueNumber: submission.childIssueNumber,
-      error: err.message || "Failed to spawn targeted execution primitive",
-    };
-  }
+  return {
+    success: result.success,
+    childIssueNumber: submission.childIssueNumber,
+    ...(result.headSha ? { headSha: result.headSha } : {}),
+    ...(result.error ? { error: result.error } : {}),
+    ...(result.exitCode !== undefined ? { exitCode: result.exitCode } : {}),
+  };
 }

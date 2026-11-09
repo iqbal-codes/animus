@@ -10,6 +10,27 @@ import {
   launchAckSchema,
   intakeResultSchema,
   evaluatedIssueSchema,
+  workListSchema,
+  workRecordSchema,
+  draftListSchema,
+  draftRecordSchema,
+  draftRefineSubmissionSchema,
+  draftRevisionSubmissionSchema,
+  draftDecisionSubmissionSchema,
+  planListSchema,
+  planRecordSchema,
+  planImportSubmissionSchema,
+  planDecisionSubmissionSchema,
+  planDispatchSubmissionSchema,
+  planDispatchRunSchema,
+  planDispatchRunListSchema,
+  planDispatchReconciliationSchema,
+  dispatchRunDetailSchema,
+  budgetGrantListSchema,
+  budgetGrantResultSchema,
+  budgetGrantSubmissionSchema,
+  executionControlResultSchema,
+  executionControlSubmissionSchema,
   controlStateSchema,
   controlSubmissionSchema,
   lapEvidenceSchema,
@@ -35,6 +56,16 @@ import {
   projectBrakeSubmissionSchema,
   backupSubmissionSchema,
   backupResultSchema,
+  backupCreateSubmissionSchema,
+  backupCreateResultSchema,
+  backupStatusSchema,
+  backupSnapshotRecordSchema,
+  restoreCreateSubmissionSchema,
+  restoreCreateResultSchema,
+  restoreStatusResultSchema,
+  restoreReconcileSubmissionSchema,
+  restoreOperationRecordSchema,
+  installationHoldSchema,
   labelEffectsSchema,
   admissionPreviewSchema,
   intakePreviewSubmissionSchema,
@@ -52,6 +83,34 @@ import {
   coordinationFinalPrSubmissionSchema,
   candidateVerificationRecordSchema,
   candidateVerificationSubmissionSchema,
+  executionObservationRequestSchema,
+  executionObservationRecordSchema,
+  observationListSchema,
+  runEvidenceReportSchema,
+  acceptanceDecisionSchema,
+  factoryFindingRecordSchema,
+  findingListSchema,
+  findingFixRequestSchema,
+  findingRecheckRequestSchema,
+  publicationStatusSchema,
+  publicationStatusListSchema,
+  publicationEvidenceBindingRequestSchema,
+  integrationStatusSchema,
+  integrationStatusListSchema,
+  integrationLandSubmissionSchema,
+  draftPublicationSchema,
+  draftPublicationListSchema,
+  draftPublicationSubmissionSchema,
+  deliveryGateStatusSchema,
+  deliveryRoleClaimSchema,
+  deliveryRoleClaimListSchema,
+  deliveryClaimReconcileSubmissionSchema,
+  finalDeliveryStatusSchema,
+  finalDeliveryStatusListSchema,
+  finalDeliveryAdvanceSubmissionSchema,
+  finalDeliveryVerifySubmissionSchema,
+  operatorBoardSchema,
+  operatorWorkDetailSchema,
   landingGuardResultSchema,
   landingSubmissionSchema,
   landingExecutionResultSchema,
@@ -73,6 +132,13 @@ import {
   type WsEvent,
   type CandidateVerificationRecord,
   type CandidateVerificationSubmission,
+  type ExecutionObservationRecord,
+  type ExecutionObservationRequestInput,
+  type RunEvidenceReport,
+  type AcceptanceDecision,
+  type FactoryFindingRecord,
+  type FindingFixRequest,
+  type FindingRecheckRequestInput,
   type LandingGuardResult,
   type LandingSubmission,
   type LandingExecutionResult,
@@ -101,6 +167,32 @@ import {
   type LaunchAck,
   type IntakeResult,
   type EvaluatedIssue,
+  type WorkList,
+  type WorkRecord,
+  type DraftList,
+  type DraftRecord,
+  type DraftRefineSubmission,
+  type DraftRevisionSubmission,
+  type DraftDecisionSubmission,
+  type DraftPublication,
+  type DraftPublicationList,
+  type PlanList,
+  type PlanRecord,
+  type PlanImportSubmission,
+  type PlanDecisionSubmission,
+  type PlanDispatchSubmission,
+  type PlanDispatchRun,
+  type PlanDispatchRunList,
+  type PlanDispatchReconciliation,
+  type PlanDispatchReconcileSubmission,
+  type DispatchRunDetail,
+  type OperatorBoard,
+  type OperatorWorkDetail,
+  type BudgetGrantList,
+  type BudgetGrantResult,
+  type BudgetGrantSubmission,
+  type ExecutionControlSubmission,
+  type ExecutionControlResult,
   type ControlState,
   type ControlAction,
   type OperatorErrorCode,
@@ -123,6 +215,17 @@ import {
   type ProjectBrakeSubmission,
   type BackupSubmission,
   type BackupResult,
+  type BackupCreateSubmission,
+  type BackupCreateResult,
+  type BackupStatus,
+  type BackupSnapshotRecord,
+  type BackupCredentialNotice,
+  type RestoreCreateSubmission,
+  type RestoreCreateResult,
+  type RestoreStatusResult,
+  type RestoreReconcileSubmission,
+  type RestoreOperationRecord,
+  type InstallationHold,
   type LabelEffects,
   type AdmissionPreview,
   type IntakePreviewSubmission,
@@ -134,7 +237,36 @@ import {
   type TargetBindingResult,
   type BranchIntegrationSubmission,
   type BranchIntegrationResult,
+  type PublicationStatus,
+  type PublicationStatusList,
+  type DeliveryGateStatus,
+  type DeliveryRoleClaimRecord,
+  type DeliveryClaimReconcileSubmission,
+  type IntegrationStatus,
+  type IntegrationStatusList,
+  type IntegrationLandSubmission,
+  type FinalDeliveryStatus,
+  type FinalDeliveryStatusList,
+  type FinalDeliveryAdvanceSubmission,
 } from "@animus/contracts/operator";
+import {
+  cutoverStatusSchema,
+  cutoverStageSubmissionSchema,
+  cutoverStageResultSchema,
+  cutoverActivateSubmissionSchema,
+  cutoverActivateResultSchema,
+  cutoverAbortSubmissionSchema,
+  cutoverAbortResultSchema,
+  cutoverMappingsResultSchema,
+  type CutoverStatus,
+  type CutoverStageSubmission,
+  type CutoverStageResult,
+  type CutoverActivateSubmission,
+  type CutoverActivateResult,
+  type CutoverAbortSubmission,
+  type CutoverAbortResult,
+  type CutoverMappingsResult,
+} from "@animus/contracts/cutover";
 
 export {
   projectSchema,
@@ -155,6 +287,16 @@ export {
   projectBrakeSubmissionSchema,
   backupSubmissionSchema,
   backupResultSchema,
+  backupCreateSubmissionSchema,
+  backupCreateResultSchema,
+  backupStatusSchema,
+  backupSnapshotRecordSchema,
+  restoreCreateSubmissionSchema,
+  restoreCreateResultSchema,
+  restoreStatusResultSchema,
+  restoreReconcileSubmissionSchema,
+  restoreOperationRecordSchema,
+  installationHoldSchema,
   labelEffectsSchema,
   admissionPreviewSchema,
   intakePreviewSubmissionSchema,
@@ -166,6 +308,37 @@ export {
   targetBindingResultSchema,
   branchIntegrationSubmissionSchema,
   branchIntegrationResultSchema,
+  publicationStatusSchema,
+  publicationStatusListSchema,
+  publicationEvidenceBindingRequestSchema,
+  draftPublicationSchema,
+  draftPublicationListSchema,
+  draftPublicationSubmissionSchema,
+  deliveryGateStatusSchema,
+  deliveryRoleClaimSchema,
+  deliveryRoleClaimListSchema,
+  deliveryClaimReconcileSubmissionSchema,
+  planListSchema,
+  planRecordSchema,
+  planImportSubmissionSchema,
+  planDecisionSubmissionSchema,
+  type PlanList,
+  type PlanRecord,
+  type PlanImportSubmission,
+  type PlanDecisionSubmission,
+  type PlanDispatchSubmission,
+  type PlanDispatchRun,
+  type PlanDispatchRunList,
+  type PlanDispatchReconciliation,
+  type PlanDispatchReconcileSubmission,
+  type DispatchRunDetail,
+  type OperatorBoard,
+  type OperatorWorkDetail,
+  type BudgetGrantList,
+  type BudgetGrantResult,
+  type BudgetGrantSubmission,
+  type ExecutionControlSubmission,
+  type ExecutionControlResult,
   type Project,
   type ProjectList,
   type ProjectRegistration,
@@ -185,6 +358,17 @@ export {
   type ProjectBrakeSubmission,
   type BackupSubmission,
   type BackupResult,
+  type BackupCreateSubmission,
+  type BackupCreateResult,
+  type BackupStatus,
+  type BackupSnapshotRecord,
+  type BackupCredentialNotice,
+  type RestoreCreateSubmission,
+  type RestoreCreateResult,
+  type RestoreStatusResult,
+  type RestoreReconcileSubmission,
+  type RestoreOperationRecord,
+  type InstallationHold,
   type LabelEffects,
   type AdmissionPreview,
   type IntakePreviewSubmission,
@@ -225,8 +409,11 @@ export type FactoryErrorCode =
   | "invalid_operator_response";
 
 export class FactoryClientError extends Error {
-  constructor(public readonly code: FactoryErrorCode) {
-    super(code);
+  constructor(
+    public readonly code: FactoryErrorCode,
+    public readonly detail?: string,
+  ) {
+    super(detail ?? code);
     this.name = "FactoryClientError";
   }
 }
@@ -262,7 +449,16 @@ export function createFactoryClient(options: {
 
     if (!response.ok) {
       const error = operatorErrorSchema.safeParse(body);
-      throw new FactoryClientError(error.success ? error.data.error : "invalid_operator_response");
+      const detail =
+        body &&
+        typeof body === "object" &&
+        typeof (body as { message?: unknown }).message === "string"
+          ? (body as { message: string }).message
+          : undefined;
+      throw new FactoryClientError(
+        error.success ? error.data.error : "invalid_operator_response",
+        detail,
+      );
     }
 
     const result = schema.safeParse(body);
@@ -298,7 +494,16 @@ export function createFactoryClient(options: {
 
     if (!response.ok) {
       const error = operatorErrorSchema.safeParse(body);
-      throw new FactoryClientError(error.success ? error.data.error : "invalid_operator_response");
+      const detail =
+        body &&
+        typeof body === "object" &&
+        typeof (body as { message?: unknown }).message === "string"
+          ? (body as { message: string }).message
+          : undefined;
+      throw new FactoryClientError(
+        error.success ? error.data.error : "invalid_operator_response",
+        detail,
+      );
     }
 
     const result = schema.safeParse(body);
@@ -331,7 +536,16 @@ export function createFactoryClient(options: {
 
     if (!response.ok) {
       const error = operatorErrorSchema.safeParse(body);
-      throw new FactoryClientError(error.success ? error.data.error : "invalid_operator_response");
+      const detail =
+        body &&
+        typeof body === "object" &&
+        typeof (body as { message?: unknown }).message === "string"
+          ? (body as { message: string }).message
+          : undefined;
+      throw new FactoryClientError(
+        error.success ? error.data.error : "invalid_operator_response",
+        detail,
+      );
     }
 
     const result = schema.safeParse(body);
@@ -474,6 +688,60 @@ export function createFactoryClient(options: {
       if (!parsed.success) throw new FactoryClientError("invalid_payload");
       return postJson("/api/v1/commands/backup", parsed.data, backupResultSchema);
     },
+    async backupStatus(): Promise<BackupStatus> {
+      return getJson("/api/v1/backups/status", backupStatusSchema);
+    },
+    async createWorkspaceBackup(submission: BackupCreateSubmission): Promise<BackupCreateResult> {
+      const parsed = backupCreateSubmissionSchema.safeParse(submission);
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      return postJson("/api/v1/backups", parsed.data, backupCreateResultSchema);
+    },
+    async restoreStatus(stateDir?: string): Promise<RestoreStatusResult> {
+      const qs = stateDir ? `?state_dir=${encodeURIComponent(stateDir)}` : "";
+      return getJson(`/api/v1/restores/status${qs}`, restoreStatusResultSchema);
+    },
+    async restoreWorkspace(submission: RestoreCreateSubmission): Promise<RestoreCreateResult> {
+      const parsed = restoreCreateSubmissionSchema.safeParse(submission);
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      return postJson("/api/v1/restores", parsed.data, restoreCreateResultSchema);
+    },
+    async reconcileRestore(
+      submission: RestoreReconcileSubmission,
+      stateDir?: string,
+    ): Promise<RestoreStatusResult> {
+      const parsed = restoreReconcileSubmissionSchema.safeParse(submission);
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      const qs = stateDir ? `?state_dir=${encodeURIComponent(stateDir)}` : "";
+      return postJson(`/api/v1/restores/reconcile${qs}`, parsed.data, restoreStatusResultSchema);
+    },
+    async authorityStatus(): Promise<CutoverStatus> {
+      return getJson("/api/v1/authority/status", cutoverStatusSchema);
+    },
+    async stageAuthorityCutover(
+      submission: CutoverStageSubmission = {},
+    ): Promise<CutoverStageResult> {
+      const parsed = cutoverStageSubmissionSchema.safeParse(submission);
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      return postJson("/api/v1/authority/stage", parsed.data, cutoverStageResultSchema);
+    },
+    async activateAuthorityCutover(
+      submission: CutoverActivateSubmission,
+    ): Promise<CutoverActivateResult> {
+      const parsed = cutoverActivateSubmissionSchema.safeParse(submission);
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      return postJson("/api/v1/authority/activate", parsed.data, cutoverActivateResultSchema);
+    },
+    async abortAuthorityCutover(submission: CutoverAbortSubmission): Promise<CutoverAbortResult> {
+      const parsed = cutoverAbortSubmissionSchema.safeParse(submission);
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      return postJson("/api/v1/authority/abort", parsed.data, cutoverAbortResultSchema);
+    },
+    async authorityMappings(cutoverId: string): Promise<CutoverMappingsResult> {
+      return getJson(
+        `/api/v1/authority/mappings?cutover_id=${encodeURIComponent(cutoverId)}`,
+        cutoverMappingsResultSchema,
+      );
+    },
     forProject(projectId: string) {
       const encId = encodeURIComponent(projectId);
       const scopedBase = `/api/v1/projects/${encId}`;
@@ -579,6 +847,182 @@ export function createFactoryClient(options: {
           return getJson(
             `${scopedBase}/intake/${encodeURIComponent(number)}/integration`,
             branchIntegrationResultSchema,
+          );
+        },
+        async work(): Promise<WorkList> {
+          return getJson(`${scopedBase}/work`, workListSchema);
+        },
+        async workItem(workId: string): Promise<WorkRecord> {
+          return getJson(`${scopedBase}/work/${encodeURIComponent(workId)}`, workRecordSchema);
+        },
+        async drafts(): Promise<DraftList> {
+          return getJson(`${scopedBase}/drafts`, draftListSchema);
+        },
+        async draft(draftId: string): Promise<DraftRecord> {
+          return getJson(`${scopedBase}/drafts/${encodeURIComponent(draftId)}`, draftRecordSchema);
+        },
+        async workDraft(workId: string): Promise<DraftRecord> {
+          return getJson(
+            `${scopedBase}/drafts/by-work/${encodeURIComponent(workId)}`,
+            draftRecordSchema,
+          );
+        },
+        async refineDraft(submission: DraftRefineSubmission): Promise<DraftRecord> {
+          const parsed = draftRefineSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(`${scopedBase}/drafts`, parsed.data, draftRecordSchema);
+        },
+        async reviseDraft(
+          draftId: string,
+          submission: DraftRevisionSubmission,
+        ): Promise<DraftRecord> {
+          const parsed = draftRevisionSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/drafts/${encodeURIComponent(draftId)}/revisions`,
+            parsed.data,
+            draftRecordSchema,
+          );
+        },
+        async decideDraft(
+          draftId: string,
+          submission: DraftDecisionSubmission,
+        ): Promise<DraftRecord> {
+          const parsed = draftDecisionSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/drafts/${encodeURIComponent(draftId)}/decisions`,
+            parsed.data,
+            draftRecordSchema,
+          );
+        },
+        async draftPublications(): Promise<DraftPublicationList> {
+          return getJson(`${scopedBase}/draft-publications`, draftPublicationListSchema);
+        },
+        async draftPublication(publicationId: string): Promise<DraftPublication> {
+          return getJson(
+            `${scopedBase}/draft-publications/${encodeURIComponent(publicationId)}`,
+            draftPublicationSchema,
+          );
+        },
+        async draftPublicationByDraft(draftId: string): Promise<DraftPublication> {
+          return getJson(
+            `${scopedBase}/draft-publications/by-draft/${encodeURIComponent(draftId)}`,
+            draftPublicationSchema,
+          );
+        },
+        async publishDraft(draftId: string): Promise<DraftPublication> {
+          const parsed = draftPublicationSubmissionSchema.safeParse({ draft_id: draftId });
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(`${scopedBase}/draft-publications`, parsed.data, draftPublicationSchema);
+        },
+        async reconcileDraftPublication(publicationId: string): Promise<DraftPublication> {
+          return postJson(
+            `${scopedBase}/draft-publications/${encodeURIComponent(publicationId)}/reconcile`,
+            {},
+            draftPublicationSchema,
+          );
+        },
+        async plans(): Promise<PlanList> {
+          return getJson(`${scopedBase}/plans`, planListSchema);
+        },
+        async plan(planId: string): Promise<PlanRecord> {
+          return getJson(`${scopedBase}/plans/${encodeURIComponent(planId)}`, planRecordSchema);
+        },
+        async importPlan(submission: PlanImportSubmission): Promise<PlanRecord> {
+          const parsed = planImportSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(`${scopedBase}/plans/import`, parsed.data, planRecordSchema);
+        },
+        async approvePlan(
+          planId: string,
+          submission: PlanDecisionSubmission = {},
+        ): Promise<PlanRecord> {
+          const parsed = planDecisionSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/plans/${encodeURIComponent(planId)}/approve`,
+            parsed.data,
+            planRecordSchema,
+          );
+        },
+        async revokePlan(
+          planId: string,
+          submission: PlanDecisionSubmission = {},
+        ): Promise<PlanRecord> {
+          const parsed = planDecisionSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/plans/${encodeURIComponent(planId)}/revoke`,
+            parsed.data,
+            planRecordSchema,
+          );
+        },
+        async dispatchPlan(submission: PlanDispatchSubmission): Promise<PlanDispatchRun> {
+          const parsed = planDispatchSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(`${scopedBase}/dispatch`, parsed.data, planDispatchRunSchema);
+        },
+        async dispatchRuns(opts?: { planId?: string }): Promise<PlanDispatchRunList> {
+          const path = opts?.planId
+            ? `${scopedBase}/dispatch/runs?plan_id=${encodeURIComponent(opts.planId)}`
+            : `${scopedBase}/dispatch/runs`;
+          return getJson(path, planDispatchRunListSchema);
+        },
+        async dispatchRun(runId: string): Promise<PlanDispatchRun> {
+          return getJson(
+            `${scopedBase}/dispatch/runs/${encodeURIComponent(runId)}`,
+            planDispatchRunSchema,
+          );
+        },
+        async reconcileDispatchRun(runId: string): Promise<PlanDispatchRun> {
+          return postJson(
+            `${scopedBase}/dispatch/runs/${encodeURIComponent(runId)}/reconcile`,
+            {},
+            planDispatchRunSchema,
+          );
+        },
+        async reconcileDispatch(): Promise<PlanDispatchReconciliation> {
+          return postJson(`${scopedBase}/dispatch/reconcile`, {}, planDispatchReconciliationSchema);
+        },
+        async dispatchRunDetail(runId: string): Promise<DispatchRunDetail> {
+          return getJson(
+            `${scopedBase}/dispatch/runs/${encodeURIComponent(runId)}/detail`,
+            dispatchRunDetailSchema,
+          );
+        },
+        async grantDispatchBudget(
+          runId: string,
+          submission: BudgetGrantSubmission,
+        ): Promise<BudgetGrantResult> {
+          const parsed = budgetGrantSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/dispatch/runs/${encodeURIComponent(runId)}/grant`,
+            parsed.data,
+            budgetGrantResultSchema,
+          );
+        },
+        async dispatchGrants(opts?: { runId?: string; workId?: string }): Promise<BudgetGrantList> {
+          const params = new URLSearchParams();
+          if (opts?.runId) params.set("run_id", opts.runId);
+          if (opts?.workId) params.set("work_id", opts.workId);
+          const suffix = params.toString();
+          return getJson(
+            `${scopedBase}/dispatch/grants${suffix ? `?${suffix}` : ""}`,
+            budgetGrantListSchema,
+          );
+        },
+        async controlDispatchRun(
+          runId: string,
+          submission: ExecutionControlSubmission,
+        ): Promise<ExecutionControlResult> {
+          const parsed = executionControlSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/dispatch/runs/${encodeURIComponent(runId)}/control`,
+            parsed.data,
+            executionControlResultSchema,
           );
         },
         async laps(): Promise<LapList> {
@@ -757,6 +1201,262 @@ export function createFactoryClient(options: {
           return getJson(
             `${scopedBase}/evidence/report/${encodeURIComponent(prNumber)}/sanitized`,
             sanitizedReportSchema,
+          );
+        },
+        async recordObservation(
+          submission: ExecutionObservationRequestInput,
+        ): Promise<ExecutionObservationRecord> {
+          const parsed = executionObservationRequestSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/evidence/observations`,
+            parsed.data,
+            executionObservationRecordSchema,
+          );
+        },
+        async observations(opts?: {
+          runId?: string;
+          deliveryId?: string;
+          candidateHeadSha?: string;
+          workId?: string;
+        }): Promise<ExecutionObservationRecord[]> {
+          const params = new URLSearchParams();
+          if (opts?.runId) params.set("run_id", opts.runId);
+          if (opts?.deliveryId) params.set("delivery_id", opts.deliveryId);
+          if (opts?.candidateHeadSha) params.set("candidate_head_sha", opts.candidateHeadSha);
+          if (opts?.workId) params.set("work_id", opts.workId);
+          const qs = params.toString();
+          return getJson(
+            `${scopedBase}/evidence/observations${qs ? `?${qs}` : ""}`,
+            observationListSchema,
+          );
+        },
+        async observation(id: string): Promise<ExecutionObservationRecord> {
+          return getJson(
+            `${scopedBase}/evidence/observations/${encodeURIComponent(id)}`,
+            executionObservationRecordSchema,
+          );
+        },
+        async runEvidence(runId: string): Promise<RunEvidenceReport> {
+          return getJson(
+            `${scopedBase}/evidence/runs/${encodeURIComponent(runId)}`,
+            runEvidenceReportSchema,
+          );
+        },
+        async acceptance(runId: string): Promise<AcceptanceDecision> {
+          return getJson(
+            `${scopedBase}/evidence/acceptance/${encodeURIComponent(runId)}`,
+            acceptanceDecisionSchema,
+          );
+        },
+        async findings(opts?: {
+          runId?: string;
+          deliveryId?: string;
+          workId?: string;
+          status?: "open" | "resolved";
+        }): Promise<FactoryFindingRecord[]> {
+          const params = new URLSearchParams();
+          if (opts?.runId) params.set("run_id", opts.runId);
+          if (opts?.deliveryId) params.set("delivery_id", opts.deliveryId);
+          if (opts?.workId) params.set("work_id", opts.workId);
+          if (opts?.status) params.set("status", opts.status);
+          const qs = params.toString();
+          return getJson(`${scopedBase}/evidence/findings${qs ? `?${qs}` : ""}`, findingListSchema);
+        },
+        async finding(id: string): Promise<FactoryFindingRecord> {
+          return getJson(
+            `${scopedBase}/evidence/findings/${encodeURIComponent(id)}`,
+            factoryFindingRecordSchema,
+          );
+        },
+        async submitFindingFix(
+          id: string,
+          submission: FindingFixRequest,
+        ): Promise<FactoryFindingRecord> {
+          const parsed = findingFixRequestSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/evidence/findings/${encodeURIComponent(id)}/fix`,
+            parsed.data,
+            factoryFindingRecordSchema,
+          );
+        },
+        async recheckFinding(
+          id: string,
+          submission: FindingRecheckRequestInput,
+        ): Promise<FactoryFindingRecord> {
+          const parsed = findingRecheckRequestSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/evidence/findings/${encodeURIComponent(id)}/recheck`,
+            parsed.data,
+            factoryFindingRecordSchema,
+          );
+        },
+        async publicationTargets(opts?: {
+          workId?: string;
+          deliveryId?: string;
+        }): Promise<PublicationStatusList> {
+          const params = new URLSearchParams();
+          if (opts?.workId) params.set("work_id", opts.workId);
+          if (opts?.deliveryId) params.set("delivery_id", opts.deliveryId);
+          const qs = params.toString();
+          return getJson(
+            `${scopedBase}/publication/targets${qs ? `?${qs}` : ""}`,
+            publicationStatusListSchema,
+          );
+        },
+        async publication(runId: string): Promise<PublicationStatus> {
+          return getJson(
+            `${scopedBase}/publication/runs/${encodeURIComponent(runId)}`,
+            publicationStatusSchema,
+          );
+        },
+        async publicationTarget(targetId: string): Promise<PublicationStatus> {
+          return getJson(
+            `${scopedBase}/publication/targets/${encodeURIComponent(targetId)}`,
+            publicationStatusSchema,
+          );
+        },
+        async publishPublication(runId: string): Promise<PublicationStatus> {
+          return postJson(
+            `${scopedBase}/publication/runs/${encodeURIComponent(runId)}/publish`,
+            {},
+            publicationStatusSchema,
+          );
+        },
+        async publishPublicationTarget(targetId: string): Promise<PublicationStatus> {
+          return postJson(
+            `${scopedBase}/publication/targets/${encodeURIComponent(targetId)}/publish`,
+            {},
+            publicationStatusSchema,
+          );
+        },
+        async reconcilePublication(): Promise<PublicationStatusList> {
+          return postJson(`${scopedBase}/publication/reconcile`, {}, publicationStatusListSchema);
+        },
+        async reconcilePublicationTarget(targetId: string): Promise<PublicationStatus> {
+          return postJson(
+            `${scopedBase}/publication/targets/${encodeURIComponent(targetId)}/reconcile`,
+            {},
+            publicationStatusSchema,
+          );
+        },
+        async bindPublicationEvidence(
+          targetId: string,
+          artifactId: string,
+          hostedUrl: string,
+        ): Promise<PublicationStatus> {
+          const parsed = publicationEvidenceBindingRequestSchema.safeParse({
+            hosted_url: hostedUrl,
+          });
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/publication/targets/${encodeURIComponent(targetId)}/evidence/${encodeURIComponent(artifactId)}/bind`,
+            parsed.data,
+            publicationStatusSchema,
+          );
+        },
+        async integrationStatus(runId: string): Promise<IntegrationStatus> {
+          return getJson(
+            `${scopedBase}/integration/runs/${encodeURIComponent(runId)}`,
+            integrationStatusSchema,
+          );
+        },
+        async integrations(opts?: {
+          workId?: string;
+          deliveryId?: string;
+          planId?: string;
+        }): Promise<IntegrationStatusList> {
+          const params = new URLSearchParams();
+          if (opts?.workId) params.set("work_id", opts.workId);
+          if (opts?.deliveryId) params.set("delivery_id", opts.deliveryId);
+          if (opts?.planId) params.set("plan_id", opts.planId);
+          const suffix = params.toString();
+          return getJson(
+            `${scopedBase}/integration${suffix ? `?${suffix}` : ""}`,
+            integrationStatusListSchema,
+          );
+        },
+        async landChild(
+          runId: string,
+          submission: IntegrationLandSubmission = {},
+        ): Promise<IntegrationStatus> {
+          const parsed = integrationLandSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/integration/runs/${encodeURIComponent(runId)}/land`,
+            parsed.data,
+            integrationStatusSchema,
+          );
+        },
+        async deliveryGate(runId: string): Promise<DeliveryGateStatus> {
+          return getJson(
+            `${scopedBase}/delivery/runs/${encodeURIComponent(runId)}`,
+            deliveryGateStatusSchema,
+          );
+        },
+        async verifyDeliveryMerge(runId: string, actor = "operator"): Promise<DeliveryGateStatus> {
+          return postJson(
+            `${scopedBase}/delivery/runs/${encodeURIComponent(runId)}/verify-merge`,
+            { actor },
+            deliveryGateStatusSchema,
+          );
+        },
+        async deliveryClaims(runId: string): Promise<DeliveryRoleClaimRecord[]> {
+          return getJson(
+            `${scopedBase}/delivery/runs/${encodeURIComponent(runId)}/claims`,
+            deliveryRoleClaimListSchema,
+          );
+        },
+        async reconcileDeliveryClaim(
+          runId: string,
+          stage: "technical_checks" | "independent_review" | "final_acceptance",
+          submission: DeliveryClaimReconcileSubmission,
+        ): Promise<DeliveryRoleClaimRecord> {
+          return postJson(
+            `${scopedBase}/delivery/runs/${encodeURIComponent(runId)}/claims/${encodeURIComponent(stage)}/reconcile`,
+            submission,
+            deliveryRoleClaimSchema,
+          );
+        },
+        async finalDeliveries(): Promise<FinalDeliveryStatusList> {
+          return getJson(`${scopedBase}/final`, finalDeliveryStatusListSchema);
+        },
+        async finalDelivery(planId: string): Promise<FinalDeliveryStatus> {
+          return getJson(
+            `${scopedBase}/final/${encodeURIComponent(planId)}`,
+            finalDeliveryStatusSchema,
+          );
+        },
+        async advanceFinalDelivery(
+          planId: string,
+          submission: FinalDeliveryAdvanceSubmission = {},
+        ): Promise<FinalDeliveryStatus> {
+          const parsed = finalDeliveryAdvanceSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/final/${encodeURIComponent(planId)}/advance`,
+            parsed.data,
+            finalDeliveryStatusSchema,
+          );
+        },
+        async verifyFinalMerge(planId: string, actor = "operator"): Promise<FinalDeliveryStatus> {
+          const parsed = finalDeliveryVerifySubmissionSchema.safeParse({ actor });
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(
+            `${scopedBase}/final/${encodeURIComponent(planId)}/verify-merge`,
+            parsed.data,
+            finalDeliveryStatusSchema,
+          );
+        },
+        async board(): Promise<OperatorBoard> {
+          return getJson(`${scopedBase}/board`, operatorBoardSchema);
+        },
+        async workDetail(workId: string): Promise<OperatorWorkDetail> {
+          return getJson(
+            `${scopedBase}/board/work/${encodeURIComponent(workId)}`,
+            operatorWorkDetailSchema,
           );
         },
       };

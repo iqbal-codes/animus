@@ -30,10 +30,12 @@ export function KanbanLane({
   lane,
   cards,
   density,
+  onOpenWork,
 }: {
   lane: KanbanLaneModel;
   cards: TaskCardJob[];
   density?: CardDensity;
+  onOpenWork?: (workId: string) => void;
 }) {
   const Icon = LANE_ICONS[lane.icon];
 
@@ -56,7 +58,12 @@ export function KanbanLane({
       </header>
 
       {cards.map((job) => (
-        <TaskCard key={job.id} job={job} density={density} />
+        <TaskCard
+          key={job.id}
+          job={job}
+          density={density}
+          onOpen={job.workId && onOpenWork ? () => onOpenWork(job.workId!) : undefined}
+        />
       ))}
     </section>
   );

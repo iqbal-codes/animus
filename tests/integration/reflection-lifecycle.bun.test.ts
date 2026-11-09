@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { runLocalLoop, type AgentTransport } from "../../scripts/local-loop";
+import { runLocalLoop, type AgentTransport } from "./support/loop-harness";
 import {
   recordLapAttempt,
   shouldTriggerReflection,

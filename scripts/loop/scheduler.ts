@@ -63,6 +63,7 @@ export type TickSkipReason =
   | "outside_work_window"
   | "capacity_full"
   | "no_admitted_issues"
+  | "delivery_already_claimed"
   | "launch_failed";
 
 export type TickLaunchReason = "launch_successful";
@@ -485,9 +486,12 @@ export interface SchedulerTickOptions {
   reconcileCi?: boolean;
   ghRun?: GhRunner;
   checkPrCi?: typeof checkPrCiStatus;
+  /** Canonical installation state dir; re-checked inside legacy CI reconciliation. */
+  installationStateDir?: string;
   triage?: TriagePassHandler | null;
   fetchBacklog: () => Promise<{ issues: BacklogCandidate[]; closedNumbers: Set<number> }>;
   launchLap: (issue: BacklogCandidate) => Promise<{ runId: string }>;
+  dispatchLocal?: () => Promise<SchedulerTickResult>;
   db?: any;
   dbPath?: string;
 }
@@ -534,6 +538,12 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
     };
   }
 
+  // Local dispatch consumes the frozen plan manifest and durable dispatch state.
+  // When provided, the GitHub backlog path below is never fetched or rebound.
+  if (options.dispatchLocal) {
+    return await options.dispatchLocal();
+  }
+
   const mergedConfig = preflight.schedule;
   const runsDir = options.runsDir ?? workspace.runsDir;
   const stateRoot = options.stateRoot ?? workspace.stateRoot;
@@ -546,6 +556,7 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
         ghRun: options.ghRun,
         maxLaps: mergedConfig.max_laps,
         checkPrCi: options.checkPrCi,
+        installationStateDir: options.installationStateDir,
       });
     } catch (reconcileErr) {
       console.error("Warning: CI reconciliation failed:", reconcileErr);
@@ -665,6 +676,7 @@ export interface SchedulerLoopOptions {
   awaitTriageOnStop?: boolean;
   fetchBacklog: () => Promise<{ issues: BacklogCandidate[]; closedNumbers: Set<number> }>;
   launchLap: (issue: BacklogCandidate) => Promise<{ runId: string }>;
+  dispatchLocal?: () => Promise<SchedulerTickResult>;
   onTick?: (result: SchedulerTickResult) => void;
   signal?: AbortSignal;
 }
@@ -716,6 +728,7 @@ export function startSchedulerLoop(options: SchedulerLoopOptions): SchedulerLoop
           triage: options.triage,
           fetchBacklog: options.fetchBacklog,
           launchLap: options.launchLap,
+          dispatchLocal: options.dispatchLocal,
         });
 
         if (options.onTick) {

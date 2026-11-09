@@ -14,6 +14,10 @@ import { CommandService } from "../command/service";
 import { evaluateIssueAdmission, type RawIssue } from "../intake/admission";
 import { parseDependencies } from "../intake/parser";
 import { buildDependencyDAG } from "./dag";
+import {
+  InstallationHeldError,
+  assertInstallationNotHeld,
+} from "@animus/contracts/installation-hold";
 import { allocateWorktree } from "./worktree";
 import { freezeContract, executeTargetedImplement, type ImplementRunner } from "./primitive";
 import { SerializedIntegrationManager } from "./integration";
@@ -303,6 +307,7 @@ export class SpecCoordinatorService {
     actor?: string;
   }): Promise<TargetedImplementResult> {
     const { projectId, specIssueNumber, childIssueNumber, runner, actor } = params;
+    this.assertInstallationReady();
     const project = this.getProject(projectId);
     const plan = this.getPlan(projectId, specIssueNumber);
 
@@ -662,6 +667,7 @@ export class SpecCoordinatorService {
     body?: string;
   }): Promise<CoordinationFinalPrResult> {
     const { projectId, specIssueNumber } = params;
+    this.assertInstallationReady();
     const project = this.getProject(projectId);
     const plan = this.getPlan(projectId, specIssueNumber);
 
@@ -734,5 +740,21 @@ export class SpecCoordinatorService {
       base: pr.base,
       integratedChildren: plan.children.map((c) => c.number),
     };
+  }
+
+  /**
+   * Coordination dispatch and final-PR creation are direct execution/publication
+   * writers, so a restored installation holds them exactly like the dispatch and
+   * publication services.
+   */
+  private assertInstallationReady(): void {
+    try {
+      assertInstallationNotHeld(this.db);
+    } catch (error) {
+      if (error instanceof InstallationHeldError) {
+        throw new CoordinationError("coordination_installation_held", error.message);
+      }
+      throw error;
+    }
   }
 }

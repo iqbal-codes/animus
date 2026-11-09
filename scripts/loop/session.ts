@@ -1,25 +1,69 @@
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { git, inspectLocalLoop, findExistingWorktreeForBranch, acquireIssueLock, prepareLoopWorktree, assertCandidate as assertCandidateInWorktree, DEFAULT_PROTECTED_PATHS } from "./worktree";
+import {
+  git,
+  inspectLocalLoop,
+  findExistingWorktreeForBranch,
+  acquireIssueLock,
+  prepareLoopWorktree,
+  assertCandidate as assertCandidateInWorktree,
+  DEFAULT_PROTECTED_PATHS,
+  readHarnessChecks,
+} from "./worktree";
 import { computeExternalBlastRadius } from "./blast-radius";
-import { extractRequiredAcIds, validateIssue, formatEscalationHandoff, annotateDiffWithLineNumbers, assembleRolePromptContext } from "./prompt-context";
+import {
+  extractRequiredAcIds,
+  validateIssue,
+  formatEscalationHandoff,
+  annotateDiffWithLineNumbers,
+  assembleRolePromptContext,
+} from "./prompt-context";
 import { processRun } from "./process";
 import { resolveRoleBudgets, RoleInterrupted } from "./deadlines";
-import { loadIssueDossier, recordLapAttempt, syncDossierFindings, shouldTriggerReflection, type IssueDossier, type LapAttemptRecord } from "./dossier";
+import {
+  loadIssueDossier,
+  recordLapAttempt,
+  syncDossierFindings,
+  shouldTriggerReflection,
+  type IssueDossier,
+  type LapAttemptRecord,
+} from "./dossier";
 import { executeTerminalReflection } from "./reflector";
 import { renderPrompt, loadPrompt } from "./prompts";
-import { extractReport, validateEvidenceCitations, setupArtifactDirectories, evaluateHostReadiness } from "./artifacts";
-import { formatBuilderComment, formatQaFailureComment, formatCiCheckComment, formatReviewComment } from "./pr-reporting";
+import {
+  extractReport,
+  validateEvidenceCitations,
+  setupArtifactDirectories,
+  evaluateHostReadiness,
+} from "./artifacts";
+import {
+  formatBuilderComment,
+  formatQaFailureComment,
+  formatCiCheckComment,
+  formatReviewComment,
+} from "./pr-reporting";
 import { executeSubticketAutoMerge, evaluateSubticketAutoMerge } from "./merge-queue";
-import { readAnimusConfig, resolveProviderForRole, resolveModelForRole, resolveEffortForRole, resolveResumeBuilderSession } from "./config";
+import {
+  readAnimusConfig,
+  resolveProviderForRole,
+  resolveModelForRole,
+  resolveEffortForRole,
+  resolveResumeBuilderSession,
+} from "./config";
 import { providerSessionExists } from "./providers";
 import { resolveVerificationProfile, getProfileInstructions } from "./profiles";
-import { resolveAllowedSkills, resolveLoopExtensions, buildCuratedAppendPrompts } from "./harness-memory";
+import {
+  resolveAllowedSkills,
+  resolveLoopExtensions,
+  buildCuratedAppendPrompts,
+} from "./harness-memory";
 import { loadScheduleConfig } from "./scheduler";
 import { LoopPublisher } from "./publisher";
 import { runBoundedRole } from "./role-runner";
 import { resolveProjectWorkspace } from "../../packages/contracts/src/paths";
+import { assertInstallationNotHeldAtStateDir } from "@animus/contracts/installation-hold";
+import { assertLegacyAuthority } from "@animus/contracts/execution-authority";
 import type {
   LocalIssue,
   LocalLoopOptions,
@@ -40,25 +84,6 @@ import type { PrCheckItem, PrCiAssessment } from "./ci";
 function parsePartOf(text: string): number | null {
   const match = text.match(/Part of #(\d+)/i);
   return match ? Number.parseInt(match[1]!, 10) : null;
-}
-
-function readHarnessChecks(root: string): { checks: string[]; protectedPaths: string[] } {
-  const harnessPath = join(root, "harness/harness.config.json");
-  if (!existsSync(harnessPath)) {
-    throw new Error(`Harness config not found at ${harnessPath}`);
-  }
-  const raw = JSON.parse(readFileSync(harnessPath, "utf8"));
-  const checks = [raw.static, raw.unit].filter(
-    (c): c is string => typeof c === "string" && c.trim().length > 0,
-  );
-  if (checks.length === 0) {
-    throw new Error("No declared ordinary project checks in harness/harness.config.json");
-  }
-  const protectedPaths =
-    typeof raw.protected_paths === "string"
-      ? raw.protected_paths.split(",").map((p: string) => p.trim()).filter(Boolean)
-      : [...DEFAULT_PROTECTED_PATHS];
-  return { checks, protectedPaths };
 }
 
 async function findExistingRunForWorktree(
@@ -94,7 +119,14 @@ async function findExistingRunForWorktree(
  */
 export interface TerminalDispositionInput {
   stage: "builder" | "ordinary_checks" | "qa" | "ci" | "reviewer";
-  outcome: "approved" | "merged" | "waiting_approval" | "sent_back" | "needs_owner" | "failed" | "interrupted";
+  outcome:
+    | "approved"
+    | "merged"
+    | "waiting_approval"
+    | "sent_back"
+    | "needs_owner"
+    | "failed"
+    | "interrupted";
   candidate?: string;
   changedFiles?: string[];
   qaReport?: QaReport;
@@ -137,6 +169,7 @@ export class LapSession {
   readonly artifactsDir: string;
   readonly handoffDir: string;
   readonly stateRoot: string;
+  private readonly installationStateDir: string | undefined;
   readonly branch: string;
   readonly base: string;
   readonly baseBranch: string;
@@ -185,6 +218,7 @@ export class LapSession {
     artifactsDir: string;
     handoffDir: string;
     stateRoot: string;
+    installationStateDir?: string;
     branch: string;
     base: string;
     baseBranch: string;
@@ -221,6 +255,7 @@ export class LapSession {
     this.artifactsDir = init.artifactsDir;
     this.handoffDir = init.handoffDir;
     this.stateRoot = init.stateRoot;
+    this.installationStateDir = init.installationStateDir;
     this.branch = init.branch;
     this.base = init.base;
     this.baseBranch = init.baseBranch;
@@ -265,7 +300,8 @@ export class LapSession {
       parsedPartOf !== null && parsedPartOf > 0 && parsedPartOf !== issue.number
         ? parsedPartOf
         : undefined;
-    const integrationBranch = partOf !== undefined ? `factory/spec-${partOf}-integration` : undefined;
+    const integrationBranch =
+      partOf !== undefined ? `factory/spec-${partOf}-integration` : undefined;
     const baseBranch = integrationBranch ?? defaultBaseBranch;
 
     let remotes: string[] = [];
@@ -414,6 +450,11 @@ export class LapSession {
       };
 
       const save = async () => {
+        // A legacy lap must never write after the authority fence is set: this is
+        // the mid-lap half of the startup check, so a builder that started before
+        // the cutover cannot mutate state.json or its dossier afterwards.
+        assertInstallationNotHeldAtStateDir(options.installationStateDir);
+        assertLegacyAuthority(options.installationStateDir);
         const tempPath = join(runDirectory, `state.${crypto.randomUUID()}.tmp`);
         await Bun.write(tempPath, JSON.stringify(state, null, 2) + "\n");
         const { rename } = await import("node:fs/promises");
@@ -435,6 +476,7 @@ export class LapSession {
         issueNumber: issue.number,
         push: options.push !== false,
         runner: options.ghRunner,
+        installationStateDir: options.installationStateDir,
       });
 
       const transport =
@@ -457,6 +499,7 @@ export class LapSession {
         artifactsDir,
         handoffDir,
         stateRoot,
+        installationStateDir: options.installationStateDir,
         branch,
         base,
         baseBranch,
@@ -509,6 +552,9 @@ export class LapSession {
     cwdOverride?: string,
     optionsOverride?: { requiredAcIds?: string[] },
   ): Promise<any> {
+    // Re-check immediately before any role transport spawns. A hold installed
+    // while this lap was being prepared must still stop the builder/QA/reviewer.
+    this.assertInstallationReady();
     await inspectLocalLoop(this.root);
     this.state.status = role === "builder" ? "building" : role === "qa" ? "qa" : "reviewing";
     await this.save();
@@ -564,7 +610,9 @@ export class LapSession {
       depth: profileInstructions.depth,
       profile: effectiveProfile,
       skip_app_launch: profileInstructions.skipAppLaunch ? "true" : "false",
-      checks_status: existsSync(join(this.artifactsDir, "builder-checks.log")) ? "passed" : "pending",
+      checks_status: existsSync(join(this.artifactsDir, "builder-checks.log"))
+        ? "passed"
+        : "pending",
       holdout: existsSync(join(this.root, ".factory/holdout/HOLDOUT.md"))
         ? join(this.root, ".factory/holdout/HOLDOUT.md")
         : "",
@@ -679,7 +727,11 @@ export class LapSession {
     for (let i = 0; i < this.checks.length; i++) {
       await inspectLocalLoop(this.root);
       const startedAt = new Date().toISOString();
-      const result = await processRun(["sh", "-c", this.checks[i]!], this.state.worktree, this.timeout);
+      const result = await processRun(
+        ["sh", "-c", this.checks[i]!],
+        this.state.worktree,
+        this.timeout,
+      );
       const completedAt = new Date().toISOString();
       const artifact = join(this.runDirectory, `check-${i}.json`);
       const recordPath = `command-${i}.json`;
@@ -734,7 +786,9 @@ export class LapSession {
   /**
    * Stage 2: Black-Box QA in isolated worktree.
    */
-  async executeQa(builderReport: BuilderReport): Promise<{ qaReport: QaReport; evidenceOk: string }> {
+  async executeQa(
+    builderReport: BuilderReport,
+  ): Promise<{ qaReport: QaReport; evidenceOk: string }> {
     const requiredAcIds = extractRequiredAcIds(this.issue);
     const qaWorktreeDir = join(this.runDirectory, "qa-worktree");
     let testedIntegrationHead = this.state.candidate;
@@ -854,6 +908,8 @@ export class LapSession {
    * Stage 2.5: PR CI check verification gate.
    */
   async verifyPrCi(): Promise<{ failed: boolean; failedChecks?: PrCheckItem[] }> {
+    // Remote CI polling is an outward effect: re-check immediately before it.
+    this.assertInstallationReady();
     const prTarget = this.state.pr ?? (this.options.checkPrCi ? "mock-pr" : undefined);
     if (!prTarget || (this.options.push === false && !this.options.checkPrCi)) {
       return { failed: false };
@@ -905,7 +961,7 @@ export class LapSession {
     const qaPassed = Boolean((qaReport as any).passed ?? qaReport.overall === "PASS");
     const reviewPassed = Boolean(
       (reviewReport as any).passed ??
-        (reviewReport.outcome === "approved" || reviewReport.outcome === "merge"),
+      (reviewReport.outcome === "approved" || reviewReport.outcome === "merge"),
     );
 
     const readiness = evaluateHostReadiness({
@@ -948,12 +1004,25 @@ export class LapSession {
         : "sent_back";
 
     const changedFilesFinal = (
-      await git(this.state.worktree, "diff", "--name-only", "--no-renames", this.base, candidateHead)
+      await git(
+        this.state.worktree,
+        "diff",
+        "--name-only",
+        "--no-renames",
+        this.base,
+        candidateHead,
+      )
     )
       .split("\n")
       .filter(Boolean);
 
-    const diffContentFinal = await git(this.state.worktree, "diff", "--no-renames", this.base, candidateHead);
+    const diffContentFinal = await git(
+      this.state.worktree,
+      "diff",
+      "--no-renames",
+      this.base,
+      candidateHead,
+    );
 
     const autoMergeEval = evaluateSubticketAutoMerge({
       isSubticket: this.partOf !== undefined,
@@ -1025,7 +1094,14 @@ export class LapSession {
     if (!changedFiles && candidate && this.state.worktree) {
       try {
         changedFiles = (
-          await git(this.state.worktree, "diff", "--name-only", "--no-renames", this.base, candidate)
+          await git(
+            this.state.worktree,
+            "diff",
+            "--name-only",
+            "--no-renames",
+            this.base,
+            candidate,
+          )
         )
           .split("\n")
           .filter(Boolean);
@@ -1072,7 +1148,12 @@ export class LapSession {
       {
         runId: this.runId,
         timestamp: new Date().toISOString(),
-        status: finalStatus as "failed" | "merged" | "needs_owner" | "sent_back" | "waiting_approval",
+        status: finalStatus as
+          | "failed"
+          | "merged"
+          | "needs_owner"
+          | "sent_back"
+          | "waiting_approval",
         candidateHead: candidate,
         artifactsDir: this.artifactsDir,
         evidence: [...this.state.evidence],
@@ -1080,8 +1161,7 @@ export class LapSession {
         recoveries: [...this.recoveries],
         sessions: { ...this.sessions },
         changedFiles,
-        failedStage:
-          input.stage === "reviewer" && input.isApproved ? undefined : input.stage,
+        failedStage: input.stage === "reviewer" && input.isApproved ? undefined : input.stage,
         errorExcerpt: input.errorExcerpt,
         reviewFindings,
         structuredFindings: input.syncedFindings as any,
@@ -1241,8 +1321,18 @@ export class LapSession {
   /**
    * Runs the full autonomous lap lifecycle through the public seam.
    */
+  private assertInstallationReady(): void {
+    assertInstallationNotHeldAtStateDir(this.installationStateDir);
+    // A legacy lap is a legacy writer. Once the durable fence is written it must
+    // fail closed before any further role, CI, publisher or merge effect.
+    assertLegacyAuthority(this.installationStateDir);
+  }
+
   async run(): Promise<LocalLoopResult> {
     try {
+      // No worktree allocation, checker or role transport may run while the
+      // installation is held by a restore.
+      this.assertInstallationReady();
       // Worktree allocation / reuse
       await prepareLoopWorktree({
         root: this.root,
@@ -1257,7 +1347,9 @@ export class LapSession {
 
       const targetBaseTip = (await git(this.root, "rev-parse", this.base)).trim();
       const currentHead = (await git(this.state.worktree, "rev-parse", "HEAD")).trim();
-      const mergeBase = (await git(this.state.worktree, "merge-base", this.base, currentHead)).trim();
+      const mergeBase = (
+        await git(this.state.worktree, "merge-base", this.base, currentHead)
+      ).trim();
 
       this.state.identities = {
         targetBaseTip,
@@ -1353,16 +1445,18 @@ export class LapSession {
       // -------------------------------------------------------------
       // STAGE 3: CODE REVIEW (loop-review)
       // -------------------------------------------------------------
-      const reviewReport = await this.invokeRole("reviewer", this.state.candidate, { evidence_ok: evidenceOk });
+      const reviewReport = await this.invokeRole("reviewer", this.state.candidate, {
+        evidence_ok: evidenceOk,
+      });
       this.state.reviewerReport = reviewReport;
       await this.assertCandidate(this.state.candidate);
-      await Bun.write(join(this.artifactsDir, "review.json"), JSON.stringify(reviewReport, null, 2));
+      await Bun.write(
+        join(this.artifactsDir, "review.json"),
+        JSON.stringify(reviewReport, null, 2),
+      );
       const reviewerDir = join(this.runDirectory, "reviewer");
       await mkdir(reviewerDir, { recursive: true });
-      await Bun.write(
-        join(reviewerDir, "report.md"),
-        reviewReport.summary ?? "Review approved",
-      );
+      await Bun.write(join(reviewerDir, "report.md"), reviewReport.summary ?? "Review approved");
 
       let reviewEval: {
         readiness: any;
@@ -1404,6 +1498,7 @@ export class LapSession {
           db: (this.options as any).db,
           dbPath: (this.options as any).dbPath,
           projectId: (this.options as any).projectId,
+          installationStateDir: this.installationStateDir,
         });
         const sessionFinalStatus: "waiting_approval" | "needs_owner" | "sent_back" | "merged" =
           mergeRes.finalStatus === "merged"
@@ -1543,6 +1638,15 @@ export async function runAnimusLoop(
     };
   } = {},
 ): Promise<LocalLoopResult> {
+  // A restored installation is held: no native builder lap may start until the
+  // installation hold is released through verified reconciliation. Always resolve
+  // the canonical installation state directory (explicit embedder override or the
+  // environment default) and never the per-project worktree stateRoot, which has
+  // no console.db.
+  assertInstallationNotHeldAtStateDir(options.installationStateDir);
+  // Fail closed before any GitHub read, worktree allocation, forge push or
+  // builder spawn. This is the startup check; the session re-checks mid-lap.
+  assertLegacyAuthority(options.installationStateDir);
   const session = await LapSession.init(root, issue, options);
   return await session.run();
 }
