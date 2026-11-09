@@ -30,6 +30,13 @@ describe("operator board projection", () => {
     rmSync(fixture.root, { recursive: true, force: true });
   });
 
+  test("the bare origin advertises main so default clones can advance the delivery target", () => {
+    const clone = join(fixture.root, "default-clone");
+    git(fixture.root, "clone", "-q", fixture.bareOrigin, clone);
+    expect(git(clone, "branch", "--show-current")).toBe("main");
+    expect(git(clone, "rev-parse", "HEAD")).toBe(git(fixture.checkout, "rev-parse", "main"));
+  });
+
   test("AC2: an empty project keeps every existing lane with honest zero counts", async () => {
     const board = await fixture.fetchBoard();
     expect(board.counts).toEqual({ specs: 0, tickets: 0, unplanned: 0, workers: 0, capacity: 3 });

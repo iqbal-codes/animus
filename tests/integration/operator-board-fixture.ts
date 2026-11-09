@@ -167,7 +167,7 @@ export async function createFixture(): Promise<Fixture> {
   const db = initializeDatabase(join(root, "state", "console.db"));
   seedActivatedAuthority(db);
   const bareOrigin = join(root, "origin.git");
-  execFileSync("git", ["init", "-q", "--bare", bareOrigin]);
+  execFileSync("git", ["init", "-q", "--bare", "--initial-branch=main", bareOrigin]);
   const checkout = join(root, "checkout");
   mkdirSync(checkout, { recursive: true });
   execFileSync("git", ["init", "-q", checkout]);
