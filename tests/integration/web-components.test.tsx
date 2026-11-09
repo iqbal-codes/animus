@@ -957,7 +957,9 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
         workerAlive: false,
         worktreeLockPid: null,
         worktreeLockAlive: false,
+        roleClaims: [],
       },
+      claims: [],
       acceptanceCriteria: [
         { acKey: "AC1", text: "prepared criterion", openFindingIds: ["find-1"] },
       ],

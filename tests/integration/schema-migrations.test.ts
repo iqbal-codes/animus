@@ -24,6 +24,8 @@ const RESTORE_V11 = "workspace_backup_restore";
 const FINAL_V12 = "final_spec_delivery_coordination";
 const RESTORE_V13 = "restore_terminal_intent_disposition";
 const CUTOVER_V15 = "authority_cutover";
+const DELIVERY_CLAIM_V16 = "delivery_role_claims";
+const DELIVERY_CLAIM_AUDIT_V17 = "delivery_role_claim_reconcile_audit";
 
 const ALL_MIGRATIONS = [
   { version: 1, name: WORK_V1 },
@@ -40,6 +42,8 @@ const ALL_MIGRATIONS = [
   { version: 12, name: FINAL_V12 },
   { version: 13, name: RESTORE_V13 },
   { version: 15, name: CUTOVER_V15 },
+  { version: 16, name: DELIVERY_CLAIM_V16 },
+  { version: 17, name: DELIVERY_CLAIM_AUDIT_V17 },
 ];
 
 function tableExists(db: DatabaseSync, table: string): boolean {
@@ -486,6 +490,71 @@ describe("coherent schema migration registry", () => {
       ).toThrow(expect.objectContaining({ code: "migration_out_of_order" }));
     } finally {
       db.close();
+    }
+  });
+
+  test("AC-migration: a populated v15 database upgrades to v16 and preserves project/delivery identity", () => {
+    // Build a real current database, then rewind exactly the v16 lane to model a
+    // populated v15 installation. The base tables (projects, integrations) already
+    // exist, so this is the same upgrade path a real v15 state takes.
+    const legacy = initializeDatabase(path);
+    try {
+      legacy.exec("DROP INDEX IF EXISTS idx_delivery_role_claim_audit_claim;");
+      legacy.exec("DROP TABLE IF EXISTS delivery_role_claim_audit;");
+      legacy.exec("DROP INDEX IF EXISTS idx_delivery_role_claims_run;");
+      legacy.exec("DROP TABLE delivery_role_claims;");
+      legacy.prepare("DELETE FROM schema_migrations WHERE version IN (16, 17)").run();
+      seedProject(legacy);
+      seedDelivery(legacy);
+      legacy
+        .prepare(
+          `INSERT INTO project_issue_integrations
+             (project_id, issue_number, branch, commit_sha, integrated_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run("proj_1", 501, "factory/legacy", "a".repeat(40), "1");
+      expect(tableExists(legacy, "delivery_role_claims")).toBe(false);
+    } finally {
+      legacy.close();
+    }
+
+    const upgraded = initializeDatabase(path);
+    try {
+      expect(
+        upgraded.prepare("SELECT version, name FROM schema_migrations ORDER BY version").all(),
+      ).toEqual(ALL_MIGRATIONS);
+      expect(tableExists(upgraded, "delivery_role_claims")).toBe(true);
+      expect(
+        upgraded
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_delivery_role_claims_run'",
+          )
+          .get(),
+      ).toEqual({ name: "idx_delivery_role_claims_run" });
+      // Existing rows survive the v16 install.
+      expect(upgraded.prepare("SELECT id FROM projects").all()).toEqual([{ id: "proj_1" }]);
+      expect(upgraded.prepare("SELECT id FROM deliveries").all()).toEqual([{ id: "delivery_1" }]);
+      expect(
+        upgraded
+          .prepare(
+            "SELECT issue_number, branch FROM project_issue_integrations ORDER BY issue_number",
+          )
+          .all(),
+      ).toEqual([{ issue_number: 501, branch: "factory/legacy" }]);
+      // The new table's foreign keys stay enforced after the upgrade.
+      expect(() =>
+        upgraded
+          .prepare(
+            `INSERT INTO delivery_role_claims
+               (id, project_id, delivery_id, run_id, lap, stage, candidate_head_sha, attempt_key,
+                claim_token, claim_generation, lease_expires_at, heartbeat_at, state, created_at, updated_at)
+             VALUES ('claim_dangling', 'proj_1', 'delivery_1', 'run_missing', 1,
+                     'independent_review', ?, 'attempt', 'token', 1, 1, 1, 'running', 1, 1)`,
+          )
+          .run("a".repeat(40)),
+      ).toThrow(/FOREIGN KEY/i);
+    } finally {
+      upgraded.close();
     }
   });
 

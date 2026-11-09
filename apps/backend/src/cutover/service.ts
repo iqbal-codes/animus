@@ -181,6 +181,25 @@ function mergeMappings(
  * the single `local` marker with fsync + compare-and-swap. Every crash boundary
  * is resumed through the same operation row.
  */
+function heldError(
+  held: Array<{ entity: string; identity: string; reason: string }>,
+  phase: string,
+): AuthorityCutoverError {
+  const artifacts = held.filter((fact) => fact.entity === "artifact");
+  if (artifacts.length > 0 && artifacts.length === held.length) {
+    return new AuthorityCutoverError(
+      "cutover_writers_active",
+      `Finalized artifact inventory is not a clean closure ${phase}; resolve the unregistered/changed artifact files listed in details.held before staging`,
+      { held },
+    );
+  }
+  return new AuthorityCutoverError(
+    "cutover_writers_active",
+    `Live writers still own execution records ${phase}; quiesce them before staging`,
+    { held },
+  );
+}
+
 export class AuthorityCutoverService {
   private readonly stateDir: string;
   private readonly home: string;
@@ -697,11 +716,7 @@ export class AuthorityCutoverService {
 
       const pre = this.inventoryLive();
       if (pre.held.length > 0) {
-        throw new AuthorityCutoverError(
-          "cutover_writers_active",
-          "Live writers still own execution records; quiesce them before staging",
-          { held: pre.held },
-        );
+        throw heldError(pre.held, "before staging");
       }
 
       const backupPath =
@@ -804,11 +819,7 @@ export class AuthorityCutoverService {
 
       const live = this.inventoryLive();
       if (live.held.length > 0) {
-        throw new AuthorityCutoverError(
-          "cutover_writers_active",
-          "Live writers changed execution records during staging",
-          { held: live.held },
-        );
+        throw heldError(live.held, "during staging");
       }
       if (live.stateDigest !== snapshotInventory.stateDigest) {
         throw new AuthorityCutoverError(

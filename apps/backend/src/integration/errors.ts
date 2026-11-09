@@ -5,6 +5,7 @@ export type IntegrationErrorCode =
   | "integration_run_not_succeeded"
   | "integration_merge_policy_manual"
   | "integration_acceptance_blocked"
+  | "integration_stopped"
   | "integration_publication_missing"
   | "integration_publication_incomplete"
   | "integration_remote_unreadable"

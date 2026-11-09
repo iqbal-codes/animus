@@ -34,6 +34,7 @@ import { resolveAnimusStateDir } from "@animus/contracts/paths";
 import { enqueuePublicationEvent, ensurePublicationTarget } from "../publication/outbox";
 import { ExecutionBudgetService } from "../work/budget";
 import { ArtifactPathError, normalizeArtifactRelativePath } from "./artifact-path";
+import { renderInlineArtifactEvidence } from "./inline-artifact";
 import { EvidenceError } from "./errors";
 
 interface RunRow {
@@ -159,6 +160,7 @@ const REQUIRED_STAGES: Record<PlanGateProfile, readonly ExecutionStage[]> = {
  * present (for example `final_acceptance` on a standalone run) is additionally
  * treated as authorizing and re-verified when the gate consumes it.
  */
+
 const AUTHORIZING_INDEPENDENT_STAGES: Record<PlanGateProfile, readonly ExecutionStage[]> = {
   child: ["technical_checks"],
   standalone: ["independent_review", "final_acceptance"],
@@ -171,6 +173,12 @@ export interface ExecutionObservationServiceOptions {
   clock?: () => number;
   gitRunner?: (cmd: string[], cwd: string) => string;
   budget?: ExecutionBudgetService;
+  /**
+   * Largest child evidence artifact that may be published as bounded inline PR
+   * audit text. Larger artifacts keep their immutable local hash but stay
+   * incomplete until an operator supplies hosted access.
+   */
+  inlineArtifactMaxBytes?: number;
 }
 
 export interface ObservationQuery {
@@ -218,6 +226,7 @@ export class ExecutionObservationService {
   private readonly clock: () => number;
   private readonly gitRunner: (cmd: string[], cwd: string) => string;
   private readonly budget: ExecutionBudgetService;
+  private readonly inlineArtifactMaxBytes: number;
 
   constructor(
     private readonly db: DatabaseSync,
@@ -226,6 +235,7 @@ export class ExecutionObservationService {
     this.artifactRoot = options.artifactRoot ?? join(resolveAnimusStateDir(), "artifacts");
     this.clock = options.clock ?? (() => Date.now());
     this.budget = options.budget ?? new ExecutionBudgetService(db);
+    this.inlineArtifactMaxBytes = options.inlineArtifactMaxBytes ?? 131_072;
     this.gitRunner =
       options.gitRunner ??
       ((cmd, cwd) =>
@@ -500,6 +510,10 @@ export class ExecutionObservationService {
         });
       }
 
+      const observationArtifacts = this.db
+        .prepare("SELECT * FROM execution_artifacts WHERE observation_id = ? ORDER BY rowid ASC")
+        .all(observationId) as unknown as ArtifactRow[];
+
       for (const path of checkPaths) {
         const present = this.db
           .prepare(
@@ -518,7 +532,7 @@ export class ExecutionObservationService {
 
       const observation = this.getObservation(projectId, observationId);
       if (options.publishVerificationEvent !== false) {
-        this.queueObservationAudit(run, observation, record, findingIds, now);
+        this.queueObservationAudit(run, observation, record, findingIds, observationArtifacts, now);
       }
 
       // A rejected observation on the final allowed lap is an immediate Needs
@@ -531,11 +545,40 @@ export class ExecutionObservationService {
     }, "observation");
   }
 
+  /**
+   * Render a bounded, sanitized inline copy of a child evidence artifact. The
+   * marker binds the published excerpt to the immutable local artifact identity,
+   * full-file digest and size so the PR reader can verify what was inlined. An
+   * artifact above the inline bound keeps its local hash but is never advertised
+   * as complete public proof.
+   */
+  private renderInlineArtifactEvidence(
+    projectId: string,
+    artifact: ArtifactRow,
+    binding: { runId: string; candidateHeadSha: string },
+  ): { marker: string; block: string } | null {
+    return renderInlineArtifactEvidence(
+      this.artifactRoot,
+      projectId,
+      {
+        id: artifact.id,
+        name: artifact.name,
+        relativePath: artifact.relative_path,
+        mediaType: artifact.media_type,
+        sizeBytes: artifact.size_bytes,
+        digestSha256: artifact.digest_sha256,
+      },
+      binding,
+      this.inlineArtifactMaxBytes,
+    );
+  }
+
   private queueObservationAudit(
     run: RunRow,
     observation: ExecutionObservationRecord,
     record: ExecutionObservationSubmission,
     findingIds: string[],
+    observationArtifacts: ArtifactRow[],
     now: number,
   ): void {
     if (record.status === "running") return;
@@ -567,9 +610,20 @@ export class ExecutionObservationService {
       (finding) =>
         `- [${finding.severity}] ${finding.acKey ? `${finding.acKey} ` : ""}${finding.fileContext}: ${finding.summary}`,
     );
-    const artifactLines = record.artifacts.map(
-      (artifact) => `- ${artifact.name} (${artifact.relativePath}, ${artifact.mediaType})`,
+    const artifactLines = observationArtifacts.map(
+      (artifact) => `- ${artifact.name} (${artifact.relative_path}, ${artifact.media_type})`,
     );
+    const inlineEvidence =
+      run.gate_profile === "child"
+        ? observationArtifacts
+            .map((artifact) =>
+              this.renderInlineArtifactEvidence(run.project_id, artifact, {
+                runId: run.id,
+                candidateHeadSha,
+              }),
+            )
+            .filter((evidence): evidence is { marker: string; block: string } => evidence !== null)
+        : [];
     const body = [
       `**Stage:** ${record.stage} · **Status:** ${record.status} · **Lap:** ${observation.lap}`,
       `**Producer:** ${record.producer.id} (${record.producer.role})`,
@@ -577,6 +631,14 @@ export class ExecutionObservationService {
       ...(checkLines.length > 0 ? ["", "**Checks:**", ...checkLines] : []),
       ...(findingLines.length > 0 ? ["", "**Findings:**", ...findingLines] : []),
       ...(artifactLines.length > 0 ? ["", "**Artifacts:**", ...artifactLines] : []),
+      ...(inlineEvidence.length > 0
+        ? [
+            "",
+            "**Bounded inline evidence** (full immutable artifact hash recorded locally; content sanitized and bounded for PR review):",
+            "",
+            ...inlineEvidence.map((evidence) => evidence.block),
+          ]
+        : []),
       ...(observation.error ? ["", `**Error:** ${observation.error}`] : []),
     ].join("\n");
     const title =

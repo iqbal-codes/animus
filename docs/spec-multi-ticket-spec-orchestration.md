@@ -1,5 +1,14 @@
 # Spec: Multi-Ticket Specification Implementation Coordination (`animus-implement-spec`)
 
+> **Execution contract superseded.** This draft records historical orchestration
+> decisions (single combined PR, direct child-branch merging, closure-based
+> completion). The current production contract is the local execution authority in
+> `docs/runtime.md` and `.agents/skills/animus-implement-spec/SKILL.md`: one PR per
+> child into the spec integration branch, candidate-bound technical checks plus
+> independent review, serialized lineage-verified auto-integration, dependency
+> release by lineage, and manual standalone/final merge. Do not implement from this
+> document's workflow sections.
+
 * **Status:** Draft / Proposed
 * **Date:** 2026-11-04
 * **Scope:** Autonomous Software Factory Builder, Subagent Coordination, Session & Artifact Topology (`.agents/skills/animus-implement-spec/SKILL.md`, `scripts/loop/harness-memory.ts`, `apps/backend/src/coordination/`)

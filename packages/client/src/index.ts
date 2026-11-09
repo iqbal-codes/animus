@@ -102,6 +102,9 @@ import {
   draftPublicationListSchema,
   draftPublicationSubmissionSchema,
   deliveryGateStatusSchema,
+  deliveryRoleClaimSchema,
+  deliveryRoleClaimListSchema,
+  deliveryClaimReconcileSubmissionSchema,
   finalDeliveryStatusSchema,
   finalDeliveryStatusListSchema,
   finalDeliveryAdvanceSubmissionSchema,
@@ -237,6 +240,8 @@ import {
   type PublicationStatus,
   type PublicationStatusList,
   type DeliveryGateStatus,
+  type DeliveryRoleClaimRecord,
+  type DeliveryClaimReconcileSubmission,
   type IntegrationStatus,
   type IntegrationStatusList,
   type IntegrationLandSubmission,
@@ -310,6 +315,9 @@ export {
   draftPublicationListSchema,
   draftPublicationSubmissionSchema,
   deliveryGateStatusSchema,
+  deliveryRoleClaimSchema,
+  deliveryRoleClaimListSchema,
+  deliveryClaimReconcileSubmissionSchema,
   planListSchema,
   planRecordSchema,
   planImportSubmissionSchema,
@@ -1393,6 +1401,23 @@ export function createFactoryClient(options: {
             `${scopedBase}/delivery/runs/${encodeURIComponent(runId)}/verify-merge`,
             { actor },
             deliveryGateStatusSchema,
+          );
+        },
+        async deliveryClaims(runId: string): Promise<DeliveryRoleClaimRecord[]> {
+          return getJson(
+            `${scopedBase}/delivery/runs/${encodeURIComponent(runId)}/claims`,
+            deliveryRoleClaimListSchema,
+          );
+        },
+        async reconcileDeliveryClaim(
+          runId: string,
+          stage: "technical_checks" | "independent_review" | "final_acceptance",
+          submission: DeliveryClaimReconcileSubmission,
+        ): Promise<DeliveryRoleClaimRecord> {
+          return postJson(
+            `${scopedBase}/delivery/runs/${encodeURIComponent(runId)}/claims/${encodeURIComponent(stage)}/reconcile`,
+            submission,
+            deliveryRoleClaimSchema,
           );
         },
         async finalDeliveries(): Promise<FinalDeliveryStatusList> {

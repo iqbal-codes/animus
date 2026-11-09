@@ -48,6 +48,15 @@ export interface ChildIntegrationServiceOptions {
   clock?: () => number;
   /** Cross-process integration lock wait before failing closed. */
   lockTimeoutMs?: number;
+  /**
+   * Read the current Stop/hold control for the run's budget scope. A Stop issued
+   * while the pre-merge remote reads are in flight must block the merge.
+   */
+  readControl?: (run: {
+    projectId: string;
+    deliveryId: string;
+    workId: string;
+  }) => { status: string } | null;
 }
 
 interface RunRow {
@@ -172,6 +181,13 @@ export class ChildIntegrationService {
   private readonly remoteRunner: IntegrationRemoteRunner;
   private readonly clock: () => number;
   private readonly lockTimeoutMs: number;
+  private readonly readControl:
+    | ((run: {
+        projectId: string;
+        deliveryId: string;
+        workId: string;
+      }) => { status: string } | null)
+    | null;
 
   constructor(
     private readonly db: DatabaseSync,
@@ -188,6 +204,7 @@ export class ChildIntegrationService {
     this.remoteRunner = options.remoteRunner ?? defaultRemoteRunner;
     this.clock = options.clock ?? (() => Date.now());
     this.lockTimeoutMs = options.lockTimeoutMs ?? 15_000;
+    this.readControl = options.readControl ?? null;
   }
 
   // -------------------------------------------------------------------------
@@ -516,9 +533,80 @@ export class ChildIntegrationService {
       }
 
       let mergeSha: string | null = null;
+      let effectiveChecks = checks;
       try {
         // Re-check immediately before the forge merge; the fence may have been set
         // while the earlier verification/awaits were in flight.
+        this.assertInstallationReady();
+
+        // Refresh every local candidate-bound gate after the remote/CI/target
+        // awaits. A late failed/inconclusive review, a revoked authorization, an
+        // exhausted budget, a new finding, an incomplete audit or a changed
+        // artifact must invalidate the merge before any forge effect. Acceptance
+        // was snapshotted before those awaits; re-read the latest result now.
+        //
+        // Order matters: read the target FIRST, then CI, then acceptance, then the
+        // Stop control. A CI conclusion that changes while the target is read is
+        // observed by the later read; a late review/Stop that lands during the
+        // final target read is observed by the acceptance/control re-checks below.
+        const freshRemoteTarget = await this.readRemoteTarget(run);
+        const freshChecks = await this.requiredChecks(run);
+        const freshBlockerList: IntegrationBlocker[] = [];
+        if (freshRemoteTarget === null || freshRemoteTarget !== targetBefore) {
+          freshBlockerList.push({
+            code: "integration_target_drift",
+            message: `Integration branch ${run.target_branch} changed before the merge effect`,
+            details: { expected: targetBefore, actual: freshRemoteTarget },
+          });
+        }
+        freshBlockerList.push(...freshChecks.blockers);
+
+        const freshAcceptance = this.observations.evaluateAcceptance(projectId, run.id);
+        const freshPublication = this.safePublication(projectId, run.id);
+        if (freshAcceptance.candidateHeadSha !== run.head_sha) {
+          freshBlockerList.push({
+            code: "integration_candidate_mismatch",
+            message: `Candidate ${freshAcceptance.candidateHeadSha} no longer matches ${run.head_sha}`,
+          });
+        }
+        if (freshAcceptance.targetTipSha && freshAcceptance.targetTipSha !== targetBefore) {
+          freshBlockerList.push({
+            code: "integration_target_drift",
+            message: `Acceptance target tip ${freshAcceptance.targetTipSha} no longer matches ${targetBefore}`,
+          });
+        }
+        freshBlockerList.push(...this.localBlockers(run, freshAcceptance, freshPublication));
+
+        // A Stop issued during the pre-merge awaits must block the merge too.
+        const control = this.readControl?.({
+          projectId: run.project_id,
+          deliveryId: run.delivery_id,
+          workId: run.work_id,
+        });
+        if (
+          control &&
+          (control.status === "held" ||
+            control.status === "stopping" ||
+            control.status === "stopped")
+        ) {
+          freshBlockerList.push({
+            code: "integration_stopped",
+            message: `A Stop control (${control.status}) was set before the merge effect`,
+          });
+        }
+
+        if (freshBlockerList.length > 0) {
+          return await this.block(
+            run,
+            freshBlockerList,
+            freshAcceptance,
+            freshPublication,
+            targetBefore,
+            submission,
+          );
+        }
+
+        effectiveChecks = freshChecks;
         this.assertInstallationReady();
         const merged = await this.forge.mergePullRequest(run.repo_name, activePullRequest.number, {
           expectedHeadSha: run.head_sha!,
@@ -535,8 +623,8 @@ export class ChildIntegrationService {
                   `Remote refused to merge pull request #${activePullRequest.number}`,
               },
             ],
-            acceptance,
-            publication,
+            freshAcceptance,
+            freshPublication,
             targetBefore,
             submission,
           );
@@ -599,7 +687,7 @@ export class ChildIntegrationService {
         actor: submission.actor ?? "operator",
         mergeShaHint: mergeSha,
         reconciliation: false,
-        checks: checks.checks,
+        checks: effectiveChecks.checks,
       });
     } finally {
       release();
@@ -1466,6 +1554,7 @@ export function integrationErrorStatus(code: IntegrationErrorCode): number {
     case "integration_run_not_succeeded":
     case "integration_merge_policy_manual":
     case "integration_acceptance_blocked":
+    case "integration_stopped":
     case "integration_publication_missing":
     case "integration_publication_incomplete":
     case "integration_remote_binding_mismatch":

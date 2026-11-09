@@ -12,6 +12,7 @@ import {
   type ExecutionBudgetStatus,
   type ExecutionControlResult,
   type ExecutionControlSubmission,
+  type DeliveryRoleProcessState,
   type ExecutionProcessState,
   type FrozenContract,
   type PlanDispatchReconciliation,
@@ -48,6 +49,11 @@ import {
   type DispatchWorkerOwner,
 } from "./ownership";
 import { ExecutionAuthorityGateError } from "@animus/contracts/execution-authority";
+import {
+  readDeliveryClaimsForRun,
+  readRoleProcesses,
+  verifiedRoleTargets,
+} from "../delivery/role-process";
 import { assertInstallationNotHeld } from "@animus/contracts/installation-hold";
 import { assertLocalDispatchAllowed } from "../authority/guard";
 import { ExecutionObservationService } from "../evidence/observations";
@@ -189,6 +195,17 @@ export interface DispatchServiceOptions {
   observations?: ExecutionObservationService;
   budget?: ExecutionBudgetService;
   terminate?: DispatchTerminator;
+  /**
+   * Durable delivery-role identity for this run. Stop/takeover must honor a live
+   * detached role process on a SUCCEEDED builder run, not only the builder
+   * worker-owner file. Defaults to reading the shared console.db claim rows.
+   */
+  deliveryRoleProcesses?: (projectId: string, runId: string) => DeliveryRoleProcessState[];
+  /** Signals one verified delivery-role process group during Stop. */
+  terminateRole?: (
+    target: { pid: number | null; pgid: number | null },
+    signal: NodeJS.Signals,
+  ) => void;
 }
 
 interface ProjectRow {
@@ -329,6 +346,11 @@ export class DispatchService {
   private readonly observations: ExecutionObservationService;
   private readonly budget: ExecutionBudgetService;
   private readonly terminate: DispatchTerminator;
+  private readonly deliveryRoleProcesses: (
+    projectId: string,
+    runId: string,
+  ) => DeliveryRoleProcessState[];
+  private readonly terminateRole: DispatchTerminator;
 
   constructor(
     private readonly db: DatabaseSync,
@@ -351,6 +373,10 @@ export class DispatchService {
     this.observations = options.observations ?? new ExecutionObservationService(db);
     this.budget = options.budget ?? new ExecutionBudgetService(db);
     this.terminate = options.terminate ?? defaultTerminate;
+    this.terminateRole = options.terminateRole ?? defaultTerminate;
+    this.deliveryRoleProcesses =
+      options.deliveryRoleProcesses ??
+      ((projectId, runId) => readRoleProcesses(db, projectId, runId));
   }
 
   async dispatch(projectId: string, submission: DispatchSubmission): Promise<PlanDispatchRun> {
@@ -1082,6 +1108,7 @@ export class DispatchService {
         finishedAt: row.finished_at,
       })),
       process: this.processState(run),
+      claims: this.deliveryRoleClaims(projectId, run.id),
       acceptanceCriteria: criteria.map((criterion) => ({
         acKey: criterion.ac_key,
         text: criterion.text,
@@ -1249,7 +1276,11 @@ export class DispatchService {
     run: PlanDispatchRun,
     submission: ExecutionControlSubmission,
   ): ExecutionControlResult {
-    if (!(ACTIVE_STATES as readonly string[]).includes(run.state)) {
+    // A delivery role runs on a SUCCEEDED builder run (review/QA/acceptance), so a
+    // terminal builder state must not hide a live role process. Stop stays usable
+    // whenever the run is active OR it still owns a recorded delivery-role claim.
+    const ownsRoleClaim = this.deliveryRoleProcesses(run.project_id, run.id).length > 0;
+    if (!(ACTIVE_STATES as readonly string[]).includes(run.state) && !ownsRoleClaim) {
       throw new DispatchError("run_not_active", `Run ${run.id} is already terminal (${run.state})`);
     }
     const requestId = `cmd_stop_${randomUUID()}`;
@@ -1270,22 +1301,48 @@ export class DispatchService {
       identityFailure === null && owner
         ? { pid: owner.pid, pgid: owner.pgid }
         : { pid: null, pgid: null };
+    // Delivery-role processes are signalled too, but only verified groups (start
+    // identity matches, pgid == pid). An unverified live role is never signalled;
+    // it holds the Stop as unconfirmed instead.
+    const roleClaims = this.deliveryRoleProcesses(run.project_id, run.id);
+    const roleTargets = verifiedRoleTargets(roleClaims);
+    const unverifiedLiveRole = roleClaims.some((claim) => claim.alive && !claim.verified);
     let terminateError: string | null = null;
     try {
       if (target.pid !== null || target.pgid !== null) {
         this.terminate(target, signal);
       }
+      for (const roleTarget of roleTargets) {
+        this.terminateRole({ pid: roleTarget.pid, pgid: roleTarget.pgid }, signal);
+      }
     } catch (error) {
       terminateError = error instanceof Error ? error.message : String(error);
     }
 
+    // Wait for the signalled groups to actually leave the process table before
+    // reporting confirmation; a delivered signal is not proof of termination.
+    if (roleTargets.length > 0 || (target.pid !== null && target.pgid !== null)) {
+      this.waitForTermination(run, signal);
+    }
+
     const process = this.processState(run);
-    const confirmed =
-      identityFailure === null &&
-      terminateError === null &&
-      !process.ownerAlive &&
-      !process.workerAlive &&
-      !process.worktreeLockAlive;
+    const roleAliveAfter = unverifiedLiveRole || process.roleClaims.some((claim) => claim.alive);
+    const builderActive = (ACTIVE_STATES as readonly string[]).includes(run.state);
+    // For an ACTIVE builder run the recorded identity must be readable before we can
+    // claim its process tree is gone: a missing/unreadable owner record is unknown,
+    // so the builder is never confirmed from coordinator liveness alone. On a
+    // terminal (e.g. succeeded) builder run there is no builder process to prove;
+    // only the delivery-role liveness below matters.
+    const builderConfirmed = builderActive
+      ? identityFailure === null &&
+        !process.ownerAlive &&
+        !process.workerAlive &&
+        !process.worktreeLockAlive
+      : // A terminal builder run has no builder process left to stop; any lingering
+        // worker-owner file belongs to the finished builder. Only the delivery-role
+        // liveness below decides confirmation.
+        true;
+    const confirmed = terminateError === null && builderConfirmed && !roleAliveAfter;
     const now = this.clock();
     const control = this.budget.setControl({
       projectId,
@@ -1293,11 +1350,13 @@ export class DispatchService {
       workId: run.work_id,
       status: "stopping",
       actor: submission.actor,
-      reason: identityFailure
-        ? "termination_unverified"
-        : confirmed
-          ? "termination_requested"
-          : "termination_unconfirmed",
+      reason: confirmed
+        ? "termination_requested"
+        : roleAliveAfter
+          ? "termination_unconfirmed"
+          : identityFailure
+            ? "termination_unverified"
+            : "termination_unconfirmed",
       commandRequestId: requestId,
       lastRunId: run.id,
       now,
@@ -1313,9 +1372,12 @@ export class DispatchService {
           timestamp: new Date(now).toISOString(),
           actor: submission.actor,
           details:
-            identityFailure ??
             terminateError ??
-            (confirmed ? "termination_requested" : "termination_unconfirmed"),
+            (confirmed
+              ? "termination_requested"
+              : roleAliveAfter
+                ? "termination_unconfirmed:role_process_alive"
+                : (identityFailure ?? "termination_unconfirmed")),
         },
         ...(terminateError ? { error: terminateError } : {}),
       });
@@ -1327,14 +1389,34 @@ export class DispatchService {
       budget: this.budget.getScope(this.scopeKeyFromRun(run)),
       confirmed,
       commandRequestId: requestId,
-      detail: identityFailure
-        ? `termination_unverified:${identityFailure}`
-        : terminateError
-          ? `termination_error:${terminateError}`
-          : confirmed
-            ? "termination_requested"
-            : "termination_unconfirmed",
+      detail: terminateError
+        ? `termination_error:${terminateError}`
+        : confirmed
+          ? "termination_requested"
+          : unverifiedLiveRole
+            ? "termination_unverified:role_process_identity_unreadable"
+            : roleAliveAfter
+              ? "termination_unconfirmed:role_process_alive"
+              : identityFailure
+                ? `termination_unverified:${identityFailure}`
+                : "termination_unconfirmed",
     };
+  }
+
+  private waitForTermination(run: PlanDispatchRun, _signal: NodeJS.Signals): void {
+    // Bounded short poll: a delivered signal is not proof of termination, so wait
+    // briefly for the kernel to reap the group. A writer that stays alive simply
+    // leaves the Stop unconfirmed (never a false confirmation) without blocking.
+    const deadline = Date.now() + 400;
+    const buffer = new Int32Array(new SharedArrayBuffer(4));
+    while (Date.now() < deadline) {
+      const claims = this.deliveryRoleProcesses(run.project_id, run.id);
+      const roleAlive = claims.some((claim) => claim.alive && claim.verified);
+      const owner = this.processState(run);
+      const builderAlive = owner.ownerAlive || owner.workerAlive || owner.worktreeLockAlive;
+      if (!roleAlive && !builderAlive) return;
+      Atomics.wait(buffer, 0, 0, 50);
+    }
   }
 
   private takeoverRun(
@@ -1346,11 +1428,27 @@ export class DispatchService {
       throw new DispatchError("run_not_active", `Run ${run.id} is already terminal (${run.state})`);
     }
     const process = this.processState(run);
-    if (process.ownerAlive || process.workerAlive || process.worktreeLockAlive) {
+    // A live (or unreadable) delivery-role process is a previous writer even when
+    // the builder coordinator is gone. Takeover must not start a new writer.
+    const liveRoleClaims = process.roleClaims.filter((claim) => claim.alive);
+    if (
+      process.ownerAlive ||
+      process.workerAlive ||
+      process.worktreeLockAlive ||
+      liveRoleClaims.length > 0
+    ) {
       throw new DispatchError(
         "owner_may_still_run",
         `Run ${run.id} may still be writing; takeover refused until its process tree is confirmed dead`,
-        { run_id: run.id },
+        {
+          run_id: run.id,
+          live_role_claims: liveRoleClaims.map((claim) => ({
+            claim_id: claim.claimId,
+            stage: claim.stage,
+            role_pid: claim.rolePid,
+            verified: claim.verified,
+          })),
+        },
       );
     }
     // Effects must be readable and clear before the CAS. This also captures the
@@ -1400,6 +1498,24 @@ export class DispatchService {
       );
     }
     clearWorkerOwner(run.id);
+    // Confirmed stop/takeover fences every prior role claim for this run: rotate
+    // the fencing token and bump the generation so a late role result can never
+    // authorize a write under the new ownership. This does not change budget.
+    this.db
+      .prepare(
+        `UPDATE delivery_role_claims
+            SET claim_token = lower(hex(randomblob(16))),
+                claim_generation = claim_generation + 1,
+                state = CASE WHEN state = 'running' THEN 'interrupted' ELSE state END,
+                disposition = CASE WHEN state = 'running' THEN 'released_dead_owner'
+                                   ELSE disposition END,
+                disposition_reason = 'operator_takeover_fenced',
+                disposition_owner_probe = 'dead',
+                resolved_at = ?,
+                updated_at = ?
+          WHERE project_id = ? AND run_id = ?`,
+      )
+      .run(now, now, projectId, run.id);
     const control = this.budget.setControl({
       projectId,
       deliveryId: run.delivery_id,
@@ -1491,6 +1607,8 @@ export class DispatchService {
       }
     }
 
+    const roleClaims = this.deliveryRoleProcesses(run.project_id, run.id);
+
     return {
       ownerPid,
       ownerAlive,
@@ -1499,7 +1617,13 @@ export class DispatchService {
       workerAlive,
       worktreeLockPid,
       worktreeLockAlive,
+      roleClaims,
     };
+  }
+
+  /** Public claim projection for run detail (the fencing token is never exposed). */
+  private deliveryRoleClaims(projectId: string, runId: string): DispatchRunDetail["claims"] {
+    return readDeliveryClaimsForRun(this.db, projectId, runId);
   }
 
   private safeProcessAlive(pid: number): boolean {

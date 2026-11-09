@@ -29,6 +29,7 @@ import type {
   FactoryFindingRecord,
   PlanDispatchRun,
   DraftAnswerInput,
+  DeliveryRoleClaimRecord,
   DraftRecord,
   DraftPublication,
   PlanKind,
@@ -825,6 +826,13 @@ export async function runPlanCommand(
     amount?: string;
     idempotencyKey?: string;
     signal?: string;
+    stage?: string;
+    lap?: string;
+    expectedGeneration?: string;
+    expectedCandidate?: string;
+    expectedState?: string;
+    observation?: string;
+    ackUnknownOwner?: boolean;
     json?: boolean;
   },
 ): Promise<number> {
@@ -832,7 +840,7 @@ export async function runPlanCommand(
   try {
     if (!opts.projectId) {
       throw new Error(
-        "Usage: factory plan <list|get|import|approve|revoke|dispatch|runs|run|detail|evidence|findings|grants|grant|hold|resume|stop|takeover|reconcile|publication|audit|publish|bind-evidence|integration|integrations|land|gate|verify-merge|final|final-advance|final-verify> --project <project-id>",
+        "Usage: factory plan <list|get|import|approve|revoke|dispatch|runs|run|detail|evidence|findings|grants|grant|hold|resume|stop|takeover|claims|claim-interrupt|claim-complete|reconcile|publication|audit|publish|bind-evidence|integration|integrations|land|gate|verify-merge|final|final-advance|final-verify> --project <project-id>",
       );
     }
     const scoped = createRegistrationClient(opts).forProject(opts.projectId);
@@ -1172,6 +1180,77 @@ export async function runPlanCommand(
       return 0;
     }
 
+    if (sub === "claims") {
+      const runId = opts.positionals[2];
+      if (!runId) throw new Error("Usage: factory plan claims <run-id> --project <project-id>");
+      const claims = await scoped.deliveryClaims(runId);
+      if (opts.json) console.log(JSON.stringify(claims, null, 2));
+      else if (claims.length === 0) console.log("No delivery role claims.");
+      else {
+        console.log(`Delivery role claims (${claims.length}):`);
+        for (const claim of claims) printClaim(claim, "  ");
+      }
+      return 0;
+    }
+
+    if (sub === "claim-interrupt" || sub === "claim-complete") {
+      const runId = opts.positionals[2];
+      const stage = opts.stage;
+      if (!runId || !stage) {
+        throw new Error(
+          `Usage: factory plan ${sub} <run-id> --stage <technical_checks|independent_review|final_acceptance> --lap <n> --expected-generation <n> [--expected-candidate <sha>] [--expected-state running|interrupted] --reason <text> [--observation <id>] [--ack-unknown-owner] [--project <project-id>]`,
+        );
+      }
+      if (
+        stage !== "technical_checks" &&
+        stage !== "independent_review" &&
+        stage !== "final_acceptance"
+      ) {
+        throw new Error(`--stage must be technical_checks, independent_review or final_acceptance`);
+      }
+      const lap = opts.lap ? Number(opts.lap) : NaN;
+      const expectedGeneration = opts.expectedGeneration ? Number(opts.expectedGeneration) : NaN;
+      if (!Number.isSafeInteger(lap) || lap <= 0) {
+        throw new Error(`--lap must be a positive integer, got: ${opts.lap ?? "(missing)"}`);
+      }
+      if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration <= 0) {
+        throw new Error(
+          `--expected-generation must be a positive integer, got: ${opts.expectedGeneration ?? "(missing)"}`,
+        );
+      }
+      if (!opts.reason) throw new Error(`Plan ${sub} requires --reason`);
+      // Read the claim so the caller always CASes against a freshly-read state and
+      // never supplies a stale candidate/state from memory.
+      const claims = await scoped.deliveryClaims(runId);
+      const claim = claims.find((entry) => entry.stage === stage && entry.lap === lap);
+      if (!claim) {
+        throw new Error(
+          `No delivery claim exists for run ${runId} stage ${stage} lap ${lap}; run 'plan claims' first`,
+        );
+      }
+      const expectedCandidateHeadSha = opts.expectedCandidate ?? claim.candidateHeadSha;
+      if (claim.claimGeneration !== expectedGeneration) {
+        const msg = `Claim is at generation ${claim.claimGeneration}, not ${expectedGeneration} (held: ${claim.hold.disposition})`;
+        if (opts.json) console.log(JSON.stringify({ ok: false, error: "delivery_claim_stale", message: msg }));
+        else console.error(`Error: ${msg}`);
+        return 1;
+      }
+      const updated = await scoped.reconcileDeliveryClaim(runId, stage, {
+        action: sub === "claim-interrupt" ? "interrupt" : "complete",
+        actor: opts.actor ?? "operator",
+        reason: opts.reason,
+        lap,
+        expectedGeneration,
+        expectedCandidateHeadSha,
+        expectedState: (opts.expectedState as "running" | "interrupted") ?? claim.state,
+        ...(opts.ackUnknownOwner ? { acknowledgeUnknownOwner: true } : {}),
+        ...(opts.observation ? { observationId: opts.observation } : {}),
+      });
+      if (opts.json) console.log(JSON.stringify(updated, null, 2));
+      else printClaim(updated, "");
+      return 0;
+    }
+
     if (["hold", "resume", "stop", "takeover"].includes(sub)) {
       const runId = opts.positionals[2];
       if (!runId) {
@@ -1196,7 +1275,7 @@ export async function runPlanCommand(
     }
 
     throw new Error(
-      `Unknown plan subcommand: ${sub}. Expected list, get, import, approve, revoke, dispatch, runs, run, detail, evidence, findings, grants, grant, hold, resume, stop, takeover, reconcile, publication, audit, publish, bind-evidence, integration, integrations, land, gate, verify-merge, final, final-advance, final-verify.`,
+      `Unknown plan subcommand: ${sub}. Expected list, get, import, approve, revoke, dispatch, runs, run, detail, evidence, findings, grants, grant, hold, resume, stop, takeover, claims, claim-interrupt, claim-complete, reconcile, publication, audit, publish, bind-evidence, integration, integrations, land, gate, verify-merge, final, final-advance, final-verify.`,
     );
   } catch (err: any) {
     const msg = err?.message ?? String(err);
@@ -1204,6 +1283,18 @@ export async function runPlanCommand(
     else console.error(`Error: ${msg}`);
     return 1;
   }
+}
+
+function printClaim(claim: DeliveryRoleClaimRecord, indent = ""): void {
+  console.log(
+    `${indent}${claim.id}  ${claim.stage}  lap=${claim.lap}  ${claim.state}  gen=${claim.claimGeneration}`,
+  );
+  console.log(
+    `${indent}  hold=${claim.hold.disposition} (${claim.hold.ownerProbe}) ${claim.hold.reason}`,
+  );
+  console.log(
+    `${indent}  owner=${claim.ownerPid ?? "none"} role=${claim.rolePid ?? "none"}/${claim.rolePgid ?? "none"} candidate=${claim.candidateHeadSha.slice(0, 12)} receipt=${claim.resultObservationId ?? "none"}`,
+  );
 }
 
 function printRun(run: PlanDispatchRun, indent = ""): void {
@@ -1230,6 +1321,8 @@ function printRunDetail(detail: DispatchRunDetail): void {
   console.log(
     `  Process:   owner_pid=${detail.process.ownerPid ?? "none"} alive=${detail.process.ownerAlive} worker=${detail.process.workerPid ?? "none"}/${detail.process.workerPgid ?? "none"} alive=${detail.process.workerAlive} lock=${detail.process.worktreeLockPid ?? "none"} alive=${detail.process.worktreeLockAlive}`,
   );
+  console.log(`  Delivery claims (${detail.claims.length}):`);
+  for (const claim of detail.claims) printClaim(claim, "    ");
   console.log(`  Attempts (${detail.attempts.length}):`);
   for (const attempt of detail.attempts) {
     console.log(

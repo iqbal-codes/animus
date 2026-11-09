@@ -55,6 +55,7 @@ const GROUP_BY_TABLE: Record<string, CutoverTableGroup> = {
   factory_findings: "evidence",
   factory_finding_events: "evidence",
   execution_artifacts: "evidence",
+  delivery_role_claims: "delivery",
   project_spec_coordinations: "coordination",
   child_integrations: "integration",
   child_integration_events: "integration",
@@ -666,6 +667,19 @@ function isRunLikeActive(table: string, row: Record<string, unknown>): boolean {
   }
   if (table === "run_processes") return status === "running";
   if (table === "dispatch_runs") return ["claimed", "dispatched", "running"].includes(status);
+  if (table === "delivery_role_claims") {
+    // Only an active writer blocks quiescence. A running claim always holds. An
+    // interrupted claim holds only while its disposition is the truthful frozen
+    // state; a claim released after a proven-dead owner (or one the restore lane
+    // cleared) is historical and never authority. A completed/failed claim keeps
+    // historical attribution and never blocks.
+    if (status === "running") return true;
+    if (status === "interrupted") {
+      const disposition = typeof row.disposition === "string" ? row.disposition : "active";
+      return disposition === "frozen_unknown_owner" || disposition === "active";
+    }
+    return false;
+  }
   if (table === "execution_controls") return ["active", "stopping"].includes(status);
   if (table === "project_spec_coordinations") return status === "active";
   if (table === "final_deliveries") return ["active", "running", "repairing"].includes(status);
@@ -683,11 +697,43 @@ function heldReason(table: string, row: Record<string, unknown>): string | null 
   return null;
 }
 
+interface RegisteredArtifact {
+  key: string;
+  relativePath: string;
+  size: number;
+  digest: string;
+}
+
+function registeredArtifacts(db: DatabaseSync): Map<string, RegisteredArtifact> {
+  const rows = db
+    .prepare("SELECT project_id, relative_path, size_bytes, digest_sha256 FROM execution_artifacts")
+    .all() as unknown as Array<{
+    project_id: string;
+    relative_path: string;
+    size_bytes: number;
+    digest_sha256: string;
+  }>;
+  const map = new Map<string, RegisteredArtifact>();
+  for (const row of rows) {
+    // Registered paths are project-scoped ("<projectId>/<path>"); the artifact walk
+    // is rooted at the artifact root, so the same join produces the walk key.
+    const relativePath = `${row.project_id}/${row.relative_path}`.split(sep).join("/");
+    map.set(relativePath, {
+      key: relativePath,
+      relativePath,
+      size: row.size_bytes,
+      digest: row.digest_sha256,
+    });
+  }
+  return map;
+}
+
 function walkArtifacts(
   root: string,
   current: string,
   out: Array<{ relativePath: string; size: number; digest: string }>,
   held: CutoverHeldFact[],
+  presentPaths?: Set<string>,
 ): void {
   const entries = readdirSync(current, { withFileTypes: true }).sort((left, right) =>
     left.name.localeCompare(right.name),
@@ -695,10 +741,11 @@ function walkArtifacts(
   for (const entry of entries) {
     const absolute = join(current, entry.name);
     if (entry.isDirectory()) {
-      walkArtifacts(root, absolute, out, held);
+      walkArtifacts(root, absolute, out, held, presentPaths);
       continue;
     }
     const relativePath = relative(root, absolute).split(sep).join("/");
+    presentPaths?.add(relativePath);
     if (!entry.isFile()) {
       held.push({
         entity: "artifact",
@@ -778,17 +825,58 @@ export function inventoryInstallation(
     }
   }
 
+  // The artifact digest is the closure of REGISTERED artifacts (the exact set the
+  // backup bundle copies), not a raw filesystem walk. A crash between the artifact
+  // write and the receipt commit — or any stray file — leaves an unregistered file
+  // under the immutable root; a raw walk would make live and snapshot digests
+  // disagree forever and block staging with an unactionable `cutover_state_changed`.
+  // Unregistered files are surfaced as truthful held facts (with their provenance)
+  // so an operator can see and dispose of them; they are never silently deleted.
+  const registered = registeredArtifacts(db);
   const artifactFiles: Array<{ relativePath: string; size: number; digest: string }> = [];
+  const presentPaths = new Set<string>();
   if (existsSync(artifactRoot)) {
-    walkArtifacts(artifactRoot, artifactRoot, artifactFiles, held);
+    walkArtifacts(artifactRoot, artifactRoot, artifactFiles, held, presentPaths);
   }
-  artifactFiles.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+  for (const file of artifactFiles) {
+    const row = registered.get(file.relativePath);
+    if (row) {
+      if (row.size !== file.size || row.digest !== file.digest) {
+        held.push({
+          entity: "artifact",
+          identity: `${file.relativePath} (recorded ${row.digest.slice(0, 16)}…, on-disk ${file.digest.slice(0, 16)}…)`,
+          reason:
+            "registered artifact bytes differ from the recorded digest; quarantine before cutover",
+        });
+      }
+    } else {
+      held.push({
+        entity: "artifact",
+        identity: `${file.relativePath} (sha256 ${file.digest})`,
+        reason:
+          "unregistered file under the artifact root (possible crash between artifact write and receipt commit); move it out of the immutable artifact root or re-finalize its receipt before cutover",
+      });
+    }
+  }
+  for (const row of registered.values()) {
+    if (!presentPaths.has(row.key)) {
+      held.push({
+        entity: "artifact",
+        identity: `${row.relativePath} (sha256 ${row.digest})`,
+        reason:
+          "registered artifact file is missing from the artifact root; restore it before cutover",
+      });
+    }
+  }
+  const closureFiles = [...registered.values()]
+    .filter((row) => presentPaths.has(row.key))
+    .sort((left, right) => left.relativePath.localeCompare(right.relativePath));
   const artifacts: CutoverArtifactSummary = {
     root: artifactRoot,
-    count: artifactFiles.length,
-    totalBytes: artifactFiles.reduce((sum, file) => sum + file.size, 0),
+    count: closureFiles.length,
+    totalBytes: closureFiles.reduce((sum, file) => sum + file.size, 0),
     digest: sha256Text(
-      artifactFiles
+      closureFiles
         .map((file) => `${file.relativePath}\u0000${file.size}\u0000${file.digest}`)
         .join("\n"),
     ),

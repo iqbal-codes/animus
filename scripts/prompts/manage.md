@@ -17,7 +17,7 @@ Inspect the state of loop execution:
 Act directly on GitHub to keep the backlog actionable (maximum 5 issue creations and 5 rewrites per pass):
 - **Close resolved items:** Close duplicate issues or tickets already delivered by merged PRs.
 - **Clarify vague criteria:** Restructure ambiguous acceptance criteria into concrete checkable assertions while preserving intent.
-- **Maintain dependency DAG:** Update `Depends on: #n` references when prerequisite tickets merge or are closed.
+- **Maintain dependency DAG:** Update `Depends on: #n` references only when the prerequisite work is verified included in the required integration lineage (or verified merged into the final delivery target). Issue closure or an unverified merge is not lineage proof.
 - **Harvest noticed defects:** Review `Noticed (not this change's)` sections from recent loop reviews. Open clean, reproducible issues for valid bugs observed in the default branch.
 - **Resolve `needs-owner`:** If an item is blocked on mechanical wording or a missing checkable criterion, resolve it and remove `needs-owner`. If an item requires product scope or direction decisions, leave it for the human owner.
 

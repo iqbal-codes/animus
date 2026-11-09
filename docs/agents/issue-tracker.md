@@ -10,7 +10,7 @@ Runtime intake and planning skills use five canonical triage labels to control w
 
 | Canonical Label | Admission State | Meaning |
 | --- | --- | --- |
-| `ready-for-agent` | **Admitted** | Fully specified, unambiguous ticket ready for autonomous agent execution once prerequisites close |
+| `ready-for-agent` | **Admitted** | Fully specified, unambiguous ticket eligible for local plan import and execution once its prerequisites are verified on the required lineage |
 | `needs-triage` | **Held** | Newly opened or unreviewed item awaiting maintainer evaluation |
 | `needs-info` | **Held** | Waiting on reporter or product owner to resolve missing intent or open questions |
 | `ready-for-human` | **Held** | Requires human implementation, architectural sign-off, or parent-spec tracking |
@@ -18,11 +18,37 @@ Runtime intake and planning skills use five canonical triage labels to control w
 
 ### Admission Gate Rules
 
-- `ready-for-agent`: Admits an open ticket only when all referenced `Depends on:` prerequisites are closed, no blocking/exclusion labels are present, and no active loop claim exists. Apply only to self-contained, executable child tickets.
-- `needs-info`, `ready-for-human`, `needs-triage`: Hold work from autonomous pickup even if `ready-for-agent` is also present.
+Labels are GitHub-visible triage hints, not a continuously evaluated execution control plane.
+Local execution authority is the backend-owned command/query surface: an admitted plan freezes the
+exact ticket/parent revisions, dependency graph, target branches and gate profile at import. Later
+label edits, title/body edits or issue closure do not change an accepted contract or launch work.
+
+- `ready-for-agent`: Marks an open ticket as importable when it is self-contained, complete and has
+  no blocking/exclusion labels or active loop claim. Apply only to executable child or standalone
+  tickets. Import records the admission decision.
+- `needs-info`, `ready-for-human`, `needs-triage`: Hold work from autonomous pickup even if
+  `ready-for-agent` is also present.
 - `wontfix`: Excludes work with absolute precedence.
 - **Unlabeled issues**: Held awaiting triage (`unlabeled_awaiting_triage`). Creating labels in a repository does not make unlabeled issues executable.
 - **Legacy `factory:*` labels**: `factory:ready`, `factory:hold`, and `factory:exclude` carry zero triage or admission authority.
+
+### Dependency Release (execution authority)
+
+A dependent ticket becomes dispatchable only when every `Depends on:` prerequisite is **proven
+included in the required integration lineage** (for children) or **verified merged into the final
+delivery target** (for standalone/final). The proof is the recorded merge commit and ancestry check
+on the fetched remote target, not a GitHub state.
+
+- GitHub issue closure is a reporting fact, never a dependency release. A closed-unmerged ticket,
+  an arbitrary closure, or a comment claiming completion unlocks nothing.
+- A dependency recorded on a different branch or repository never satisfies the frozen target.
+- A missing or unreadable dependency fails closed; it does not silently admit the dependent.
+
+### GitHub Inertness After Import
+
+Manual issue edits, label changes, closure, PR comments, reviews and request-changes do not mutate
+accepted scope, create factory findings or allocate laps. Required remote CI, PR head/base changes
+and the verified merge still govern candidate readiness and completion.
 
 ### Taxonomy, Spec & Loop Execution Labels
 

@@ -76,6 +76,13 @@ export interface ParsedCliArgs {
     amount?: string;
     "idempotency-key"?: string;
     signal?: string;
+    stage?: string;
+    lap?: string;
+    "expected-generation"?: string;
+    "expected-candidate"?: string;
+    "expected-state"?: string;
+    observation?: string;
+    "ack-unknown-owner"?: boolean;
   };
 }
 
@@ -156,6 +163,13 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       amount: { type: "string" },
       "idempotency-key": { type: "string" },
       signal: { type: "string" },
+      stage: { type: "string" },
+      lap: { type: "string" },
+      "expected-generation": { type: "string" },
+      "expected-candidate": { type: "string" },
+      "expected-state": { type: "string" },
+      observation: { type: "string" },
+      "ack-unknown-owner": { type: "boolean", default: false },
     },
   });
 

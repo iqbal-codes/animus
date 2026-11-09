@@ -767,4 +767,101 @@ describe("child gate integration", () => {
     );
     expect(integrationRow(run.id)).toBeUndefined();
   });
+
+  test("S-D-1: a required check that fails during the FINAL pre-merge read blocks the merge with no integration row", async () => {
+    const { plan, branch } = await importSpec(1030, [{ issue: 1031, dependsOn: undefined }]);
+    const dispatch = makeDispatch(committingRunner("impl-late-ci.txt"));
+    const integration = makeIntegration();
+    const run = await dispatch.dispatch(projectId, {
+      plan_id: plan.id,
+      issue_number: 1031,
+      actor: "operator",
+    });
+    await recordPassingGates(run.id, "late-ci");
+    await publication.publishByRun(projectId, run.id);
+    forge.setRequiredStatusChecks(REPO, branch, ["ci/verify"]);
+    forge.setCheckRuns(REPO, run.head_sha!, [
+      { name: "ci/verify", status: "completed", conclusion: "success" },
+    ]);
+
+    // The initial `requiredChecks` read passes; only the FRESH pre-merge read (the
+    // second call, taken after the acceptance snapshot) sees the failure. This
+    // would not be caught by a regression that only fires on the initial read.
+    let checkReads = 0;
+    const originalListCheckRuns = forge.listCheckRuns!.bind(forge);
+    forge.listCheckRuns = async (repo, ref) => {
+      const result = await originalListCheckRuns(repo, ref);
+      checkReads += 1;
+      if (checkReads === 1) return result;
+      return [{ name: "ci/verify", status: "completed", conclusion: "failure" }];
+    };
+
+    const status = await integration.land(projectId, run.id);
+    expect(checkReads).toBeGreaterThanOrEqual(2);
+    expect(status.state).toBe("blocked");
+    expect(status.blockers.map((blocker) => blocker.code)).toContain("integration_ci_failed");
+    expect(integrationRow(run.id)).toBeUndefined();
+    // No dependent release and no remote merge happened for this candidate.
+    expect(
+      db.prepare("SELECT COUNT(*) AS c FROM child_integrations WHERE run_id = ?").get(run.id),
+    ).toEqual({ c: 0 });
+  });
+
+  test("AC3: a late failed review recorded during the pre-merge remote read blocks the merge", async () => {
+    const { plan, branch } = await importSpec(1020, [{ issue: 1021 }]);
+    const dispatch = makeDispatch(committingRunner("impl-late-review.txt"));
+    const integration = makeIntegration();
+    const run = await dispatch.dispatch(projectId, {
+      plan_id: plan.id,
+      issue_number: 1021,
+      actor: "operator",
+    });
+    await recordPassingGates(run.id, "late");
+    await publication.publishByRun(projectId, run.id);
+
+    // A concurrent reviewer records a blocking failure after acceptance was
+    // snapshotted but before the forge merge. The freshness fence must see it.
+    const lateReviewer = register("late-concurrent-reviewer", "peer_reviewer");
+    const originalGetPullRequest = forge.getPullRequest.bind(forge);
+    let fired = false;
+    forge.getPullRequest = async (repo, number) => {
+      const result = await originalGetPullRequest(repo, number);
+      if (!fired) {
+        fired = true;
+        observations.recordRunObservation(
+          projectId,
+          run.id,
+          {
+            stage: "independent_review",
+            status: "failed",
+            producer: lateReviewer.producer,
+            checks: [{ name: "late review", command: "review diff", result: "FAIL" }],
+            findings: [
+              {
+                severity: "blocking",
+                fileContext: "impl-late-review.txt:1",
+                summary: "late concurrent blocking defect",
+              },
+            ],
+          },
+          { attemptKey: "late-review-attempt" },
+        );
+      }
+      return result;
+    };
+
+    const status = await integration.land(projectId, run.id);
+    expect(status.state).toBe("blocked");
+    expect(status.acceptance.authorized).toBe(false);
+    expect(status.blockers.map((blocker) => blocker.code)).toEqual(
+      expect.arrayContaining(["integration_acceptance_blocked"]),
+    );
+    expect(integrationRow(run.id)).toBeUndefined();
+    expect(remoteHead(branch)).toBeTruthy();
+    const reviews = observations
+      .listObservations(projectId, { runId: run.id })
+      .filter((observation) => observation.stage === "independent_review");
+    expect(reviews.map((review) => review.status)).toContain("failed");
+    expect(reviews).toHaveLength(2);
+  });
 });

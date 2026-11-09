@@ -15,6 +15,25 @@ export class ArtifactPathError extends Error {
   }
 }
 
+/** True when the string contains any C0/DEL control character. */
+export function containsControlCharacter(value: string): boolean {
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/** True when the string contains a control character other than tab/newline/CR. */
+export function containsDisallowedControlCharacter(value: string): boolean {
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code === 0x09 || code === 0x0a || code === 0x0d) continue;
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
 export function normalizeArtifactRelativePath(relativePath: string): string {
   const candidate = relativePath.trim();
   if (
@@ -26,6 +45,18 @@ export function normalizeArtifactRelativePath(relativePath: string): string {
     throw new ArtifactPathError(
       "artifact_unsafe_path",
       `Artifact path must be a normalized project-relative path: ${relativePath}`,
+    );
+  }
+  // Producer-controlled path text is also untrusted metadata. Reject characters
+  // that could break an inline marker, a markdown fence or an HTML comment.
+  if (
+    containsControlCharacter(candidate) ||
+    candidate.includes("-->") ||
+    candidate.includes("<!--")
+  ) {
+    throw new ArtifactPathError(
+      "artifact_unsafe_path",
+      `Artifact path contains unsafe control or comment characters: ${relativePath}`,
     );
   }
   const normalized = posix.normalize(candidate).replace(/^\.\//, "");

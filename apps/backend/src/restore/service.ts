@@ -118,6 +118,7 @@ const COUNTED_TABLES = [
   "factory_findings",
   "factory_finding_events",
   "execution_artifacts",
+  "delivery_role_claims",
   "publication_targets",
   "publication_pull_requests",
   "publication_events",
@@ -1160,8 +1161,10 @@ export class BackupRestoreService {
         snapshot: input.snapshot,
         runs: verification.report.runs,
         intents: verification.report.intents,
+        claims: verification.report.claims,
         unresolvedRunCount: verification.report.unresolvedRunCount,
         unresolvedIntentCount: verification.report.unresolvedIntentCount,
+        unresolvedClaimCount: verification.report.unresolvedClaimCount,
       };
 
       const ledger = isLive && this.ledger ? this.ledger : new CommandLedger(db);
@@ -1391,6 +1394,80 @@ export class BackupRestoreService {
       });
     }
 
+    // Delivery-role claims are the other durable writer identity. A restored
+    // installation must never treat a copied coordinator/role PID, start time,
+    // lease or fencing token as live authority. Running claims are interrupted;
+    // any non-terminal claim that still carries owner identity has it cleared.
+    // Historical attribution is retained only as hashes in the restore report.
+    const priorClaims = db
+      .prepare(
+        `SELECT id, run_id, stage, lap, state, claim_token, owner_pid, owner_process_start,
+                role_pid, role_pgid, role_process_start
+           FROM delivery_role_claims
+          WHERE state IN ('running', 'interrupted')
+          ORDER BY id ASC`,
+      )
+      .all() as unknown as Array<{
+      id: string;
+      run_id: string;
+      stage: string;
+      lap: number;
+      state: string;
+      claim_token: string;
+      owner_pid: number | null;
+      owner_process_start: string | null;
+      role_pid: number | null;
+      role_pgid: number | null;
+      role_process_start: string | null;
+    }>;
+    const clearClaim = db.prepare(
+      `UPDATE delivery_role_claims
+          SET state = CASE WHEN state = 'running' THEN 'interrupted' ELSE state END,
+              owner_pid = NULL,
+              owner_process_start = NULL,
+              role_pid = NULL,
+              role_pgid = NULL,
+              role_process_start = NULL,
+              claim_token = ?,
+              claim_generation = claim_generation + 1,
+              lease_expires_at = ?,
+              heartbeat_at = ?,
+              updated_at = ?,
+              error = COALESCE(error, 'restored_installation_held')
+        WHERE id = ? AND state IN ('running', 'interrupted')`,
+    );
+    const clearedClaims: Array<{
+      claimId: string;
+      runId: string;
+      stage: string;
+      lap: number;
+      priorState: string;
+      priorOwnerPid: number | null;
+      priorOwnerProcessStart: string | null;
+      priorRolePid: number | null;
+      priorRolePgid: number | null;
+      priorRoleProcessStart: string | null;
+      priorClaimTokenSha256: string;
+    }> = [];
+    let interruptedClaimCount = 0;
+    for (const row of priorClaims) {
+      clearClaim.run(randomUUID(), 0, input.now, input.now, row.id);
+      if (row.state === "running") interruptedClaimCount += 1;
+      clearedClaims.push({
+        claimId: row.id,
+        runId: row.run_id,
+        stage: row.stage,
+        lap: row.lap,
+        priorState: row.state,
+        priorOwnerPid: row.owner_pid,
+        priorOwnerProcessStart: row.owner_process_start,
+        priorRolePid: row.role_pid,
+        priorRolePgid: row.role_pgid,
+        priorRoleProcessStart: row.role_process_start,
+        priorClaimTokenSha256: sha256Bytes(Buffer.from(row.claim_token, "utf8")),
+      });
+    }
+
     const heldControls = db
       .prepare(
         `UPDATE execution_controls
@@ -1452,6 +1529,9 @@ export class BackupRestoreService {
       rewrittenPathCount: worktreeRewrites.rewritten,
       clearedOwnerCount: clearedOwners.length,
       clearedOwners,
+      interruptedClaimCount,
+      clearedClaimCount: clearedClaims.length,
+      clearedClaims,
       projectCheckouts: worktreeRewrites.projectCheckouts,
       worktreePathsNotResurrected: activeRuns.map((run) => ({
         run_id: run.id,

@@ -903,6 +903,27 @@ export const executionControlStateSchema = z.object({
 });
 export type ExecutionControlState = z.infer<typeof executionControlStateSchema>;
 
+/**
+ * Actual OS presence of one recorded delivery-role process group. `verified`
+ * means the persisted start identity still matches the live pid; `alive` is the
+ * process/group liveness after that check. An unreadable identity is never
+ * reported alive-or-dead: it stays `alive:true` (fail closed).
+ */
+export const deliveryRoleProcessStateSchema = z.object({
+  claimId: z.string().min(1),
+  stage: z.string().min(1),
+  lap: z.number().int().positive(),
+  state: z.string().min(1),
+  disposition: z.string().min(1),
+  ownerProbe: z.enum(["alive", "dead", "unknown"]),
+  rolePid: z.number().int().positive().nullable(),
+  rolePgid: z.number().int().positive().nullable(),
+  roleProcessStart: z.string().nullable(),
+  verified: z.boolean(),
+  alive: z.boolean(),
+});
+export type DeliveryRoleProcessState = z.infer<typeof deliveryRoleProcessStateSchema>;
+
 export const executionProcessStateSchema = z.object({
   ownerPid: z.number().int().positive().nullable(),
   ownerAlive: z.boolean(),
@@ -911,6 +932,8 @@ export const executionProcessStateSchema = z.object({
   workerAlive: z.boolean(),
   worktreeLockPid: z.number().int().positive().nullable(),
   worktreeLockAlive: z.boolean(),
+  /** Recorded delivery-role processes for this run (review/QA/acceptance). */
+  roleClaims: z.array(deliveryRoleProcessStateSchema).default([]),
 });
 export type ExecutionProcessState = z.infer<typeof executionProcessStateSchema>;
 
@@ -1519,6 +1542,20 @@ export const restoreRunFactSchema = z.object({
 });
 export type RestoreRunFact = z.infer<typeof restoreRunFactSchema>;
 
+/** Non-terminal delivery-role claims that still carry a copied writer identity. */
+export const restoreClaimFactSchema = z.object({
+  claimId: z.string().min(1),
+  projectId: z.string().min(1),
+  runId: z.string().min(1),
+  stage: z.string().min(1),
+  lap: z.number().int().positive(),
+  state: z.string().min(1),
+  ownerIdentityPresent: z.boolean(),
+  roleIdentityPresent: z.boolean(),
+  leaseCleared: z.boolean(),
+});
+export type RestoreClaimFact = z.infer<typeof restoreClaimFactSchema>;
+
 export const restoreIntentFactSchema = z.object({
   intentId: z.string().min(1),
   projectId: z.string().min(1),
@@ -1535,6 +1572,7 @@ export type RestoreIntentFact = z.infer<typeof restoreIntentFactSchema>;
 export const restoreUnresolvedSchema = z.object({
   runs: z.array(restoreRunFactSchema),
   intents: z.array(restoreIntentFactSchema),
+  claims: z.array(restoreClaimFactSchema),
 });
 export type RestoreUnresolved = z.infer<typeof restoreUnresolvedSchema>;
 
@@ -2458,6 +2496,7 @@ export const integrationBlockReasonSchema = z.enum([
   "integration_merge_rejected",
   "integration_merge_unknown",
   "integration_lineage_unverified",
+  "integration_stopped",
 ]);
 export type IntegrationBlockReason = z.infer<typeof integrationBlockReasonSchema>;
 
@@ -2564,6 +2603,104 @@ export const dispatchAcceptanceCriterionSchema = z.object({
 });
 export type DispatchAcceptanceCriterion = z.infer<typeof dispatchAcceptanceCriterionSchema>;
 
+export const deliveryClaimStageSchema = z.enum([
+  "technical_checks",
+  "independent_review",
+  "final_acceptance",
+]);
+export type DeliveryClaimStage = z.infer<typeof deliveryClaimStageSchema>;
+
+export const deliveryRoleClaimStateSchema = z.enum([
+  "running",
+  "completed",
+  "failed",
+  "interrupted",
+]);
+export type DeliveryRoleClaimStateRecord = z.infer<typeof deliveryRoleClaimStateSchema>;
+
+export const deliveryRoleClaimDispositionSchema = z.enum([
+  "active",
+  "terminal",
+  "released_dead_owner",
+  "frozen_unknown_owner",
+  "restored_installation_held",
+]);
+export type DeliveryRoleClaimDisposition = z.infer<typeof deliveryRoleClaimDispositionSchema>;
+
+/**
+ * Why an interrupted claim is (or is not) still an active writer. `frozen_unknown_owner`
+ * keeps a truthful held state when the owning process cannot be proven dead, instead of
+ * reporting a false release. `released_dead_owner` means the process identity is gone and
+ * the claim no longer blocks quiescence.
+ */
+export const deliveryRoleClaimHoldReasonSchema = z.object({
+  disposition: deliveryRoleClaimDispositionSchema,
+  reason: z.string().min(1),
+  ownerProbe: z.enum(["alive", "dead", "unknown"]),
+  resolvedAt: z.number().int().nonnegative().nullable(),
+});
+export type DeliveryRoleClaimHoldReason = z.infer<typeof deliveryRoleClaimHoldReasonSchema>;
+
+/** Public projection of a durable delivery-role claim. The fencing token is never exposed. */
+export const deliveryRoleClaimSchema = z.object({
+  id: z.string().min(1),
+  projectId: z.string().min(1),
+  deliveryId: z.string().min(1),
+  runId: z.string().min(1),
+  lap: z.number().int().positive(),
+  stage: deliveryClaimStageSchema,
+  candidateHeadSha: z.string().min(1),
+  attemptKey: z.string().min(1),
+  claimGeneration: z.number().int().positive(),
+  ownerPid: z.number().int().positive().nullable(),
+  ownerProcessStart: z.string().nullable(),
+  rolePid: z.number().int().positive().nullable(),
+  rolePgid: z.number().int().positive().nullable(),
+  roleProcessStart: z.string().nullable(),
+  leaseExpiresAt: z.number().int(),
+  heartbeatAt: z.number().int(),
+  state: deliveryRoleClaimStateSchema,
+  resultObservationId: z.string().min(1).nullable(),
+  error: z.string().nullable(),
+  /** Truthful operator-facing disposition; never a fabricated release. */
+  hold: deliveryRoleClaimHoldReasonSchema,
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type DeliveryRoleClaimRecord = z.infer<typeof deliveryRoleClaimSchema>;
+
+export const deliveryRoleClaimListSchema = z.array(deliveryRoleClaimSchema);
+export type DeliveryRoleClaimList = z.infer<typeof deliveryRoleClaimListSchema>;
+
+/**
+ * Operator CAS reconciliation for an existing claim. The caller must supply the
+ * opaque claim generation, candidate head and observed state it acted on, so a
+ * stale or replayed request cannot clear a newer claim. `expectedGeneration` is
+ * the public CAS version, never the fencing token/credential.
+ *
+ * `interrupt` only releases a claim whose owner process is proven dead. When the
+ * owner cannot be proven dead, `acknowledge_unknown_owner` is required and the
+ * claim stays truthfully held (`frozen_unknown_owner`) instead of reporting a
+ * false release. `complete` requires an existing role observation bound to the
+ * claim's own project/run/stage/lap/attempt/candidate tuple.
+ */
+export const deliveryClaimReconcileSubmissionSchema = z
+  .object({
+    actor: z.string().min(1).max(200),
+    reason: z.string().min(1).max(2000),
+    action: z.enum(["interrupt", "complete"]),
+    lap: z.number().int().positive(),
+    expectedGeneration: z.number().int().positive(),
+    expectedCandidateHeadSha: z.string().min(1),
+    expectedState: deliveryRoleClaimStateSchema,
+    acknowledgeUnknownOwner: z.boolean().optional(),
+    observationId: z.string().min(1).optional(),
+  })
+  .strict();
+export type DeliveryClaimReconcileSubmission = z.infer<
+  typeof deliveryClaimReconcileSubmissionSchema
+>;
+
 export const dispatchRunDetailSchema = z.object({
   run: planDispatchRunSchema,
   budget: executionBudgetStatusSchema.nullable(),
@@ -2571,6 +2708,8 @@ export const dispatchRunDetailSchema = z.object({
   grants: budgetGrantListSchema,
   attempts: z.array(dispatchAttemptSchema),
   process: executionProcessStateSchema,
+  /** Durable delivery-role claims for this run, including a succeeded builder run. */
+  claims: z.array(deliveryRoleClaimSchema),
   acceptanceCriteria: z.array(dispatchAcceptanceCriterionSchema),
   openFindings: z.array(factoryFindingRecordSchema),
   acceptance: acceptanceDecisionSchema,

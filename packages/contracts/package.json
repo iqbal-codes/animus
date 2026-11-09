@@ -9,6 +9,7 @@
     "./execution-authority": "./src/execution-authority.ts",
     "./cutover": "./src/cutover.ts",
     "./sanitizer": "./src/sanitizer.ts",
+    "./inline-artifact": "./src/inline-artifact.ts",
     "./ticket": "./src/ticket.ts",
     "./installation-hold": "./src/installation-hold.ts"
   },

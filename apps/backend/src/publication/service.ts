@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
   publicationStatusSchema,
@@ -13,6 +14,7 @@ import {
   type PublicationTarget,
 } from "@animus/contracts/operator";
 import { ReportSanitizer } from "@animus/contracts/sanitizer";
+import { resolveAnimusStateDir } from "@animus/contracts/paths";
 import {
   AmbiguousEvidenceBoundaryError,
   EVIDENCE_SECTION_END,
@@ -26,7 +28,9 @@ import { processRun } from "../../../../scripts/loop/process";
 import type { ForgeAdapter, ForgePullRequest } from "../registry/forge";
 import { assertInstallationNotHeld } from "@animus/contracts/installation-hold";
 import { assertExternalWriterAllowed } from "../authority/guard";
+import { verifyInlineArtifactEvidence } from "../evidence/inline-artifact";
 import { PublicationError } from "./errors";
+import { sanitizePublicationText } from "./sanitizer";
 
 interface TargetRow {
   id: string;
@@ -134,6 +138,7 @@ interface ObservationRow {
 
 interface ArtifactRow {
   id: string;
+  project_id: string;
   name: string;
   relative_path: string;
   media_type: string;
@@ -170,6 +175,10 @@ export interface PublicationServiceOptions {
   /** Bounded remote git transport (push/ls-remote); injectable for offline tests. */
   gitRemote?: PublicationRemoteRunner;
   sanitizer?: ReportSanitizer;
+  /** Root holding project-scoped finalized artifacts; must match the observation service. */
+  artifactRoot?: string;
+  /** Largest artifact that may be published as bounded inline audit text. */
+  inlineArtifactMaxBytes?: number;
 }
 
 /**
@@ -182,12 +191,6 @@ export const defaultGitRemote: PublicationRemoteRunner = async (args, cwd) => {
 
 const RETIRE_FAILED = "superseded_pull_request_retire_failed";
 
-const LOCAL_PATH_PATTERNS: RegExp[] = [
-  /file:\/\/[^\s)\]"'`]+/g,
-  /(?:\/(?:Users|home|opt|tmp|private|var|mnt|workspace|root|etc))(?:\/[^\s)\]"'`]+)+/g,
-  /[A-Za-z]:\\[^\s)\]"'`]+/g,
-];
-
 function isAmbiguousTransportError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /timeout|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|aborted|killed|signal|socket hang up|network/i.test(
@@ -195,25 +198,7 @@ function isAmbiguousTransportError(error: unknown): boolean {
   );
 }
 
-function localPathSanitize(value: string): string {
-  let next = value;
-  for (const pattern of LOCAL_PATH_PATTERNS) {
-    next = next.replace(pattern, "[LOCAL_PATH]");
-  }
-  return next;
-}
-
-/**
- * Canonical publication sanitation policy shared by PR audit and issue
- * publication: scrub credentials/holdouts, unsafe HTML, and local-only paths
- * before any text crosses the remote boundary.
- */
-export function sanitizePublicationText(
-  value: string,
-  sanitizer: ReportSanitizer = new ReportSanitizer(),
-): string {
-  return localPathSanitize(sanitizer.sanitizeMarkdown(value).report);
-}
+export { sanitizePublicationText };
 
 export function publicationMarker(operationKey: string): string {
   return `<!-- animus-publication:${operationKey} -->`;
@@ -231,6 +216,8 @@ export class PublicationService {
   private readonly gitRunner: (cmd: string[], cwd: string) => string;
   private readonly gitRemote: PublicationRemoteRunner;
   private readonly sanitizer: ReportSanitizer;
+  private readonly artifactRoot: string;
+  private readonly inlineArtifactMaxBytes: number;
   private readonly locks = new Map<string, Promise<unknown>>();
 
   constructor(
@@ -249,6 +236,8 @@ export class PublicationService {
         }).trim());
     this.sanitizer = options.sanitizer ?? new ReportSanitizer();
     this.gitRemote = options.gitRemote ?? defaultGitRemote;
+    this.artifactRoot = options.artifactRoot ?? join(resolveAnimusStateDir(), "artifacts");
+    this.inlineArtifactMaxBytes = options.inlineArtifactMaxBytes ?? 131_072;
   }
 
   // -------------------------------------------------------------------------
@@ -481,30 +470,48 @@ export class PublicationService {
     }
     await this.retireSupersededPullRequests(this.loadTarget(target.project_id, target.id));
     if (!pr) {
+      // A verified merge makes the child PR inactive. Its bound audit history is
+      // still the truthful surface for post-merge verdicts (for example the
+      // integration event), so publish pending events to that exact bound PR
+      // instead of dropping them as permanently queued.
+      const merged = this.mergedBoundPullRequest(target);
+      if (merged) await this.reconcileEventsAndSummary(target, merged);
       this.refreshTargetState(target.id);
       return;
     }
 
-    const remote = await this.observeActivePullRequest(target, pr);
-    if (!remote) {
+    const observed = await this.observeActivePullRequest(target, pr);
+    if (!observed) {
+      const merged = this.mergedBoundPullRequest(target);
+      if (merged) await this.reconcileEventsAndSummary(target, merged);
       this.refreshTargetState(target.id);
       return;
     }
-    if (remote !== pr) pr = remote;
+    pr = observed;
 
-    // Publish consequential events first so the mutable summary reflects their
-    // accepted state instead of freezing a pre-publication snapshot.
-    const pendingEvents = this.db
+    await this.reconcileEventsAndSummary(target, pr);
+  }
+
+  private mergedBoundPullRequest(target: TargetRow): PullRequestRow | null {
+    const row = this.db
       .prepare(
-        `SELECT * FROM publication_intents
-          WHERE target_id = ? AND kind = 'publish_event' AND state NOT IN ('accepted', 'abandoned')
-          ORDER BY created_at ASC, id ASC`,
+        `SELECT * FROM publication_pull_requests
+          WHERE target_id = ? AND state = 'merged'
+            AND candidate_head_sha = ? AND head_branch = ? AND base_branch = ?
+          ORDER BY updated_at DESC LIMIT 1`,
       )
-      .all(target.id) as unknown as IntentRow[];
-    for (const intent of pendingEvents) {
-      await this.executeEventIntent(this.loadTarget(target.project_id, target.id), pr, intent);
-    }
+      .get(target.id, target.candidate_head_sha, target.source_branch, target.target_branch);
+    return row === undefined ? null : (row as unknown as PullRequestRow);
+  }
 
+  /**
+   * Publish consequential events first, then the mutable summary that reflects
+   * their accepted state. This runs for the active PR and for a bound merged PR
+   * so post-merge verdicts do not leave a stale summary or a permanently queued
+   * audit event.
+   */
+  private async reconcileEventsAndSummary(target: TargetRow, pr: PullRequestRow): Promise<void> {
+    await this.publishPendingEvents(target, pr);
     const current = this.loadTarget(target.project_id, target.id);
     const projection = this.renderSummary(
       current,
@@ -517,6 +524,19 @@ export class PublicationService {
     const summaryIntent = this.ensureSummaryIntent(current, projection.hash);
     if (summaryIntent) {
       await this.executeSummaryIntent(current, pr, summaryIntent);
+    }
+  }
+
+  private async publishPendingEvents(target: TargetRow, pr: PullRequestRow): Promise<void> {
+    const pendingEvents = this.db
+      .prepare(
+        `SELECT * FROM publication_intents
+          WHERE target_id = ? AND kind = 'publish_event' AND state NOT IN ('accepted', 'abandoned')
+          ORDER BY created_at ASC, id ASC`,
+      )
+      .all(target.id) as unknown as IntentRow[];
+    for (const intent of pendingEvents) {
+      await this.executeEventIntent(this.loadTarget(target.project_id, target.id), pr, intent);
     }
   }
 
@@ -1363,7 +1383,7 @@ export class PublicationService {
   private listTargetArtifacts(target: TargetRow): ArtifactRow[] {
     return this.db
       .prepare(
-        `SELECT a.id, a.name, a.relative_path, a.media_type, a.size_bytes,
+        `SELECT a.id, a.project_id, a.name, a.relative_path, a.media_type, a.size_bytes,
                 a.digest_sha256, a.observation_id
            FROM execution_artifacts a
            JOIN execution_observations o ON o.id = a.observation_id
@@ -1387,13 +1407,87 @@ export class PublicationService {
     let unsafe = 0;
     for (const artifact of this.listTargetArtifacts(target)) {
       const binding = evidence.find((item) => item.artifactId === artifact.id);
-      if (!binding || binding.status !== "supplied_unverified" || !binding.hostedUrl) {
-        pending += 1;
+      if (binding?.status === "supplied_unverified" && binding.hostedUrl) {
+        if (!validateHostedAssetUrl(binding.hostedUrl).ok) unsafe += 1;
         continue;
       }
-      if (!validateHostedAssetUrl(binding.hostedUrl).ok) unsafe += 1;
+      // Child evidence may be published as bounded inline audit text through the
+      // supported comment outbox. The marker binds the accepted comment to the
+      // immutable local artifact identity and full-file digest; it is not a
+      // fabricated hosted URL and it does not waive standalone/final binding.
+      if (target.gate_profile === "child" && this.inlineArtifactEvent(target, artifact)) {
+        continue;
+      }
+      pending += 1;
     }
     return { pending, unsafe };
+  }
+
+  /**
+   * Returns the accepted audit event that carries the exact canonical inline
+   * payload for an artifact. The strict marker is parsed, the immutable local
+   * artifact is re-read, its full digest/size/media/path are re-verified, the
+   * sanitized excerpt digest is recomputed and the published block must match
+   * byte-for-byte. A forged or self-reported marker never counts as complete.
+   *
+   * The accepted event must be bound to the artifact's own observation and to
+   * the same run/candidate the observation was recorded for, so an earlier-lap
+   * artifact stays complete only while its provenance is consistent.
+   */
+  private inlineArtifactEvent(
+    target: TargetRow,
+    artifact: ArtifactRow,
+  ): { id: string; sequence: number } | null {
+    const rows = this.db
+      .prepare(
+        `SELECT e.id, e.sequence, e.body,
+                e.run_id AS event_run_id, e.candidate_head_sha AS event_candidate,
+                o.run_id AS observation_run_id, o.candidate_head_sha AS observation_candidate
+           FROM publication_events e
+           JOIN publication_intents i
+             ON i.target_id = e.target_id AND i.operation_key = 'event:' || e.id
+           JOIN execution_observations o ON o.id = e.observation_id
+          WHERE e.target_id = ? AND e.observation_id = ?
+            AND i.state = 'accepted'
+          ORDER BY e.sequence ASC`,
+      )
+      .all(target.id, artifact.observation_id) as Array<{
+      id: string;
+      sequence: number;
+      body: string;
+      event_run_id: string | null;
+      event_candidate: string;
+      observation_run_id: string;
+      observation_candidate: string;
+    }>;
+    for (const row of rows) {
+      if (
+        row.event_run_id !== row.observation_run_id ||
+        row.event_candidate !== row.observation_candidate
+      ) {
+        continue;
+      }
+      const verified = verifyInlineArtifactEvidence({
+        artifactRoot: this.artifactRoot,
+        projectId: artifact.project_id,
+        artifact: {
+          id: artifact.id,
+          name: artifact.name,
+          relativePath: artifact.relative_path,
+          mediaType: artifact.media_type,
+          sizeBytes: artifact.size_bytes,
+          digestSha256: artifact.digest_sha256,
+        },
+        binding: {
+          runId: row.observation_run_id,
+          candidateHeadSha: row.observation_candidate,
+        },
+        maxBytes: this.inlineArtifactMaxBytes,
+        body: row.body,
+      });
+      if (verified.ok) return { id: row.id, sequence: row.sequence };
+    }
+    return null;
   }
 
   private activePullRequest(target: TargetRow): PullRequestRow | null {
@@ -1734,7 +1828,7 @@ export class PublicationService {
       .all(target.project_id, target.delivery_id, target.work_id) as unknown as FindingRow[];
     const artifacts = this.db
       .prepare(
-        `SELECT a.id, a.name, a.relative_path, a.media_type, a.size_bytes,
+        `SELECT a.id, a.project_id, a.name, a.relative_path, a.media_type, a.size_bytes,
                 a.digest_sha256, a.observation_id
            FROM execution_artifacts a
            JOIN execution_observations o ON o.id = a.observation_id
@@ -1814,10 +1908,14 @@ export class PublicationService {
       for (const artifact of artifacts) {
         const binding = evidence.find((item) => item.artifactId === artifact.id);
         const hostedCheck = binding?.hostedUrl ? validateHostedAssetUrl(binding.hostedUrl) : null;
+        const inline =
+          target.gate_profile === "child" ? this.inlineArtifactEvent(target, artifact) : null;
         const access =
           binding?.hostedUrl && hostedCheck?.ok
             ? `[supplied by operator](<${binding.hostedUrl}>) *(supplied unverified)*`
-            : "manual upload pending";
+            : inline
+              ? `inline in audit event #${inline.sequence} (sha256 verified)`
+              : "manual upload pending";
         lines.push(
           `| ${escapeMarkdownTableCell(artifact.name)} | ${escapeMarkdownTableCell(artifact.media_type)} | ${artifact.size_bytes}B | \`${artifact.digest_sha256.slice(0, 16)}…\` | ${access} |`,
         );

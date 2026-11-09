@@ -63,6 +63,7 @@ export type TickSkipReason =
   | "outside_work_window"
   | "capacity_full"
   | "no_admitted_issues"
+  | "delivery_already_claimed"
   | "launch_failed";
 
 export type TickLaunchReason = "launch_successful";

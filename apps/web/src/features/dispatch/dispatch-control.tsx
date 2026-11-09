@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   DeliveryGateStatus,
+  DeliveryRoleClaimRecord,
   DispatchRunDetail,
   FinalDeliveryStatus,
   IntegrationStatus,
@@ -97,6 +98,10 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
   const [controlNotice, setControlNotice] = useState<Record<string, string>>({});
   const [grantAmount, setGrantAmount] = useState<Record<string, string>>({});
   const [grantReason, setGrantReason] = useState<Record<string, string>>({});
+  const [claimBusy, setClaimBusy] = useState<string | null>(null);
+  const [claimNotice, setClaimNotice] = useState<Record<string, string>>({});
+  const [claimReason, setClaimReason] = useState<Record<string, string>>({});
+  const [claimAckUnknown, setClaimAckUnknown] = useState<Record<string, boolean>>({});
   const grantKeys = useRef<Record<string, string>>({});
   const detailInFlight = useRef<Set<string>>(new Set());
 
@@ -434,6 +439,49 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setControlBusy(null);
+    }
+  };
+
+  const reconcileClaim = async (
+    runId: string,
+    claim: DeliveryRoleClaimRecord,
+    action: "interrupt" | "complete",
+  ) => {
+    const key = claim.id;
+    const reason = (claimReason[key] ?? "").trim();
+    if (!reason) {
+      setError("Reconciling a delivery claim requires a reason");
+      return;
+    }
+    setClaimBusy(key);
+    setClaimNotice((current) => {
+      const copy = { ...current };
+      delete copy[key];
+      return copy;
+    });
+    setError(null);
+    try {
+      const updated = await factory
+        .forProject(projectId)
+        .reconcileDeliveryClaim(runId, claim.stage, {
+          action,
+          actor: "operator",
+          reason,
+          lap: claim.lap,
+          expectedGeneration: claim.claimGeneration,
+          expectedCandidateHeadSha: claim.candidateHeadSha,
+          expectedState: claim.state,
+          ...(claimAckUnknown[key] ? { acknowledgeUnknownOwner: true } : {}),
+        });
+      setClaimNotice((current) => ({
+        ...current,
+        [key]: `${action}: ${updated.state} (${updated.hold.disposition})`,
+      }));
+      await loadDetail(runId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setClaimBusy(null);
     }
   };
 
@@ -837,6 +885,23 @@ export function DispatchControl({ factory = client }: { factory?: typeof client 
                         }}
                         onControl={(action) => void runControl(run.id, action)}
                         onGrant={() => void grantAttempt(run.id)}
+                      />
+                    ) : null}
+                    {details[run.id] ? (
+                      <DeliveryClaimsPanel
+                        runId={run.id}
+                        claims={details[run.id]!.claims}
+                        busyClaimId={claimBusy}
+                        notice={claimNotice}
+                        reason={claimReason}
+                        acknowledgeUnknown={claimAckUnknown}
+                        onReason={(claimId, value) =>
+                          setClaimReason((current) => ({ ...current, [claimId]: value }))
+                        }
+                        onAcknowledgeUnknown={(claimId, value) =>
+                          setClaimAckUnknown((current) => ({ ...current, [claimId]: value }))
+                        }
+                        onReconcile={(claim, action) => void reconcileClaim(run.id, claim, action)}
                       />
                     ) : null}
                   </div>
@@ -1490,6 +1555,169 @@ const INTEGRATION_TONE: Record<
   integrated: "success",
   unknown: "warning",
 };
+
+const CLAIM_STATE_TONE: Record<
+  DeliveryRoleClaimRecord["state"],
+  "default" | "success" | "warning" | "error" | "accent"
+> = {
+  running: "accent",
+  completed: "success",
+  failed: "error",
+  interrupted: "warning",
+};
+
+const CLAIM_DISPOSITION_LABEL: Record<DeliveryRoleClaimRecord["hold"]["disposition"], string> = {
+  active: "Active owner",
+  terminal: "Terminal result recorded",
+  released_dead_owner: "Released (owner proven dead)",
+  frozen_unknown_owner: "Held — owner identity unknown",
+  restored_installation_held: "Restored installation held",
+};
+
+export function DeliveryClaimsPanel({
+  runId,
+  claims,
+  busyClaimId,
+  notice,
+  reason,
+  acknowledgeUnknown,
+  onReason,
+  onAcknowledgeUnknown,
+  onReconcile,
+}: {
+  runId: string;
+  claims: DeliveryRoleClaimRecord[];
+  busyClaimId: string | null;
+  notice: Record<string, string>;
+  reason: Record<string, string>;
+  acknowledgeUnknown: Record<string, boolean>;
+  onReason: (claimId: string, value: string) => void;
+  onAcknowledgeUnknown: (claimId: string, value: boolean) => void;
+  onReconcile: (claim: DeliveryRoleClaimRecord, action: "interrupt" | "complete") => void;
+}) {
+  if (claims.length === 0) {
+    return (
+      <section
+        aria-label="Delivery role claims"
+        className="mt-2 min-w-0 space-y-1 overflow-hidden rounded-[10px] border border-[var(--border-subtle)] bg-background/40 p-3"
+      >
+        <h3 className="text-xs font-medium text-foreground">Delivery role claims</h3>
+        <p className="text-[11px] text-text-secondary">
+          No durable delivery-role claim is recorded for this run.
+        </p>
+      </section>
+    );
+  }
+  return (
+    <section
+      aria-label="Delivery role claims"
+      className="mt-2 min-w-0 space-y-2 overflow-hidden rounded-[10px] border border-[var(--border-subtle)] bg-background/40 p-3"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="text-xs font-medium text-foreground">Delivery role claims</h3>
+        <span className="text-[10px] text-text-secondary">
+          {claims.length} recorded · active/unknown claims must be reconciled before cutover
+        </span>
+      </div>
+      <ul aria-label={`Delivery role claims for ${runId}`} className="space-y-2">
+        {claims.map((claim) => {
+          const unknownOwnership =
+            claim.hold.disposition === "frozen_unknown_owner" ||
+            claim.hold.ownerProbe === "unknown";
+          const actionable = claim.state === "running" || claim.state === "interrupted";
+          return (
+            <li
+              key={claim.id}
+              data-testid={`claim-${claim.id}`}
+              className="min-w-0 space-y-1 rounded-[8px] border border-[var(--border-subtle)] p-2"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant={CLAIM_STATE_TONE[claim.state]}>{claim.state}</Badge>
+                <span className="break-all font-mono text-[10px] text-text-secondary">
+                  {claim.stage} · lap {claim.lap} · gen {claim.claimGeneration}
+                </span>
+                <span className="break-all text-[10px] text-text-secondary">
+                  {CLAIM_DISPOSITION_LABEL[claim.hold.disposition]}
+                </span>
+              </div>
+              <p className="break-all text-[10px] text-text-secondary">
+                owner {claim.ownerPid ?? "none"} ({claim.hold.ownerProbe}) · role{" "}
+                {claim.rolePid ?? "none"}
+                {claim.rolePgid ? ` / pgid ${claim.rolePgid}` : ""} · candidate{" "}
+                {claim.candidateHeadSha.slice(0, 12)}
+                {claim.resultObservationId ? ` · receipt ${claim.resultObservationId}` : ""}
+              </p>
+              {claim.error && (
+                <p className="break-all text-[10px] text-[var(--error)]">{claim.error}</p>
+              )}
+              {unknownOwnership && (
+                <p role="alert" className="text-[10px] text-[var(--warning,#d97706)]">
+                  Owner/role identity cannot be proven dead. Interrupting keeps the claim held
+                  unless you acknowledge unknown-owner effects; a held claim keeps blocking cutover.
+                </p>
+              )}
+              {actionable && (
+                <div className="flex min-w-0 flex-wrap items-end gap-2">
+                  <label className="flex w-full min-w-0 flex-col gap-1 text-[10px] text-text-secondary sm:flex-1">
+                    <span>Reconcile reason</span>
+                    <input
+                      aria-label={`Reconcile reason for ${claim.id}`}
+                      type="text"
+                      value={reason[claim.id] ?? ""}
+                      onChange={(event) => onReason(claim.id, event.target.value)}
+                      placeholder="Why this claim is being reconciled"
+                      className="h-11 min-w-0 rounded-full border border-[var(--border)] bg-background px-3 text-xs text-foreground sm:h-8"
+                    />
+                  </label>
+                  {unknownOwnership && (
+                    <label className="flex min-h-11 min-w-11 items-center gap-2 p-2 text-[10px] text-text-secondary">
+                      <input
+                        type="checkbox"
+                        aria-label={`Acknowledge unknown owner for ${claim.id}`}
+                        checked={Boolean(acknowledgeUnknown[claim.id])}
+                        onChange={(event) => onAcknowledgeUnknown(claim.id, event.target.checked)}
+                        className="h-5 w-5"
+                      />
+                      Acknowledge unknown owner
+                    </label>
+                  )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="min-h-11 sm:min-h-8"
+                    disabled={busyClaimId === claim.id}
+                    onClick={() => onReconcile(claim, "interrupt")}
+                  >
+                    {busyClaimId === claim.id ? "Applying…" : "Interrupt (held)"}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="min-h-11 sm:min-h-8"
+                    disabled={busyClaimId === claim.id || !claim.resultObservationId}
+                    title={
+                      claim.resultObservationId
+                        ? "Complete from the claim's own recorded receipt"
+                        : "No bound receipt exists; the real stage must run"
+                    }
+                    onClick={() => onReconcile(claim, "complete")}
+                  >
+                    Complete from receipt
+                  </Button>
+                </div>
+              )}
+              {notice[claim.id] && (
+                <p role="status" className="text-[10px] text-text-secondary">
+                  {notice[claim.id]}
+                </p>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
 
 export function ChildIntegrationPanel({
   status,

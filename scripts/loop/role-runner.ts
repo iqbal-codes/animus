@@ -51,6 +51,8 @@ export interface BoundedRoleResult {
   rawStdout: string;
   artifact: string;
   head: string;
+  /** Zero-based attempt index actually executed by this bounded run. */
+  attempt: number;
   /** Provider-issued session id observed in this attempt's stdout, when reported. */
   sessionId?: string;
 }
@@ -234,6 +236,7 @@ export async function runBoundedRole(opts: BoundedRoleOptions): Promise<BoundedR
       const previous = existsSync(checkpointPath)
         ? readFileSync(checkpointPath, "utf8")
         : `# Interrupted ${role} checkpoint`;
+      await mkdir(handoffDir, { recursive: true });
       await writeFile(checkpointPath, previous + facts);
       await writeFile(
         join(handoffDir, `${role}-attempt-${attempt}-checkpoint.md`),
@@ -264,6 +267,7 @@ export async function runBoundedRole(opts: BoundedRoleOptions): Promise<BoundedR
       rawStdout: result.stdout,
       artifact,
       head,
+      attempt,
       sessionId: extractSessionId(result.stdout),
     };
   }

@@ -18,6 +18,9 @@ import {
 import { PlanService } from "../../../apps/backend/src/plans";
 import { CommandLedger } from "../../../apps/backend/src/command/ledger";
 import { BrakeService } from "../../../apps/backend/src/command/brakes";
+import { ExecutionObservationService } from "../../../apps/backend/src/evidence";
+import { ExecutionBudgetService } from "../../../apps/backend/src/work/budget";
+import { createLocalExecutionRuntime } from "../../../apps/backend/src/local-runtime";
 import { assertInstallationNotHeldAtStateDir } from "@animus/contracts/installation-hold";
 import {
   loadScheduleConfig,
@@ -210,11 +213,36 @@ export async function runLocalSchedulerCommand(
     const registry = new ProjectRegistryService(db, new SystemForgeAdapter());
     const plans = new PlanService(db, registry.getForge());
     const brakes = new BrakeService(db);
+    const observations = new ExecutionObservationService(db);
+    const budget = new ExecutionBudgetService(db);
     const dispatch = new DispatchService(db, {
       plans,
       ledger: new CommandLedger(db),
       brakes,
+      observations,
+      budget,
       engine: opts.engine,
+    });
+    const runtime = createLocalExecutionRuntime({
+      db,
+      plans,
+      dispatch,
+      forge: registry.getForge(),
+      observations,
+      budget,
+      ...(opts.engine
+        ? {
+            engine: {
+              ...(opts.engine.transport ? { transport: opts.engine.transport } : {}),
+              ...(opts.engine.provider ? { provider: opts.engine.provider } : {}),
+              ...(opts.engine.model ? { model: opts.engine.model } : {}),
+              ...(opts.engine.effort ? { effort: opts.engine.effort } : {}),
+              ...(opts.engine.maxContinuations !== undefined
+                ? { maxContinuations: opts.engine.maxContinuations }
+                : {}),
+            },
+          }
+        : {}),
     });
     try {
       dispatch.reconcile();
@@ -230,6 +258,8 @@ export async function runLocalSchedulerCommand(
           dispatch,
           actor: "scheduler",
           dryRun: opts.dryRun,
+          deliveryRuntime: runtime.delivery,
+          finalDeliveryRuntime: runtime.final,
         }),
       );
     const emptyBacklog = async (): Promise<{

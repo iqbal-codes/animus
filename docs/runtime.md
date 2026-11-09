@@ -69,6 +69,14 @@ A stale succeeded candidate re-enters a new bounded builder lap when the target 
 advanced since it was built. Dependents release only after the verified inclusion is
 recorded, not from issue closure or a `MERGED` flag alone.
 
+The normal monitor tick and both local CLI entry points (`scripts/scheduler.ts` and
+the `animus loop` scheduler command) build the same execution composition. Each tick
+first resumes a succeeded run whose gate is not terminal — so a builder-only run, a
+pending required-CI read or an interrupted audit continues without a new lap — and
+then dispatches the next eligible plan member. Child, standalone and final runs all
+receive the shared delivery runtime; there is no CLI-only path that skips gate
+processing.
+
 - HTTP: `GET /projects/:id/integration`, `GET /projects/:id/integration/runs/:runId`,
   `POST /projects/:id/integration/runs/:runId/land`.
 - CLI: `factory plan integrations`, `factory plan integration <run-id>`,
@@ -76,6 +84,37 @@ recorded, not from issue closure or a `MERGED` flag alone.
 - Operator UI: the per-run **Integration** panel shows acceptance reasons, blockers,
   required checks, the child PR, verified merge identity and attempts, and exposes the
   keyboard-operable merge action.
+
+### Delivery-role claims
+
+Technical checks, independent review and full-delivery acceptance run as durable
+delivery-role claims (`delivery_role_claims`), separate from the builder dispatch
+run. Stop/takeover and cutover staging honor the recorded role process identity:
+
+- A **running** claim blocks quiescence and takeover.
+- An **interrupted** claim with a retained/unreadable owner identity is held
+  (`frozen_unknown_owner`); it is never reported as released.
+- `interrupt` only releases a claim whose recorded role/coordinator process is
+  proven dead (ESRCH or a start-identity mismatch that is gone), clearing
+  owner/role PID/PGID/start, zeroing the lease, rotating the fencing token and
+  bumping the generation. A *live* owner is refused; an unreadable identity
+  requires an explicit `acknowledgeUnknownOwner` acknowledgement and stays held.
+- `complete` resolves the result observation under the claim's own
+  project/run/stage/lap/attempt/candidate tuple; a foreign or stale receipt is
+  rejected with 409 and never terminalizes the claim.
+- Every reconcile is fenced by the caller-observed opaque generation, candidate
+  and state, recorded through the durable `CommandLedger` and the append-only
+  `delivery_role_claim_audit` table.
+
+- HTTP: `GET /projects/:id/delivery/runs/:runId/claims`,
+  `POST /projects/:id/delivery/runs/:runId/claims/:stage/reconcile`.
+- CLI: `factory plan claims <run-id> --project <id>`,
+  `factory plan claim-interrupt <run-id> --project <id> --stage <stage> --lap <n>
+  --expected-generation <n> --reason <text> [--ack-unknown-owner]`,
+  `factory plan claim-complete ... [--observation <id>]`.
+- Operator UI: the per-run **Delivery role claims** panel shows active, unknown and
+  interrupted claims even when the builder run has succeeded, with fresh CAS state
+  and interrupt/complete controls.
 
 Embedded monitor operations inherit an async-local subprocess policy that leaves
 SIGTERM/SIGINT ownership with the backend. Nested Git and agent processes still have
@@ -158,14 +197,17 @@ schedules.
 
 `GET /api/intake` evaluates the backlog of target repository issues (default `pabriq-app` or
 `FACTORY_TARGET_REPO`):
-- **Admission rules**:
+- **Admission rules** (pre-cutover triage projection; execution admission and dependency release come from the frozen local plan and verified lineage):
   - `admitted`: issue is `OPEN`, carries canonical `ready-for-agent`, carries no blocking
-    or exclusion labels, all referenced `Depends on: #...` prerequisites are closed, and has no active loop claim.
+    or exclusion labels, has no active loop claim, and its `Depends on: #...` prerequisites are closed, merged or verified integrated for triage selection.
     Legacy `factory:*` labels convey zero authority.
   - `held`: unlabeled issues (`unlabeled_awaiting_triage`), missing `ready-for-agent`, has blocking labels
     (`needs-info`, `ready-for-human`, `needs-triage`), issue is `CLOSED`,
-    waiting on open dependency, or actively claimed.
+    waiting on a dependency with no closed/merged/integrated evidence, or actively claimed.
   - `excluded`: carries `wontfix` (overrides ready status).
+  - After local authority activation, closure alone never releases a dependent: the
+    dispatch claim requires the prerequisite merge commit to be an ancestor of the
+    fetched target lineage.
 - **Caching**: Queries are cached in-memory for 60 seconds to protect GitHub API rate limits.
   Adding `?refresh=true` or `?refresh=1` forces an immediate cache refresh.
 - **Failures**: When the `gh` CLI is unauthenticated or fails, the endpoint returns HTTP 503

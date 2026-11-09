@@ -94,7 +94,7 @@ export const helpEntries: readonly HelpEntry[] = [
   },
   {
     command: "plan",
-    spec: "plan <list|get|import|approve|revoke|dispatch|runs|run|detail|evidence|findings|grants|grant|hold|resume|stop|takeover|reconcile|publication|audit|publish|bind-evidence|integration|integrations|land> --project <project-id>",
+    spec: "plan <list|get|import|approve|revoke|dispatch|runs|run|detail|evidence|findings|grants|grant|hold|resume|stop|takeover|claims|claim-interrupt|claim-complete|reconcile|publication|audit|publish|bind-evidence|integration|integrations|land> --project <project-id>",
     description: "Inspect, decide and dispatch frozen local execution plans with budgets, run controls and publication audit",
   },
   {
@@ -195,6 +195,21 @@ export const orderedFlags: readonly FlagHelp[] = [
     spec: "--instructions <text>",
     description: "Operator revision instructions for the next draft revision",
     commands: ["draft"],
+  },
+  {
+    spec: "--stage <technical_checks|independent_review|final_acceptance>",
+    description: "Delivery role claim stage for claim-interrupt/claim-complete",
+    commands: ["plan"],
+  },
+  {
+    spec: "--expected-generation <n>",
+    description: "Opaque claim generation CAS version the operator observed",
+    commands: ["plan"],
+  },
+  {
+    spec: "--ack-unknown-owner",
+    description: "Acknowledge unknown-owner effects when interrupting a claim",
+    commands: ["plan"],
   },
   {
     spec: "--revision <number>",
