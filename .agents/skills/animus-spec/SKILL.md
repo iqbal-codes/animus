@@ -11,7 +11,7 @@ Read `docs/agents/issue-tracker.md` when publishing or updating tracker issues. 
 ## When to Use
 
 Use this playbook when:
-- Synthesizing a completed `/animus-grill` slice contract or settled discussion into a formal specification (`docs/spec-<slice>.md` or a parent `spec` issue).
+- Synthesizing a completed `/animus-grill` slice contract or settled discussion into a formal specification (`docs/spec-<slice>.md`, a parent `spec` issue on GitHub, or `.animus/specs/<slug>/spec.md` in local mode).
 - Updating an existing specification with newly settled product decisions or acceptance criteria.
 
 ## Steps
@@ -29,8 +29,11 @@ Use this playbook when:
    *Completion Criterion*: The specification draft contains all required sections with stable `AC<n>` identifiers and zero invented user-story padding.
 
 4. **Present the draft and publish only when authorized.**
-   Present the draft, material gaps, target repository, and proposed labels. Publish or update the source issue only when those writes are authorized. A parent spec is planning-only: label with `spec` paired with `ready-for-human` (or `needs-info` if material intent is missing/incomplete; never `ready-for-agent` for parent specs). Read back any publication and return its exact URL.
-   *Completion Criterion*: Draft is reviewed by the user, and any authorized tracker publication is read back with verified canonical labels and exact URL.
+   Present the draft, material gaps, target repository, and proposed labels. Publish or update the source spec only when those writes are authorized. A parent spec is planning-only: label with `spec` paired with `ready-for-human` (or `needs-info` if material intent is missing/incomplete; never `ready-for-agent` for parent specs).
+   - **GitHub Mode**: Publish as a GitHub issue (`gh issue create`).
+   - **Local Mode**: Write to `.animus/specs/<slug>/spec.md` with frontmatter (`title`, `state: OPEN`, `labels: [spec, ready-for-human]`).
+   Read back any publication and return its exact URL or file path.
+   *Completion Criterion*: Draft is reviewed by the user, and any authorized tracker publication is read back with verified canonical labels and exact URL or local file path.
 
 5. **Hand off to architecture or ticket decomposition.**
    Return the spec path/URL (updating the slice's `Spec Pointer` in `docs/brainstorm-<slug>.md` when applicable), complete vs incomplete contract status, unresolved decisions, and suggested next stage: `/animus-architecture` (when tech stack, folder topology, or cross-spec reusable components are not yet settled) or `/animus-tickets` (when codebase architecture is already established). Stop before architecture or decomposition unless separately requested.

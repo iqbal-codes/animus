@@ -57,14 +57,22 @@ export function KanbanLane({
         </div>
       </header>
 
-      {cards.map((job) => (
-        <TaskCard
-          key={job.id}
-          job={job}
-          density={density}
-          onOpen={job.workId && onOpenWork ? () => onOpenWork(job.workId!) : undefined}
-        />
-      ))}
+      {cards.length === 0 ? (
+        <div className="flex min-h-[140px] items-center justify-center rounded-[12px] border border-dashed border-[var(--border-subtle)] p-4 text-center">
+          <span className="text-[11px] leading-[1.45] text-text-muted">
+            No jobs in {lane.title.toLowerCase()}
+          </span>
+        </div>
+      ) : (
+        cards.map((job) => (
+          <TaskCard
+            key={job.id}
+            job={job}
+            density={density}
+            onOpen={job.workId && onOpenWork ? () => onOpenWork(job.workId!) : undefined}
+          />
+        ))
+      )}
     </section>
   );
 }

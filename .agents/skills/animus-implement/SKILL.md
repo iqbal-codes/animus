@@ -18,7 +18,7 @@ Use this playbook when:
 ## Steps
 
 1. **Resolve work, authority, and candidate identities.**
-   Read the full spec, child tickets, comments, agreed Contract, dependencies, and existing PRs. Read `docs/agents/pr-evidence-contract.md` and `docs/agents/issue-tracker.md`. Establish the target repository, explicit base SHA, candidate branch/head SHA, merge mode, and authorized operations. Preserve unrelated dirty files. Verify the target ticket is a frontier ticket: complete intent, no unresolved owner decisions, no competing active claims, and all prerequisite outcomes verified on the chosen base. If the spec lacks executable tickets, invoke `/animus-tickets` first.
+   Read the full spec, child tickets, comments, agreed Contract, dependencies, and existing PRs (from GitHub Issues or local `.animus/issues/` and `.animus/specs/`). Read `docs/agents/pr-evidence-contract.md` and `docs/agents/issue-tracker.md`. Establish the target repository, explicit base SHA, candidate branch/head SHA, merge mode, and authorized operations. Preserve unrelated dirty files. Verify the target ticket is a frontier ticket: complete intent, no unresolved owner decisions, no competing active claims, and all prerequisite outcomes verified on the chosen base. If the spec lacks executable tickets, invoke `/animus-tickets` first.
    *Completion Criterion*: Target ticket, base SHA, candidate head SHA, and prerequisite verification status are documented with zero unresolved blockers or unverified prerequisites.
 
 2. **Choose the delivery path.**

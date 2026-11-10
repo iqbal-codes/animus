@@ -14,7 +14,7 @@ checks, independent review and required remote CI. Standalone and final PRs targ
 the delivery branch (default `main`) and stay **manual-merge**.
 
 Read `docs/runtime.md` for the runtime contract, `docs/agents/issue-tracker.md` for
-tracker semantics, and `docs/agents/pr-evidence-contract.md` for PR evidence.
+tracker semantics (GitHub or local `.animus/` mode), and `docs/agents/pr-evidence-contract.md` for PR evidence.
 
 ## When to Use
 
@@ -58,7 +58,7 @@ factory. Do not use it to improvise child integration by hand.
 ## Steps
 
 1. **Import and verify admission.**
-   Import the published spec/tickets through the backend command/query surface
+   Import the published spec/tickets (from GitHub Issues or local `.animus/` directory) through the backend command/query surface
    (`animus plan import --project <id> --issue <spec> --kind spec`, then
    `animus plan get`). A complete, authorized graph admits without a second
    decomposition. Missing/unknown dependencies, cycles, ambiguous children or

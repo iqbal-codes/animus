@@ -44,6 +44,7 @@ import type { PlanService } from "../plans";
 import type { PublicationService } from "../publication";
 import type { ProjectRegistryService } from "../registry";
 import type { WorkService } from "../work";
+import type { IntakeService } from "../intake";
 import { BoardError } from "./errors";
 
 /**
@@ -93,6 +94,7 @@ export interface OperatorBoardServiceOptions {
   integration: ChildIntegrationService;
   gate: DeliveryGateService;
   final: FinalDeliveryService;
+  intake?: IntakeService;
 }
 
 interface PlanMembership {
@@ -696,7 +698,15 @@ export class OperatorBoardService {
       return leftAdmitted - rightAdmitted || left.created_at - right.created_at;
     });
 
-    const work = this.options.work.listWork(projectId);
+    let work = this.options.work.listWork(projectId);
+    if (this.options.intake && work.length === 0) {
+      try {
+        await this.options.intake.evaluateProjectBacklog(projectId);
+        work = this.options.work.listWork(projectId);
+      } catch {
+        // Fall back to existing work
+      }
+    }
     const workById = new Map(work.map((record) => [record.id, record]));
 
     const runs = sortRunsDesc(this.options.dispatch.listRuns(projectId));

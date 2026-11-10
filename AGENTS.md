@@ -10,6 +10,17 @@
 
 - **Canonical Configuration**: `AGENTS.md` and `.agents/skills/` are authoritative sources of truth. Compatibility symlinks (`CLAUDE.md -> AGENTS.md`, `.claude/skills -> ../.agents/skills`) mirror them for tool support.
 - **Stage & Workflow Boundary**: Stage playbooks in `.agents/skills/` (`animus-*`, `retro`, `pr`, `skill-creator`, `writing-for-agents`) are **strictly user- or engine-invoked (`disable-model-invocation: true`)**. Never self-invoke, read, chain, or combine stage playbooks unless explicitly requested for the current turn; when an interactive skill is invoked, follow only that skill without layering extra review or coordinator stages.
+- **Repository Skills**: Canonical playbooks live in `.agents/skills/`. Consult when triggered:
+  - Skill router: `/animus-ask` (aliases: `/ask-animus`, `/ask-matt`)
+  - Repository setup & onboarding: `/animus-setup` (aliases: `/setup-animus-skills`, `/setup-matt-pocock-skills`)
+  - Issue triage: `/animus-triage`
+  - Spec drafting, product shaping & architecture: `/animus-brainstorm`, `/animus-grill`, `/animus-spec`, `/animus-architecture`, `/animus-tickets`
+  - Implementation, PR authoring & verification: `/animus-implement`, `/animus-implement-spec`, `.agents/skills/pr`, `.agents/skills/tdd`, `.agents/skills/blueprint`, `.agents/skills/security-hardening`
+  - Failure recovery & root-causing: `/diagnosing-bugs`, `.agents/skills/unstick`
+  - Frontend & UI verification: `.agents/skills/ui-quality`
+  - Code review & standards: `/animus-review` (enforces `CODING_STANDARDS.md`)
+  - Repository harness setup & self-check: `/animus-harness`
+  - Retrospective & post-lap memory synthesis: `/retro`, `/animus-learn`, `.agents/skills/writing-for-agents`, `.agents/skills/skill-creator`
 - **Learned Repo Playbooks** (synthesized via `/animus-learn` from past issue laps):
   - When implementing or repairing governance policy verifiers, read `.agents/skills/policy-verifier-regressions/SKILL.md` and follow it.
 - **Verified Tool Guidance**: Inspect `.factory/tool-guidance.json` for validated CLI recipes (test, lint, format, typecheck, build) that exited code 0.

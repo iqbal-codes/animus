@@ -15,7 +15,6 @@ const bun = execFileSync("bun", ["--version"], { encoding: "utf8" }).trim();
 const vite = JSON.parse(
   readFileSync(new URL("../../node_modules/vite-plus/package.json", import.meta.url), "utf8"),
 ).version;
-
 if (process.versions.bun) {
   throw new Error(`Run repository tooling with Node ${nodeVersion}, not Bun ${bun}.`);
 }

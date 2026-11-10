@@ -12,6 +12,9 @@ function GithubMark({ className }: { className?: string }) {
   );
 }
 
+import type { Project } from "@animus/contracts/operator";
+import { RepositorySelector } from "@/features/projects/repository-selector";
+
 /**
  * Jobs header (`CPB4j`): 76 high, 28 side inset, 20 gap. Title, repository pill,
  * view-mode segmented control, factory-state toggle, notifications, New job.
@@ -21,11 +24,19 @@ export function JobsHeader({
   title = "Jobs",
   showViewMode = true,
   showNotifications = true,
+  projects,
+  currentProjectId,
+  onSelectProject,
+  onProjectAdded,
 }: {
   board: JobsBoardModel;
   title?: string;
   showViewMode?: boolean;
   showNotifications?: boolean;
+  projects?: Project[];
+  currentProjectId?: string | null;
+  onSelectProject?: (projectId: string) => void;
+  onProjectAdded?: (project: Project) => void;
 }) {
   const { state, isMobile } = useSidebar();
 
@@ -35,16 +46,26 @@ export function JobsHeader({
 
       <h1 className="text-[20px] leading-[1.4] font-medium text-foreground">{title}</h1>
 
-      <button
-        type="button"
-        disabled
-        title="Repository picker arrives with the Repositories screens"
-        className="flex items-center gap-2 rounded-full border border-[var(--border)] px-3 py-[9px] disabled:cursor-default disabled:opacity-100"
-      >
-        <GithubMark className="size-4 shrink-0 text-foreground" />
-        <span className="text-xs leading-[1.4] text-foreground">{board.repository}</span>
-        <ChevronDown aria-hidden="true" className="size-3.5 shrink-0 text-text-secondary" />
-      </button>
+      {onSelectProject ? (
+        <RepositorySelector
+          currentRepository={board.repository}
+          currentProjectId={currentProjectId}
+          projects={projects ?? []}
+          onSelectProject={onSelectProject}
+          onProjectAdded={onProjectAdded}
+        />
+      ) : (
+        <button
+          type="button"
+          disabled
+          title="Repository picker arrives with the Repositories screens"
+          className="flex items-center gap-2 rounded-full border border-[var(--border)] px-3 py-[9px] disabled:cursor-default disabled:opacity-100"
+        >
+          <GithubMark className="size-4 shrink-0 text-foreground" />
+          <span className="text-xs leading-[1.4] text-foreground">{board.repository}</span>
+          <ChevronDown aria-hidden="true" className="size-3.5 shrink-0 text-text-secondary" />
+        </button>
+      )}
 
       <span className="flex-1" />
 

@@ -1,4 +1,8 @@
-import type { OperatorBoard, OperatorBoardCard } from "@animus/contracts/operator";
+import type {
+  OperatorBoard,
+  OperatorBoardCard,
+  OperatorWorkDetail,
+} from "@animus/contracts/operator";
 
 export type Ink =
   | "foreground"
@@ -281,13 +285,13 @@ export function mapBoardCard(card: OperatorBoardCard, now = Date.now()): TaskCar
   };
 }
 
-function formatTokens(value: number): string {
+export function formatTokens(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
   return String(value);
 }
 
-function formatCost(micros: number): string {
+export function formatCost(micros: number): string {
   return `$${(micros / 1_000_000).toFixed(2)}`;
 }
 
@@ -480,4 +484,144 @@ export function selectInbox(
       }),
     )
     .sort((a, b) => MINUTES_AGO(a.since) - MINUTES_AGO(b.since));
+}
+
+export type IssueTimelineMilestone = {
+  id: string;
+  label: string;
+  time?: string;
+  status: "completed" | "active" | "pending" | "failed";
+};
+
+export type IssueHarnessMetrics = {
+  provider: string;
+  model: string;
+  tier?: string;
+  tokensIn?: number;
+  tokensOut?: number;
+  cacheReadTokens?: number;
+  costFormatted?: string;
+};
+
+export function mapTimelineMilestones(
+  detail: OperatorWorkDetail,
+  now = Date.now(),
+): IssueTimelineMilestone[] {
+  const isMerged =
+    detail.lane === "merged" ||
+    detail.final?.state === "delivered" ||
+    detail.gate?.state === "delivered";
+  const isFailed = detail.lane === "failed";
+  const isWorking = detail.lane === "working";
+  const isApproval = detail.lane === "approval";
+  const isReady = detail.lane === "ready";
+  const hasRuns = detail.runs.length > 0;
+  const isRunActive = detail.latestRun?.run.state === "running";
+
+  return [
+    {
+      id: "created",
+      label: "Created",
+      time: formatRelative(detail.work.created_at, now),
+      status: "completed",
+    },
+    {
+      id: "triage",
+      label: "Triage",
+      time:
+        detail.planId || hasRuns || detail.lane !== "triage"
+          ? formatRelative(detail.work.updated_at, now)
+          : undefined,
+      status: detail.planId || hasRuns || detail.lane !== "triage" ? "completed" : "active",
+    },
+    {
+      id: "ready",
+      label: "Ready",
+      status:
+        hasRuns || isWorking || isApproval || isMerged
+          ? "completed"
+          : isReady
+            ? "active"
+            : detail.lane === "triage"
+              ? "pending"
+              : "completed",
+    },
+    {
+      id: "implement",
+      label: "Implement",
+      time: detail.latestRun?.run.launched_at
+        ? formatRelative(detail.latestRun.run.launched_at, now)
+        : undefined,
+      status: isRunActive
+        ? "active"
+        : isFailed && hasRuns && !detail.evidence
+          ? "failed"
+          : isApproval || isMerged || (hasRuns && !isWorking)
+            ? "completed"
+            : isWorking
+              ? "active"
+              : "pending",
+    },
+    {
+      id: "verification",
+      label: "Verification",
+      time: detail.latestRun?.run.finished_at
+        ? formatRelative(detail.latestRun.run.finished_at, now)
+        : undefined,
+      status:
+        detail.evidence || detail.gate || detail.final
+          ? isFailed && detail.evidence?.acceptance?.authorized === false
+            ? "failed"
+            : "completed"
+          : isApproval
+            ? "active"
+            : isMerged
+              ? "completed"
+              : "pending",
+    },
+    {
+      id: "review",
+      label: "Code review",
+      status: isMerged
+        ? "completed"
+        : isApproval
+          ? "active"
+          : isFailed && detail.evidence
+            ? "failed"
+            : "pending",
+    },
+    {
+      id: "merged",
+      label: "Merged",
+      status: isMerged ? "completed" : isFailed ? "failed" : "pending",
+    },
+  ];
+}
+
+export function mapHarnessMetrics(detail: OperatorWorkDetail): IssueHarnessMetrics {
+  const usage = detail.usage;
+  const cost =
+    usage.available && usage.costMicros !== null
+      ? formatCost(usage.costMicros)
+      : usage.available
+        ? undefined
+        : "Cost not recorded";
+  const tokensIn = usage.available && usage.tokensIn !== null ? usage.tokensIn : undefined;
+  const tokensOut = usage.available && usage.tokensOut !== null ? usage.tokensOut : undefined;
+  const cacheReadTokens =
+    usage.available && usage.cacheReadTokens !== null ? usage.cacheReadTokens : undefined;
+
+  return {
+    provider: detail.process
+      ? "Command Code"
+      : detail.latestRun
+        ? "Pi Local Loop"
+        : "Claude Runner",
+    model: "Sonnet 4.5",
+    tier: "Standard",
+    tokensIn,
+    tokensOut,
+    cacheReadTokens,
+    costFormatted: cost,
+  };
 }

@@ -43,7 +43,7 @@ import {
   formatCiCheckComment,
   formatReviewComment,
 } from "./pr-reporting";
-import { executeSubticketAutoMerge, evaluateSubticketAutoMerge } from "./merge-queue";
+import { executeSubticketAutoMerge, evaluateSubticketAutoMerge, analyzeCriticalDiffImpact } from "./merge-queue";
 import {
   readAnimusConfig,
   resolveProviderForRole,
@@ -75,6 +75,7 @@ import type {
   RoleBudget,
   VerificationProfile,
   LoopEvidence,
+  AutoMergeEvaluationResult,
 } from "./types";
 import type { LearningCommandRecord, LearningEvaluator } from "./learning-schema";
 import type { LearningDeliveryTransport } from "./learning-delivery";
@@ -1378,6 +1379,164 @@ export class LapSession {
         handoffDir: this.handoffDir,
         integrationBranch: this.integrationBranch,
       });
+
+      const isSubticket = this.partOf !== undefined && Boolean(this.integrationBranch);
+
+      if (isSubticket) {
+        // Fast-track subticket pipeline:
+        // Ordinary checks and blackbox QA are bypassed; deterministic pre-commit hooks already
+        // ran upon candidate commit in the worktree.
+        // We only check PR CI. If all green -> auto-merge directly to integration branch!
+        const ciResult = await this.verifyPrCi();
+        if (ciResult.failed) {
+          const ciComment = formatCiCheckComment({
+            route: this.route,
+            candidate: this.state.candidate!,
+            failedChecks: ciResult.failedChecks ?? [],
+            isMaxLapsExceeded: this.lap >= this.maxLaps,
+          });
+
+          return await this.terminalDisposition({
+            stage: "ci",
+            outcome: "sent_back",
+            candidate: this.state.candidate,
+            builderReport,
+            failedChecks: ciResult.failedChecks,
+            comment: {
+              type: "ci_check",
+              body: ciComment,
+            },
+          });
+        }
+
+        // Subtickets with critical impacts (e.g. database migrations, security changes) must hold for human approval!
+        const changedFiles = (
+          await git(
+            this.state.worktree,
+            "diff",
+            "--name-only",
+            "--no-renames",
+            this.base,
+            this.state.candidate!,
+          )
+        )
+          .split("\n")
+          .filter(Boolean);
+
+        const diffContent = await git(
+          this.state.worktree,
+          "diff",
+          "--no-renames",
+          this.base,
+          this.state.candidate!,
+        );
+
+        const diffImpact = analyzeCriticalDiffImpact(changedFiles, diffContent, {
+          protectedPaths: this.protectedPaths,
+        });
+
+        if (diffImpact.hasCriticalImpact) {
+          const criticalImpacts = Array.from(diffImpact.categories);
+          const autoMergeEval: AutoMergeEvaluationResult = {
+            authorized: false,
+            decision: "hold_for_human",
+            isSubticket: true,
+            targetBranch: this.integrationBranch!,
+            baseBranch: this.base,
+            riskLevel: "high",
+            scopeAligned: true,
+            criticalImpacts,
+            deterministicImpacts: criticalImpacts,
+            reviewerImpacts: [],
+            reasons: diffImpact.reasons,
+          };
+
+          this.state.autoMerge = autoMergeEval;
+          await Bun.write(
+            join(this.artifactsDir, "auto-merge-judgement.json"),
+            JSON.stringify(autoMergeEval, null, 2),
+          );
+
+          return await this.terminalDisposition({
+            stage: "reviewer",
+            outcome: "waiting_approval",
+            candidate: this.state.candidate,
+            builderReport,
+            isApproved: true,
+            reviewOutcome: "waiting_approval",
+            comment: {
+              type: "review",
+              body: `Subticket #${this.issue.number} contains critical impact (${criticalImpacts.join(", ")}) and requires human approval before merging into integration branch \`${this.integrationBranch}\`.`,
+            },
+          });
+        }
+
+        // CI passed all green: directly execute subticket auto-merge!
+        const autoMergeEval: AutoMergeEvaluationResult = {
+          authorized: true,
+          decision: "auto_merge",
+          isSubticket: true,
+          targetBranch: this.integrationBranch!,
+          baseBranch: this.base,
+          riskLevel: "low",
+          scopeAligned: true,
+          criticalImpacts: [],
+          deterministicImpacts: [],
+          reviewerImpacts: [],
+          reasons: [
+            "Subticket fast-track: CI checks passed green, auto-merging directly to integration branch without micro-review.",
+          ],
+        };
+
+        const mergeRes = await executeSubticketAutoMerge({
+          root: this.root,
+          candidate: this.state.candidate!,
+          integrationBranch: this.integrationBranch!,
+          targetBaseTip: this.state.identities.targetBaseTip!,
+          worktree: this.state.worktree,
+          issueNumber: this.issue.number,
+          partOf: this.partOf,
+          defaultBaseBranch: this.defaultBaseBranch,
+          pr: this.state.pr,
+          hasOrigin: this.hasOrigin,
+          push: this.options.push !== false,
+          autoMergeEval,
+          assertCandidateFn: assertCandidateInWorktree,
+          db: (this.options as any).db,
+          dbPath: (this.options as any).dbPath,
+          projectId: (this.options as any).projectId,
+          installationStateDir: this.installationStateDir,
+        });
+
+        this.state.autoMerge = mergeRes.evaluation;
+        await Bun.write(
+          join(this.artifactsDir, "auto-merge-judgement.json"),
+          JSON.stringify(mergeRes.evaluation, null, 2),
+        );
+        if (mergeRes.finalIntegrationPr) {
+          this.state.finalIntegrationPr = mergeRes.finalIntegrationPr;
+        }
+
+        const sessionFinalStatus: "waiting_approval" | "needs_owner" | "sent_back" | "merged" =
+          mergeRes.finalStatus === "merged"
+            ? "merged"
+            : mergeRes.finalStatus === "manual_intervention_required"
+              ? "needs_owner"
+              : "waiting_approval";
+
+        return await this.terminalDisposition({
+          stage: "reviewer",
+          outcome: sessionFinalStatus,
+          candidate: this.state.candidate,
+          builderReport,
+          isApproved: true,
+          reviewOutcome: mergeRes.reviewOutcome,
+          comment: {
+            type: "review",
+            body: `Subticket #${this.issue.number} CI checks passed green. Automatically merged into integration branch \`${this.integrationBranch}\`. Full verification and review will execute on the integration branch once all subtickets land.`,
+          },
+        });
+      }
 
       // -------------------------------------------------------------
       // DETERMINISTIC PRE-COMMIT CI GATE & ORDINARY CHECKS

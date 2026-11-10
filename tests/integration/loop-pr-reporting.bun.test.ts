@@ -27,7 +27,7 @@ describe("PR Body and Comment Reporting Lifecycle", () => {
     mergeBase: "mbase22222222222222222222222222222222222",
     prHead: "head333333333333333333333333333333333333",
     testedHead: "test444444444444444444444444444444444444",
-    environment: "macOS 15.0 Bun 1.4.2",
+    environment: "macOS 15.0 Bun 1.4.4",
   };
 
   const dummyIssue: LocalIssue = {

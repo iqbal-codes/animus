@@ -22,30 +22,40 @@ export function useOperatorBoard(factory: typeof client = client) {
   const [projectId, setProjectId] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
 
-  const load = useCallback(async () => {
-    setState({ phase: "loading" });
-    try {
-      const nextProjects = await factory.projects();
-      setProjects(nextProjects);
-      const active = selectActiveProjects(nextProjects);
-      const nextProjectId =
-        (projectId && nextProjects.some((project) => project.id === projectId)
-          ? projectId
-          : null) ??
-        active[0]?.id ??
-        nextProjects[0]?.id ??
-        null;
-      setProjectId(nextProjectId);
-      if (!nextProjectId) {
-        setState({ phase: "ready", board: null });
-        return;
+  const load = useCallback(
+    async (targetProjectId?: string | null) => {
+      setState({ phase: "loading" });
+      try {
+        const nextProjects = await factory.projects();
+        setProjects(nextProjects);
+        const active = selectActiveProjects(nextProjects);
+        const chosenId = targetProjectId !== undefined ? targetProjectId : projectId;
+        const nextProjectId =
+          (chosenId && nextProjects.some((project) => project.id === chosenId) ? chosenId : null) ??
+          active[0]?.id ??
+          nextProjects[0]?.id ??
+          null;
+        setProjectId(nextProjectId);
+        if (!nextProjectId) {
+          setState({ phase: "ready", board: null });
+          return;
+        }
+        const board = await factory.forProject(nextProjectId).board();
+        setState({ phase: "ready", board });
+      } catch (error) {
+        setState({ phase: "error", message: messageOf(error) });
       }
-      const board = await factory.forProject(nextProjectId).board();
-      setState({ phase: "ready", board });
-    } catch (error) {
-      setState({ phase: "error", message: messageOf(error) });
-    }
-  }, [factory, projectId]);
+    },
+    [factory, projectId],
+  );
+
+  const selectProject = useCallback(
+    async (id: string) => {
+      setProjectId(id);
+      await load(id);
+    },
+    [load],
+  );
 
   useEffect(() => {
     void load();
@@ -53,5 +63,5 @@ export function useOperatorBoard(factory: typeof client = client) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return { state, projectId, projects, reload: load };
+  return { state, projectId, projects, reload: load, selectProject };
 }
