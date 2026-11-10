@@ -43,7 +43,7 @@ import {
   formatCiCheckComment,
   formatReviewComment,
 } from "./pr-reporting";
-import { executeSubticketAutoMerge, evaluateSubticketAutoMerge } from "./merge-queue";
+import { executeSubticketAutoMerge, evaluateSubticketAutoMerge, analyzeCriticalDiffImpact } from "./merge-queue";
 import {
   readAnimusConfig,
   resolveProviderForRole,
@@ -1405,6 +1405,68 @@ export class LapSession {
             comment: {
               type: "ci_check",
               body: ciComment,
+            },
+          });
+        }
+
+        // Subtickets with critical impacts (e.g. database migrations, security changes) must hold for human approval!
+        const changedFiles = (
+          await git(
+            this.state.worktree,
+            "diff",
+            "--name-only",
+            "--no-renames",
+            this.base,
+            this.state.candidate!,
+          )
+        )
+          .split("\n")
+          .filter(Boolean);
+
+        const diffContent = await git(
+          this.state.worktree,
+          "diff",
+          "--no-renames",
+          this.base,
+          this.state.candidate!,
+        );
+
+        const diffImpact = analyzeCriticalDiffImpact(changedFiles, diffContent, {
+          protectedPaths: this.protectedPaths,
+        });
+
+        if (diffImpact.hasCriticalImpact) {
+          const criticalImpacts = Array.from(diffImpact.categories);
+          const autoMergeEval: AutoMergeEvaluationResult = {
+            authorized: false,
+            decision: "hold_for_human",
+            isSubticket: true,
+            targetBranch: this.integrationBranch!,
+            baseBranch: this.base,
+            riskLevel: "high",
+            scopeAligned: true,
+            criticalImpacts,
+            deterministicImpacts: criticalImpacts,
+            reviewerImpacts: [],
+            reasons: diffImpact.reasons,
+          };
+
+          this.state.autoMerge = autoMergeEval;
+          await Bun.write(
+            join(this.artifactsDir, "auto-merge-judgement.json"),
+            JSON.stringify(autoMergeEval, null, 2),
+          );
+
+          return await this.terminalDisposition({
+            stage: "reviewer",
+            outcome: "waiting_approval",
+            candidate: this.state.candidate,
+            builderReport,
+            isApproved: true,
+            reviewOutcome: "waiting_approval",
+            comment: {
+              type: "review",
+              body: `Subticket #${this.issue.number} contains critical impact (${criticalImpacts.join(", ")}) and requires human approval before merging into integration branch \`${this.integrationBranch}\`.`,
             },
           });
         }

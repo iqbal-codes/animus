@@ -24,7 +24,7 @@ import {
   type TargetBindingResult,
   type BranchIntegrationResult,
 } from "@animus/contracts/operator";
-import type { ForgeAdapter, ForgeIssue, IssueForgeAdapter } from "../registry/forge";
+import type { ForgeAdapter, IssueForgeAdapter } from "../registry/forge";
 import { SystemForgeAdapter, assertIssueForge } from "../registry/forge";
 import { ProjectRegistryError } from "../registry/service";
 import { WorkPersistenceError, WorkService } from "../work";
@@ -113,14 +113,9 @@ export class IntakeService {
     }
 
     const forge = this.getIssueForge();
-    let rawIssues: ForgeIssue[] = [];
-    try {
-      rawIssues = (await forge.listIssues(project.repo_name)).filter(
-        (issue) => issue.state.toUpperCase() === "OPEN",
-      );
-    } catch {
-      rawIssues = [];
-    }
+    const rawIssues = (await forge.listIssues(project.repo_name)).filter(
+      (issue) => issue.state.toUpperCase() === "OPEN",
+    );
 
     // Support local development: scan .animus/issues/*.md and .animus/specs/*.md
     const localIssues = scanLocalAnimusIssues(project.checkout_path);
@@ -164,12 +159,7 @@ export class IntakeService {
 
   async getProjectIssue(projectId: string, issueNumber: number): Promise<EvaluatedIssue> {
     const project = this.resolveProject(projectId);
-    let raw: any = null;
-    try {
-      raw = await this.getIssueForge().getIssue(project.repo_name, issueNumber);
-    } catch {
-      raw = null;
-    }
+    let raw = await this.getIssueForge().getIssue(project.repo_name, issueNumber);
     if (!raw) {
       const localIssues = scanLocalAnimusIssues(project.checkout_path);
       raw = localIssues.find((issue) => issue.number === issueNumber) ?? null;
