@@ -1,6 +1,8 @@
 # Spec: Subticket Integration Branch Auto-Merge with Two-Layer Critical Impact Gate
 
-* **Status:** Approved & In Implementation
+- **Status:** Superseded
+- **Superseded by:** [runtime contract](../../runtime.md) and [authority cutover](../../authority-cutover.md)
+
 * **Date:** 2026-11-01
 * **Scope:** Autonomous Delivery Loop (`scripts/local-loop.ts`, `scripts/loop/merge-queue.ts`, `scripts/loop/report-schema.ts`, `scripts/loop/scheduler.ts`, `scripts/prompts/loop-review.md`)
 

@@ -29,7 +29,7 @@ Use this playbook when:
    Based on Round 1, propose and confirm two artifacts with the user:
    - **Shared Product Spine**: cross-slice domain vocabulary, global business rules (e.g., single-entry vs double-entry, currency/tenant rules), and parked sensible defaults that every slice must obey so parallel `/animus-grill` sessions remain consistent.
    - **Vertical Slice Map (`S1`, `S2`, `S3`...)**: partition the product into user-meaningful capability slices (1 slice = 1 `/animus-grill` session -> 1 `/animus-spec`), grouped into dependency waves (`Wave 1 — Foundation`, `Wave 2 — Parallelizable`, etc.). State each slice's observable outcome, in-scope boundary, sibling exclusions, and `Depends on` edges.
-   If a product-level decision depends on external primary-source facts, propose an explicit research topic and dispatch `$research` to write `docs/research-<topic>.md` only after user approval.
+   If a product-level decision depends on external primary-source facts, propose an explicit research topic and dispatch `$research` to write `docs/research-<topic>.md` with a `Status: Active` or `Status: Draft` header only after user approval.
    *Completion Criterion*: The user approves the Shared Product Spine, the exact list and wave order of Product Slices, and any authorized research spikes.
 
 3. **Write `docs/brainstorm-<slug>.md` and hand off to `/animus-grill`.**

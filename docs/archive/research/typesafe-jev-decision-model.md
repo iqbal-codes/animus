@@ -1,8 +1,11 @@
 # Research: TypeSafe Jev Decision Model & Its Application to the Software Factory
 
+- **Status:** Historical
+- **Archived:** 2026-11-10
+- **Historical note:** Retained as a design record; do not implement from this document.
+
 * **Date:** 2026-10-27
 * **Topic:** Evaluation of the TypeSafe Jev architecture (System 1 Typed Decision Engine) for automation and *self-improvement* in the Software Factory.
-* **Status:** Final Research Report
 
 ---
 

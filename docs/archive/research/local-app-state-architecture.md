@@ -1,10 +1,13 @@
 # Research & Architecture Specification: Local Application State Architecture for Animus
 
+- **Status:** Historical
+- **Archived:** 2026-11-10
+- **Historical note:** Retained as a design record; do not implement from this document.
+
 * **Author:** Deep-Research Specialist Subagent (`ResearchLocalAppState`)
 * **Date:** 2026-10-31
 * **Topic:** Design of a Clean, Non-Polluting Local Application State Architecture (`~/.animus/`) for Animus Multi-Agent Autonomous Software Factory
 * **Target Artifact:** `docs/research-local-app-state-architecture.md`
-* **Status:** Final Research & Architecture Specification
 
 ---
 

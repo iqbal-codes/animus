@@ -17,7 +17,7 @@ Use this playbook when:
 ## Steps
 
 1. **Resolve the source and target repository.**
-   Resolve the source conversation/issue/path (including any `docs/brainstorm-<slug>.md` slice entry and `docs/research-*.md` notes) and target repository. Read the source in full, including comments, relevant code, glossary, and ADRs. Check whether the requested outcome already exists or overlaps another issue.
+   Resolve the source conversation/issue/path (including any `docs/brainstorm-<slug>.md` slice entry and `docs/research-*.md` notes marked `Active` or `Draft`; ignore `docs/archive/**`) and target repository. Read the source in full, including comments, relevant code, glossary, and ADRs. Check whether the requested outcome already exists or overlaps another issue.
    *Completion Criterion*: Source inputs, target repository, and overlap checks are verified with zero unexamined source comments or references.
 
 2. **Separate current behavior from the agreed proposal and lock architectural/UI invariants.**

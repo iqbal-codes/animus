@@ -1,15 +1,17 @@
 # Bun/Vite+ migration health journey (#28)
 
+- **Status:** Active
+- **Last verified:** 2026-11-10
+
 This page is **verification infrastructure**, not the replacement operator dashboard.
-Python (`python3 app.py --port {port}`) remains the sole owner of operational
-workflows, intake, controls, diagnostics, evidence, scheduling and promotion. Its
-existing dashboard and harness-memory controls remain available. The new services
-own only their health/identity journey: no workflow launches, stores, native reads,
-scheduler, Python forwarding or fallback.
+The TypeScript backend and engine-host own health, identity, registry, execution
+runtime, and operator surfaces; the unified launcher starts both. No Python service
+or fallback owns operational workflows, intake, controls, diagnostics, evidence,
+scheduling, or promotion.
 
 ## Qualified environment and install
 
-Use exactly **Bun 1.4.2**, **Node 26.8.1**, and project-local **Vite+ 1.4.0**.
+Use exactly **Bun 1.4.2**, **Node 26.13.0**, and project-local **Vite+ 1.4.0**.
 `.bun-version`, `.node-version`, root engines and `packageManager` record these
 versions. Provision the runtimes before running commands; put the selected Bun on
 `PATH`. No command upgrades a global runtime. Install from the checkout root:
@@ -118,7 +120,7 @@ apps/tests, Node tooling/tests and neutral/browser code. Vite+ alone owns format
 lint and integrated type diagnostics. Cross-app, relative-workspace bypass and
 private client imports are lint errors; production build additionally inspects the
 browser module graph and assets. New source/config/test/tooling paths are checked,
-not reformatted legacy Python/dashboard/governance files.
+not reformatted legacy governance files.
 
 ```sh
 bun run format       # non-mutating; format:write explicitly mutates
@@ -131,7 +133,7 @@ bun run verify       # Vite Task: exact toolchain + static + test
 
 Every introduced config task has `cache:false`; package scripts are uncached by
 default. No task-result cache or native compatibility guarantee is adopted here.
-Suite failures propagate through the aggregate; Python is not analyzed by Vite+.
+Suite failures propagate through the aggregate.
 For focused development use `vp` via `node_modules/.bin/vp`, never a global CLI or
 `bun --bun`:
 
@@ -162,10 +164,8 @@ runner with unrelated suites isolated in disposable config. It removes its owned
 worktree. Record logs with the tested HEAD. Do not call these intentional red
 controls a failing positive check.
 
-The unchanged Python aggregate still includes a historical-run evidence test
-(`tests/test_app.py:HealthIdentityTests.test_evidence_and_report_against_real_app`)
-that requires operator-owned native history. A clean `ANIMUS_HOME` lacks that
-prerequisite; do not fabricate history, skip the assertion or claim portable clean
-Python success. The new health slice needs no such history. Full native process-tree,
-parent-death, provider, OS portability, later migration and task-cache qualification
-remain **NOT RUN** by these tests. Report actual OS/candidate/results separately.
+The Python-era aggregate and its historical-run evidence test were removed with the
+TypeScript cutover; this health slice needs no operator-owned native history. Full
+native process-tree, parent-death, provider, OS portability, later migration and
+task-cache qualification remain **NOT RUN** by these tests. Report actual
+OS/candidate/results separately.

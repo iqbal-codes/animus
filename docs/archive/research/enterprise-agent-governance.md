@@ -1,5 +1,9 @@
 # Research & Architecture Specification: Company-Level / Enterprise Agent Governance for Animus
 
+- **Status:** Historical
+- **Archived:** 2026-11-10
+- **Historical note:** Retained as a design record; do not implement from this document.
+
 - **Date:** 2026-11-01
 - **Topic:** Company-Level / Enterprise Agent Governance: Industry Standards, Current Codebase Audit, 7-Pillar Governance Architecture, and Phased Implementation Blueprint for Animus Software Factory (`animus`).
 - **Status:** Research and proposed architecture specification. Not an enacted runtime policy or merge gate change.

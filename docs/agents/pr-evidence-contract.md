@@ -1,5 +1,8 @@
 # Canonical PR Evidence and Review Contract
 
+- **Status:** Active
+- **Last verified:** 2026-11-10
+
 Authoritative specification for human-friendly PR bodies (`.agents/skills/pr/SKILL.md`), Before/After captures, inline diff findings, and status comments across Animus.
 
 ## Authority and Host Ownership

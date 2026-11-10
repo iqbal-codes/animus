@@ -1,5 +1,9 @@
 # Implementation Plan: Deterministic `animus setup` & Agentic Harness Skills (`/animus-harness`, `/animus-learn`, `/animus-architecture`)
 
+- **Status:** Historical
+- **Archived:** 2026-11-10
+- **Historical note:** Retained as a design record; do not implement from this document.
+
 ## 1. Problem & Goal
 
 Currently, `animus setup` (`scripts/cli/commands/setup.ts` and `scripts/cli/commands/harness-scaffold.ts`) mixes deterministic CLI scaffolding with brittle, non-LLM heuristics that attempt codebase analysis:

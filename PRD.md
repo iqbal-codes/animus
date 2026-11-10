@@ -18,9 +18,7 @@ Using pinned Animus SDLC workflows (triage, planning, delivery rounds, runtime v
 
 ## 4. Technical Architecture
 - **Runtime Environment:** Bun (v1.4+) and TypeScript monorepo with Vite+, with pure TypeScript/Bun monorepo execution.
-- **AI Engine:** Pinned Animus SDLC Pack workflows with Pi coding agent provider backed by custom router models:
-  - Fast / Small / Medium: `ag/gemini-3.8-flash`
-  - Frontier / Large / Planner: `cx/gpt-6.1-sol`
+- **AI Engine:** Pinned Animus SDLC Pack workflows executed through the configured coding-agent provider (`pi`, `claude`, `omp`, or `commandcode`). Model tiers resolve from the selected harness's own defaults, with optional per-role overrides; no router model string is hardcoded.
 - **Application Structure:**
   - HTTP Service / API with `/health` and `/build-id` endpoints returning current Git SHA or candidate ID.
   - State persistence isolated to runtime snapshot directories without leaking across laps.

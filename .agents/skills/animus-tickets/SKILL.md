@@ -17,7 +17,7 @@ Use this playbook when:
 ## Steps
 
 1. **Establish the source and architectural prerequisites.**
-   Read the supplied spec/conversation/issue, `docs/architecture.md` (when present), `docs/research-*.md` notes, and all comments. Resolve the intended target repository, current base behavior, relevant glossary/ADRs, and existing issues/PRs. If material product intent is missing, identify the question and stop that branch for `/animus-grill` or `/animus-spec`; if a greenfield product spec lacks a settled tech stack, folder topology, or shared component strategy, route to `/animus-architecture` first rather than inventing architecture inside tickets.
+   Read the supplied spec/conversation/issue, `docs/architecture.md` (when present), `docs/research-*.md` notes marked `Active` or `Draft`, and all comments. Never treat `docs/archive/**` or `Historical`/`Superseded` notes as current behavior. Resolve the intended target repository, current base behavior, relevant glossary/ADRs, and existing issues/PRs. If material product intent is missing, identify the question and stop that branch for `/animus-grill` or `/animus-spec`; if a greenfield product spec lacks a settled tech stack, folder topology, or shared component strategy, route to `/animus-architecture` first rather than inventing architecture inside tickets.
    *Completion Criterion*: Source spec, architecture constraints, and target repository are verified with zero missing product or architectural prerequisites.
 
 2. **Draft the vertical task graph (Coarse-Grained Cohesive Milestones).**

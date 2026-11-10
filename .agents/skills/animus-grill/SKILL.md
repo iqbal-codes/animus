@@ -17,7 +17,7 @@ Use this playbook when:
 ## Steps
 
 1. **Ground context and lock a single-slice boundary.**
-   Read the conversation, any referenced `docs/brainstorm-<slug>.md` map, `docs/research-*.md` notes, and relevant repository code/configuration. Separate verified facts, inherited `Shared Product Spine` rules, parked `Sensible Defaults`, sibling-slice `Excluded` boundaries, and open decisions. Find environmental or primary-source facts yourself (via repo inspection, Context7 docs, or `$research`); ask the user only for decisions that cannot be resolved from evidence or sensible defaults.
+   Read the conversation, any referenced `docs/brainstorm-<slug>.md` map, `docs/research-*.md` notes marked `Active` or `Draft` (ignore `docs/archive/**` and notes marked `Historical` or `Superseded`), and relevant repository code/configuration. Separate verified facts, inherited `Shared Product Spine` rules, parked `Sensible Defaults`, sibling-slice `Excluded` boundaries, and open decisions. Find environmental or primary-source facts yourself (via repo inspection, Context7 docs, or `$research`); ask the user only for decisions that cannot be resolved from evidence or sensible defaults.
    *Completion Criterion*: Environmental facts and inherited brainstorm constraints are separated from open decisions, and the session is scoped to a single slice.
 
 2. **Gate 1 (High-Level Altitude) — Settle Outcome, Actors, and Scope Boundary breadth-first.**

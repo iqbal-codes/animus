@@ -1,5 +1,9 @@
 # Spec: Enforce foundational agent governance for single-operator and solo-company factory execution
 
+- **Status:** Historical
+- **Archived:** 2026-11-10
+- **Historical note:** Retained as a design record; do not implement from this document.
+
 - **Date:** 2026-11-01
 - **Status:** **Implementation-Ready Specification** (Complete contract; zero material open questions)
 - **Target repository:** `iqbal-codes/animus`

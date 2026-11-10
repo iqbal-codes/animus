@@ -23,6 +23,7 @@
 - **PR & Evidence Contract**: Read `docs/agents/pr-evidence-contract.md` for canonical PR bodies, evidence matrices, Before/After captures, and finding rechecks.
 - **Issue Tracker, Dependencies & Triage Labels**: Read `docs/agents/issue-tracker.md` for `gh` conventions, native/textual `Depends on:` rules, and canonical triage labels (`ready-for-agent`, `needs-info`, `ready-for-human`, `needs-triage`, `wontfix`, `spec`, `needs-owner`).
 - **Domain Models & ADRs**: Read `docs/agents/domain.md` for glossary terms, architecture docs, and ADR conventions.
+- **Document Lifecycle**: `docs/README.md` indexes every document with `Status: Active|Draft|Historical|Superseded`. Implement only from `Active`; treat `Historical` and `Superseded` as provenance, follow the named replacement for superseded work, and never add an unindexed file under `docs/`.
 
 ## Execution Rules
 

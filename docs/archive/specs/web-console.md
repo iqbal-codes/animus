@@ -1,7 +1,10 @@
 # Spec: Operate a multi-repository Software Factory through a local-first web console
 
+- **Status:** Historical
+- **Archived:** 2026-11-10
+- **Historical note:** Retained as a design record; do not implement from this document.
+
 Date: 2026-10-28\
-Status: **Implementation-Ready Specification** (all open questions Q1–Q7 have been resolved via `/animus-grill`).\
 Target repository: `iqbal-codes/animus`  
 Source: [Software Factory Web Console Architecture](https://github.com/iqbal-codes/animus/issues/46), all 11 child issues and their resolution comments, and the Q1–Q7 grill results.\
 Baseline source: `5fa30a37748d0acde86a6fc6c0fc3ba49d5e8105`.  

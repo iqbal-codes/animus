@@ -1,6 +1,8 @@
 # Execution authority cutover
 
-Status: implemented in ticket #165. One durable authority marker, one SQLite
+- **Status:** Active
+- **Last verified:** 2026-11-10
+
 database, one workflow engine. This document is the architecture and schema
 contract for upgrading an existing mixed GitHub/filesystem installation.
 

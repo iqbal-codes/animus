@@ -1,9 +1,12 @@
 # Research: Token Consumption Optimization Across Issue Triage and the Autonomous Software Factory
 
+- **Status:** Historical
+- **Archived:** 2026-11-10
+- **Historical note:** Retained as a design record; do not implement from this document.
+
 * **Date:** 2026-11-02
 * **Target Audience:** Animus Architecture Council, Core Engineers, Factory Operations
 * **Primary Scope:** Root-cause analysis of token expenditure introduced by the autonomous Issue Triage stage (`animus-triage` / `scripts/loop/triage.ts`) and cross-stage context/exploration redundancy across the Animus Software Factory (`triage` → `builder` → `qa` → `reviewer` → `reflector`, plus multi-lap retries and scheduler polling), with repo-grounded optimization engineering specifications.
-* **Status:** Final Research Specification
 
 ---
 

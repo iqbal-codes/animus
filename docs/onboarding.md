@@ -1,5 +1,8 @@
 # Repository onboarding
 
+- **Status:** Active
+- **Last verified:** 2026-11-10
+
 Repository configuration, factory enrollment, and issue admission are distinct states. A successful local configuration is not proof that the factory is reachable or that a job has started.
 
 ## CLI Installation

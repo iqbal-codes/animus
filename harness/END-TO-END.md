@@ -13,20 +13,30 @@ Shared runtime verification owns execution and evidence collection.
 
 **What would make this fail:** The server crashes during startup, fails to bind to the dynamic port, or returns a hardcoded or stale build identity.
 
-## 2. Operator inspects workflow catalog and triggers doctor check
+## 2. Operator inspects the workflow catalog and engine diagnostics
 
-1. Send `GET /api/workflows` to list all registered shared SDLC workflows.
-2. Assert that the returned list is non-empty and contains `animus-loop`, `animus-ship-block`, `animus-backlog`, and `animus-holdouts`.
-3. Send `POST /api/doctor` to verify toolchains, git integration, and provider bindings.
-4. Assert that the response reports `ok: true` and verifies the engine status.
+1. Send `GET /api/v1/catalog` to the service.
+2. Assert that the response is 200 with a non-empty `workflows` array containing `animus-loop`,
+   `animus-ship-block`, `animus-backlog`, and `animus-holdouts`.
+3. Send `GET /api/v1/diagnostics` to the service.
+4. Assert that the response is 200 with `status` in `healthy` / `degraded`, the configured
+   `revision_required`, a non-empty `digest`, and `default_workflows_loaded: true`.
 
-**What would make this fail:** Missing shared workflow entries, failed provider resolution, or broken doctor checks.
+**What would make this fail:** The engine host is unreachable, the pinned source is incomplete,
+the catalog omits required workflows, or diagnostics report unavailable prerequisites. A 503
+`host_unavailable` / `host_unauthorized` is an honest blocked result, never a pass.
 
-## 3. Operator initiates a supervised lap with approval gate
+## 3. Operator submits a supervised lap and inspects its isolated run
 
-1. Submit a work item specification to `POST /api/laps` with `merge_mode: approve`.
-2. Inspect the created lap via `GET /api/laps/:id` and observe status transition from `pending` to `running`.
-3. Assert that the lap execution isolates work to an independent session directory and records run telemetry.
-4. Verify that once review passes, the lap enters `waiting_approval` rather than auto-merging directly.
+1. Submit a work item with `POST /api/v1/laps` and a strict JSON body `{"specification": "<work>"}`.
+2. Assert that the response is 202 with the genuine native run `id` and an initial `status`.
+3. Inspect the created lap with `GET /api/v1/laps/:id` and observe the transition from
+   `pending` to `running`.
+4. Assert that the lap records an isolated session `working_path` and that
+   `GET /api/v1/commands` contains the corresponding `launch` command record.
+5. Assert that the lap never merges directly into the promotion target: child integration and
+   final delivery remain gated, and the final merge stays manual.
 
-**What would make this fail:** Direct merge without gate check, leaking state across laps, or dropped run telemetry.
+**What would make this fail:** A STOP brake still permits a launch, the service returns a
+synthetic run ID, state leaks across laps, the command ledger omits the launch, or a run
+bypasses the delivery gates.
