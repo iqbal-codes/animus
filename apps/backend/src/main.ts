@@ -68,6 +68,7 @@ import { FinalDeliveryService, handleProjectFinalRoute } from "./final";
 import { createLocalExecutionRuntime } from "./local-runtime";
 import { OperatorBoardService, handleProjectBoardRoute } from "./board";
 import { HarnessService, handleHarnessRoute } from "./harness";
+import { SettingsService, handleSettingsRoute, handleProjectScopedSettingsRoute } from "./settings";
 import {
   validateCsrfProtection,
   authenticateOperatorRequest,
@@ -182,10 +183,11 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
   const planService = new PlanService(registryService.getDb(), registryService.getForge());
   const onboardingService = new ProjectOnboardingService(registryService);
   const harnessService = new HarnessService();
+  const settingsService = new SettingsService();
 
   const failure = (error: OperatorErrorCode, status = 503) => Response.json({ error }, { status });
 
-  // Bun 1.4.2 still resolves ambient proxies with fetch({ proxy: "" }).
+  // Bun 1.4.4 still resolves ambient proxies with fetch({ proxy: "" }).
   if (origin) {
     try {
       process.env.NO_PROXY = process.env.no_proxy = new URL(origin).hostname;
@@ -374,6 +376,7 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     integration: integrationService,
     gate: deliveryService,
     final: finalService,
+    intake: sharedIntakeService,
   });
 
   const monitorRuntime =
@@ -1027,6 +1030,23 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
       if (scopedAction === "commands") {
         return handleCommandsRoute(request, parts.slice(1), routeContext, projectId);
       }
+
+      if (scopedAction === "settings") {
+        const settingsRes = await handleProjectScopedSettingsRoute(request, projectId, {
+          settingsService,
+          registryService,
+        });
+        if (settingsRes) return settingsRes;
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+    }
+
+    if (path.startsWith("/api/v1/settings/") || path.startsWith("/api/settings/")) {
+      const settingsRes = await handleSettingsRoute(request, path, {
+        settingsService,
+        registryService,
+      });
+      if (settingsRes) return settingsRes;
     }
 
     if (path.startsWith("/api/v1/harness/") || path.startsWith("/api/harness/")) {

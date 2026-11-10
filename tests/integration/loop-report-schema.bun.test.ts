@@ -62,7 +62,7 @@ describe("Loop Report Schema & Strict Validation", () => {
       mergeBase: "2222222222222222222222222222222222222222",
       prHead: "3333333333333333333333333333333333333333",
       testedHead: "4444444444444444444444444444444444444444",
-      environment: "linux x86_64 Bun 1.4.2",
+      environment: "linux x86_64 Bun 1.4.4",
     };
     expect(hostBoundIdentitiesSchema.parse(valid)).toEqual(valid);
 

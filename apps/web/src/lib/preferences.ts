@@ -58,4 +58,40 @@ export function savePreferences(next: Preferences): void {
     // Storage can be denied (private mode, disabled cookies); the session still
     // holds the values, so the modal keeps working without persistence.
   }
+  // Also synchronize to the personal backend ~/.animus/preferences.json storage
+  if (typeof fetch !== "undefined") {
+    fetch("/api/v1/settings/personal", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(next),
+    }).catch(() => {
+      // Offline fallback
+    });
+  }
+}
+
+export async function syncPreferencesFromBackend(): Promise<Preferences | null> {
+  if (typeof fetch === "undefined") return null;
+  try {
+    const res = await fetch("/api/v1/settings/personal");
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data && typeof data === "object") {
+      const prefs: Preferences = {
+        cardDensity: data.cardDensity === "compact" ? "compact" : "comfortable",
+        startupView: data.startupView === "jobs" ? "jobs" : "inbox",
+        notifyNeedsAttention:
+          typeof data.notifyNeedsAttention === "boolean"
+            ? data.notifyNeedsAttention
+            : DEFAULT_PREFERENCES.notifyNeedsAttention,
+        notifyFailedJobs:
+          typeof data.notifyFailedJobs === "boolean"
+            ? data.notifyFailedJobs
+            : DEFAULT_PREFERENCES.notifyFailedJobs,
+      };
+      savePreferences(prefs);
+      return prefs;
+    }
+  } catch {}
+  return null;
 }

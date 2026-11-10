@@ -51,7 +51,19 @@ export function TaskCard({
             className={cn("size-3 shrink-0", INK_TEXT[job.execution.ink])}
           />
         )}
-        <span className="font-mono text-[11px] leading-[1.45] text-text-secondary">{job.ref}</span>
+        {onOpen ? (
+          <button
+            type="button"
+            onClick={onOpen}
+            className="font-mono text-[11px] leading-[1.45] text-text-secondary hover:underline cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
+          >
+            {job.ref}
+          </button>
+        ) : (
+          <span className="font-mono text-[11px] leading-[1.45] text-text-secondary">
+            {job.ref}
+          </span>
+        )}
 
         {job.repository && (
           <span className="flex h-6 items-center justify-center rounded-full border border-[var(--input)] bg-background px-2.5 text-[11px] leading-none font-medium text-foreground">

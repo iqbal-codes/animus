@@ -1,4 +1,4 @@
-import { Columns3, FileText, Inbox, PanelLeftClose, Settings } from "lucide-react";
+import { Columns3, Inbox, PanelLeftClose, Settings } from "lucide-react";
 import { useSidebar } from "@/components/ui/sidebar";
 import {
   Sidebar,
@@ -11,11 +11,11 @@ import {
 } from "@/components/ui/sidebar";
 import { NavMain, type PrimaryNavItem } from "@/components/nav-main";
 
-export type NavId = "inbox" | "jobs" | "drafts";
+export type NavId = "inbox" | "jobs";
 
 /**
- * The Animus shell rail, expanded (`EeR9s`) and collapsed (`G08RJ`): Inbox,
- * Jobs and Drafts above, Settings pinned to the bottom. Settings is not a destination — it
+ * The Animus shell rail, expanded (`EeR9s`) and collapsed (`G08RJ`): Inbox and
+ * Jobs above, Settings pinned to the bottom. Settings is not a destination — it
  * opens the `R5yIDY` modal over the current surface.
  */
 export function AppSidebar({
@@ -38,7 +38,6 @@ export function AppSidebar({
   const items: PrimaryNavItem<NavId>[] = [
     { id: "inbox", title: "Inbox", icon: <Inbox />, count: inboxCount },
     { id: "jobs", title: "Jobs", icon: <Columns3 />, count: jobCount },
-    { id: "drafts", title: "Drafts", icon: <FileText /> },
   ];
 
   return (

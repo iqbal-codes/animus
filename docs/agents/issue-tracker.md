@@ -3,9 +3,13 @@
 - **Status:** Active
 - **Last verified:** 2026-11-10
 
-Issues and specifications for this repository live in GitHub Issues. Use the `gh` CLI for all tracker operations.
+Animus operates against two issue tracker modes:
+1. **GitHub Mode (`gh` CLI)**: Issues and specifications live in GitHub Issues. Use the `gh` CLI for tracker operations when an active GitHub repository is configured.
+2. **Local Mode (`.animus/` directory)**: Issues and specifications live as Markdown files directly in the repository checkout for local, offline, or air-gapped development:
+   - Issues: `.animus/issues/<number>-<slug>.md` (or `.animus/issues/<slug>.md`)
+   - Specifications: `.animus/specs/<slug>/spec.md` (or `.animus/specs/<number>-<slug>.md`)
 
-For ticket decomposition and publication workflow, see `.agents/skills/animus-tickets/SKILL.md`. Both factory intake and `animus-loop` parse the standalone textual `Depends on:` line (`Depends on: #12, #14` or `Depends on: None`) in the issue body; native GitHub blocking edges supplement that line, never replace it.
+For ticket decomposition and publication workflow, see `.agents/skills/animus-tickets/SKILL.md`. In both tracker modes, factory intake and `animus-loop` parse the standalone textual `Depends on:` line (`Depends on: #12, #14` or `Depends on: None`) and `Part of #<parent>` in the issue body. In GitHub mode, native GitHub blocking edges supplement the textual line without replacing it.
 
 ## Canonical Triage & Admission Labels
 
@@ -76,6 +80,39 @@ Infer the repository from `git remote -v` (or pass `-R <owner>/<repo>` when targ
 - **Comment on an issue**: `gh issue comment <number> --body "..."`.
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..." --remove-label "..."`.
 - **Close an issue**: `gh issue close <number> --comment "..."`.
+
+## Local Mode Conventions (`.animus/`)
+
+When operating without GitHub connectivity or on local checkouts:
+- **Directory layout**:
+  - Issues: `.animus/issues/<number>-<slug>.md` (e.g. `.animus/issues/001-export-csv.md`)
+  - Specs: `.animus/specs/<slug>/spec.md` or `.animus/specs/<number>-<slug>.md`
+- **Markdown structure**:
+  ```markdown
+  ---
+  number: 101
+  title: Bounded outcome title
+  state: OPEN
+  labels: [ready-for-agent]
+  ---
+  ## Source and problem
+  ...
+  ## Outcome
+  ...
+  ## Invariants
+  ...
+  ## Acceptance criteria
+  - [ ] AC1: ...
+
+  ## Boundary
+  Part of #<parent>
+  Depends on: #12, #14
+  ```
+- **Local tracker operations**:
+  - **Create**: Write `.animus/issues/<number>-<slug>.md` or `.animus/specs/<slug>/spec.md`.
+  - **Read / List**: Read files directly from `.animus/issues/` and `.animus/specs/`.
+  - **Update labels & state**: Modify frontmatter `labels` list or set `state: CLOSED`.
+  - **Dependencies & parent links**: Standalone `Depends on:` and `Part of #<parent>` body lines are parsed identically by intake and planning services.
 
 ## Pull Requests as a Triage Surface
 

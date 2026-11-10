@@ -81,13 +81,13 @@ export function JobsBoard({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-[26px] pt-7 pb-5">
-      {(loading || error || board.totalJobs === 0) && (
+      {(loading || error) && (
         <div className="mx-7 flex flex-wrap items-center gap-3 rounded-[10px] border border-[var(--border-subtle)] px-3 py-2">
           {loading ? (
             <p role="status" data-testid="board-loading" className="text-xs text-text-secondary">
               Loading the project board from canonical factory state…
             </p>
-          ) : error ? (
+          ) : (
             <>
               <p
                 role="alert"
@@ -107,13 +107,14 @@ export function JobsBoard({
                 </Button>
               )}
             </>
-          ) : (
-            <p data-testid="board-empty" className="text-xs text-text-secondary">
-              No work is recorded for this project yet. Import and approve a plan to populate the
-              existing columns.
-            </p>
           )}
         </div>
+      )}
+      {board.totalJobs === 0 && !loading && !error && (
+        <p data-testid="board-empty" className="sr-only">
+          No work is recorded for this project yet. Import and approve a plan to populate the
+          existing columns.
+        </p>
       )}
 
       <div className="grid shrink-0 grid-cols-2 items-stretch gap-3 px-7 sm:grid-cols-5">

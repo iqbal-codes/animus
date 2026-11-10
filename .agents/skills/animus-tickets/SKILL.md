@@ -12,7 +12,7 @@ Read `docs/agents/issue-tracker.md`.
 
 Use this playbook when:
 - Decomposing an agreed specification (`/animus-spec`) and settled codebase architecture (`/animus-architecture` or existing repo conventions) into vertical, dependency-ordered implementation tickets.
-- Publishing approved executable tickets to the configured GitHub issue tracker or saving local ticket drafts.
+- Publishing approved executable tickets to the configured issue tracker (GitHub Issues or local `.animus/issues/*.md`).
 
 ## Steps
 
@@ -29,16 +29,16 @@ Use this playbook when:
    *Completion Criterion*: Every parent requirement is accounted for in a coarse-grained, acyclic milestone graph (typically 2–4 tickets) with zero micro-ticket fragmentation, and the user approves the draft before publication.
 
 3. **Publish the approved graph in topological order.**
-   Publish only the approved operations:
+   Publish only the approved operations to the active tracker mode (see `docs/agents/issue-tracker.md`):
    - Resolve each dependency to an actual issue number. Write `Depends on: #12, #14` (or `Depends on: None`) as a standalone body line outside code fences; keep reasons elsewhere. Native dependencies supplement this line, never replace it.
-   - Create one issue per ticket in the explicit repository. Link it to the source spec as a native sub-issue when supported and retain `Part of #<parent>` plus the spec-section reference in its body.
-   - Apply the approved canonical triage labels (`ready-for-agent`, `needs-info`, `ready-for-human`, `wontfix`) per `docs/agents/issue-tracker.md`. Parent specs stay excluded (`spec` paired with `ready-for-human` or `wontfix`). Add `ready-for-agent` only to complete, verified-unblocked tickets explicitly approved for intake.
-   - Add native blocker links where supported. Read back each created issue, its labels, parent relationship, dependency body line, and native edges. If the user asked only for local drafts, save one file per ticket under `.scratch/<feature>/issues/` and a graph/coverage index marked draft-only.
-   *Completion Criterion*: All approved tickets and dependency edges are published and read back (or written to `.scratch/` when draft-only) with verified labels and issue numbers.
+   - **GitHub Mode**: Create one issue per ticket in the repository (`gh issue create`). Link it to the source spec as a native sub-issue when supported and retain `Part of #<parent>` in its body. Apply canonical triage labels (`ready-for-agent`, `needs-info`, `ready-for-human`, `wontfix`). Add native blocker links where supported.
+   - **Local Mode** (or offline/local development): Write one file per ticket under `.animus/issues/<number>-<slug>.md` with frontmatter (`number`, `title`, `state: OPEN`, `labels: [...]`), retaining `Part of #<parent>` and standalone `Depends on: #...` in the markdown body.
+   - Read back each created issue, its labels, parent relationship, dependency body line, and edges (from GitHub or by verifying `.animus/issues/*.md` files on disk).
+   *Completion Criterion*: All approved tickets and dependency edges are published and read back (via GitHub API or verified in `.animus/issues/`) with verified labels and issue numbers.
 
 4. **Hand off to `/animus-implement` or `/animus-implement-spec`.**
-   Return issue URLs, source coverage, blockers, and separate contract/admission status. Name the current frontier and any unknown prerequisite state. Suggest `/animus-implement-spec <spec-reference>` for multi-ticket DAG coordination on an integration branch, or `/animus-implement <ticket-reference>` for an isolated single-ticket frontier item; publishing tickets does not launch a lap, close the parent, or authorize merge/deploy.
-   *Completion Criterion*: Handoff summary lists all created ticket URLs, coverage mapping, and current unblocked frontier without auto-launching execution.
+   Return issue references (GitHub issue URLs or local `.animus/issues/<number>-<slug>.md` paths), source coverage, blockers, and separate contract/admission status. Name the current frontier and any unknown prerequisite state. Suggest `/animus-implement-spec <spec-reference>` for multi-ticket DAG coordination on an integration branch, or `/animus-implement <ticket-reference>` for an isolated single-ticket frontier item; publishing tickets does not launch a lap, close the parent, or authorize merge/deploy.
+   *Completion Criterion*: Handoff summary lists all created ticket references (URLs or local file paths), coverage mapping, and current unblocked frontier without auto-launching execution.
 
 ## Canonical ticket body template
 

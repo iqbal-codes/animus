@@ -24,13 +24,14 @@ import {
   type TargetBindingResult,
   type BranchIntegrationResult,
 } from "@animus/contracts/operator";
-import type { ForgeAdapter, IssueForgeAdapter } from "../registry/forge";
+import type { ForgeAdapter, ForgeIssue, IssueForgeAdapter } from "../registry/forge";
 import { SystemForgeAdapter, assertIssueForge } from "../registry/forge";
 import { ProjectRegistryError } from "../registry/service";
 import { WorkPersistenceError, WorkService } from "../work";
 import { evaluateBacklogAdmission, type RawIssue } from "./admission";
 import { parseDependencies, isActiveClaim, computeDiff, computeLabelEffects } from "./parser";
 import { verifyTargetBinding, TargetBindingError } from "./binding";
+import { scanLocalAnimusIssues } from "./local-issues";
 
 interface ProjectRow {
   id: string;
@@ -112,9 +113,26 @@ export class IntakeService {
     }
 
     const forge = this.getIssueForge();
-    const rawIssues = (await forge.listIssues(project.repo_name)).filter(
-      (issue) => issue.state.toUpperCase() === "OPEN",
-    );
+    let rawIssues: ForgeIssue[] = [];
+    try {
+      rawIssues = (await forge.listIssues(project.repo_name)).filter(
+        (issue) => issue.state.toUpperCase() === "OPEN",
+      );
+    } catch {
+      rawIssues = [];
+    }
+
+    // Support local development: scan .animus/issues/*.md and .animus/specs/*.md
+    const localIssues = scanLocalAnimusIssues(project.checkout_path);
+    if (localIssues.length > 0) {
+      const existingNumbers = new Set(rawIssues.map((i) => i.number));
+      for (const local of localIssues) {
+        if (!existingNumbers.has(local.number) && local.state === "OPEN") {
+          rawIssues.push(local);
+        }
+      }
+    }
+
     const evaluated = await this.evaluateIssues(
       project.repo_name,
       rawIssues,
@@ -146,7 +164,16 @@ export class IntakeService {
 
   async getProjectIssue(projectId: string, issueNumber: number): Promise<EvaluatedIssue> {
     const project = this.resolveProject(projectId);
-    const raw = await this.getIssueForge().getIssue(project.repo_name, issueNumber);
+    let raw: any = null;
+    try {
+      raw = await this.getIssueForge().getIssue(project.repo_name, issueNumber);
+    } catch {
+      raw = null;
+    }
+    if (!raw) {
+      const localIssues = scanLocalAnimusIssues(project.checkout_path);
+      raw = localIssues.find((issue) => issue.number === issueNumber) ?? null;
+    }
     const found = raw
       ? (await this.evaluateIssues(project.repo_name, [raw], project.checkout_path, projectId))[0]
       : null;
