@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -168,10 +168,10 @@ describe("Settings Service & Backend Routes", () => {
     // 1. Service direct call
     const piModels = service.getHarnessModels("pi");
     expect(piModels.provider).toBe("pi");
-    expect(piModels.models).toBeArray();
+    expect(Array.isArray(piModels.models)).toBe(true);
     expect(piModels.models.length).toBeGreaterThan(0);
     expect(piModels.models).toContain("default");
-    expect(piModels.supportedEfforts).toBeArray();
+    expect(Array.isArray(piModels.supportedEfforts)).toBe(true);
     expect(piModels.supportedEfforts).toContain("medium");
     expect(piModels.supportedEfforts).toContain("high");
 
