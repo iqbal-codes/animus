@@ -26,6 +26,7 @@ const RESTORE_V13 = "restore_terminal_intent_disposition";
 const CUTOVER_V15 = "authority_cutover";
 const DELIVERY_CLAIM_V16 = "delivery_role_claims";
 const DELIVERY_CLAIM_AUDIT_V17 = "delivery_role_claim_reconcile_audit";
+const CONSOLIDATION_V18 = "consolidate_delivery_state_and_merge_audit";
 
 const ALL_MIGRATIONS = [
   { version: 1, name: WORK_V1 },
@@ -44,6 +45,7 @@ const ALL_MIGRATIONS = [
   { version: 15, name: CUTOVER_V15 },
   { version: 16, name: DELIVERY_CLAIM_V16 },
   { version: 17, name: DELIVERY_CLAIM_AUDIT_V17 },
+  { version: 18, name: CONSOLIDATION_V18 },
 ];
 
 function tableExists(db: DatabaseSync, table: string): boolean {
@@ -158,18 +160,36 @@ describe("coherent schema migration registry", () => {
         "publication_events",
         "publication_intents",
         "publication_evidence_bindings",
-        "publication_summaries",
-        "child_integrations",
-        "child_integration_events",
+        "delivery_merges",
+        "delivery_events",
         "draft_publications",
         "draft_publication_members",
         "draft_publication_relationships",
+      ]) {
+        expect(tableExists(db, table)).toBe(true);
+      }
+      for (const dropped of [
+        "publication_summaries",
+        "child_integrations",
+        "child_integration_events",
         "delivery_merge_verifications",
         "final_deliveries",
         "final_delivery_events",
       ]) {
-        expect(tableExists(db, table)).toBe(true);
+        expect(tableExists(db, dropped)).toBe(false);
       }
+      const targetColumns = db.prepare("PRAGMA table_info(publication_targets)").all() as Array<{
+        name: string;
+      }>;
+      expect(targetColumns.map((column) => column.name)).toEqual(
+        expect.arrayContaining(["summary_body", "summary_updated_at"]),
+      );
+      const deliveryColumns = db.prepare("PRAGMA table_info(deliveries)").all() as Array<{
+        name: string;
+      }>;
+      expect(deliveryColumns.map((column) => column.name)).toEqual(
+        expect.arrayContaining(["final_status", "final_run_id", "lease_owner"]),
+      );
       const checkColumns = db.prepare("PRAGMA table_info(execution_checks)").all() as Array<{
         name: string;
       }>;
@@ -555,6 +575,169 @@ describe("coherent schema migration registry", () => {
       ).toThrow(/FOREIGN KEY/i);
     } finally {
       upgraded.close();
+    }
+  });
+
+  test("AC-migration: v18 backfills consolidated delivery, merge and event state from a v17 database", () => {
+    const legacy = new DatabaseSync(path);
+    try {
+      legacy.exec("PRAGMA foreign_keys = OFF;");
+      createLegacyMigrationTable(legacy);
+      applyMigrations(legacy, SCHEMA_MIGRATIONS.slice(0, -1));
+      seedProject(legacy);
+      seedDelivery(legacy);
+      const sha = (char: string) => char.repeat(40);
+      legacy
+        .prepare(
+          `INSERT INTO work_items
+             (id, project_id, repo_id, repo_name, issue_number, created_at, updated_at)
+           VALUES ('work_1', 'proj_1', 501, 'owner/repo', 701, 1, 1)`,
+        )
+        .run();
+      legacy
+        .prepare(
+          `INSERT INTO publication_targets
+             (id, project_id, delivery_id, plan_id, work_id, issue_number, gate_profile,
+              source_branch, target_branch, candidate_head_sha, base_sha, state, created_at, updated_at)
+           VALUES ('target_1', 'proj_1', 'delivery_1', 'plan_1', 'work_1', 701, 'child',
+                   'factory/issue-701', 'factory/spec-151-integration', ?, ?, 'published', 1, 1)`,
+        )
+        .run(sha("a"), sha("b"));
+      legacy
+        .prepare(
+          `INSERT INTO publication_pull_requests
+             (id, target_id, project_id, repository, number, url, head_branch, base_branch,
+              candidate_head_sha, head_ref_oid, draft, state, active, remote_retired,
+              created_by_intent, created_at, updated_at)
+           VALUES ('pr_1', 'target_1', 'proj_1', 'owner/repo', 77,
+                   'https://github.com/owner/repo/pull/77', 'factory/issue-701',
+                   'factory/spec-151-integration', ?, ?, 0, 'open', 1, 0, NULL, 1, 1)`,
+        )
+        .run(sha("a"), sha("a"));
+      legacy
+        .prepare(
+          `INSERT INTO publication_summaries (target_id, project_id, body, updated_at)
+           VALUES ('target_1', 'proj_1', 'Consolidated summary', 2)`,
+        )
+        .run();
+      legacy
+        .prepare(
+          `INSERT INTO final_deliveries
+             (id, project_id, delivery_id, plan_id, manifest_id, graph_hash, integration_branch,
+              delivery_branch, status, candidate_head_sha, final_run_id, required_count,
+              integrated_count, pull_request_number, pull_request_url, halt_reason, lease_owner,
+              lease_expires_at, created_at, updated_at)
+           VALUES ('final_1', 'proj_1', 'delivery_1', 'plan_1', 'manifest_1', ?, 
+                   'factory/spec-151-integration', 'delivery/branch', 'delivered', ?, 'run_final',
+                   2, 2, 42, 'https://github.com/owner/repo/pull/42', NULL, NULL, NULL, 1, 3)`,
+        )
+        .run("a".repeat(64), sha("c"));
+      legacy
+        .prepare(
+          `INSERT INTO child_integrations
+             (id, project_id, delivery_id, plan_id, work_id, run_id, issue_number, gate_profile,
+              source_branch, target_branch, candidate_head_sha, base_sha, target_tip_before_sha,
+              target_tip_after_sha, merge_sha, remote_pull_request_number, remote_pull_request_url,
+              evidence_identity, integrated_at)
+           VALUES ('ci_1', 'proj_1', 'delivery_1', 'plan_1', 'work_1', 'run_child', 701, 'child',
+                   'factory/issue-701', 'factory/spec-151-integration', ?, ?, ?, ?, ?, 77,
+                   'https://github.com/owner/repo/pull/77', 'lineage#a#lap1', 5)`,
+        )
+        .run(sha("a"), sha("b"), sha("d"), sha("e"), sha("e"));
+      legacy
+        .prepare(
+          `INSERT INTO delivery_merge_verifications
+             (id, project_id, delivery_id, plan_id, work_id, run_id, gate_profile, target_id,
+              pull_request_id, repository, pr_number, source_branch, target_branch,
+              candidate_head_sha, remote_head_ref_oid, remote_target_tip_sha, merge_commit_sha,
+              verified_at, verified_by)
+           VALUES ('dmv_1', 'proj_1', 'delivery_1', 'plan_1', 'work_1', 'run_final', 'final',
+                   'target_1', 'pr_1', 'owner/repo', 42, 'delivery/branch', 'main', ?, ?, ?, ?, 6,
+                   'operator')`,
+        )
+        .run(sha("c"), sha("c"), sha("f"), sha("f"));
+      legacy
+        .prepare(
+          `INSERT INTO child_integration_events
+             (id, project_id, delivery_id, work_id, run_id, candidate_head_sha, target_tip_sha,
+              kind, merge_sha, reasons, created_at)
+           VALUES ('cie_1', 'proj_1', 'delivery_1', 'work_1', 'run_child', ?, ?, 'merged', ?,
+                   '["merged"]', 7)`,
+        )
+        .run(sha("a"), sha("e"), sha("e"));
+      legacy
+        .prepare(
+          `INSERT INTO final_delivery_events
+             (id, project_id, delivery_id, plan_id, run_id, kind, candidate_head_sha, reasons,
+              detail, created_at)
+           VALUES ('fde_1', 'proj_1', 'delivery_1', 'plan_1', 'run_final', 'delivered', ?,
+                   '["final_merge_verified"]', 'Verified final merge', 8)`,
+        )
+        .run(sha("c"));
+
+      applyMigrations(legacy, SCHEMA_MIGRATIONS);
+
+      expect(
+        legacy
+          .prepare("SELECT summary_body, summary_updated_at FROM publication_targets WHERE id = ?")
+          .get("target_1"),
+      ).toEqual({ summary_body: "Consolidated summary", summary_updated_at: 2 });
+      expect(
+        legacy
+          .prepare(
+            `SELECT final_status, candidate_head_sha, final_run_id, required_count,
+                    integrated_count, pull_request_number, updated_at
+             FROM deliveries WHERE id = ?`,
+          )
+          .get("delivery_1"),
+      ).toEqual({
+        final_status: "delivered",
+        candidate_head_sha: sha("c"),
+        final_run_id: "run_final",
+        required_count: 2,
+        integrated_count: 2,
+        pull_request_number: 42,
+        updated_at: 3,
+      });
+      expect(
+        legacy
+          .prepare(
+            `SELECT gate_profile, issue_number, pr_number, target_id, pull_request_id
+             FROM delivery_merges ORDER BY gate_profile`,
+          )
+          .all(),
+      ).toEqual([
+        {
+          gate_profile: "child",
+          issue_number: 701,
+          pr_number: 77,
+          target_id: null,
+          pull_request_id: null,
+        },
+        {
+          gate_profile: "final",
+          issue_number: 701,
+          pr_number: 42,
+          target_id: "target_1",
+          pull_request_id: "pr_1",
+        },
+      ]);
+      expect(legacy.prepare("SELECT kind FROM delivery_events ORDER BY created_at").all()).toEqual([
+        { kind: "merged" },
+        { kind: "delivered" },
+      ]);
+      for (const dropped of [
+        "publication_summaries",
+        "child_integrations",
+        "child_integration_events",
+        "delivery_merge_verifications",
+        "final_deliveries",
+        "final_delivery_events",
+      ]) {
+        expect(tableExists(legacy, dropped)).toBe(false);
+      }
+    } finally {
+      legacy.close();
     }
   });
 

@@ -227,13 +227,15 @@ export class DeliveryGateService {
       this.db.exec("BEGIN IMMEDIATE;");
       this.db
         .prepare(
-          `INSERT INTO delivery_merge_verifications
-             (id, project_id, delivery_id, plan_id, work_id, run_id, gate_profile,
-              target_id, pull_request_id, repository, pr_number, source_branch, target_branch,
-              candidate_head_sha, remote_head_ref_oid, remote_target_tip_sha, merge_commit_sha,
-              verified_at, verified_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(project_id, run_id, candidate_head_sha) DO NOTHING`,
+          `INSERT INTO delivery_merges
+             (id, project_id, delivery_id, plan_id, work_id, run_id, gate_profile, issue_number,
+              target_id, pull_request_id, repository, pr_number, pr_url, source_branch,
+              target_branch, candidate_head_sha, base_sha, target_tip_before_sha,
+              target_tip_after_sha, remote_head_ref_oid, merge_sha, evidence_identity,
+              verified_at, verified_by, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?, ?, ?)
+           ON CONFLICT(project_id, run_id, candidate_head_sha)
+             WHERE gate_profile != 'child' DO NOTHING`,
         )
         .run(
           verificationId,
@@ -243,18 +245,22 @@ export class DeliveryGateService {
           evaluated.workId,
           evaluated.runId,
           evaluated.gateProfile as "standalone" | "final",
+          run.issue_number,
           targetId,
           pullRequestId,
-          this.loadProjectRepo(projectId),
+          run.repo_name,
           prNumber,
+          remote.html_url ?? null,
           evaluated.sourceBranch,
           evaluated.targetBranch,
           evaluated.candidateHeadSha,
-          headRefOid,
+          run.base_sha,
           remoteTargetTipSha,
+          headRefOid,
           proof.mergeCommitSha,
           verifiedAt,
           actor,
+          verifiedAt,
         );
       this.db.exec("COMMIT;");
     } catch (error) {
@@ -880,8 +886,11 @@ export class DeliveryGateService {
     if (!candidateHeadSha) return null;
     const row = this.db
       .prepare(
-        `SELECT * FROM delivery_merge_verifications
-         WHERE project_id = ? AND run_id = ? AND candidate_head_sha = ?`,
+        `SELECT *, target_tip_after_sha AS remote_target_tip_sha,
+                merge_sha AS merge_commit_sha
+         FROM delivery_merges
+         WHERE project_id = ? AND run_id = ? AND candidate_head_sha = ?
+           AND gate_profile != 'child'`,
       )
       .get(projectId, runId, candidateHeadSha) as unknown as VerificationRow | undefined;
     if (!row) return null;

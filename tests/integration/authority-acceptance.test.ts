@@ -280,7 +280,9 @@ describe("authority cutover public acceptance", () => {
     expect(status.operation?.report).toMatchObject({ activatedBy: "operator" });
     expect(
       db
-        .prepare("SELECT COUNT(*) AS count FROM delivery_merge_verifications WHERE run_id = ?")
+        .prepare(
+          "SELECT COUNT(*) AS count FROM delivery_merges WHERE run_id = ? AND gate_profile != 'child'",
+        )
         .get(run.id),
     ).toEqual({ count: 1 });
     expect(

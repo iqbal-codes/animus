@@ -269,7 +269,7 @@ describe("child delivery through the real declared two-command harness", () => {
   }
 
   function integrationCount(): number {
-    return (db.prepare("SELECT COUNT(*) AS c FROM child_integrations").get() as { c: number }).c;
+    return (db.prepare("SELECT COUNT(*) AS c FROM delivery_merges").get() as { c: number }).c;
   }
 
   function artifactBody(relativePath: string): string {
@@ -417,7 +417,7 @@ describe("child delivery through the real declared two-command harness", () => {
 
     const integration = db
       .prepare(
-        "SELECT candidate_head_sha, target_tip_after_sha FROM child_integrations WHERE run_id = ?",
+        "SELECT candidate_head_sha, target_tip_after_sha FROM delivery_merges WHERE run_id = ?",
       )
       .get(runId) as { candidate_head_sha: string; target_tip_after_sha: string };
     const run = dispatch.getRun(projectId, runId);

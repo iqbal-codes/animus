@@ -282,7 +282,7 @@ describe("packaged authority runtime", () => {
     expect(parsed.authority).toBe("local");
     expect(parsed.phase).toBe("active");
     expect(parsed.cutoverId).toBe("cutover_binary");
-    expect(parsed.schemaVersion).toBe(17);
+    expect(parsed.schemaVersion).toBe(18);
     expect(parsed.tableCount).toBeGreaterThan(10);
     expect(parsed.artifactCount).toBe(1);
     expect(parsed.databasePath).toBe(join(stateDir, "console.db"));
@@ -329,7 +329,7 @@ describe("packaged authority runtime", () => {
     };
     expect(backupResult.destinationPath).toBe(backupDestination);
     expect(backupResult.artifactCount).toBe(1);
-    expect(backupResult.schemaVersion).toBe(17);
+    expect(backupResult.schemaVersion).toBe(18);
 
     const restore = Bun.spawnSync(
       [
@@ -412,7 +412,7 @@ describe("packaged authority runtime", () => {
     };
     expect(restoredSnapshot.installationHeld).toBe(true);
     expect(restoredSnapshot.artifactCount).toBe(1);
-    expect(restoredSnapshot.schemaVersion).toBe(17);
+    expect(restoredSnapshot.schemaVersion).toBe(18);
 
     const evidencePath = process.env.AUTHORITY_RUNTIME_EVIDENCE;
     if (evidencePath) {

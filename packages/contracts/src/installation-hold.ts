@@ -104,9 +104,16 @@ function assertHoldNotActive(hold: InstallationHold): void {
 }
 
 /**
- * Read-only hold lookup for out-of-process launchers (CLI, scheduler, native
- * loop, engine host) that resolve the Animus state directory rather than holding
- * a kernel connection.
+ * Hold lookup for out-of-process launchers (CLI, scheduler, native loop, engine
+ * host) that resolve the Animus state directory rather than holding a kernel
+ * connection.
+ *
+ * The connection is opened read-write and immediately restricted with
+ * `PRAGMA query_only = ON`. SQLite cannot reliably read a WAL-mode database
+ * through a read-only connection once its `-shm` file is gone, which would turn a
+ * cleanly closed installation into a false "hold unavailable" refusal. query_only
+ * keeps the same no-write guarantee at the SQL layer while letting SQLite attach
+ * the WAL bookkeeping it needs.
  *
  * A missing database is a brand-new installation and a missing hold table is a
  * pre-v11 installation; both have no hold. Every other failure (open, corrupt or
@@ -120,7 +127,8 @@ export function readInstallationHoldAtStateDir(stateDir?: string): InstallationH
 
   let db: DatabaseSync;
   try {
-    db = new DatabaseSync(dbPath, { readOnly: true });
+    db = new DatabaseSync(dbPath);
+    db.exec("PRAGMA query_only = ON;");
   } catch (error) {
     throw new InstallationHoldUnavailableError(
       resolved,

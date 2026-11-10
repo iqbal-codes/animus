@@ -57,8 +57,8 @@ const GROUP_BY_TABLE: Record<string, CutoverTableGroup> = {
   execution_artifacts: "evidence",
   delivery_role_claims: "delivery",
   project_spec_coordinations: "coordination",
-  child_integrations: "integration",
-  child_integration_events: "integration",
+  delivery_merges: "integration",
+  delivery_events: "integration",
   work_items: "plans",
   work_revisions: "plans",
   plans: "plans",
@@ -71,18 +71,14 @@ const GROUP_BY_TABLE: Record<string, CutoverTableGroup> = {
   plan_decisions: "plans",
   deliveries: "delivery",
   dispatch_runs: "runs",
-  delivery_merge_verifications: "delivery",
   execution_budget_scopes: "delivery",
   execution_budget_grants: "delivery",
   execution_controls: "delivery",
-  final_deliveries: "delivery",
-  final_delivery_events: "delivery",
   publication_targets: "publication",
   publication_pull_requests: "publication",
   publication_events: "publication",
   publication_intents: "publication",
   publication_evidence_bindings: "publication",
-  publication_summaries: "publication",
   work_drafts: "drafts",
   work_draft_revisions: "drafts",
   work_draft_decisions: "drafts",
@@ -102,8 +98,6 @@ const LEGACY_HISTORY_TABLES = new Set([
   "gate_approvals",
   "candidate_landings",
   "project_spec_coordinations",
-  "child_integrations",
-  "child_integration_events",
 ]);
 
 export interface CutoverInventoryOptions {
@@ -682,7 +676,10 @@ function isRunLikeActive(table: string, row: Record<string, unknown>): boolean {
   }
   if (table === "execution_controls") return ["active", "stopping"].includes(status);
   if (table === "project_spec_coordinations") return status === "active";
-  if (table === "final_deliveries") return ["active", "running", "repairing"].includes(status);
+  if (table === "deliveries") {
+    const finalStatus = typeof row.final_status === "string" ? row.final_status.toLowerCase() : "";
+    return ["waiting_children", "verifying"].includes(finalStatus);
+  }
   if (table === "publication_intents") return ["attempting", "unknown"].includes(status);
   return false;
 }

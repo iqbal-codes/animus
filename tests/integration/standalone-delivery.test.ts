@@ -546,7 +546,7 @@ describe("standalone full-delivery gate and verified merge", () => {
     expect(
       db
         .prepare(
-          "SELECT COUNT(*) AS count FROM delivery_merge_verifications WHERE project_id = ? AND run_id = ?",
+          "SELECT COUNT(*) AS count FROM delivery_merges WHERE project_id = ? AND run_id = ? AND gate_profile != 'child'",
         )
         .get(projectId, run.id),
     ).toEqual({ count: 1 });
@@ -557,7 +557,7 @@ describe("standalone full-delivery gate and verified merge", () => {
     expect(
       db
         .prepare(
-          "SELECT COUNT(*) AS count FROM delivery_merge_verifications WHERE project_id = ? AND run_id = ?",
+          "SELECT COUNT(*) AS count FROM delivery_merges WHERE project_id = ? AND run_id = ? AND gate_profile != 'child'",
         )
         .get(projectId, run.id),
     ).toEqual({ count: 1 });

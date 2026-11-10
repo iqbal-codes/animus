@@ -282,7 +282,7 @@ describe("child delivery runtime on the normal scheduler tick", () => {
   }
 
   function integrationCount(): number {
-    return (db.prepare("SELECT COUNT(*) AS c FROM child_integrations").get() as { c: number }).c;
+    return (db.prepare("SELECT COUNT(*) AS c FROM delivery_merges").get() as { c: number }).c;
   }
 
   function pullRequestCount(): number {
@@ -378,7 +378,7 @@ describe("child delivery runtime on the normal scheduler tick", () => {
 
     const integration = db
       .prepare(
-        "SELECT candidate_head_sha, target_tip_after_sha FROM child_integrations WHERE run_id = ?",
+        "SELECT candidate_head_sha, target_tip_after_sha FROM delivery_merges WHERE run_id = ?",
       )
       .get(firstRunId) as { candidate_head_sha: string; target_tip_after_sha: string };
     const firstRun = dispatch.getRun(projectId, firstRunId);
@@ -486,7 +486,7 @@ describe("child delivery runtime on the normal scheduler tick", () => {
         .some((item) => item.stage === "independent_review" && item.status === "passed"),
     ).toBe(true);
     const integration = db
-      .prepare("SELECT candidate_head_sha FROM child_integrations WHERE run_id = ?")
+      .prepare("SELECT candidate_head_sha FROM delivery_merges WHERE run_id = ?")
       .get(second.id) as { candidate_head_sha: string } | undefined;
     expect(integration?.candidate_head_sha).toBe(second.head_sha);
     expect(integrationCount()).toBe(1);
