@@ -9,15 +9,7 @@
 ## Repository Knowledge, Skills & Memory
 
 - **Canonical Configuration**: `AGENTS.md` and `.agents/skills/` are authoritative sources of truth (`CLAUDE.md -> AGENTS.md`, `.claude/skills -> ../.agents/skills`).
-- **Repository Skills**: Consult playbooks in `.agents/skills/` when triggered:
-  - Issue triage: `/animus-triage`
-  - Spec drafting, product shaping & architecture: `/animus-brainstorm`, `/animus-grill`, `/animus-spec`, `/animus-architecture`, `/animus-tickets`
-  - Implementation & verification: `/animus-implement`, `/animus-implement-spec`, `.agents/skills/tdd/SKILL.md`, `.agents/skills/blueprint/SKILL.md`, `.agents/skills/security-hardening/SKILL.md`
-  - Failure recovery & root-causing: `/diagnosing-bugs`, `.agents/skills/unstick/SKILL.md`
-  - Frontend & UI verification: `.agents/skills/ui-quality/SKILL.md`
-  - Code review & standards: `/animus-review`
-  - Repository harness setup & self-check: `/animus-harness`
-  - Post-lap memory & lesson synthesis: `/animus-learn`, `.agents/skills/writing-for-agents/SKILL.md`, `.agents/skills/skill-creator/SKILL.md`
+- **Stage & Workflow Boundary**: Stage playbooks in `.agents/skills/` (`animus-*`, `retro`, `pr`, `skill-creator`, `writing-for-agents`) are **strictly user- or engine-invoked (`disable-model-invocation: true`)**. Never self-invoke, read, chain, or combine stage playbooks unless explicitly requested for the current turn.
 - **Verified Tool Guidance**: Inspect `.factory/tool-guidance.json` for validated CLI recipes (`static`: `$STATIC_CHECK`, `unit`: `$UNIT_TEST`).
 - **Evidence-Backed Lessons**: Inspect `.factory/lessons.jsonl` for repository-specific gotchas matching target files before editing.
 - **Harness Authoring Standard**: Adhere to `docs/agents/harness-authoring-standard.md` when curating lessons, rules, or skills.
