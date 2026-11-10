@@ -23,7 +23,7 @@ Use this playbook when:
 
 2. **Choose the delivery path.**
    - **Native factory delivery requested**: Inspect the pinned engine's inputs, workability policy, and consumer boundary. Verify how the target ticket is selected before launch; report any target-binding blocker without claiming execution. Present the repository, base, ticket, and merge mode for authorization before launch.
-   - **Direct code implementation requested**: Implement the single approved frontier ticket in the authorized branch using repository conventions, domain types (`.agents/skills/blueprint`), and test-driven development (`.agents/skills/tdd`). Never reset another checkout or touch out-of-scope worktrees.
+   - **Direct code implementation requested**: Implement the single approved frontier ticket in the authorized branch using repository conventions, domain types (`.agents/skills/blueprint`), and test-driven development (`.agents/skills/tdd`). Treat ticket `Touchpoints` and shared exploration notes as starting hints, never a closed boundary: always inspect the live integration branch tip (via `git log`, `trail_ask`, `trail_skeleton`, or `trail_callers`) to discover seams added by upstream tickets and verify unmodified callers. Run targeted test files during the red → green loop rather than repeatedly executing the full repository test suite on every edit. Never self-invoke other stage playbooks (`/animus-review`, `/animus-implement-spec`), reset another checkout, or touch out-of-scope worktrees.
    *Completion Criterion*: Delivery path is selected with verified authority; direct edits stay confined to the designated branch with zero incidental scheduler, branch-switch, or merge mutations.
 
 3. **Build, verify, and compile candidate-bound evidence.**

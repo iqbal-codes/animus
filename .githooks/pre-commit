@@ -17,7 +17,11 @@ bun run lint
 echo "==> [Gate 3] Typecheck..."
 bun run typecheck
 
-echo "==> [Gate 4] Test verification..."
-bun run test
+if [ "${ANIMUS_PRECOMMIT_FULL_TEST:-0}" = "1" ]; then
+  echo "==> [Gate 4] Full test verification (ANIMUS_PRECOMMIT_FULL_TEST=1)..."
+  bun run test
+else
+  echo "==> [Gate 4] Skipping full test suite on commit (run targeted tests during TDD; set ANIMUS_PRECOMMIT_FULL_TEST=1 for full suite)."
+fi
 
 echo "==> All local CI checks passed cleanly."

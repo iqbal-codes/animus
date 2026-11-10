@@ -1,6 +1,7 @@
 ---
 name: pr
 description: Write human-friendly, visual-first pull request descriptions with Summary diagrams, Before/After evidence, and Merge Danger assessment.
+disable-model-invocation: true
 ---
 
 # Write a Human-Friendly Pull Request

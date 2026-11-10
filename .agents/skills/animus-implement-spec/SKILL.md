@@ -44,9 +44,13 @@ factory. Do not use it to improvise child integration by hand.
   its prerequisite is proven included in the required integration lineage (or
   verified merged into the final target). **Issue closure never satisfies a
   dependency.**
-- **Bounded laps.** Factory failures return to the builder within the ticket's
-  durable lap budget. Exhaustion moves the affected work to Needs owner with
-  retained work/evidence; it never resets budget or blocks unrelated work.
+- **Bounded laps & token discipline.** Factory failures return to the builder within the ticket's
+  durable lap budget (at most 1–2 remediation laps before escalating to `Needs owner`). Exhaustion moves the affected work to Needs owner with
+  retained work/evidence; it never resets budget, spins in unbounded review-repair loops, or blocks unrelated work.
+- **Living Exploration Notes & Codebase Truth (Anti-Stale Discipline).** Shared exploration notes are an **orientation index, never a closed or static boundary**:
+  - **Codebase is the live source of truth**: Every child builder must verify current signatures and call sites on the latest integration branch tip (using code-graph tools like `trail_ask`, `trail_skeleton`, `trail_callers`, or targeted `git diff <base>..HEAD`) rather than blindly trusting pre-run notes or ignoring newly introduced modules.
+  - **Append-on-merge delta updates**: Whenever a child ticket integrates new public seams, schema migrations, or shared contracts into the integration branch, append a concise delta entry (`commit SHA + new/modified public symbols`) to the shared exploration notes so downstream frontier builders immediately see what upstream tickets built.
+  - **Targeted intermediate checks & immediate worktree cleanup**: Run targeted tests during intermediate laps (reserving the full regression suite for final acceptance), and immediately remove merged child worktrees (`git worktree remove`) to prevent disk bloat and cross-worktree edit collisions.
 - **Manual GitHub input is inert.** Issue edits/labels/closure and PR comments,
   reviews or request-changes do not mutate contracts, create findings or allocate
   laps. Required CI, head/base changes and verified merges still govern readiness.

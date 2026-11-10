@@ -9,15 +9,7 @@
 ## Repository Knowledge, Skills & Memory
 
 - **Canonical Configuration**: `AGENTS.md` and `.agents/skills/` are authoritative sources of truth. Compatibility symlinks (`CLAUDE.md -> AGENTS.md`, `.claude/skills -> ../.agents/skills`) mirror them for tool support.
-- **Repository Skills**: Canonical playbooks live in `.agents/skills/`. Consult when triggered:
-  - Issue triage: `/animus-triage`
-  - Spec drafting, product shaping & architecture: `/animus-brainstorm`, `/animus-grill`, `/animus-spec`, `/animus-architecture`, `/animus-tickets`
-  - Implementation, PR authoring & verification: `/animus-implement`, `/animus-implement-spec`, `.agents/skills/pr`, `.agents/skills/tdd`, `.agents/skills/blueprint`, `.agents/skills/security-hardening`
-  - Failure recovery & root-causing: `/diagnosing-bugs`, `.agents/skills/unstick`
-  - Frontend & UI verification: `.agents/skills/ui-quality`
-  - Code review & standards: `/animus-review` (enforces `CODING_STANDARDS.md`)
-  - Repository harness setup & self-check: `/animus-harness`
-  - Retrospective & post-lap memory synthesis: `/retro`, `/animus-learn`, `.agents/skills/writing-for-agents`, `.agents/skills/skill-creator`
+- **Stage & Workflow Boundary**: Stage playbooks in `.agents/skills/` (`animus-*`, `retro`, `pr`, `skill-creator`, `writing-for-agents`) are **strictly user- or engine-invoked (`disable-model-invocation: true`)**. Never self-invoke, read, chain, or combine stage playbooks unless explicitly requested for the current turn; when an interactive skill is invoked, follow only that skill without layering extra review or coordinator stages.
 - **Learned Repo Playbooks** (synthesized via `/animus-learn` from past issue laps):
   - When implementing or repairing governance policy verifiers, read `.agents/skills/policy-verifier-regressions/SKILL.md` and follow it.
 - **Verified Tool Guidance**: Inspect `.factory/tool-guidance.json` for validated CLI recipes (test, lint, format, typecheck, build) that exited code 0.
@@ -34,7 +26,7 @@
 
 ## Execution Rules
 
-- **Pre-Commit CI Invariant**: Deterministic checks (architecture, format, lint, typecheck, tests) run on commit. Bypassing git hooks with `--no-verify` or `-n` is forbidden and blocked.
+- **Pre-Commit CI Invariant**: Deterministic static checks (architecture, format, lint, typecheck) run on commit, while full test suites run during targeted verification or when `ANIMUS_PRECOMMIT_FULL_TEST=1` is set. Bypassing git hooks with `--no-verify` or `-n` is forbidden and blocked.
 - **Red → Green Loop**: Test-first at agreed public seams using `.agents/skills/tdd`. Never mock internals or write tautological assertions.
 - **Blueprint & Two-Strike Unstick**: Compile domain types and stub signatures before bodies (`.agents/skills/blueprint`). After 2 consecutive check failures, stop editing, probe the shared assumption, and revert scratch debris (`.agents/skills/unstick`).
 - **Offline Invariant**: Test suites run offline with zero live network calls. Use injectable mock transports for external APIs (e.g., OpenRouter / Jev).
