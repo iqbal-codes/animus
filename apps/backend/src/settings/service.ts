@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -70,6 +71,58 @@ const DEFAULT_PLATFORM_PROVIDERS = [
     enabled: false,
   },
 ];
+
+const FALLBACK_HARNESS_MODELS: Record<string, string[]> = {
+  pi: [
+    "default",
+    "google-vertex/gemini-2.5-pro",
+    "google-vertex/gemini-2.5-flash",
+    "google-vertex/gemini-3.7-flash",
+    "google-vertex/gemini-3.8-flash",
+    "openai/gpt-5",
+    "openai/gpt-4o",
+    "openai/o3-mini",
+    "minimax/MiniMax-M3",
+  ],
+  claude: [
+    "default",
+    "claude-3-7-sonnet",
+    "claude-3-5-sonnet",
+    "claude-3-5-haiku",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6",
+    "claude-haiku-4-5",
+  ],
+  omp: [
+    "default",
+    "opus",
+    "sonnet",
+    "gpt-5.2",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "deepseek-v4.1-flash",
+  ],
+  codex: [
+    "default",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "o3-mini",
+    "o4-mini",
+    "gpt-4o",
+  ],
+  opencode: ["default", "opencode-zen", "opencode-go", "deepseek-coder", "claude-3-5-sonnet"],
+  commandcode: ["default", "commandcode-default", "claude-3-7-sonnet", "gpt-4o"],
+};
+
+const HARNESS_EFFORTS: Record<string, string[]> = {
+  pi: ["minimal", "low", "medium", "high", "xhigh", "max"],
+  claude: ["low", "medium", "high", "xhigh", "max"],
+  omp: ["minimal", "low", "medium", "high", "xhigh", "max"],
+  commandcode: ["low", "medium", "high", "xhigh", "max"],
+  codex: ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
+  opencode: ["low", "medium", "high"],
+};
 
 export class SettingsService {
   private userAnimusDir: string;
@@ -163,18 +216,95 @@ export class SettingsService {
   }
 
   // ==========================================
+  // Harness Models Discovery & Efforts
+  // ==========================================
+  getHarnessModels(providerId = "pi"): {
+    provider: string;
+    models: string[];
+    supportedEfforts: string[];
+    defaultEffort: string;
+  } {
+    const provider = providerId.toLowerCase();
+    const supportedEfforts = HARNESS_EFFORTS[provider] || ["low", "medium", "high", "max"];
+    const defaultEffort = supportedEfforts.includes("high")
+      ? "high"
+      : supportedEfforts[0] || "medium";
+
+    if (provider === "pi") {
+      try {
+        const res = spawnSync("pi", ["--list-models"], {
+          timeout: 3000,
+          encoding: "utf-8",
+        });
+        if (res.status === 0 && res.stdout) {
+          const lines = res.stdout.trim().split("\n");
+          const parsedModels = new Set<string>(["default"]);
+          for (let i = 1; i < lines.length; i++) {
+            const parts = lines[i].trim().split(/\s+/);
+            if (parts.length >= 2) {
+              const prov = parts[0];
+              const mod = parts[1];
+              parsedModels.add(prov ? `${prov}/${mod}` : mod);
+            }
+          }
+          if (parsedModels.size > 1) {
+            return {
+              provider,
+              models: Array.from(parsedModels),
+              supportedEfforts,
+              defaultEffort,
+            };
+          }
+        }
+      } catch {}
+    }
+
+    const fallback = FALLBACK_HARNESS_MODELS[provider] || ["default"];
+    return {
+      provider,
+      models: fallback,
+      supportedEfforts,
+      defaultEffort,
+    };
+  }
+
+  // ==========================================
   // Project Settings (<repoRoot>)
   // ==========================================
   getProjectSettings(repoRoot = this.defaultRepoRoot): ProjectSettings {
     // 1. Models & Releases: .animus/config.yaml
     const animusYamlPath = join(repoRoot, ".animus/config.yaml");
-    let modelsData = {};
+    let modelsData: any = {};
     let releasesData = {};
     if (existsSync(animusYamlPath)) {
       try {
         const parsed = parseYaml(readFileSync(animusYamlPath, "utf-8"));
         if (parsed && typeof parsed === "object") {
-          modelsData = parsed;
+          const assistant = typeof parsed.assistant === "string" ? parsed.assistant : "pi";
+          const defaultModel =
+            parsed.assistants?.[assistant]?.model ||
+            parsed.defaultModel ||
+            parsed.tiers?.medium?.model ||
+            "default";
+          const effort =
+            parsed.tiers?.medium?.effort ||
+            parsed.aliases?.["@reasoning"]?.effort ||
+            parsed.effort ||
+            "high";
+          const concurrencyLimit =
+            typeof parsed.concurrencyLimit === "number" ? parsed.concurrencyLimit : 2;
+
+          modelsData = {
+            assistant,
+            defaultModel,
+            effort,
+            concurrencyLimit,
+            plannerModel: parsed.tiers?.large?.model || defaultModel,
+            builderModel: parsed.tiers?.medium?.model || defaultModel,
+            reviewerModel: parsed.aliases?.["@reasoning"]?.model || defaultModel,
+            worktreeStrategy: parsed.worktree?.strategy || "isolated",
+            ...parsed,
+          };
           if (parsed.releases && typeof parsed.releases === "object") {
             releasesData = parsed.releases;
           }
@@ -264,20 +394,78 @@ export class SettingsService {
 
     // Write 1. .animus/config.yaml
     const animusYamlPath = join(repoRoot, ".animus/config.yaml");
-    let existingYaml: Record<string, unknown> = {};
+    let existingYaml: Record<string, any> = {};
     if (existsSync(animusYamlPath)) {
       try {
         const parsed = parseYaml(readFileSync(animusYamlPath, "utf-8"));
         if (parsed && typeof parsed === "object") {
-          existingYaml = parsed as Record<string, unknown>;
+          existingYaml = parsed as Record<string, any>;
         }
       } catch {}
     }
-    const mergedYaml = {
+
+    const nextAssistant = validated.models.assistant || existingYaml.assistant || "pi";
+    const nextModel =
+      validated.models.defaultModel || existingYaml.assistants?.[nextAssistant]?.model || "default";
+    const nextEffort = validated.models.effort || existingYaml.tiers?.medium?.effort || "high";
+    const nextConcurrency = validated.models.concurrencyLimit ?? existingYaml.concurrencyLimit ?? 2;
+
+    const mergedYaml: Record<string, any> = {
       ...existingYaml,
       ...validated.models,
+      assistant: nextAssistant,
+      assistants: {
+        ...existingYaml.assistants,
+        [nextAssistant]: { model: nextModel },
+      },
+      tiers: {
+        small: {
+          provider: nextAssistant,
+          model: nextModel,
+          effort: "medium",
+        },
+        medium: {
+          provider: nextAssistant,
+          model: nextModel,
+          effort: nextEffort,
+        },
+        large: {
+          provider: nextAssistant,
+          model: nextModel,
+          effort: nextEffort === "max" || nextEffort === "xhigh" ? nextEffort : "high",
+        },
+        ...existingYaml.tiers,
+      },
+      aliases: {
+        ...existingYaml.aliases,
+        "@reasoning": {
+          provider: nextAssistant,
+          model: nextModel,
+          effort: nextEffort === "max" ? "max" : "high",
+        },
+      },
+      concurrencyLimit: nextConcurrency,
       releases: validated.releases,
     };
+
+    if (mergedYaml.tiers?.small) {
+      mergedYaml.tiers.small.provider = nextAssistant;
+      mergedYaml.tiers.small.model = nextModel;
+    }
+    if (mergedYaml.tiers?.medium) {
+      mergedYaml.tiers.medium.provider = nextAssistant;
+      mergedYaml.tiers.medium.model = nextModel;
+      mergedYaml.tiers.medium.effort = nextEffort;
+    }
+    if (mergedYaml.tiers?.large) {
+      mergedYaml.tiers.large.provider = nextAssistant;
+      mergedYaml.tiers.large.model = nextModel;
+    }
+    if (mergedYaml.aliases?.["@reasoning"]) {
+      mergedYaml.aliases["@reasoning"].provider = nextAssistant;
+      mergedYaml.aliases["@reasoning"].model = nextModel;
+    }
+
     this.atomicWrite(animusYamlPath, stringifyYaml(mergedYaml));
 
     // Write 2. .factory/tool-guidance.json

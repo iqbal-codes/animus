@@ -14,13 +14,28 @@ export async function handleSettingsRoute(
 ): Promise<Response | null> {
   const service = ctx.settingsService ?? new SettingsService();
 
-  const normalized = path.startsWith("/api/v1/settings/")
-    ? path.slice("/api/v1/settings/".length)
-    : path.startsWith("/api/settings/")
-      ? path.slice("/api/settings/".length)
+  const rawPath = path.split("?")[0] ?? path;
+  const normalized = rawPath.startsWith("/api/v1/settings/")
+    ? rawPath.slice("/api/v1/settings/".length)
+    : rawPath.startsWith("/api/settings/")
+      ? rawPath.slice("/api/settings/".length)
       : null;
 
   if (normalized === null) return null;
+
+  // 0. Harness Models Dynamic Discovery
+  if (normalized === "harness-models") {
+    if (request.method !== "GET") {
+      return Response.json(
+        { error: "method_not_allowed" },
+        { status: 405, headers: { Allow: "GET" } },
+      );
+    }
+    const url = new URL(request.url);
+    const provider = url.searchParams.get("provider") || "pi";
+    const modelsInfo = service.getHarnessModels(provider);
+    return Response.json(modelsInfo);
+  }
 
   // 1. Personal Preferences
   if (normalized === "personal" || normalized === "preferences") {

@@ -163,4 +163,33 @@ describe("Settings Service & Backend Routes", () => {
     const scopedData = await scopedRes?.json();
     expect(scopedData.models.concurrencyLimit).toBe(4);
   });
+
+  test("Harness models dynamic discovery returns real models and supported efforts", async () => {
+    // 1. Service direct call
+    const piModels = service.getHarnessModels("pi");
+    expect(piModels.provider).toBe("pi");
+    expect(piModels.models).toBeArray();
+    expect(piModels.models.length).toBeGreaterThan(0);
+    expect(piModels.models).toContain("default");
+    expect(piModels.supportedEfforts).toBeArray();
+    expect(piModels.supportedEfforts).toContain("medium");
+    expect(piModels.supportedEfforts).toContain("high");
+
+    const claudeModels = service.getHarnessModels("claude");
+    expect(claudeModels.provider).toBe("claude");
+    expect(claudeModels.models).toContain("default");
+    expect(claudeModels.models).toContain("claude-3-5-sonnet");
+    expect(claudeModels.supportedEfforts).toContain("high");
+
+    // 2. HTTP route via handleSettingsRoute
+    const req = new Request("http://localhost:3000/api/v1/settings/harness-models?provider=claude");
+    const res = await handleSettingsRoute(req, "/api/v1/settings/harness-models?provider=claude", {
+      settingsService: service,
+    });
+    expect(res?.status).toBe(200);
+    const body = await res?.json();
+    expect(body.provider).toBe("claude");
+    expect(body.models).toContain("claude-3-7-sonnet");
+    expect(body.supportedEfforts).toContain("max");
+  });
 });

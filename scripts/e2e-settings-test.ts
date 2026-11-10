@@ -362,28 +362,42 @@ async function run() {
     console.log("  ✓ config.json github verified on disk:", configData3.github);
 
     // =========================================================================
-    // Scenario 7: Project / Models (Model Tiers & Role Routing)
+    // Scenario 7: Project / Models (Dynamic Harness, Models & Reasoning Effort)
     // =========================================================================
-    console.log("Scenario 7: Testing Project / Models & .animus/config.yaml persistence...");
+    console.log("Scenario 7: Testing Project / Models (Harness, Dynamic Models, Reasoning Effort) & .animus/config.yaml persistence...");
     await page.goto(\`http://localhost:\${PORT}/?settings=true&scope=project&section=models\`);
     await page.waitForSelector('text=Model tiers', { timeout: 5000 });
     await page.waitForSelector('text=Role routing', { timeout: 5000 });
 
+    // Select Harness: claude
+    const harnessSelect = page.locator('#settings-harness-provider');
+    await harnessSelect.selectOption('claude');
+    await page.waitForTimeout(600);
+
+    // Dynamic models loaded for Claude! Select claude-3-5-sonnet
     const modelSelect = page.locator('#settings-default-model');
     await modelSelect.selectOption('claude-3-5-sonnet');
+
+    // Select Reasoning Effort: high
+    const effortSelect = page.locator('#settings-reasoning-effort');
+    await effortSelect.selectOption('high');
+
+    // Select Concurrency Limit: 4
     const concurrencySelect = page.locator('#settings-concurrency-limit');
     await concurrencySelect.selectOption('4');
     await page.waitForTimeout(600);
 
     await page.screenshot({ path: path.join(EVIDENCE_DIR, '06-project-models.png') });
-    results.push({ name: "Project Models & Tiers", status: "PASS", evidence: "06-project-models.png" });
+    results.push({ name: "Project Models, Dynamic Harness & Efforts", status: "PASS", evidence: "06-project-models.png" });
 
     const animusYamlPath = path.join(testRepoDir, '.animus/config.yaml');
     assert(fs.existsSync(animusYamlPath), ".animus/config.yaml must exist on disk");
     const yamlContent = fs.readFileSync(animusYamlPath, 'utf-8');
+    assert(yamlContent.includes('assistant: claude'), ".animus/config.yaml must contain assistant: claude");
     assert(yamlContent.includes('claude-3-5-sonnet'), ".animus/config.yaml must contain claude-3-5-sonnet");
     assert(yamlContent.includes('concurrencyLimit: 4'), ".animus/config.yaml must contain concurrencyLimit: 4");
-    console.log("  ✓ .animus/config.yaml verified on disk");
+    assert(yamlContent.includes('effort: high'), ".animus/config.yaml must contain effort: high");
+    console.log("  ✓ .animus/config.yaml verified on disk with dynamic harness & reasoning effort");
 
     // =========================================================================
     // Scenario 8: Project / Checks (Verification Commands & tool-guidance.json)

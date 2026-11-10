@@ -115,18 +115,23 @@ export type PlatformSettingsUpdate = {
 export const projectSettingsSchema = z.object({
   models: z
     .object({
-      defaultModel: z.string().default("claude-3-7-sonnet"),
-      plannerModel: z.string().default("claude-3-7-sonnet"),
-      builderModel: z.string().default("claude-3-7-sonnet"),
-      reviewerModel: z.string().default("claude-3-7-sonnet"),
+      assistant: z.string().default("pi"),
+      defaultModel: z.string().default("default"),
+      effort: z.string().default("high"),
+      plannerModel: z.string().default("default"),
+      builderModel: z.string().default("default"),
+      reviewerModel: z.string().default("default"),
       worktreeStrategy: z.string().default("isolated"),
       concurrencyLimit: z.number().default(2),
     })
+    .passthrough()
     .default({
-      defaultModel: "claude-3-7-sonnet",
-      plannerModel: "claude-3-7-sonnet",
-      builderModel: "claude-3-7-sonnet",
-      reviewerModel: "claude-3-7-sonnet",
+      assistant: "pi",
+      defaultModel: "default",
+      effort: "high",
+      plannerModel: "default",
+      builderModel: "default",
+      reviewerModel: "default",
       worktreeStrategy: "isolated",
       concurrencyLimit: 2,
     }),
