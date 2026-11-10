@@ -21,6 +21,7 @@ import { RESTORE_MIGRATIONS } from "../restore/schema";
 import { CUTOVER_MIGRATIONS } from "../cutover/schema";
 import { FINAL_DELIVERY_MIGRATIONS } from "../final/schema";
 import { DELIVERY_CLAIM_MIGRATIONS } from "../delivery/claim-schema";
+import { CONSOLIDATION_MIGRATIONS } from "./consolidation";
 import { applyMigrations, type Migration } from "./migrations";
 
 /**
@@ -38,7 +39,8 @@ import { applyMigrations, type Migration } from "./migrations";
  * coordination (#160) owns version 12, the authority cutover (#165) owns
  * version 15, and the final-spec-review remediation owns version 16 for the
  * durable delivery-role claim. Version 14 stays unassigned; a future lane
- * appends the next version instead of claiming an existing one.
+ * appends the next version instead of claiming an existing one. Version 18
+ * consolidates 1:1 delivery state and the duplicated merge/event audit tables.
  */
 export const SCHEMA_MIGRATIONS: Migration[] = [
   ...WORK_MIGRATIONS,
@@ -55,6 +57,7 @@ export const SCHEMA_MIGRATIONS: Migration[] = [
   ...RESTORE_MIGRATIONS.filter((migration) => migration.version > 12),
   ...CUTOVER_MIGRATIONS,
   ...DELIVERY_CLAIM_MIGRATIONS,
+  ...CONSOLIDATION_MIGRATIONS,
 ];
 
 export function resolveStateDir(): string {

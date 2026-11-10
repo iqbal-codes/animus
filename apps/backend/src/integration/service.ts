@@ -813,12 +813,15 @@ export class ChildIntegrationService {
       body: `Candidate \`${options.expectedCandidate}\` merged at \`${mergeSha}\` and verified on the remote integration lineage \`${run.target_branch}\` (${targetAfter}).`,
     });
 
+    const activePublication = publication?.pullRequests.find((pr) => pr.active) ?? null;
     const recorded = this.recordIntegration(run, {
       acceptance,
       mergeSha,
       targetBefore: options.targetBefore,
       targetAfter,
       remotePullRequest,
+      targetId: publication?.target.id ?? null,
+      pullRequestId: activePublication?.id ?? null,
       actor: options.actor,
       reconciliation: options.reconciliation,
     });
@@ -850,6 +853,8 @@ export class ChildIntegrationService {
       targetBefore: string;
       targetAfter: string;
       remotePullRequest: ForgePullRequest;
+      targetId: string | null;
+      pullRequestId: string | null;
       actor: string;
       reconciliation: boolean;
     },
@@ -862,26 +867,34 @@ export class ChildIntegrationService {
       try {
         this.db
           .prepare(
-            `INSERT INTO child_integrations
-               (id, project_id, delivery_id, plan_id, work_id, run_id, issue_number, gate_profile,
-                source_branch, target_branch, candidate_head_sha, base_sha,
-                target_tip_before_sha, target_tip_after_sha, merge_sha,
-                remote_pull_request_number, remote_pull_request_url, evidence_identity, integrated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'child', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(project_id, delivery_id, work_id, target_branch) DO UPDATE SET
+            `INSERT INTO delivery_merges
+               (id, project_id, delivery_id, plan_id, work_id, run_id, gate_profile, issue_number,
+                target_id, pull_request_id, repository, pr_number, pr_url, source_branch,
+                target_branch, candidate_head_sha, base_sha, target_tip_before_sha,
+                target_tip_after_sha, remote_head_ref_oid, merge_sha, evidence_identity,
+                verified_at, verified_by, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, 'child', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(project_id, delivery_id, work_id, target_branch)
+               WHERE gate_profile = 'child' DO UPDATE SET
                id = excluded.id,
                run_id = excluded.run_id,
                issue_number = excluded.issue_number,
+               target_id = excluded.target_id,
+               pull_request_id = excluded.pull_request_id,
                source_branch = excluded.source_branch,
                candidate_head_sha = excluded.candidate_head_sha,
                base_sha = excluded.base_sha,
                target_tip_before_sha = excluded.target_tip_before_sha,
                target_tip_after_sha = excluded.target_tip_after_sha,
+               remote_head_ref_oid = excluded.remote_head_ref_oid,
                merge_sha = excluded.merge_sha,
-               remote_pull_request_number = excluded.remote_pull_request_number,
-               remote_pull_request_url = excluded.remote_pull_request_url,
+               repository = excluded.repository,
+               pr_number = excluded.pr_number,
+               pr_url = excluded.pr_url,
                evidence_identity = excluded.evidence_identity,
-               integrated_at = excluded.integrated_at`,
+               verified_at = excluded.verified_at,
+               verified_by = excluded.verified_by,
+               created_at = excluded.created_at`,
           )
           .run(
             id,
@@ -891,16 +904,22 @@ export class ChildIntegrationService {
             run.work_id,
             run.id,
             run.issue_number,
+            details.targetId,
+            details.pullRequestId,
+            run.repo_name,
+            details.remotePullRequest.number,
+            details.remotePullRequest.html_url ?? null,
             run.branch,
             run.target_branch,
             run.head_sha!,
             run.base_sha,
             details.targetBefore,
             details.targetAfter,
+            run.head_sha!,
             details.mergeSha,
-            details.remotePullRequest.number,
-            details.remotePullRequest.html_url ?? null,
             evidenceIdentity,
+            now,
+            details.actor,
             now,
           );
 
@@ -924,15 +943,16 @@ export class ChildIntegrationService {
 
         this.db
           .prepare(
-            `INSERT INTO child_integration_events
-               (id, project_id, delivery_id, work_id, run_id, candidate_head_sha, target_tip_sha,
-                kind, merge_sha, reasons, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'merged', ?, ?, ?)`,
+            `INSERT INTO delivery_events
+               (id, project_id, delivery_id, plan_id, work_id, run_id, kind, candidate_head_sha,
+                target_tip_sha, merge_sha, reasons, detail, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, 'merged', ?, ?, ?, ?, NULL, ?)`,
           )
           .run(
             `ievt_${randomUUID()}`,
             run.project_id,
             run.delivery_id,
+            run.plan_id,
             run.work_id,
             run.id,
             run.head_sha!,
@@ -962,7 +982,7 @@ export class ChildIntegrationService {
     return this.mapIntegration(
       this.db
         .prepare(
-          "SELECT * FROM child_integrations WHERE project_id = ? AND delivery_id = ? AND work_id = ? AND target_branch = ?",
+          "SELECT *, pr_number AS remote_pull_request_number, pr_url AS remote_pull_request_url, verified_at AS integrated_at FROM delivery_merges WHERE project_id = ? AND delivery_id = ? AND work_id = ? AND target_branch = ? AND gate_profile = 'child'",
         )
         .get(
           run.project_id,
@@ -989,15 +1009,16 @@ export class ChildIntegrationService {
       try {
         this.db
           .prepare(
-            `INSERT INTO child_integration_events
-               (id, project_id, delivery_id, work_id, run_id, candidate_head_sha, target_tip_sha,
-                kind, merge_sha, reasons, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'blocked', NULL, ?, ?)`,
+            `INSERT INTO delivery_events
+               (id, project_id, delivery_id, plan_id, work_id, run_id, kind, candidate_head_sha,
+                target_tip_sha, merge_sha, reasons, detail, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, 'blocked', ?, ?, NULL, ?, NULL, ?)`,
           )
           .run(
             `ievt_${randomUUID()}`,
             run.project_id,
             run.delivery_id,
+            run.plan_id,
             run.work_id,
             run.id,
             run.head_sha ?? run.base_sha,
@@ -1392,7 +1413,13 @@ export class ChildIntegrationService {
 
   private loadIntegration(projectId: string, runId: string): ChildIntegration | null {
     const row = this.db
-      .prepare("SELECT * FROM child_integrations WHERE project_id = ? AND run_id = ?")
+      .prepare(
+        `SELECT *, pr_number AS remote_pull_request_number,
+                pr_url AS remote_pull_request_url,
+                verified_at AS integrated_at
+         FROM delivery_merges
+         WHERE project_id = ? AND run_id = ? AND gate_profile = 'child'`,
+      )
       .get(projectId, runId) as unknown as IntegrationRow | undefined;
     return row ? this.mapIntegration(row) : null;
   }
@@ -1400,8 +1427,9 @@ export class ChildIntegrationService {
   private listEvents(projectId: string, runId: string): IntegrationEvent[] {
     const rows = this.db
       .prepare(
-        `SELECT * FROM child_integration_events
+        `SELECT * FROM delivery_events
           WHERE project_id = ? AND run_id = ?
+            AND kind IN ('blocked', 'merged', 'reconciled')
           ORDER BY created_at ASC, id ASC`,
       )
       .all(projectId, runId) as unknown as EventRow[];

@@ -1,5 +1,9 @@
 # Upgrading the factory
 
+- **Status:** Historical
+- **Archived:** 2026-11-10
+- **Historical note:** Retained as a design record; do not implement from this document.
+
 Upgrade an installed factory by pulling the factory repository and rerunning
 `python <factory>/bin/factory.py init` from the application repository.
 

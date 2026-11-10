@@ -1,5 +1,9 @@
 # Project runtime host
 
+- **Status:** Historical
+- **Archived:** 2026-11-10
+- **Historical note:** Retained as a design record; do not implement from this document.
+
 Factory can own ordinary application environments while Animus owns every workflow
 and coding agent. It never chooses a stage, retries an agent, evaluates a scenario,
 interprets workflow output to dispatch more work, or authorizes a merge.

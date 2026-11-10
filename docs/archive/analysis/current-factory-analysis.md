@@ -1,5 +1,9 @@
 # Current software factory: execution, labels, and missing controls
 
+- **Status:** Historical
+- **Archived:** 2026-11-10
+- **Historical note:** Retained as a design record; do not implement from this document.
+
 Date: 2026-10-26
 
 ## Conclusion

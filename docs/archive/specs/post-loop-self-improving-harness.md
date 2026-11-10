@@ -1,6 +1,8 @@
 # Spec & Implementation Plan: Post-Loop Self-Improving Harness (Harness² Adaptation)
 
-* **Status:** Original design; admission, activation, and delivery requirements superseded by [learning reliability hardening](spec-learning-reliability-hardening.md). Sections below describe the original plan, not verified current behavior.
+- **Status:** Superseded
+- **Superseded by:** [learning reliability hardening](../../spec-learning-reliability-hardening.md)
+
 * **Date:** 2026-10-29
 * **Reference Architecture:** [Google Research Harness²](https://github.com/google-research/harness2) (arXiv:2610.14224), TypeSafe Jev System 1 (`typesafe/jev-1.14`), Pi Coding Agent Extensions & Skills
 * **Target Subsystems:** `scripts/local-loop.ts`, `scripts/loop/providers.ts`, `scripts/loop/config.ts`, `scripts/loop/types.ts`, `scripts/loop/scheduler.ts`, `.animus/config.yaml`, `.factory/`, `.agents/skills/`, `apps/backend/src/main.ts`

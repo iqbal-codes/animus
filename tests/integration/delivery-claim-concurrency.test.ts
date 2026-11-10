@@ -210,9 +210,8 @@ describe("durable delivery-role claims", () => {
   }
 
   function integrationCount(connection: ReturnType<typeof initializeDatabase>): number {
-    return (
-      connection.prepare("SELECT COUNT(*) AS c FROM child_integrations").get() as { c: number }
-    ).c;
+    return (connection.prepare("SELECT COUNT(*) AS c FROM delivery_merges").get() as { c: number })
+      .c;
   }
 
   beforeEach(async () => {

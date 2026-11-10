@@ -236,7 +236,9 @@ describe("child gate integration", () => {
 
   function integrationRow(runId: string) {
     return db
-      .prepare("SELECT * FROM child_integrations WHERE project_id = ? AND run_id = ?")
+      .prepare(
+        "SELECT * FROM delivery_merges WHERE project_id = ? AND run_id = ? AND gate_profile = 'child'",
+      )
       .get(projectId, runId) as Record<string, unknown> | undefined;
   }
 
@@ -340,13 +342,11 @@ describe("child gate integration", () => {
     const again = await integration.land(projectId, run.id);
     expect(again.state).toBe("integrated");
     const integrations = db
-      .prepare("SELECT COUNT(*) AS count FROM child_integrations WHERE run_id = ?")
+      .prepare("SELECT COUNT(*) AS count FROM delivery_merges WHERE run_id = ?")
       .get(run.id) as { count: number };
     expect(integrations.count).toBe(1);
     const mergedEvents = db
-      .prepare(
-        "SELECT COUNT(*) AS count FROM child_integration_events WHERE run_id = ? AND kind = 'merged'",
-      )
+      .prepare("SELECT COUNT(*) AS count FROM delivery_events WHERE run_id = ? AND kind = 'merged'")
       .get(run.id) as { count: number };
     expect(mergedEvents.count).toBe(1);
   });
@@ -803,7 +803,7 @@ describe("child gate integration", () => {
     expect(integrationRow(run.id)).toBeUndefined();
     // No dependent release and no remote merge happened for this candidate.
     expect(
-      db.prepare("SELECT COUNT(*) AS c FROM child_integrations WHERE run_id = ?").get(run.id),
+      db.prepare("SELECT COUNT(*) AS c FROM delivery_merges WHERE run_id = ?").get(run.id),
     ).toEqual({ c: 0 });
   });
 

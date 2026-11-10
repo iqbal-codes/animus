@@ -1,6 +1,9 @@
 # Software factory operator app: review input
 
-Status: agreed direction for independent concept review, not implementation approval.
+- **Status:** Historical
+- **Archived:** 2026-11-10
+- **Historical note:** Retained as a design record; do not implement from this document.
+
 
 ## Problem
 

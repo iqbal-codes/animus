@@ -1,5 +1,8 @@
 # Harness Authoring Standard: Repository Memory & Skills
 
+- **Status:** Active
+- **Last verified:** 2026-11-10
+
 Authoritative schema and formatting constraints for agent-authored repository memory (`.factory/*`) and procedural skills (`.agents/skills/<name>/SKILL.md`). For context-pointer design, information hierarchy, and completion-criteria mechanics, follow `.agents/skills/writing-for-agents/SKILL.md`.
 
 ## 1. Core Principles & 5-Level Enforcement Hierarchy

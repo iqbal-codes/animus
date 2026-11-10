@@ -1,7 +1,8 @@
 # Factory operations
 
-This application runs on a pinned Animus SDLC source. See
-[factory/MIGRATION.md](factory/MIGRATION.md) for installing and upgrading it.
+This application runs on a pinned Animus SDLC source. See the
+[onboarding guide](docs/onboarding.md) for installation and enrollment, and the
+[runtime contract](docs/runtime.md) for start commands and HTTP routes.
 
 Shared workflow gates own every decision. Inspect a run's identity and status
 before responding to a declared gate.

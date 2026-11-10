@@ -1,7 +1,7 @@
 # Mission
 
 **Derived from:** PRD.md
-**Last reconciled with it:** 2026-10-26
+**Last reconciled with it:** 2026-11-10
 
 ## What Animus is
 

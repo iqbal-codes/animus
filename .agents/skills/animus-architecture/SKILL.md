@@ -35,7 +35,7 @@ Use this playbook when:
 
 3. **Verify selected stack patterns against official primary sources.**
    Verify current versions, setup conventions, and idiomatic APIs for the chosen stack against primary sources (via Context7 docs tools or by dispatching `$research` to write `docs/research-<stack-topic>.md`) instead of relying on pretraining memory.
-   *Completion Criterion*: Every chosen framework and library pattern is verified against official primary-source documentation and cited in `docs/research-*.md` or `docs/architecture.md`.
+   *Completion Criterion*: Every chosen framework and library pattern is verified against official primary-source documentation and cited in an `Active` `docs/research-*.md` or `docs/architecture.md`; archived notes never count as current evidence.
 
 4. **Write `docs/architecture.md` and hand off to `/animus-tickets`.**
    Write `docs/architecture.md` (and any load-bearing ADRs in `docs/adr/`) using the shape below, including Foundation / Strangler Slice (`S0`) prerequisites. Synchronize module boundary rules into `.factory/codebase-rules.json` (using `mode: "warn"` on legacy paths or target-scoped globs until `S0` completes) and `AGENTS.md`. Present the completed architecture doc and suggest `/animus-tickets` next. Hand off cleanly without automatic invocation.

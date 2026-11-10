@@ -50,6 +50,8 @@ interface TargetRow {
   state: PublicationTarget["state"];
   active_pull_request_id: string | null;
   last_error: string | null;
+  summary_body: string | null;
+  summary_updated_at: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -1044,9 +1046,9 @@ export class PublicationService {
     const hash = JSON.parse(intent.request_json).hash as string;
     const marker = publicationMarker(intent.operation_key);
     const summary = this.db
-      .prepare("SELECT body FROM publication_summaries WHERE target_id = ?")
-      .get(target.id) as { body: string } | undefined;
-    if (!summary) {
+      .prepare("SELECT summary_body AS body FROM publication_targets WHERE id = ?")
+      .get(target.id) as { body: string | null } | undefined;
+    if (!summary?.body) {
       this.failIntent(intent, new Error("publication summary is missing"));
       return;
     }
@@ -1680,11 +1682,11 @@ export class PublicationService {
     const now = this.clock();
     this.db
       .prepare(
-        `INSERT INTO publication_summaries (target_id, project_id, body, updated_at)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(target_id) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at`,
+        `UPDATE publication_targets
+         SET summary_body = ?, summary_updated_at = ?, updated_at = ?
+         WHERE id = ?`,
       )
-      .run(target.id, target.project_id, body, now);
+      .run(body, now, now, target.id);
   }
 
   private serialize<T>(key: string, work: () => Promise<T>): Promise<T> {

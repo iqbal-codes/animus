@@ -109,6 +109,8 @@ const COUNTED_TABLES = [
   "plan_members",
   "plan_decisions",
   "deliveries",
+  "delivery_merges",
+  "delivery_events",
   "dispatch_runs",
   "execution_budget_scopes",
   "execution_budget_grants",
@@ -123,7 +125,6 @@ const COUNTED_TABLES = [
   "publication_pull_requests",
   "publication_events",
   "publication_intents",
-  "publication_summaries",
   "commands",
 ] as const;
 
@@ -981,8 +982,16 @@ export class BackupRestoreService {
         });
       } finally {
         try {
-          restoredDb.close();
-        } catch {}
+          // A restore target must be a self-contained database: check the WAL
+          // back in and leave journal_mode=DELETE so later read-only integrity
+          // checks never need a -shm file the staging directory does not own.
+          restoredDb.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+          restoredDb.exec("PRAGMA journal_mode = DELETE;");
+        } finally {
+          try {
+            restoredDb.close();
+          } catch {}
+        }
       }
 
       stage = "verify_restored_database";
@@ -1029,6 +1038,8 @@ export class BackupRestoreService {
       const restoredWrite = initializeDatabase(join(target, BACKUP_DATABASE_FILE));
       try {
         this.writeRestoreRecord(restoredWrite, record);
+        restoredWrite.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+        restoredWrite.exec("PRAGMA journal_mode = DELETE;");
       } finally {
         try {
           restoredWrite.close();

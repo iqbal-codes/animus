@@ -1,5 +1,9 @@
 # Research: readable, decision-useful PR evidence and review records
 
+- **Status:** Historical
+- **Archived:** 2026-11-10
+- **Historical note:** Retained as a design record; do not implement from this document.
+
 - **Date:** 2026-11-01
 - **Topic:** PR bodies, Before/After evidence, review findings, resolutions, and status comments for Animus.
 - **Status:** Research and proposed design, not an approved template, runtime contract, or merge policy.

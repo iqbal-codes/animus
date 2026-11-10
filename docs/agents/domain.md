@@ -1,5 +1,8 @@
 # Domain Models, Architecture & ADRs
 
+- **Status:** Active
+- **Last verified:** 2026-11-10
+
 How planning, architecture, and implementation skills consume and maintain this repository's domain vocabulary, architectural decisions, and shared component patterns.
 
 ## Before exploring or designing, read these

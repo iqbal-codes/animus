@@ -1,5 +1,8 @@
 # Issue Tracker, Dependencies & Triage Labels
 
+- **Status:** Active
+- **Last verified:** 2026-11-10
+
 Issues and specifications for this repository live in GitHub Issues. Use the `gh` CLI for all tracker operations.
 
 For ticket decomposition and publication workflow, see `.agents/skills/animus-tickets/SKILL.md`. Both factory intake and `animus-loop` parse the standalone textual `Depends on:` line (`Depends on: #12, #14` or `Depends on: None`) in the issue body; native GitHub blocking edges supplement that line, never replace it.

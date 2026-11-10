@@ -58,14 +58,6 @@ interface DeliveryRow {
 }
 
 interface FinalRow {
-  id: string;
-  project_id: string;
-  delivery_id: string;
-  plan_id: string;
-  manifest_id: string;
-  graph_hash: string;
-  integration_branch: string;
-  delivery_branch: string;
   status: FinalDeliveryState;
   candidate_head_sha: string | null;
   final_run_id: string | null;
@@ -76,7 +68,6 @@ interface FinalRow {
   halt_reason: string | null;
   lease_owner: string | null;
   lease_expires_at: number | null;
-  created_at: number;
   updated_at: number;
 }
 
@@ -675,29 +666,12 @@ export class FinalDeliveryService {
       if (!existing) {
         this.db
           .prepare(
-            `INSERT INTO final_deliveries
-               (id, project_id, delivery_id, plan_id, manifest_id, graph_hash,
-                integration_branch, delivery_branch, status, candidate_head_sha, final_run_id,
-                required_count, integrated_count, pull_request_number, pull_request_url,
-                halt_reason, lease_owner, lease_expires_at, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'waiting_children', NULL, NULL, ?, 0, NULL, NULL,
-                     NULL, ?, ?, ?, ?)`,
+            `UPDATE deliveries
+             SET final_status = 'waiting_children', required_count = ?, integrated_count = 0,
+                 lease_owner = ?, lease_expires_at = ?, updated_at = ?
+             WHERE project_id = ? AND id = ?`,
           )
-          .run(
-            `final_${randomUUID()}`,
-            project.id,
-            delivery.id,
-            plan.id,
-            delivery.manifest_id,
-            plan.graph_hash,
-            this.integrationBranch(plan),
-            delivery.delivery_branch,
-            requiredCount,
-            ownerToken,
-            now + this.leaseMs,
-            now,
-            now,
-          );
+          .run(requiredCount, ownerToken, now + this.leaseMs, now, project.id, delivery.id);
       } else {
         if (
           existing.lease_owner &&
@@ -710,11 +684,11 @@ export class FinalDeliveryService {
         }
         this.db
           .prepare(
-            `UPDATE final_deliveries
+            `UPDATE deliveries
              SET lease_owner = ?, lease_expires_at = ?, required_count = ?, updated_at = ?
-             WHERE project_id = ? AND plan_id = ?`,
+             WHERE project_id = ? AND id = ?`,
           )
-          .run(ownerToken, now + this.leaseMs, requiredCount, now, project.id, plan.id);
+          .run(ownerToken, now + this.leaseMs, requiredCount, now, project.id, delivery.id);
       }
       this.db.exec("COMMIT;");
       return { acquired: true };
@@ -733,9 +707,9 @@ export class FinalDeliveryService {
     try {
       this.db
         .prepare(
-          `UPDATE final_deliveries
+          `UPDATE deliveries
            SET lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
-           WHERE project_id = ? AND delivery_id = ? AND lease_owner = ?`,
+           WHERE project_id = ? AND id = ? AND lease_owner = ?`,
         )
         .run(this.clock(), projectId, deliveryId, ownerToken);
     } catch {
@@ -762,8 +736,8 @@ export class FinalDeliveryService {
       : { number: null, url: null };
     this.db
       .prepare(
-        `UPDATE final_deliveries
-         SET status = ?, candidate_head_sha = ?, final_run_id = ?, required_count = ?,
+        `UPDATE deliveries
+         SET final_status = ?, candidate_head_sha = ?, final_run_id = ?, required_count = ?,
              integrated_count = ?, pull_request_number = ?, pull_request_url = ?,
              halt_reason = ?, updated_at = ?
          WHERE project_id = ? AND plan_id = ?`,
@@ -797,13 +771,13 @@ export class FinalDeliveryService {
   ): void {
     this.db
       .prepare(
-        `INSERT INTO final_delivery_events
-           (id, project_id, delivery_id, plan_id, run_id, kind, candidate_head_sha, reasons,
-            detail, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO delivery_events
+           (id, project_id, delivery_id, plan_id, work_id, run_id, kind, candidate_head_sha,
+            target_tip_sha, merge_sha, reasons, detail, created_at)
+         VALUES (?, ?, ?, ?, NULL, ?, ?, ?, NULL, NULL, ?, ?, ?)`,
       )
       .run(
-        `fev_${randomUUID()}`,
+        `devt_${randomUUID()}`,
         project.id,
         delivery.id,
         plan.id,
@@ -1234,7 +1208,13 @@ export class FinalDeliveryService {
 
   private loadRow(projectId: string, planId: string): FinalRow | null {
     const row = this.db
-      .prepare("SELECT * FROM final_deliveries WHERE project_id = ? AND plan_id = ?")
+      .prepare(
+        `SELECT final_status AS status, candidate_head_sha, final_run_id, required_count,
+                integrated_count, pull_request_number, pull_request_url, halt_reason,
+                lease_owner, lease_expires_at, updated_at
+         FROM deliveries
+         WHERE project_id = ? AND plan_id = ? AND final_status IS NOT NULL`,
+      )
       .get(projectId, planId) as FinalRow | undefined;
     return row ?? null;
   }
@@ -1275,10 +1255,12 @@ export class FinalDeliveryService {
       const row = this.db
         .prepare(
           `SELECT work_id, issue_number, candidate_head_sha, merge_sha, target_tip_before_sha,
-                  target_tip_after_sha, target_branch, remote_pull_request_number,
-                  remote_pull_request_url
-           FROM child_integrations
-           WHERE project_id = ? AND delivery_id = ? AND work_id = ? AND target_branch = ?`,
+                  target_tip_after_sha, target_branch,
+                  pr_number AS remote_pull_request_number,
+                  pr_url AS remote_pull_request_url
+           FROM delivery_merges
+           WHERE project_id = ? AND delivery_id = ? AND work_id = ? AND target_branch = ?
+             AND gate_profile = 'child'`,
         )
         .get(projectId, deliveryId, member.work_id, targetBranch) as IntegrationRow | undefined;
       if (row) map.set(member.work_id, row);

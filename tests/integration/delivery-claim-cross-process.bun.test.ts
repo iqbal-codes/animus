@@ -386,7 +386,7 @@ db.close();
     const verify = initializeDatabase(join(stateDir, "console.db"));
     try {
       const integrations = verify
-        .prepare("SELECT run_id, candidate_head_sha FROM child_integrations")
+        .prepare("SELECT run_id, candidate_head_sha FROM delivery_merges")
         .all() as Array<{ run_id: string; candidate_head_sha: string }>;
       expect(integrations).toHaveLength(1);
       const reviews = verify

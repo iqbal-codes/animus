@@ -389,7 +389,7 @@ describe("workspace backup and isolated restore", () => {
     }>(response);
     expect(created.manifestHash).toMatch(/^[a-f0-9]{64}$/);
     expect(created.artifactCount).toBe(1);
-    expect(created.schemaVersion).toBe(17);
+    expect(created.schemaVersion).toBe(18);
 
     const manifest = JSON.parse(readFileSync(join(bundle, BACKUP_MANIFEST_FILE), "utf8"));
     expect(manifest.kind).toBe("animus-workspace-backup");
@@ -1530,9 +1530,6 @@ describe("workspace backup and isolated restore", () => {
     const snapshot = new DatabaseSync(snapshotPath);
     try {
       snapshot.exec("PRAGMA foreign_keys = OFF;");
-      snapshot.exec("DROP TABLE child_integration_events;");
-      snapshot.exec("DROP TABLE child_integrations;");
-      snapshot.exec("DROP TABLE delivery_merge_verifications;");
       snapshot.exec("ALTER TABLE execution_checks DROP COLUMN kind;");
       snapshot.exec("ALTER TABLE execution_checks DROP COLUMN criterion_key;");
       // Rebuild the intent ledger with the genuine pre-v13 CHECK (no `abandoned`)
@@ -1658,12 +1655,10 @@ describe("workspace backup and isolated restore", () => {
           version: number;
         }>
       ).map((row) => row.version);
-      expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17]);
+      expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18]);
       expect(
         restoredDb
-          .prepare(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='child_integrations'",
-          )
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='delivery_merges'")
           .get(),
       ).toBeTruthy();
       expect(

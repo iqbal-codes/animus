@@ -1,6 +1,9 @@
 # Spec: Deterministic Intake Gating with Canonical Labels & TypeSafe Jev System 1 Decision Client (Phase 1)
 
-* **Status:** Ready for Implementation
+- **Status:** Historical
+- **Archived:** 2026-11-10
+- **Historical note:** Retained as a design record; do not implement from this document.
+
 * **Target Issue:** GitHub Issue #15
 * **Milestone:** Phase 1 (Intake Admission & System 1 Gatekeeper)
 * **Date:** 2026-10-27

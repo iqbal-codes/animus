@@ -3,6 +3,9 @@
  * LICENSE (MIT), CONTRIBUTING.md, SECURITY.md, and CHANGELOG.md.
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
 /**
  * @param {string} repoRoot
  * @param {(relPath: string, label: string) => string | null} readRequiredFile
@@ -23,12 +26,27 @@ function validateBasicGovernance(repoRoot, readRequiredFile, violations) {
 
   // 2. CONTRIBUTING.md
   const contributingContent = readRequiredFile("CONTRIBUTING.md", "Contributing guide");
-  if (contributingContent !== null) {
-    if (!contributingContent.includes("26.8.1")) {
-      violations.push("CONTRIBUTING.md must document pinned Node version 26.8.1");
+  /**
+   * @param {string} file
+   * @returns {string | null}
+   */
+  const readPinnedVersion = (file) => {
+    const path = join(repoRoot, file);
+    if (!existsSync(path)) return null;
+    try {
+      return readFileSync(path, "utf8").trim();
+    } catch {
+      return null;
     }
-    if (!contributingContent.includes("1.4.2")) {
-      violations.push("CONTRIBUTING.md must document pinned Bun version 1.4.2");
+  };
+  const pinnedNode = readPinnedVersion(".node-version");
+  const pinnedBun = readPinnedVersion(".bun-version");
+  if (contributingContent !== null) {
+    if (pinnedNode && !contributingContent.includes(pinnedNode)) {
+      violations.push(`CONTRIBUTING.md must document pinned Node version ${pinnedNode}`);
+    }
+    if (pinnedBun && !contributingContent.includes(pinnedBun)) {
+      violations.push(`CONTRIBUTING.md must document pinned Bun version ${pinnedBun}`);
     }
     if (!contributingContent.includes("animus setup --local-only")) {
       violations.push("CONTRIBUTING.md must document 'animus setup --local-only'");

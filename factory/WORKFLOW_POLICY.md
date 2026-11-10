@@ -31,11 +31,11 @@ refuses every other agent.
 ## Runtime and review evidence
 
 Runtime and holdout evidence must exercise the delivered candidate and match its
-current source identity. When using the factory runtime host, follow
-`factory/RUNTIME_HOST.md`: prepare the resource from the delivering checkout at its
-expected revision, require the configured health and build-identity checks, use
-fresh state for each attempt, and preserve the typed result as evidence. Ordinary
-checks do not substitute for required runtime or holdout evidence.
+current source identity. Follow `docs/runtime.md`: prepare the resource from the
+delivering checkout at its expected revision, require the configured health and
+build-identity checks, use fresh state for each attempt, and preserve the typed
+result as evidence. Ordinary checks do not substitute for required runtime or
+holdout evidence.
 
 Independent review evidence may be Animus's canonical current-head report, a
 genuine review by an independent human, or an external independent report format

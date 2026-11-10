@@ -1,6 +1,9 @@
 # External planning, factory execution
 
-Status: working concept updated after operator scope decision. Not implemented or independently reviewed.
+- **Status:** Historical
+- **Archived:** 2026-11-10
+- **Historical note:** Retained as a design record; do not implement from this document.
+
 
 ## Scope decision
 

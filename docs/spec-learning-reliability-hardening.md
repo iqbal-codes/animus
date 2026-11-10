@@ -1,8 +1,11 @@
 # Learning reliability hardening
 
+- **Status:** Active
+- **Last verified:** 2026-11-10
+
 ## Source and boundary
 
-Agreed in the Animus reliability discussion: delegate execution without routine babysitting, retain owner authority over product and architectural decisions, and prevent unverified reflections from becoming active harness instructions. This specification supersedes unsafe activation and evaluator fallback behavior in `docs/spec-post-loop-self-improving-harness.md`.
+Agreed in the Animus reliability discussion: delegate execution without routine babysitting, retain owner authority over product and architectural decisions, and prevent unverified reflections from becoming active harness instructions. This specification supersedes unsafe activation and evaluator fallback behavior in [`docs/archive/specs/post-loop-self-improving-harness.md`](archive/specs/post-loop-self-improving-harness.md).
 
 Review baseline: `706710299cd6e8febbfb34023fc3235134158f48`. Existing uncommitted auto-merge changes are outside this task and must be preserved. Review the task delta independently of those changes.
 

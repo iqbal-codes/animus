@@ -1,5 +1,8 @@
 # Animus design system — extracted from `animus.pen`
 
+- **Status:** Active
+- **Last verified:** 2026-11-10
+
 ## Source and coverage
 
 **Source.** `/Users/efishery/.pencil/documents/6a35f316-ca78-4af7-a105-4f59ba146ee2/animus.pen`
