@@ -377,6 +377,17 @@ export function resolveAnimusBinDir(customBinDir?: string): string {
 }
 
 /**
+ * Resolves the directory for machine-level canonical agent skills (~/.animus/skills).
+ */
+export function resolveAnimusSkillsHome(customHome?: string): string {
+  const envSkills = process.env.ANIMUS_SKILLS_HOME;
+  if (envSkills && envSkills.trim() !== "") {
+    return resolve(envSkills.trim());
+  }
+  return join(resolveAnimusHome(customHome), "skills");
+}
+
+/**
  * Produces a deterministic, collision-free, filesystem-safe slug for a project repository path.
  * Format: `<sanitized-dirname>-<sha256[:8]>` (e.g. `animus-a19f3b2c`).
  */

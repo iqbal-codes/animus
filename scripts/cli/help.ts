@@ -312,6 +312,11 @@ export const orderedFlags: readonly FlagHelp[] = [
     commands: ["setup", "config"],
   },
   {
+    spec: "--skills <external|repo>",
+    description: "Skills storage mode: external (~/.animus/skills) or repo (.agents/skills) (default: external)",
+    commands: ["setup", "config"],
+  },
+  {
     spec: "--foreground, -f",
     description: "Run services in the foreground instead of detaching into the background",
     commands: ["start", "serve"],

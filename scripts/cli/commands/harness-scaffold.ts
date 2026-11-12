@@ -13,6 +13,7 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveAnimusSkillsHome } from "@animus/contracts/paths";
 import type { DetectedRepoCommands } from "./setup";
 
 export interface AgentsMdAudit {
@@ -33,6 +34,8 @@ export interface HarnessAuditReport {
   skillsInstalled: string[];
   learnedSkills: string[];
   claudeSkillsSymlink: boolean;
+  skillsMode?: "external" | "repo";
+  machineSkillsAvailable?: string[];
   hooksInstalled: {
     loopGuard: boolean;
     holdoutFence: boolean;
@@ -55,6 +58,7 @@ export interface ScaffoldHarnessOptions {
   factorySourceRoot?: string;
   detectedCommands: DetectedRepoCommands;
   agentsMdAction?: "keep" | "overwrite";
+  skillsMode?: "external" | "repo";
 }
 
 export interface ScaffoldHarnessResult {
@@ -63,6 +67,7 @@ export interface ScaffoldHarnessResult {
   agentsMdBackupPath?: string;
   createdOrUpdatedPaths: string[];
   skillsCopied: string[];
+  skillsMode: "external" | "repo";
 }
 
 const REQUIRED_SKILL_POINTERS = [
@@ -194,6 +199,19 @@ export function auditRepositoryHarness(repoRoot: string): HarnessAuditReport {
     } catch {}
   }
 
+  const machineSkillsDir = resolveAnimusSkillsHome();
+  const machineSkillsAvailable: string[] = [];
+  if (existsSync(machineSkillsDir)) {
+    try {
+      for (const name of CANONICAL_SKILL_NAMES) {
+        if (existsSync(join(machineSkillsDir, name, "SKILL.md"))) {
+          machineSkillsAvailable.push(name);
+        }
+      }
+    } catch {}
+  }
+  const skillsMode: "external" | "repo" = skillsInstalled.length > 0 ? "repo" : "external";
+
   return {
     repoRoot: root,
     projectMode,
@@ -202,6 +220,8 @@ export function auditRepositoryHarness(repoRoot: string): HarnessAuditReport {
     skillsInstalled,
     learnedSkills,
     claudeSkillsSymlink,
+    skillsMode,
+    machineSkillsAvailable,
     hooksInstalled: {
       loopGuard:
         existsSync(join(root, ".animus/hooks/loop-guard.ts")) ||
@@ -583,12 +603,74 @@ function resolveFactorySourceRoot(explicit?: string): string | null {
   return null;
 }
 
+/**
+ * Synchronizes machine-level canonical agent skills into ~/.animus/skills/.
+ * Sourced from the local repository checkout or canonical catalog templates.
+ */
+export function syncMachineCanonicalSkills(
+  animusHome?: string,
+  factorySourceRoot?: string,
+): { installed: string[]; dir: string } {
+  const targetDir = resolveAnimusSkillsHome(animusHome);
+  mkdirSync(targetDir, { recursive: true, mode: 0o700 });
+
+  const sourceRoot = resolveFactorySourceRoot(factorySourceRoot);
+  const installed: string[] = [];
+
+  if (sourceRoot) {
+    const sourceSkillsDir = join(sourceRoot, ".agents/skills");
+    if (existsSync(sourceSkillsDir)) {
+      const sourceSkillDirs = readdirSync(sourceSkillsDir, { withFileTypes: true })
+        .filter((d) => d.isDirectory() && existsSync(join(sourceSkillsDir, d.name, "SKILL.md")))
+        .map((d) => d.name);
+      const allSkills = new Set([...CANONICAL_SKILL_NAMES, ...sourceSkillDirs]);
+      for (const skillName of allSkills) {
+        const srcSkill = join(sourceSkillsDir, skillName);
+        const dstSkill = join(targetDir, skillName);
+        if (existsSync(srcSkill)) {
+          mkdirSync(dstSkill, { recursive: true, mode: 0o700 });
+          cpSync(srcSkill, dstSkill, { recursive: true });
+          installed.push(skillName);
+        }
+      }
+      return { installed, dir: targetDir };
+    }
+  }
+
+  for (const [skillName, desc] of CANONICAL_SKILL_CATALOG) {
+    const dstSkillDir = join(targetDir, skillName);
+    const dstSkillFile = join(dstSkillDir, "SKILL.md");
+    mkdirSync(dstSkillDir, { recursive: true, mode: 0o700 });
+    writeFileSync(
+      dstSkillFile,
+      [
+        "---",
+        `name: ${skillName}`,
+        `description: ${desc}`,
+        "---",
+        "",
+        `# ${skillName}`,
+        "",
+        "## Steps",
+        "1. Execute verification-first workflow.",
+        "   *Completion Criterion*: All checks pass with concrete evidence.",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    installed.push(skillName);
+  }
+
+  return { installed, dir: targetDir };
+}
+
 export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): ScaffoldHarnessResult {
   const targetRoot = resolve(opts.targetRepoRoot);
   const sourceRoot = resolveFactorySourceRoot(opts.factorySourceRoot);
   const auditBefore = auditRepositoryHarness(targetRoot);
   const createdOrUpdatedPaths: string[] = [];
   const skillsCopied: string[] = [];
+  const skillsMode: "external" | "repo" = opts.skillsMode ?? "external";
 
   // 1. Handle AGENTS.md (Greenfield missing, or Brownfield overwrite/keep)
   const agentsPath = join(targetRoot, "AGENTS.md");
@@ -631,80 +713,108 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
     createdOrUpdatedPaths.push(claudeMdPath);
   }
 
-  // 3. Install canonical skills into .agents/skills/
+  // 3. Install skills (external mode relies on machine store ~/.animus/skills/, repo mode copies locally)
   const targetSkillsDir = join(targetRoot, ".agents/skills");
-  mkdirSync(targetSkillsDir, { recursive: true });
+  if (skillsMode === "external") {
+    // In external mode, populate/refresh machine canonical skills
+    try {
+      syncMachineCanonicalSkills(undefined, opts.factorySourceRoot);
+    } catch {}
 
-  if (sourceRoot && resolve(sourceRoot) !== targetRoot) {
-    const sourceSkillsDir = join(sourceRoot, ".agents/skills");
-    if (existsSync(sourceSkillsDir)) {
-      const sourceSkillDirs = readdirSync(sourceSkillsDir, { withFileTypes: true })
-        .filter((d) => d.isDirectory() && existsSync(join(sourceSkillsDir, d.name, "SKILL.md")))
-        .map((d) => d.name);
-      const allSkillsToCopy = new Set([...CANONICAL_SKILL_NAMES, ...sourceSkillDirs]);
-      for (const skillName of allSkillsToCopy) {
-        const srcSkill = join(sourceSkillsDir, skillName);
-        const dstSkill = join(targetSkillsDir, skillName);
-        if (existsSync(srcSkill) && !existsSync(dstSkill)) {
-          cpSync(srcSkill, dstSkill, { recursive: true });
-          skillsCopied.push(skillName);
-          createdOrUpdatedPaths.push(dstSkill);
-        }
-      }
-    }
-
-    const sourceAgentDocsDir = join(sourceRoot, "docs/agents");
-    if (existsSync(sourceAgentDocsDir)) {
-      const targetAgentDocsDir = join(targetRoot, "docs/agents");
-      mkdirSync(targetAgentDocsDir, { recursive: true });
-      for (const entry of readdirSync(sourceAgentDocsDir, { withFileTypes: true })) {
-        if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
-        const srcDoc = join(sourceAgentDocsDir, entry.name);
-        const dstDoc = join(targetAgentDocsDir, entry.name);
-        if (!existsSync(dstDoc)) {
-          cpSync(srcDoc, dstDoc);
-          createdOrUpdatedPaths.push(dstDoc);
+    // Ensure docs/agents are available in repo
+    if (sourceRoot && resolve(sourceRoot) !== targetRoot) {
+      const sourceAgentDocsDir = join(sourceRoot, "docs/agents");
+      if (existsSync(sourceAgentDocsDir)) {
+        const targetAgentDocsDir = join(targetRoot, "docs/agents");
+        mkdirSync(targetAgentDocsDir, { recursive: true });
+        for (const entry of readdirSync(sourceAgentDocsDir, { withFileTypes: true })) {
+          if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+          const srcDoc = join(sourceAgentDocsDir, entry.name);
+          const dstDoc = join(targetAgentDocsDir, entry.name);
+          if (!existsSync(dstDoc)) {
+            cpSync(srcDoc, dstDoc);
+            createdOrUpdatedPaths.push(dstDoc);
+          }
         }
       }
     }
   } else {
-    // Minimal embedded fallback skills if running from standalone binary outside source tree
-    for (const [skillName, desc] of CANONICAL_SKILL_CATALOG) {
-      const dstSkillFile = join(targetSkillsDir, skillName, "SKILL.md");
-      if (!existsSync(dstSkillFile)) {
-        mkdirSync(dirname(dstSkillFile), { recursive: true });
-        writeFileSync(
-          dstSkillFile,
-          [
-            "---",
-            `name: ${skillName}`,
-            `description: ${desc}`,
-            "---",
-            "",
-            `# ${skillName}`,
-            "",
-            "## Steps",
-            "1. Execute verification-first workflow.",
-            "   *Completion Criterion*: All checks pass with concrete evidence.",
-            "",
-          ].join("\n"),
-          "utf-8",
-        );
-        skillsCopied.push(skillName);
-        createdOrUpdatedPaths.push(dstSkillFile);
+    // Repo mode: install canonical skills directly into .agents/skills/
+    mkdirSync(targetSkillsDir, { recursive: true });
+
+    if (sourceRoot && resolve(sourceRoot) !== targetRoot) {
+      const sourceSkillsDir = join(sourceRoot, ".agents/skills");
+      if (existsSync(sourceSkillsDir)) {
+        const sourceSkillDirs = readdirSync(sourceSkillsDir, { withFileTypes: true })
+          .filter((d) => d.isDirectory() && existsSync(join(sourceSkillsDir, d.name, "SKILL.md")))
+          .map((d) => d.name);
+        const allSkillsToCopy = new Set([...CANONICAL_SKILL_NAMES, ...sourceSkillDirs]);
+        for (const skillName of allSkillsToCopy) {
+          const srcSkill = join(sourceSkillsDir, skillName);
+          const dstSkill = join(targetSkillsDir, skillName);
+          if (existsSync(srcSkill) && !existsSync(dstSkill)) {
+            cpSync(srcSkill, dstSkill, { recursive: true });
+            skillsCopied.push(skillName);
+            createdOrUpdatedPaths.push(dstSkill);
+          }
+        }
+      }
+
+      const sourceAgentDocsDir = join(sourceRoot, "docs/agents");
+      if (existsSync(sourceAgentDocsDir)) {
+        const targetAgentDocsDir = join(targetRoot, "docs/agents");
+        mkdirSync(targetAgentDocsDir, { recursive: true });
+        for (const entry of readdirSync(sourceAgentDocsDir, { withFileTypes: true })) {
+          if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+          const srcDoc = join(sourceAgentDocsDir, entry.name);
+          const dstDoc = join(targetAgentDocsDir, entry.name);
+          if (!existsSync(dstDoc)) {
+            cpSync(srcDoc, dstDoc);
+            createdOrUpdatedPaths.push(dstDoc);
+          }
+        }
+      }
+    } else {
+      // Minimal embedded fallback skills if running from standalone binary outside source tree
+      for (const [skillName, desc] of CANONICAL_SKILL_CATALOG) {
+        const dstSkillFile = join(targetSkillsDir, skillName, "SKILL.md");
+        if (!existsSync(dstSkillFile)) {
+          mkdirSync(dirname(dstSkillFile), { recursive: true });
+          writeFileSync(
+            dstSkillFile,
+            [
+              "---",
+              `name: ${skillName}`,
+              `description: ${desc}`,
+              "---",
+              "",
+              `# ${skillName}`,
+              "",
+              "## Steps",
+              "1. Execute verification-first workflow.",
+              "   *Completion Criterion*: All checks pass with concrete evidence.",
+              "",
+            ].join("\n"),
+            "utf-8",
+          );
+          skillsCopied.push(skillName);
+          createdOrUpdatedPaths.push(dstSkillFile);
+        }
       }
     }
   }
 
-  // 4. Ensure .claude/skills -> ../.agents/skills symlink & .claude/settings.json
+  // 4. Ensure .claude/skills -> ../.agents/skills symlink (in repo mode or if repo skills exist) & .claude/settings.json
   const claudeSkillsLink = join(targetRoot, ".claude/skills");
-  if (!existsSync(claudeSkillsLink)) {
-    try {
-      const st = lstatSync(claudeSkillsLink);
-      if (st.isSymbolicLink()) unlinkSync(claudeSkillsLink);
-    } catch {}
-    ensureSymlinkOrCopy("../.agents/skills", claudeSkillsLink, targetSkillsDir);
-    createdOrUpdatedPaths.push(claudeSkillsLink);
+  if (skillsMode === "repo" || existsSync(targetSkillsDir)) {
+    if (!existsSync(claudeSkillsLink)) {
+      try {
+        const st = lstatSync(claudeSkillsLink);
+        if (st.isSymbolicLink()) unlinkSync(claudeSkillsLink);
+      } catch {}
+      ensureSymlinkOrCopy("../.agents/skills", claudeSkillsLink, targetSkillsDir);
+      createdOrUpdatedPaths.push(claudeSkillsLink);
+    }
   }
 
   const claudeSettingsPath = join(targetRoot, ".claude/settings.json");
@@ -889,5 +999,6 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
     agentsMdBackupPath,
     createdOrUpdatedPaths,
     skillsCopied,
+    skillsMode,
   };
 }

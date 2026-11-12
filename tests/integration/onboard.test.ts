@@ -148,6 +148,8 @@ describe("machine onboarding", () => {
       enabled: false,
     });
     expect(written?.providers.find((item) => item.id === "codex")?.status).toBe("COMING SOON");
+    expect(existsSync(join(home, "skills/animus-triage/SKILL.md"))).toBe(true);
+    expect(existsSync(join(home, "skills/tdd/SKILL.md"))).toBe(true);
   });
 
   test("refuses to write configuration when GitHub authentication fails", async () => {
