@@ -380,7 +380,7 @@ describe("final repair closure: F1-F4 + standards counterexamples", () => {
     const foreign = db
       .prepare(
         `SELECT id, stage, status FROM execution_observations
-          WHERE project_id = ? AND run_id = ? AND stage = 'independent_review' AND status = 'passed'
+          WHERE project_id = ? AND run_id = ? AND stage = 'code_review' AND status = 'passed'
           ORDER BY created_at ASC LIMIT 1`,
       )
       .get(projectId, runId) as { id: string; stage: string; status: string } | undefined;
@@ -391,7 +391,7 @@ describe("final repair closure: F1-F4 + standards counterexamples", () => {
       deliveryId: run.delivery_id,
       runId,
       lap: run.lap,
-      stage: "final_acceptance",
+      stage: "blackbox_verification",
       candidateHeadSha: run.head_sha ?? run.base_sha,
     });
     expect(acquired.status).toBe("acquired");
@@ -411,7 +411,7 @@ describe("final repair closure: F1-F4 + standards counterexamples", () => {
       try {
         body = await client
           .forProject(projectId)
-          .reconcileDeliveryClaim(runId, "final_acceptance", {
+          .reconcileDeliveryClaim(runId, "blackbox_verification", {
             action: "complete",
             actor: "operator",
             reason: "attempting a foreign receipt",
@@ -452,7 +452,7 @@ describe("final repair closure: F1-F4 + standards counterexamples", () => {
       deliveryId: run.delivery_id,
       runId,
       lap: run.lap,
-      stage: "final_acceptance",
+      stage: "blackbox_verification",
       candidateHeadSha: run.head_sha ?? run.base_sha,
     });
     expect(acquired.status).toBe("acquired");
@@ -465,7 +465,7 @@ describe("final repair closure: F1-F4 + standards counterexamples", () => {
     try {
       const reconciled = await client
         .forProject(projectId)
-        .reconcileDeliveryClaim(runId, "final_acceptance", {
+        .reconcileDeliveryClaim(runId, "blackbox_verification", {
           action: "interrupt",
           actor: "operator",
           reason: "owner is not verifiable on this host",
@@ -527,7 +527,7 @@ describe("final repair closure: F1-F4 + standards counterexamples", () => {
       deliveryId: run.delivery_id,
       runId,
       lap: run.lap,
-      stage: "final_acceptance",
+      stage: "blackbox_verification",
       candidateHeadSha: run.head_sha ?? run.base_sha,
     });
     expect(acquired.status).toBe("acquired");
@@ -542,7 +542,7 @@ describe("final repair closure: F1-F4 + standards counterexamples", () => {
       deliveryId: run.delivery_id,
       runId,
       lap: run.lap,
-      stage: "final_acceptance",
+      stage: "blackbox_verification",
       candidateHeadSha: acquired.claim.candidateHeadSha,
       action: "interrupt",
       actor: "operator",
@@ -565,7 +565,7 @@ describe("final repair closure: F1-F4 + standards counterexamples", () => {
       deliveryId: run.delivery_id,
       runId,
       lap: run.lap,
-      stage: "final_acceptance",
+      stage: "blackbox_verification",
       candidateHeadSha: run.head_sha ?? run.base_sha,
     });
     expect(acquired.status).toBe("acquired");
@@ -622,7 +622,7 @@ describe("final repair closure: F1-F4 + standards counterexamples", () => {
       deliveryId: run.delivery_id,
       runId,
       lap: run.lap,
-      stage: "final_acceptance",
+      stage: "blackbox_verification",
       candidateHeadSha: run.head_sha ?? run.base_sha,
     });
     expect(acquired.status).toBe("acquired");
@@ -656,7 +656,7 @@ describe("final repair closure: F1-F4 + standards counterexamples", () => {
       deliveryId: run.delivery_id,
       runId,
       lap: run.lap,
-      stage: "final_acceptance",
+      stage: "blackbox_verification",
       candidateHeadSha: run.head_sha ?? run.base_sha,
     });
     expect(acquired.status).toBe("acquired");
@@ -673,7 +673,7 @@ describe("final repair closure: F1-F4 + standards counterexamples", () => {
       deliveryId: run.delivery_id,
       runId,
       lap: run.lap,
-      stage: "final_acceptance",
+      stage: "blackbox_verification",
       candidateHeadSha: run.head_sha ?? run.base_sha,
     })!;
     DETAILS.sc1 = { state: afterInterrupt.state, disposition: afterInterrupt.disposition };
@@ -698,7 +698,7 @@ describe("final repair closure: F1-F4 + standards counterexamples", () => {
         deliveryId: run.delivery_id,
         runId,
         lap: run.lap,
-        stage: "final_acceptance",
+        stage: "blackbox_verification",
         candidateHeadSha: acquired.claim.candidateHeadSha,
         action: "interrupt",
         actor: "operator",
@@ -713,7 +713,7 @@ describe("final repair closure: F1-F4 + standards counterexamples", () => {
       deliveryId: run.delivery_id,
       runId,
       lap: run.lap,
-      stage: "final_acceptance",
+      stage: "blackbox_verification",
       candidateHeadSha: acquired.claim.candidateHeadSha,
       action: "interrupt",
       actor: "operator",

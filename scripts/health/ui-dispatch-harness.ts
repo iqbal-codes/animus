@@ -210,7 +210,7 @@ await postJson(`/evidence/findings/${encodeURIComponent(seedFinding.id)}/recheck
 await postJson("/evidence/observations", {
   run_id: seedRun.id,
   producer_credential: reviewerCredential.credential,
-  stage: "independent_review",
+  stage: "code_review",
   status: "passed",
   checks: [
     {
@@ -224,7 +224,7 @@ await postJson("/evidence/observations", {
 await postJson("/evidence/observations", {
   run_id: seedRun.id,
   producer_credential: finalCredential.credential,
-  stage: "final_acceptance",
+  stage: "blackbox_verification",
   status: "passed",
   checks: [
     {

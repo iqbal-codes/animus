@@ -23,7 +23,7 @@ export function KpiCard({ kpi }: { kpi: KpiModel }) {
   const Icon = KPI_ICONS[kpi.icon];
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col gap-3 rounded-[12px] border border-[var(--border-subtle)] bg-card p-[18px]">
+    <div className="flex min-w-0 flex-1 flex-col gap-3 rounded-[12px] border border-[var(--border-subtle)] bg-[var(--elevation-1-surface)] p-[17px]">
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs leading-[1.4] text-text-secondary">{kpi.label}</span>
         <Icon aria-hidden="true" className="size-4 shrink-0 text-text-muted" />
@@ -31,7 +31,10 @@ export function KpiCard({ kpi }: { kpi: KpiModel }) {
       <span className="text-[28px] leading-[1.4] font-medium tracking-[-0.8px] text-foreground">
         {kpi.value}
       </span>
-      <span className={cn("text-[11px] leading-[1.4]", INK_TEXT[kpi.ink ?? "secondary"])}>
+      <span
+        title={kpi.description}
+        className={cn("line-clamp-1 text-[11px] leading-[1.4]", INK_TEXT[kpi.ink ?? "secondary"])}
+      >
         {kpi.description}
       </span>
     </div>

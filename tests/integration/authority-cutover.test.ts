@@ -277,7 +277,7 @@ describe("authority cutover (#165)", () => {
 
     expect(first.stateDigest).toBe(second.stateDigest);
     expect(first.identityDigest).toBe(second.identityDigest);
-    expect(first.schemaVersion).toBe(18);
+    expect(first.schemaVersion).toBe(19);
     // The artifact digest is the closure of REGISTERED artifacts (the exact set the
     // backup bundle copies). An unregistered file under the artifact root is not a
     // finalized closure member; it is surfaced as a truthful held fact with its
@@ -782,7 +782,7 @@ describe("authority cutover (#165)", () => {
     mkdirSync(join(stateDir, "artifacts", projectId, "review"), { recursive: true });
     writeFileSync(join(stateDir, "artifacts", projectId, artifactRelative), "retained proof\n");
     observations.recordRunObservation(projectId, run.id, {
-      stage: "independent_review",
+      stage: "code_review",
       status: "failed",
       producer: reviewer.producer,
       checks: [{ name: "review", command: "review", result: "FAIL", detail: "needs work" }],

@@ -139,6 +139,20 @@ test("skills and executable hooks are returned only when disk matches the accept
   expect(resolveLoopExtensions(root, accepted)).toEqual([]);
 });
 
+test("tracked symlinks match the accepted baseline and tampered targets fail closed", () => {
+  const root = repository();
+  put(root, ".factory/hooks/loop-guard.ts", "export default () => 'accepted';");
+  put(root, "AGENTS.md", "Accepted instructions");
+  symlinkSync("AGENTS.md", join(root, "CLAUDE.md"));
+  const accepted = commit(root);
+  expect(resolveLoopExtensions(root, accepted)).toEqual([
+    join(root, ".factory/hooks/loop-guard.ts"),
+  ]);
+  rmSync(join(root, "CLAUDE.md"));
+  symlinkSync("OTHER.md", join(root, "CLAUDE.md"));
+  expect(resolveLoopExtensions(root, accepted)).toEqual([]);
+});
+
 test("symlinked skill ancestors and dirty hooks fail closed without executable copies", () => {
   const root = repository();
   put(root, ".agents/skills/tdd/SKILL.md", "Accepted TDD");

@@ -544,7 +544,7 @@ describe("Candidate-Bound Verification, Landing Guard & Tiered Action Freshness 
       let readiness = evidenceService.getReleaseReadiness(projectId, candidateSha);
       expect(readiness.releaseComplete).toBe(false);
       expect(readiness.pendingStages).toContain("candidate_verification");
-      expect(readiness.pendingStages).toContain("independent_review");
+      expect(readiness.pendingStages).toContain("code_review");
       expect(readiness.pendingStages).toContain("gate_approval");
       expect(readiness.pendingStages).toContain("landing_verified");
 
@@ -571,7 +571,7 @@ describe("Candidate-Bound Verification, Landing Guard & Tiered Action Freshness 
       readiness = evidenceService.getReleaseReadiness(projectId, candidateSha);
       expect(readiness.releaseComplete).toBe(false);
       expect(readiness.pendingStages).not.toContain("candidate_verification");
-      expect(readiness.pendingStages).not.toContain("independent_review");
+      expect(readiness.pendingStages).not.toContain("code_review");
       expect(readiness.pendingStages).toContain("gate_approval");
 
       // 3. Add gate approval

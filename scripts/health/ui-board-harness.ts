@@ -256,7 +256,7 @@ function register(id: string, role: "peer_reviewer" | "independent_evaluator" | 
 function recordReview(runId: string, id: string): void {
   const producer = register(id, "peer_reviewer");
   observations.recordRunObservation(project.id, runId, {
-    stage: "independent_review",
+    stage: "code_review",
     status: "passed",
     producer: producer.producer,
     checks: [{ name: "standards", command: "review diff", result: "PASS", kind: "review" }],
@@ -265,7 +265,7 @@ function recordReview(runId: string, id: string): void {
 function recordAcceptance(runId: string, id: string): void {
   const producer = register(id, "independent_evaluator");
   observations.recordRunObservation(project.id, runId, {
-    stage: "final_acceptance",
+    stage: "blackbox_verification",
     status: "passed",
     producer: producer.producer,
     checks: [
@@ -324,7 +324,7 @@ async function integrateChild(planId: string, issue: number, label: string): Pro
     checks: [{ name: "unit", command: "bun test", result: "PASS" }],
   });
   observations.recordRunObservation(project.id, run.id, {
-    stage: "independent_review",
+    stage: "code_review",
     status: "passed",
     producer: reviewer.producer,
     checks: [{ name: "standards", command: "review diff", result: "PASS" }],
@@ -399,7 +399,7 @@ const failedReviewRun = await dispatch.dispatch(project.id, {
 });
 const reviewerA = register("reviewer-a2", "peer_reviewer");
 observations.recordRunObservation(project.id, failedReviewRun.id, {
-  stage: "independent_review",
+  stage: "code_review",
   status: "failed",
   producer: reviewerA.producer,
   checks: [{ name: "standards", command: "review diff", result: "FAIL" }],

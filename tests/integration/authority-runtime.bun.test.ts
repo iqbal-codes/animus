@@ -128,7 +128,7 @@ function seedMeaningfulInstallation(db: DatabaseSync, stateDir: string, home: st
        (id, project_id, delivery_id, run_id, lap, attempt_key, stage, status, candidate_head_sha,
         target_tip_sha, merge_base_sha, tested_identity, integration_lineage, producer_id,
         producer_role, producer_name, gate_profile, gate_profile_version, error, created_at)
-     VALUES (?, ?, ?, ?, 1, 'packed-attempt', 'final_acceptance', 'passed', ?, ?, ?, 'packed-identity',
+     VALUES (?, ?, ?, ?, 1, 'packed-attempt', 'blackbox_verification', 'passed', ?, ?, ?, 'packed-identity',
              'packed-lineage', 'packed-evaluator', 'independent_evaluator', 'Packed Evaluator',
              'standalone', 1, NULL, ?)`,
   ).run(observationId, projectId, deliveryId, runId, HASH, HASH, HASH, now);
@@ -282,7 +282,7 @@ describe("packaged authority runtime", () => {
     expect(parsed.authority).toBe("local");
     expect(parsed.phase).toBe("active");
     expect(parsed.cutoverId).toBe("cutover_binary");
-    expect(parsed.schemaVersion).toBe(18);
+    expect(parsed.schemaVersion).toBe(19);
     expect(parsed.tableCount).toBeGreaterThan(10);
     expect(parsed.artifactCount).toBe(1);
     expect(parsed.databasePath).toBe(join(stateDir, "console.db"));
@@ -329,7 +329,7 @@ describe("packaged authority runtime", () => {
     };
     expect(backupResult.destinationPath).toBe(backupDestination);
     expect(backupResult.artifactCount).toBe(1);
-    expect(backupResult.schemaVersion).toBe(18);
+    expect(backupResult.schemaVersion).toBe(19);
 
     const restore = Bun.spawnSync(
       [
@@ -412,7 +412,7 @@ describe("packaged authority runtime", () => {
     };
     expect(restoredSnapshot.installationHeld).toBe(true);
     expect(restoredSnapshot.artifactCount).toBe(1);
-    expect(restoredSnapshot.schemaVersion).toBe(18);
+    expect(restoredSnapshot.schemaVersion).toBe(19);
 
     const evidencePath = process.env.AUTHORITY_RUNTIME_EVIDENCE;
     if (evidencePath) {

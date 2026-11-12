@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readlinkSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import type { LocalIssue, LoopRole } from "./types";
@@ -145,14 +145,33 @@ function regularRepositoryFile(root: string, file: string): boolean {
   return true;
 }
 
+function baselineSymlinkMatches(root: string, file: string, blobSha: string): boolean {
+  const parts = file.split("/");
+  let current = root;
+  for (const [index, part] of parts.entries()) {
+    current = join(current, part);
+    const stat = lstatSync(current);
+    if (index === parts.length - 1) {
+      if (!stat.isSymbolicLink()) return false;
+    } else if (!stat.isDirectory()) {
+      return false;
+    }
+  }
+  const expected = gitRead(root, "cat-file", "blob", blobSha);
+  return expected !== undefined && readlinkSync(join(root, file)) === expected;
+}
+
 function baselineTrackedFilesMatch(root: string, ref: string): boolean {
   const entries = gitRead(root, "ls-tree", "-r", "-z", ref);
   if (entries === undefined) return false;
   try {
     return entries.split("\0").filter(Boolean).every(entry => {
       const [meta, file] = entry.split("\t");
-      return !!file && !!meta?.startsWith("100") && regularRepositoryFile(root, file)
-        && gitRead(root, "hash-object", "--no-filters", "--", join(root, file))?.trim() === meta.split(" ")[2];
+      if (!file || !meta) return false;
+      const [mode, , blob] = meta.split(" ");
+      if (mode === "120000" && blob) return baselineSymlinkMatches(root, file, blob);
+      return !!mode?.startsWith("100") && regularRepositoryFile(root, file)
+        && gitRead(root, "hash-object", "--no-filters", "--", join(root, file))?.trim() === blob;
     });
   } catch { return false; }
 }
@@ -164,11 +183,18 @@ function baselineDirectoryMatches(root: string, ref: string, path: string): bool
   try {
     for (const entry of entries.split("\0").filter(Boolean)) {
       const [meta, file] = entry.split("\t");
-      if (!file || !meta?.startsWith("100")) return false;
+      if (!file || !meta) return false;
+      const [mode, , blob] = meta.split(" ");
+      if (mode === "120000" && blob) {
+        if (!baselineSymlinkMatches(root, file, blob)) return false;
+      } else if (mode?.startsWith("100")) {
+        if (!regularRepositoryFile(root, file)) return false;
+        const currentBlob = gitRead(root, "hash-object", "--no-filters", "--", join(root, file))?.trim();
+        if (currentBlob !== blob) return false;
+      } else {
+        return false;
+      }
       expected.add(file);
-      if (!regularRepositoryFile(root, file)) return false;
-      const blob = gitRead(root, "hash-object", "--no-filters", "--", join(root, file))?.trim();
-      if (blob !== meta.split(" ")[2]) return false;
     }
     const visit = (directory: string): boolean => {
       if (!lstatSync(join(root, directory)).isDirectory()) return false;
@@ -176,7 +202,7 @@ function baselineDirectoryMatches(root: string, ref: string, path: string): bool
         const file = `${directory}/${entry.name}`;
         if (entry.isDirectory()) {
           if (!visit(file)) return false;
-        } else if (!entry.isFile() || !expected.delete(file)) return false;
+        } else if ((!entry.isFile() && !entry.isSymbolicLink()) || !expected.delete(file)) return false;
       }
       return true;
     };

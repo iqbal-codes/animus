@@ -309,7 +309,6 @@ const runtime = createLocalExecutionRuntime({
   budget,
   publication,
   artifactRoot,
-  technicalChecks: ["echo tech-ok"],
   regressionChecks: ["true"],
   engine: {
     transport,
@@ -391,14 +390,14 @@ db.close();
       expect(integrations).toHaveLength(1);
       const reviews = verify
         .prepare(
-          "SELECT status FROM execution_observations WHERE stage = 'independent_review' AND run_id = ?",
+          "SELECT status FROM execution_observations WHERE stage = 'code_review' AND run_id = ?",
         )
         .all(integrations[0]!.run_id) as Array<{ status: string }>;
       expect(reviews).toHaveLength(1);
       expect(reviews[0]!.status).toBe("passed");
       const claims = verify
         .prepare(
-          "SELECT state, claim_generation FROM delivery_role_claims WHERE run_id = ? AND stage = 'independent_review'",
+          "SELECT state, claim_generation FROM delivery_role_claims WHERE run_id = ? AND stage = 'code_review'",
         )
         .all(integrations[0]!.run_id) as Array<{ state: string; claim_generation: number }>;
       expect(claims).toHaveLength(1);

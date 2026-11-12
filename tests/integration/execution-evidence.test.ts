@@ -151,6 +151,18 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
     return observations.registerTrustedProducer(projectId, { id, role });
   }
 
+  // Standalone delivery requires black-box verification as well as review, so any
+  // test that expects an authorized candidate must record both.
+  function recordBlackbox(runId: string, producerId = "blackbox-1"): void {
+    register(producerId, "independent_evaluator");
+    observations.recordRunObservation(projectId, runId, {
+      stage: "blackbox_verification",
+      status: "passed",
+      producer: { id: producerId, role: "independent_evaluator" },
+      checks: [{ name: "AC1 black-box", command: "acceptance AC1", result: "PASS" }],
+    });
+  }
+
   async function dispatchStandalone(issueNumber: number) {
     addIssue(issueNumber);
     const plan = await plans.importPlan(projectId, {
@@ -324,13 +336,12 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
     const all = observations.listObservations(projectId, { runId: run.id });
     const failedStill = all.find((item) => item.id === failed.id)!;
     expect(failedStill.status).toBe("failed");
-    expect(
-      all.some((item) => item.stage === "independent_review" && item.status === "failed"),
-    ).toBe(true);
+    expect(all.some((item) => item.stage === "code_review" && item.status === "failed")).toBe(true);
     const resolvedFinding = observations.getFinding(projectId, finding.id);
     const recheckEvent = resolvedFinding.events.find((event) => event.action === "recheck_failed")!;
     expect(recheckEvent.observationId).toBeTruthy();
 
+    recordBlackbox(run.id);
     const acceptance = observations.evaluateAcceptance(projectId, run.id);
     expect(acceptance.authorized).toBe(true);
     expect(acceptance.reasons).toEqual([]);
@@ -355,11 +366,12 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
     register("reviewer-1", "peer_reviewer");
 
     observations.recordRunObservation(projectId, run.id, {
-      stage: "independent_review",
+      stage: "code_review",
       status: "passed",
       producer: { id: "reviewer-1", role: "peer_reviewer" },
       checks: [{ name: "standards", command: "review diff", result: "PASS" }],
     });
+    recordBlackbox(run.id);
     expect(observations.evaluateAcceptance(projectId, run.id).authorized).toBe(true);
 
     // A new candidate head or target advance invalidates the prior evidence.
@@ -371,7 +383,7 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
     // The builder identity cannot stand in for an independent reviewer.
     expect(() =>
       observations.recordRunObservation(projectId, run.id, {
-        stage: "final_acceptance",
+        stage: "blackbox_verification",
         status: "passed",
         producer: { id: "operator", role: "independent_evaluator" },
         checks: [{ name: "final", command: "qa", result: "PASS" }],
@@ -595,6 +607,7 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
       action: "recheck_passed",
       actor: "reviewer-3",
     });
+    recordBlackbox(secondRun.id);
     const nextEvidence = observations.getRunEvidence(projectId, secondRun.id);
     expect(
       nextEvidence.findings.find((finding) => finding.id === crossLapFinding.id)!.events.at(-1)!
@@ -612,15 +625,16 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
     register("reviewer-2", "peer_reviewer");
 
     observations.recordRunObservation(projectId, run.id, {
-      stage: "independent_review",
+      stage: "code_review",
       status: "passed",
       producer: { id: "reviewer-1", role: "peer_reviewer" },
       checks: [{ name: "standards", command: "review", result: "PASS" }],
     });
+    recordBlackbox(run.id);
     expect(observations.evaluateAcceptance(projectId, run.id).authorized).toBe(true);
 
     observations.recordRunObservation(projectId, run.id, {
-      stage: "independent_review",
+      stage: "code_review",
       status: "inconclusive",
       producer: { id: "reviewer-2", role: "peer_reviewer" },
       checks: [{ name: "standards", command: "review", result: "BLOCKED" }],
@@ -628,13 +642,13 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
     const afterInconclusive = observations.evaluateAcceptance(projectId, run.id);
     expect(afterInconclusive.authorized).toBe(false);
     expect(afterInconclusive.reasons).toContain(
-      "required_stage_not_passed:independent_review:inconclusive",
+      "required_stage_not_passed:code_review:inconclusive",
     );
     // History is retained rather than rewritten.
     expect(
       observations
         .listObservations(projectId, { runId: run.id })
-        .filter((item) => item.stage === "independent_review"),
+        .filter((item) => item.stage === "code_review"),
     ).toHaveLength(2);
 
     // The same rule applies to the builder stage: a newer non-pass dominates an older pass.
@@ -700,7 +714,7 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
     });
     // The child gate profile also requires an independent standards/contract review.
     observations.recordRunObservation(projectId, runB.id, {
-      stage: "independent_review",
+      stage: "code_review",
       status: "passed",
       producer: { id: "reviewer-1", role: "peer_reviewer" },
       checks: [{ name: "standards", command: "review diff", result: "PASS" }],
@@ -779,7 +793,7 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
     // A fresh, unregistered reviewer id is not an identity.
     expect(() =>
       observations.recordRunObservation(projectId, run.id, {
-        stage: "independent_review",
+        stage: "code_review",
         status: "passed",
         producer: { id: "forged-reviewer", role: "peer_reviewer" },
         checks: [{ name: "standards", command: "review", result: "PASS" }],
@@ -815,11 +829,12 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
     ).toThrowError(/already registered/i);
 
     observations.recordRunObservation(projectId, run.id, {
-      stage: "independent_review",
+      stage: "code_review",
       status: "passed",
       producer: { id: "reviewer-1", role: "peer_reviewer" },
       checks: [{ name: "standards", command: "review", result: "PASS" }],
     });
+    recordBlackbox(run.id);
     expect(observations.evaluateAcceptance(projectId, run.id).authorized).toBe(true);
   });
 
@@ -855,9 +870,10 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
     expect(second.status).toBe("resolved");
     const rechecks = observations
       .listObservations(projectId, { runId: run.id })
-      .filter((observation) => observation.stage === "independent_review");
+      .filter((observation) => observation.stage === "code_review");
     expect(rechecks).toHaveLength(2);
     expect(new Set(rechecks.map((observation) => observation.attemptKey)).size).toBe(2);
+    recordBlackbox(run.id);
     expect(observations.evaluateAcceptance(projectId, run.id).authorized).toBe(true);
   });
 

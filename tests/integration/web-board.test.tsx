@@ -54,7 +54,7 @@ function recordReview(fixture: Fixture, runId: string, producerId = "reviewer-ui
     role: "peer_reviewer",
   });
   fixture.observations.recordRunObservation(fixture.projectId, runId, {
-    stage: "independent_review",
+    stage: "code_review",
     status: "passed",
     producer: producer.producer,
     checks: [{ name: "standards", command: "review diff", result: "PASS", kind: "review" }],
@@ -67,7 +67,7 @@ function recordAcceptance(fixture: Fixture, runId: string, producerId = "evaluat
     role: "independent_evaluator",
   });
   fixture.observations.recordRunObservation(fixture.projectId, runId, {
-    stage: "final_acceptance",
+    stage: "blackbox_verification",
     status: "passed",
     producer: producer.producer,
     checks: [
@@ -108,6 +108,9 @@ describe("operator board UI", () => {
       }),
     });
     (HTMLElement.prototype as any).scrollIntoView = () => {};
+    if (!Element.prototype.getAnimations) {
+      Element.prototype.getAnimations = () => [];
+    }
   });
 
   beforeEach(async () => {
@@ -161,6 +164,24 @@ describe("operator board UI", () => {
     expect(labels).toEqual(LANES);
   });
 
+  test("layout: docks the compact inspector inside the kanban wrapper so the KPI row keeps full width", () => {
+    render(
+      <JobsBoard
+        board={emptyBoard("animus/platform")}
+        backendState="connected"
+        sideSheet={<div data-testid="side-sheet-content" />}
+      />,
+    );
+
+    const kpiRow = screen.getByTestId("kpi-row");
+    const kanbanWrapper = screen.getByTestId("kanban-wrapper");
+    const sideSheet = screen.getByTestId("side-sheet-content");
+
+    expect(kpiRow.contains(kanbanWrapper)).toBe(false);
+    expect(kanbanWrapper.contains(sideSheet)).toBe(true);
+    expect(kpiRow.contains(sideSheet)).toBe(false);
+  });
+
   test("backend-driven: parent partial progress, parent refs, mixed Needs owner / correction / publication / stale states and live workers", async () => {
     const { planId } = await fixture.importSpec(
       1900,
@@ -184,7 +205,7 @@ describe("operator board UI", () => {
       role: "peer_reviewer",
     });
     fixture.observations.recordRunObservation(fixture.projectId, failedReviewRun.id, {
-      stage: "independent_review",
+      stage: "code_review",
       status: "failed",
       producer: reviewer.producer,
       checks: [{ name: "standards", command: "review diff", result: "FAIL" }],
@@ -412,7 +433,7 @@ describe("operator board UI", () => {
       role: "peer_reviewer",
     });
     fixture.observations.recordRunObservation(fixture.projectId, childRun.id, {
-      stage: "independent_review",
+      stage: "code_review",
       status: "failed",
       producer: reviewer.producer,
       checks: [{ name: "standards", command: "review diff", result: "FAIL" }],

@@ -1198,15 +1198,15 @@ export async function runPlanCommand(
       const stage = opts.stage;
       if (!runId || !stage) {
         throw new Error(
-          `Usage: factory plan ${sub} <run-id> --stage <technical_checks|independent_review|final_acceptance> --lap <n> --expected-generation <n> [--expected-candidate <sha>] [--expected-state running|interrupted] --reason <text> [--observation <id>] [--ack-unknown-owner] [--project <project-id>]`,
+          `Usage: factory plan ${sub} <run-id> --stage <technical_checks|code_review|blackbox_verification> --lap <n> --expected-generation <n> [--expected-candidate <sha>] [--expected-state running|interrupted] --reason <text> [--observation <id>] [--ack-unknown-owner] [--project <project-id>]`,
         );
       }
       if (
         stage !== "technical_checks" &&
-        stage !== "independent_review" &&
-        stage !== "final_acceptance"
+        stage !== "code_review" &&
+        stage !== "blackbox_verification"
       ) {
-        throw new Error(`--stage must be technical_checks, independent_review or final_acceptance`);
+        throw new Error(`--stage must be technical_checks, code_review or blackbox_verification`);
       }
       const lap = opts.lap ? Number(opts.lap) : NaN;
       const expectedGeneration = opts.expectedGeneration ? Number(opts.expectedGeneration) : NaN;

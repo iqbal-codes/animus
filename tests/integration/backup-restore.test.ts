@@ -272,7 +272,7 @@ describe("workspace backup and isolated restore", () => {
       role: "peer_reviewer",
     });
     observations.recordRunObservation(projectId, completed.id, {
-      stage: "independent_review",
+      stage: "code_review",
       status: "failed",
       producer: reviewer.producer,
       checks: [{ name: "review", command: "review", result: "FAIL", detail: "needs work" }],
@@ -389,7 +389,7 @@ describe("workspace backup and isolated restore", () => {
     }>(response);
     expect(created.manifestHash).toMatch(/^[a-f0-9]{64}$/);
     expect(created.artifactCount).toBe(1);
-    expect(created.schemaVersion).toBe(18);
+    expect(created.schemaVersion).toBe(19);
 
     const manifest = JSON.parse(readFileSync(join(bundle, BACKUP_MANIFEST_FILE), "utf8"));
     expect(manifest.kind).toBe("animus-workspace-backup");
@@ -1655,7 +1655,7 @@ describe("workspace backup and isolated restore", () => {
           version: number;
         }>
       ).map((row) => row.version);
-      expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18]);
+      expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19]);
       expect(
         restoredDb
           .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='delivery_merges'")

@@ -140,31 +140,19 @@ interface FindingEventRow {
 const STAGE_PRODUCER_ROLES: Record<ExecutionStage, readonly ProducerRole[]> = {
   builder_execution: ["builder"],
   technical_checks: ["automated_gate", "independent_evaluator", "peer_reviewer"],
-  independent_review: ["peer_reviewer", "independent_evaluator"],
-  final_acceptance: ["independent_evaluator"],
+  code_review: ["peer_reviewer", "independent_evaluator"],
+  blackbox_verification: ["independent_evaluator"],
 };
 
-// A child profile must prove both its applicable technical/contract checks and an
-// independent standards/contract review before auto-integration; full parent QA is
-// a separate, later profile. Standalone and final profiles keep their existing
-// required stage here (standalone delivery and final acceptance are later slices).
+// Each profile decides exactly which independent stages must pass before a gate
+// can advance. Child work gets one independent standards/contract review before
+// auto-integration; standalone and final work must also pass black-box
+// verification of the acceptance criteria. This is the only source of truth for
+// required stages: a missing, failed, stale or self-certified result holds.
 const REQUIRED_STAGES: Record<PlanGateProfile, readonly ExecutionStage[]> = {
-  child: ["technical_checks", "independent_review"],
-  standalone: ["independent_review"],
-  final: ["final_acceptance"],
-};
-
-/**
- * Independent stages that can authorize a delivery gate for each profile. The
- * required stage above decides acceptance on its own; any other stage that is
- * present (for example `final_acceptance` on a standalone run) is additionally
- * treated as authorizing and re-verified when the gate consumes it.
- */
-
-const AUTHORIZING_INDEPENDENT_STAGES: Record<PlanGateProfile, readonly ExecutionStage[]> = {
-  child: ["technical_checks"],
-  standalone: ["independent_review", "final_acceptance"],
-  final: ["independent_review", "final_acceptance"],
+  child: ["code_review"],
+  standalone: ["blackbox_verification", "code_review"],
+  final: ["blackbox_verification", "code_review"],
 };
 
 export interface ExecutionObservationServiceOptions {
@@ -798,14 +786,14 @@ export class ExecutionObservationService {
         { findingId, runId, workId: run.work_id, expectedWorkId: finding.work_id },
       );
     }
-    this.assertProducerAllowed(run, record.stage ?? "independent_review", record.producer);
+    this.assertProducerAllowed(run, record.stage ?? "code_review", record.producer);
 
     return this.withSavepoint(() => {
       const observation = this.recordRunObservation(
         projectId,
         run.id,
         {
-          stage: record.stage ?? "independent_review",
+          stage: record.stage ?? "code_review",
           status: record.status,
           producer: record.producer,
           checks: record.checks,
@@ -1090,19 +1078,16 @@ export class ExecutionObservationService {
     const builderIdentity = builderObservation?.producer.id ?? run.actor;
     const builderIdentities = this.builderIdentities(projectId, run.delivery_id);
     const requiredStages = REQUIRED_STAGES[run.gate_profile];
-    const independentStages = Array.from(
-      new Set([...requiredStages, ...AUTHORIZING_INDEPENDENT_STAGES[run.gate_profile]]),
-    );
     const latestByStage = new Map<ExecutionStage, ExecutionObservationRecord | null>();
-    for (const stage of independentStages) {
+    for (const stage of requiredStages) {
       latestByStage.set(stage, this.latestObservation(projectId, run.id, stage));
     }
     const independentObservations: Array<ExecutionObservationRecord | null> = [];
-    for (const stage of independentStages) {
+    for (const stage of requiredStages) {
       const observation = latestByStage.get(stage) ?? null;
-      if (requiredStages.includes(stage)) independentObservations.push(observation);
+      independentObservations.push(observation);
       if (!observation) {
-        if (requiredStages.includes(stage)) reasons.push(`required_stage_missing:${stage}`);
+        reasons.push(`required_stage_missing:${stage}`);
         continue;
       }
       if (
@@ -1120,7 +1105,7 @@ export class ExecutionObservationService {
 
     const authorizingObservations = [
       builderObservation,
-      ...independentStages.map((stage) => latestByStage.get(stage) ?? null),
+      ...requiredStages.map((stage) => latestByStage.get(stage) ?? null),
     ].filter((observation): observation is ExecutionObservationRecord => observation !== null);
 
     const targetTipSha = this.currentTargetTip(run, reasons);

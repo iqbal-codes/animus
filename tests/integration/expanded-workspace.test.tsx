@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from "react";
-import { describe, expect, test, vi, beforeAll } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, expect, test, vi, beforeAll, afterEach } from "vitest";
+import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { IssueExpandedWorkspace } from "../../apps/web/src/features/jobs/issue-expanded-workspace";
 import { JobsScreen } from "../../apps/web/src/features/jobs/jobs-screen";
 import { SidebarProvider } from "../../apps/web/src/components/ui/sidebar";
@@ -57,6 +57,34 @@ const mockDetail = {
   planKind: "standalone",
   parent: null,
   specProgress: null,
+  draft: {
+    id: "draft-1",
+    project_id: "proj-1",
+    work_id: "work-1",
+    source_revision_id: "rev-1",
+    latest_revision: {
+      id: "draft-rev-1",
+      draft_id: "draft-1",
+      revision_number: 1,
+      source_revision_id: "rev-1",
+      intent: "Refined plan",
+      questions: [],
+      answers: [],
+      proposed_plan: "Implement accent normalization query filter",
+      proposed_acceptance_criteria: [
+        "Accent-insensitive query match",
+        "Preserves exact match rank",
+      ],
+      planner_metadata: {
+        model: "Sonnet 4.5",
+        provider: "Anthropic",
+      },
+      created_at: Date.now() - 3600000,
+    },
+    latest_decision: null,
+    created_at: Date.now() - 3600000,
+    updated_at: Date.now() - 3600000,
+  },
   contract: {
     title: "Search ignores accents (crème brûlée vs creme brulee)",
     body: "Problem statement: Accented characters are not normalized during search matching.\nOutcome: Queries like creme brulee match crème brûlée.",
@@ -162,7 +190,7 @@ const mockDetail = {
         runId: "run-1",
         lap: 1,
         attemptKey: "att-1",
-        stage: "final_acceptance",
+        stage: "blackbox_verification",
         status: "passed",
         candidateHeadSha: "f86af28",
         targetTipSha: "main-sha",
@@ -249,6 +277,42 @@ const mockDetail = {
   },
   retained: null,
   process: null,
+  executionSteps: [
+    { id: "created", label: "Created", status: "completed", time: "13:17", logs: [] },
+    { id: "triage", label: "Triage", status: "completed", time: "13:17–13:26", logs: [] },
+    { id: "ready", label: "Ready", status: "completed", time: "13:26", logs: [] },
+    {
+      id: "implement-1",
+      label: "Implement · lap 1",
+      status: "completed",
+      time: "13:26–13:40",
+      logs: [
+        { timestamp: "13:38:22", event: "stdout", message: "Accent regression suite passed." },
+        { timestamp: "13:35:42", event: "Edit", message: "Added shared normalize() helper." },
+      ],
+    },
+    {
+      id: "verify-1",
+      label: "Verification · lap 1",
+      status: "completed",
+      time: "13:40–13:45",
+      logs: [],
+    },
+  ],
+  realtimeLogs: [
+    {
+      id: "log-1",
+      timestamp: "13:45:28",
+      event: "evidence",
+      message: "4/4 checks passed at a91f2c4.",
+    },
+    {
+      id: "log-2",
+      timestamp: "13:48:12",
+      event: "review",
+      message: "Ready to merge — awaiting human.",
+    },
+  ],
   usage: {
     available: true,
     tokensIn: 84200,
@@ -273,6 +337,12 @@ describe("Expanded Issue Workspace (vDp5q)", () => {
       disconnect(): void {}
     }
     (globalThis as any).ResizeObserver = ResizeObserverStub;
+    if (!Element.prototype.getAnimations) {
+      Element.prototype.getAnimations = () => [];
+    }
+    if (!(HTMLElement.prototype as any).scrollIntoView) {
+      (HTMLElement.prototype as any).scrollIntoView = () => {};
+    }
     Object.defineProperty(window, "matchMedia", {
       writable: true,
       value: (query: string) => ({
@@ -286,6 +356,10 @@ describe("Expanded Issue Workspace (vDp5q)", () => {
         dispatchEvent: () => false,
       }),
     });
+  });
+
+  afterEach(() => {
+    cleanup();
   });
 
   test("mapper functions produce correct milestones and harness metrics", () => {
@@ -314,40 +388,41 @@ describe("Expanded Issue Workspace (vDp5q)", () => {
       />,
     );
 
-    // Header & Identity
+    // Pinned issue header: identity, title, stage metadata, execution context.
     await screen.findByText("Search ignores accents (crème brûlée vs creme brulee)");
-    expect(screen.getByText(/animus\/platform/)).toBeTruthy();
+    expect(screen.getAllByText(/animus\/platform/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Merged").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Back to Kanban" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Close workspace" })).toBeTruthy();
 
-    // PR badge
-    expect(screen.getByText("PR #102")).toBeTruthy();
-    expect(screen.getByText("(merged)")).toBeTruthy();
+    // Outcome block: single hairline section, no nested card.
+    expect(screen.getByText("Outcome")).toBeTruthy();
+    expect(screen.getByText(/Merged and verified/)).toBeTruthy();
 
-    // Contract Scope
-    expect(screen.getByText("Scope & Contract")).toBeTruthy();
-    expect(screen.getByText(/Problem statement: Accented characters/)).toBeTruthy();
-
-    // Acceptance Criteria checklist
-    expect(screen.getByText("Acceptance Criteria")).toBeTruthy();
-    expect(screen.getByText("AC1")).toBeTruthy();
-    expect(screen.getByText("Accent-insensitive query match")).toBeTruthy();
-
-    // Evidence & Gate Verification
-    expect(screen.getByText("Evidence & Gate Verification")).toBeTruthy();
-    expect(screen.getByText("2 / 2 checks passed")).toBeTruthy();
+    // Evidence gates read from the canonical observation set.
+    expect(screen.getAllByText("Evidence").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("2 / 2 checks passed").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Tests").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Lint").length).toBeGreaterThan(0);
+    expect(screen.getByText("npm run test")).toBeTruthy();
 
-    // Factory Milestones Stepper
-    expect(screen.getByText("Factory Timeline")).toBeTruthy();
-    expect(screen.getByText("Lifecycle Stepper")).toBeTruthy();
+    // Factory rail: exactly the three canonical sections.
+    expect(screen.getByText("Factory timeline")).toBeTruthy();
+    expect(screen.getByText("Token usage")).toBeTruthy();
+    expect(screen.getByText("Harness logs")).toBeTruthy();
+    expect(screen.getByText("TIME")).toBeTruthy();
+    expect(screen.getByText("TOOL / EVENT")).toBeTruthy();
+    expect(screen.getByText("MESSAGE")).toBeTruthy();
+    expect(screen.getAllByText(/\$1\.86/).length).toBeGreaterThan(0);
 
-    // Harness & Resource Metrics Card
-    expect(screen.getByText("Harness & Resource Metrics")).toBeTruthy();
-    expect(screen.getByText("$1.86")).toBeTruthy();
-    expect(screen.getByText(/Sonnet 4.5/)).toBeTruthy();
+    // Timeline accordion lists every executed step and only one open panel.
+    expect(screen.getAllByText("Implement · lap 1").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Verification · lap 1").length).toBeGreaterThan(0);
+    expect(screen.getByText("One step open at a time · steps appear as they run")).toBeTruthy();
+    expect(screen.getAllByText(/Ready to merge — awaiting human\./).length).toBeGreaterThan(0);
 
-    // Activity Stream
-    expect(screen.getByText("Activity & Checks Stream")).toBeTruthy();
+    // Disclosures close the inspector.
+    expect(screen.getByText("Refined ticket & original issue")).toBeTruthy();
+    expect(screen.getByText("Audit log")).toBeTruthy();
 
     // Close button invokes onClose
     const backButton = screen.getByRole("button", { name: "Back to Kanban" });
@@ -395,7 +470,12 @@ describe("Expanded Issue Workspace (vDp5q)", () => {
 
     render(
       <SidebarProvider>
-        <JobsScreen board={board} backendState="connected" projectId="proj-1" />
+        <JobsScreen
+          board={board}
+          backendState="connected"
+          projectId="proj-1"
+          factory={mockFactory}
+        />
       </SidebarProvider>,
     );
 
@@ -406,10 +486,129 @@ describe("Expanded Issue Workspace (vDp5q)", () => {
     });
     expect(cardTitleButton).toBeTruthy();
 
-    // Click card to open expanded workspace
+    // Click card on Kanban board -> opens 500px Compact Side-Sheet alongside board
     fireEvent.click(cardTitleButton);
+    expect(screen.getByTestId("compact-side-sheet")).toBeTruthy();
 
-    // Loading or expanded workspace mounts
+    // Click "Expand" -> transitions into Expanded 2-Column Workspace
+    const expandButton = await screen.findByRole("button", {
+      name: "Expand to full workspace",
+    });
+    fireEvent.click(expandButton);
     expect(screen.getByTestId("expanded-workspace-loading")).toBeTruthy();
+  });
+
+  test("JobsScreen: compact sheet reuses the expanded left pane with independent pane scroll", async () => {
+    const questions = [
+      {
+        id: "q1",
+        question: "Where are new users getting stuck today?",
+        reason: "The current drop-off point is not recorded.",
+      },
+    ];
+    const triageDetail = {
+      ...mockDetail,
+      lane: "triage",
+      stageLabel: "Needs triage",
+      detail: "Imported work is not part of an approved plan.",
+      latestRun: null,
+      evidence: null,
+      publication: null,
+      specProgress: null,
+      draft: {
+        ...mockDetail.draft,
+        status: "needs_clarification",
+        latest_revision: {
+          ...mockDetail.draft.latest_revision,
+          plan: {
+            kind: "clarification",
+            reason:
+              "The intended flow and acceptance criteria are not clear enough to prepare an actionable ticket.",
+            questions,
+          },
+          questions,
+          answers: [],
+        },
+      },
+    };
+
+    const board: JobsBoardModel = {
+      ...emptyBoard("animus/platform"),
+      lanes: emptyBoard("animus/platform").lanes.map((lane) =>
+        lane.id === "triage"
+          ? {
+              ...lane,
+              count: 1,
+              cards: [
+                {
+                  id: "card-triage",
+                  ref: "#153",
+                  stage: { label: "Needs triage", surface: "warning-bg", ink: "warning" },
+                  title: "Improve onboarding",
+                  workId: "work-triage",
+                },
+              ],
+            }
+          : lane,
+      ),
+    };
+
+    render(
+      <SidebarProvider>
+        <JobsScreen
+          board={board}
+          backendState="connected"
+          projectId="proj-1"
+          factory={
+            {
+              forProject: () => ({
+                workDetail: async () => triageDetail as unknown as OperatorWorkDetail,
+              }),
+            } as any
+          }
+        />
+      </SidebarProvider>,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open details for #153 Improve onboarding" }),
+    );
+
+    const sheet = await screen.findByTestId("compact-side-sheet");
+    expect(await screen.findByText("What triage read")).toBeTruthy();
+    expect(screen.getByTestId("compact-side-sheet-scroll")).toBeTruthy();
+    expect(screen.getAllByText(/Where are new users getting stuck today\?/).length).toBeGreaterThan(
+      0,
+    );
+    expect(screen.getByRole("button", { name: "Provide context" })).toBeTruthy();
+    expect(screen.getAllByText("Needs clarification").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/animus\/platform/).length).toBeGreaterThan(0);
+    expect(screen.getByRole("link", { name: "Open source issue on GitHub" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Expand to full workspace" })).toBeTruthy();
+
+    const compactLabels = [
+      ...sheet.querySelectorAll('[data-testid="issue-inspector-pane"] section[aria-label]'),
+    ].map((node) => node.getAttribute("aria-label"));
+    expect(compactLabels.length).toBeGreaterThan(0);
+
+    const kpiRow = screen.getByTestId("kpi-row");
+    const kanbanWrapper = screen.getByTestId("kanban-wrapper");
+    expect(kpiRow.contains(kanbanWrapper)).toBe(false);
+    expect(kanbanWrapper.contains(sheet)).toBe(true);
+    expect(kpiRow.contains(sheet)).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand to full workspace" }));
+    const workspace = await screen.findByTestId("expanded-issue-workspace");
+
+    const leftPane = screen.getByRole("region", { name: "Issue Inspector" });
+    const expandedLabels = [
+      ...leftPane.querySelectorAll('[data-testid="issue-inspector-pane"] section[aria-label]'),
+    ].map((node) => node.getAttribute("aria-label"));
+    expect(expandedLabels).toEqual(compactLabels);
+
+    expect(screen.getByTestId("issue-inspector-scroll")).toBeTruthy();
+    expect(screen.getByTestId("factory-rail-scroll")).toBeTruthy();
+    expect(workspace.querySelector('[data-testid="issue-inspector-scroll"]')).toBeTruthy();
+    expect(workspace.querySelector('[data-testid="factory-rail-scroll"]')).toBeTruthy();
   });
 });

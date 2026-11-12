@@ -27,6 +27,7 @@ const CUTOVER_V15 = "authority_cutover";
 const DELIVERY_CLAIM_V16 = "delivery_role_claims";
 const DELIVERY_CLAIM_AUDIT_V17 = "delivery_role_claim_reconcile_audit";
 const CONSOLIDATION_V18 = "consolidate_delivery_state_and_merge_audit";
+const CHILD_MERGE_NO_PR_V19 = "child_merge_without_pull_request";
 
 const ALL_MIGRATIONS = [
   { version: 1, name: WORK_V1 },
@@ -46,6 +47,7 @@ const ALL_MIGRATIONS = [
   { version: 16, name: DELIVERY_CLAIM_V16 },
   { version: 17, name: DELIVERY_CLAIM_AUDIT_V17 },
   { version: 18, name: CONSOLIDATION_V18 },
+  { version: 19, name: CHILD_MERGE_NO_PR_V19 },
 ];
 
 function tableExists(db: DatabaseSync, table: string): boolean {
@@ -569,7 +571,7 @@ describe("coherent schema migration registry", () => {
                (id, project_id, delivery_id, run_id, lap, stage, candidate_head_sha, attempt_key,
                 claim_token, claim_generation, lease_expires_at, heartbeat_at, state, created_at, updated_at)
              VALUES ('claim_dangling', 'proj_1', 'delivery_1', 'run_missing', 1,
-                     'independent_review', ?, 'attempt', 'token', 1, 1, 1, 'running', 1, 1)`,
+                     'code_review', ?, 'attempt', 'token', 1, 1, 1, 'running', 1, 1)`,
           )
           .run("a".repeat(40)),
       ).toThrow(/FOREIGN KEY/i);
@@ -583,7 +585,10 @@ describe("coherent schema migration registry", () => {
     try {
       legacy.exec("PRAGMA foreign_keys = OFF;");
       createLegacyMigrationTable(legacy);
-      applyMigrations(legacy, SCHEMA_MIGRATIONS.slice(0, -1));
+      applyMigrations(
+        legacy,
+        SCHEMA_MIGRATIONS.filter((migration) => migration.version <= 17),
+      );
       seedProject(legacy);
       seedDelivery(legacy);
       const sha = (char: string) => char.repeat(40);

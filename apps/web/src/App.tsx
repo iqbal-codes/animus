@@ -23,9 +23,10 @@ export function App() {
   const initialSettingsOpen = query?.get("settings") === "true";
   const initialScope = (query?.get("scope") as Scope) || undefined;
   const initialSection = (query?.get("section") as SectionId) || undefined;
+  const initialTab = (query?.get("tab") as NavId) || undefined;
 
   const [preferences, setPreferences] = useState<Preferences>(loadPreferences);
-  const [tab, setTab] = useState<NavId>(preferences.startupView);
+  const [tab, setTab] = useState<NavId>(initialTab || preferences.startupView);
   const [settingsOpen, setSettingsOpen] = useState(initialSettingsOpen);
   const [health, setHealth] = useState<Health | null>(null);
   const [healthChecked, setHealthChecked] = useState(false);
@@ -65,7 +66,10 @@ export function App() {
   };
 
   return (
-    <SidebarProvider style={SHELL_STYLE} className="bg-background text-foreground antialiased">
+    <SidebarProvider
+      style={SHELL_STYLE}
+      className="h-svh overflow-hidden bg-background text-foreground antialiased"
+    >
       <TooltipProvider>
         <div className="contents" inert={settingsOpen ? true : undefined}>
           <AppSidebar
@@ -77,7 +81,7 @@ export function App() {
             onOpenSettings={() => setSettingsOpen(true)}
           />
 
-          <SidebarInset className="min-w-0">
+          <SidebarInset className="min-h-0 min-w-0 overflow-hidden">
             {tab === "inbox" && (
               <InboxScreen
                 board={board}

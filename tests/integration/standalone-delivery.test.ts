@@ -175,7 +175,7 @@ describe("standalone full-delivery gate and verified merge", () => {
 
   function recordReview(runId: string, producerId = "reviewer-1"): void {
     observations.recordRunObservation(projectId, runId, {
-      stage: "independent_review",
+      stage: "code_review",
       status: "passed",
       producer: { id: producerId, role: "peer_reviewer" },
       checks: [
@@ -195,7 +195,7 @@ describe("standalone full-delivery gate and verified merge", () => {
   ): void {
     const status = options.status ?? "passed";
     observations.recordRunObservation(projectId, runId, {
-      stage: "final_acceptance",
+      stage: "blackbox_verification",
       status,
       producer: { id: options.producerId ?? "final-1", role: "independent_evaluator" },
       checks:
@@ -370,7 +370,9 @@ describe("standalone full-delivery gate and verified merge", () => {
 
     const technicalOnly = await delivery.getGate(projectId, run.id);
     expect(technicalOnly.state).toBe("blocked");
-    expect(technicalOnly.stages.find((stage) => stage.name === "final_acceptance")).toMatchObject({
+    expect(
+      technicalOnly.stages.find((stage) => stage.name === "blackbox_verification"),
+    ).toMatchObject({
       status: "missing",
     });
     expect(technicalOnly.mergePolicy).toBe("manual");
@@ -678,7 +680,7 @@ describe("standalone full-delivery gate and verified merge", () => {
     writeArtifact("checks/qa.json", '{"qa":"passed"}\n');
 
     observations.recordRunObservation(projectId, run.id, {
-      stage: "independent_review",
+      stage: "code_review",
       status: "passed",
       producer: { id: "reviewer-1", role: "peer_reviewer" },
       checks: [
@@ -700,7 +702,7 @@ describe("standalone full-delivery gate and verified merge", () => {
       ],
     });
     observations.recordRunObservation(projectId, run.id, {
-      stage: "final_acceptance",
+      stage: "blackbox_verification",
       status: "passed",
       producer: { id: "final-1", role: "independent_evaluator" },
       checks: [
@@ -783,7 +785,7 @@ describe("standalone full-delivery gate and verified merge", () => {
          (id, project_id, delivery_id, run_id, lap, attempt_key, stage, status, candidate_head_sha,
           target_tip_sha, merge_base_sha, tested_identity, integration_lineage, producer_id,
           producer_role, producer_name, gate_profile, gate_profile_version, error, created_at)
-       VALUES (?, ?, ?, ?, ?, 'stage:final_acceptance', 'final_acceptance', 'passed', ?, ?, ?, ?, ?, ?, 'independent_evaluator', NULL, ?, 2, NULL, ?)`,
+       VALUES (?, ?, ?, ?, ?, 'stage:blackbox_verification', 'blackbox_verification', 'passed', ?, ?, ?, ?, ?, ?, 'independent_evaluator', NULL, ?, 2, NULL, ?)`,
     ).run(
       "obs_builder_final_n2",
       projectId,
@@ -801,7 +803,7 @@ describe("standalone full-delivery gate and verified merge", () => {
     );
     const gate = await delivery.getGate(projectId, run.id);
     expect(gate.state).toBe("correction_required");
-    expect(gate.reasons).toContain("self_certified_stage:final_acceptance");
+    expect(gate.reasons).toContain("self_certified_stage:blackbox_verification");
   });
 
   test("N2: the gate and acceptance use one canonical latest-observation ordering", async () => {
@@ -817,7 +819,7 @@ describe("standalone full-delivery gate and verified merge", () => {
          (id, project_id, delivery_id, run_id, lap, attempt_key, stage, status, candidate_head_sha,
           target_tip_sha, merge_base_sha, tested_identity, integration_lineage, producer_id,
           producer_role, producer_name, gate_profile, gate_profile_version, error, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'independent_review', ?, ?, ?, ?, ?, ?, ?, 'peer_reviewer', NULL, ?, 2, NULL, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, 'code_review', ?, ?, ?, ?, ?, ?, ?, 'peer_reviewer', NULL, ?, 2, NULL, ?)`,
     );
     // Insertion order is zzz then aaa with an identical timestamp. Only insertion
     // (rowid) order can say which one is actually latest.
@@ -858,13 +860,13 @@ describe("standalone full-delivery gate and verified merge", () => {
 
     const reviews = observations
       .listObservations(projectId, { runId: run.id })
-      .filter((observation) => observation.stage === "independent_review");
+      .filter((observation) => observation.stage === "code_review");
     expect(reviews.at(-1)?.id).toBe("obs_aaa_n2");
 
     const acceptance = observations.evaluateAcceptance(projectId, run.id);
     expect(acceptance.independentObservationId).toBe("obs_aaa_n2");
 
     const gate = await delivery.getGate(projectId, run.id);
-    expect(gate.stages.find((stage) => stage.name === "independent_review")?.status).toBe("failed");
+    expect(gate.stages.find((stage) => stage.name === "code_review")?.status).toBe("failed");
   });
 });

@@ -859,7 +859,7 @@ export class FinalDeliveryService {
       const scope = this.budget.ensureScope(
         {
           ...this.scopeKey(project.id, delivery, plan),
-          baseLimit: manifest.budgets.final_max_laps,
+          baseLimit: manifest.budgets.max_laps,
           now,
         },
         true,

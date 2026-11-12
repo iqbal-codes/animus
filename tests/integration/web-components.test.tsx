@@ -304,7 +304,7 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
           deliveryId: "del-1",
           runId: "run-1",
           lap: 1,
-          stage: "independent_review",
+          stage: "code_review",
           status: "passed",
           candidateHeadSha: "d".repeat(40),
           targetTipSha: "c".repeat(40),
@@ -435,7 +435,7 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
       screen.getByRole("button", { name: "Hide evidence" }).getAttribute("aria-expanded"),
     ).toBe("true");
     expect(panel.textContent).toContain("Acceptance authorized");
-    expect(panel.textContent).toContain("independent_review");
+    expect(panel.textContent).toContain("code_review");
     expect(panel.textContent).toContain("bun test");
     expect(panel.textContent).toContain("checks/report.log");
     expect(panel.textContent).toContain("prepared criterion is not implemented");
@@ -676,7 +676,7 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
         mergeBaseSha: "c".repeat(40),
         integrationLineage: "lineage@factory/spec-714-integration",
         authorized: false,
-        reasons: ["required_stage_missing:independent_review"],
+        reasons: ["required_stage_missing:code_review"],
         builderObservationId: "obs-1",
         independentObservationId: null,
         openBlockingFindingIds: [],
@@ -733,7 +733,7 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
     const panel = await screen.findByTestId("run-integration-run-1");
     expect(panel.textContent).toContain("Integration to factory/spec-714-integration");
     expect(panel.textContent).toContain("integration_acceptance_blocked");
-    expect(panel.textContent).toContain("required_stage_missing:independent_review");
+    expect(panel.textContent).toContain("required_stage_missing:code_review");
     expect(panel.textContent).toContain("ci/verify");
     expect(panel.textContent).toContain("No active pull request");
     expect(panel.textContent).toContain("Integration attempts");
@@ -1170,13 +1170,13 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
         observationId: "obs-builder",
       },
       {
-        name: "independent_review",
+        name: "code_review",
         status: "passed" as const,
         detail: "review passed",
         observationId: "obs-review",
       },
       {
-        name: "final_acceptance",
+        name: "blackbox_verification",
         status: "passed" as const,
         detail: "acceptance passed",
         observationId: "obs-final",
@@ -1340,7 +1340,7 @@ describe("Web Console UI Components: Honest States & Keyboard Interaction", () =
     expect(panel.textContent).toContain("ready_for_operator_review");
     expect(panel.textContent).toContain("merge manual");
     expect(panel.textContent).toContain("Operator review required");
-    expect(panel.textContent).toContain("final_acceptance");
+    expect(panel.textContent).toContain("blackbox_verification");
     expect(panel.textContent).toContain("remote_ci");
     expect(panel.textContent).not.toContain("delivered");
     expect(screen.queryByRole("button", { name: "Verify merge" })).toBeNull();

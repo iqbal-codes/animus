@@ -213,7 +213,11 @@ export class DeliveryGateService {
       });
     }
     const headRefOid = remote.headRefOid ?? evaluated.publication.headRefOid;
-    if (!headRefOid || headRefOid !== run.head_sha) {
+    // A merged pull request may report the merge commit as its head ref. The
+    // lineage proof above is authoritative once the PR is MERGED; the head match
+    // only applies while the candidate is still the open review head.
+    const merged = String(remote.state).toUpperCase() === "MERGED";
+    if (!merged && (!headRefOid || headRefOid !== run.head_sha)) {
       throw new DeliveryError(
         "delivery_merge_not_verified",
         "The remote merge head does not match the tested candidate",
@@ -288,8 +292,8 @@ export class DeliveryGateService {
     const latest = (stage: ExecutionStage): ExecutionObservationRecord | null =>
       this.options.observations.latestObservation(projectId, runId, stage);
     const builder = latest("builder_execution");
-    const review = latest("independent_review");
-    const finalAcceptance = latest("final_acceptance");
+    const review = latest("code_review");
+    const blackboxVerification = latest("blackbox_verification");
 
     const reasons = new Set<string>(acceptance.reasons);
     const correctionReasons = new Set<string>();
@@ -316,10 +320,10 @@ export class DeliveryGateService {
 
     const stages: DeliveryGateStage[] = [
       this.stageFor("builder_execution", builder),
-      this.stageFor("independent_review", review),
-      this.stageFor("final_acceptance", finalAcceptance),
+      this.stageFor("code_review", review),
+      this.stageFor("blackbox_verification", blackboxVerification),
     ];
-    for (const observation of [review, finalAcceptance]) {
+    for (const observation of [review, blackboxVerification]) {
       if (!observation) continue;
       for (const reason of this.observationStaleness(observation, run, acceptance)) {
         staleReasons.add(reason);
@@ -340,13 +344,13 @@ export class DeliveryGateService {
       }
     }
 
-    if (review && finalAcceptance && review.producer.id === finalAcceptance.producer.id) {
+    if (review && blackboxVerification && review.producer.id === blackboxVerification.producer.id) {
       correctionReasons.add("independent_stages_share_producer");
       reasons.add("independent_stages_share_producer");
     }
 
     const criteria = this.acceptanceCriteria(run);
-    const acceptanceStage = this.acceptanceCriteriaStage(finalAcceptance, criteria);
+    const acceptanceStage = this.acceptanceCriteriaStage(blackboxVerification, criteria);
     stages.push(acceptanceStage);
     if (acceptanceStage.status !== "passed") {
       (acceptanceStage.status === "missing" ? blockedReasons : correctionReasons).add(
@@ -357,7 +361,7 @@ export class DeliveryGateService {
 
     const regressionStage = this.requiredKindStage(
       "regression",
-      [review, finalAcceptance],
+      [review, blackboxVerification],
       "regression",
     );
     const reviewStage = this.requiredKindStage("review", [review], "review");
@@ -648,14 +652,14 @@ export class DeliveryGateService {
   }
 
   private acceptanceCriteriaStage(
-    finalAcceptance: ExecutionObservationRecord | null,
+    blackboxVerification: ExecutionObservationRecord | null,
     criteria: string[],
   ): DeliveryGateStage {
-    if (!finalAcceptance) {
+    if (!blackboxVerification) {
       return {
         name: "acceptance_criteria",
         status: "missing",
-        detail: "missing_acceptance_check:final_acceptance",
+        detail: "missing_acceptance_check:blackbox_verification",
         observationId: null,
       };
     }
@@ -664,12 +668,12 @@ export class DeliveryGateService {
         name: "acceptance_criteria",
         status: "failed",
         detail: "acceptance_criteria_missing",
-        observationId: finalAcceptance.id,
+        observationId: blackboxVerification.id,
       };
     }
     const missing = criteria.filter(
       (key) =>
-        !finalAcceptance.checks.some(
+        !blackboxVerification.checks.some(
           (check) =>
             check.kind === "acceptance" && check.criterionKey === key && check.result === "PASS",
         ),
@@ -679,14 +683,14 @@ export class DeliveryGateService {
         name: "acceptance_criteria",
         status: "failed",
         detail: `missing_acceptance_check:${missing.join(",")}`,
-        observationId: finalAcceptance.id,
+        observationId: blackboxVerification.id,
       };
     }
     return {
       name: "acceptance_criteria",
       status: "passed",
       detail: `${criteria.length} acceptance criteria independently verified`,
-      observationId: finalAcceptance.id,
+      observationId: blackboxVerification.id,
     };
   }
 
@@ -781,7 +785,13 @@ export class DeliveryGateService {
     }
     if (!remote.headRefOid) {
       reasons.push("remote_head_unverified");
-    } else if (run.head_sha && remote.headRefOid !== run.head_sha) {
+    } else if (
+      run.head_sha &&
+      remote.headRefOid !== run.head_sha &&
+      // A merged pull request may report the merge commit as its head ref; the
+      // lineage/target-tip proof is authoritative once it is MERGED.
+      String(remote.state).toUpperCase() !== "MERGED"
+    ) {
       reasons.push("remote_head_mismatch");
     }
     if (publication.targetId && publication.headBranch && publication.headBranch !== run.branch) {

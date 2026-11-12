@@ -25,7 +25,6 @@ export interface LocalExecutionRuntimeOptions {
   artifactRoot?: string;
   engine?: DeliveryRuntimeEngine;
   regressionChecks?: string[];
-  technicalChecks?: string[];
   maxCorrections?: number;
   /** Durable run/stage claim shared by every supported tick. */
   claims?: DeliveryRoleClaimService;
@@ -108,7 +107,6 @@ export function createLocalExecutionRuntime(
       ...(options.artifactRoot ? { artifactRoot: options.artifactRoot } : {}),
       ...(options.engine ? { engine: options.engine } : {}),
       ...(options.regressionChecks ? { regressionChecks: options.regressionChecks } : {}),
-      ...(options.technicalChecks ? { technicalChecks: options.technicalChecks } : {}),
       ...(options.maxCorrections !== undefined ? { maxCorrections: options.maxCorrections } : {}),
       correction: {
         dispatch: (request) => final.dispatchCorrection(request),

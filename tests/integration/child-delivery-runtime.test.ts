@@ -236,7 +236,6 @@ describe("child delivery runtime on the normal scheduler tick", () => {
       budget,
       publication,
       artifactRoot,
-      technicalChecks: ["true"],
       regressionChecks: ["true"],
       maxCorrections: 3,
       engine: {
@@ -367,12 +366,8 @@ describe("child delivery runtime on the normal scheduler tick", () => {
     });
     expect(tick.action).toBe("launched");
     const firstRunId = tick.runId!;
-    expect(stages(firstRunId)).toEqual([
-      "builder_execution",
-      "technical_checks",
-      "independent_review",
-    ]);
-    expect(pullRequestCount()).toBe(1);
+    expect(stages(firstRunId)).toEqual(["builder_execution", "code_review"]);
+    expect(pullRequestCount()).toBe(0);
     expect(integrationCount()).toBe(1);
     expect(remoteHead(branch)).toBeTruthy();
 
@@ -404,7 +399,7 @@ describe("child delivery runtime on the normal scheduler tick", () => {
     expect(second.action).toBe("launched");
     expect(second.issueNumber).toBe(9002);
     expect(integrationCount()).toBe(2);
-    expect(pullRequestCount()).toBe(2);
+    expect(pullRequestCount()).toBe(0);
 
     // Once every child is verifiably integrated, the tick advances final delivery.
     const third = await runLocalDispatchTick({
@@ -446,8 +441,8 @@ describe("child delivery runtime on the normal scheduler tick", () => {
     });
     expect(tick.action).toBe("launched");
     expect(tick.runId).toBe(run.id);
-    expect(stages(run.id)).toEqual(["builder_execution", "technical_checks", "independent_review"]);
-    expect(pullRequestCount()).toBe(1);
+    expect(stages(run.id)).toEqual(["builder_execution", "code_review"]);
+    expect(pullRequestCount()).toBe(0);
     expect(integrationCount()).toBe(1);
     expect(remoteHead(branch)).toBeTruthy();
     // Recovery never faked a new builder lap.
@@ -478,12 +473,12 @@ describe("child delivery runtime on the normal scheduler tick", () => {
     expect(
       observations
         .listObservations(projectId, { runId: first.id })
-        .some((item) => item.stage === "independent_review" && item.status === "failed"),
+        .some((item) => item.stage === "code_review" && item.status === "failed"),
     ).toBe(true);
     expect(
       observations
         .listObservations(projectId, { runId: second.id })
-        .some((item) => item.stage === "independent_review" && item.status === "passed"),
+        .some((item) => item.stage === "code_review" && item.status === "passed"),
     ).toBe(true);
     const integration = db
       .prepare("SELECT candidate_head_sha FROM delivery_merges WHERE run_id = ?")
@@ -514,7 +509,7 @@ describe("child delivery runtime on the normal scheduler tick", () => {
     expect(first.action).toBe("launched");
     const run = dispatch.getRun(projectId, first.runId!);
     expect(integrationCount()).toBe(0);
-    expect(pullRequestCount()).toBe(1);
+    expect(pullRequestCount()).toBe(0);
     expect(first.delivery).toMatchObject({
       action: "failed",
       reasons: expect.arrayContaining(["integration_ci_missing"]),
@@ -540,7 +535,7 @@ describe("child delivery runtime on the normal scheduler tick", () => {
     expect(dispatch.listRuns(projectId, { plan_id: plan.id })).toHaveLength(1);
   }, 60_000);
 
-  test("missing technical configuration holds truthfully instead of inventing a pass", async () => {
+  test("child delivery runs no technical stage, so missing harness checks cannot hold it", async () => {
     await importSpec(9300, [{ issue: 9301, coverage: "AC1–AC2" }]);
     const dispatch = new DispatchService(db, {
       plans,
@@ -552,7 +547,8 @@ describe("child delivery runtime on the normal scheduler tick", () => {
       ownerPid: () => 4242,
       runner: committingRunner("config"),
     });
-    // No technicalChecks and no harness config in the checkout.
+    // Deliberately no technical override and no harness config in the checkout:
+    // deterministic checks belong to pre-commit hooks and required remote CI.
     const runtime = createLocalExecutionRuntime({
       db,
       plans,
@@ -574,10 +570,10 @@ describe("child delivery runtime on the normal scheduler tick", () => {
       deliveryRuntime: runtime.delivery,
       finalDeliveryRuntime: runtime.final,
     });
-    const delivery = tick.delivery as { action: string; reasons: string[] };
-    expect(delivery.action).toBe("failed");
-    expect(delivery.reasons).toContain("technical_checks_unavailable");
-    expect(integrationCount()).toBe(0);
+    expect(tick.action).toBe("launched");
+    expect((tick.delivery as { action: string }).action).toBe("published");
+    expect(stages(tick.runId!)).toEqual(["builder_execution", "code_review"]);
+    expect(integrationCount()).toBe(1);
     expect(pullRequestCount()).toBe(0);
   });
 });

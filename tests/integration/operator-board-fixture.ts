@@ -372,7 +372,7 @@ export async function createFixture(): Promise<Fixture> {
         checks: [{ name: "unit", command: "bun test", result: "PASS" }],
       });
       observations.recordRunObservation(projectId, run.id, {
-        stage: "independent_review",
+        stage: "code_review",
         status: "passed",
         producer: reviewer.producer,
         checks: [{ name: "standards", command: "review diff", result: "PASS" }],

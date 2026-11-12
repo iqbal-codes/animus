@@ -13,7 +13,10 @@ import {
   type RequiredCheck,
   type IntegrationEvent,
 } from "@animus/contracts/operator";
-import { acquireCrossProcessIntegrationLock } from "../coordination/integration";
+import {
+  SerializedIntegrationManager,
+  acquireCrossProcessIntegrationLock,
+} from "../coordination/integration";
 import type { ExecutionObservationService } from "../evidence/observations";
 import { enqueuePublicationEvent } from "../publication/outbox";
 import type { PublicationService } from "../publication/service";
@@ -181,6 +184,7 @@ export class ChildIntegrationService {
   private readonly remoteRunner: IntegrationRemoteRunner;
   private readonly clock: () => number;
   private readonly lockTimeoutMs: number;
+  private readonly mergeManager: SerializedIntegrationManager;
   private readonly readControl:
     | ((run: {
         projectId: string;
@@ -204,6 +208,7 @@ export class ChildIntegrationService {
     this.remoteRunner = options.remoteRunner ?? defaultRemoteRunner;
     this.clock = options.clock ?? (() => Date.now());
     this.lockTimeoutMs = options.lockTimeoutMs ?? 15_000;
+    this.mergeManager = new SerializedIntegrationManager(this.gitRunner);
     this.readControl = options.readControl ?? null;
   }
 
@@ -217,7 +222,7 @@ export class ChildIntegrationService {
     const events = this.listEvents(projectId, run.id);
     const acceptance = this.observations.evaluateAcceptance(projectId, run.id);
     const publication = this.safePublication(projectId, run.id);
-    const blockers = this.localBlockers(run, acceptance, publication);
+    const blockers = this.localBlockers(run, acceptance);
     return this.buildStatus(run, {
       state: integration
         ? "integrated"
@@ -289,14 +294,23 @@ export class ChildIntegrationService {
       const targetBefore = await this.ensureTarget(run);
       await this.syncLocalTarget(run, targetBefore);
 
-      let publication: PublicationStatus | null = null;
-      try {
-        publication = await this.publication.publishByRun(projectId, run.id);
-      } catch {
-        publication = this.safePublication(projectId, run.id);
-      }
-
+      const publication: PublicationStatus | null = null;
       const acceptance = this.observations.evaluateAcceptance(projectId, run.id);
+
+      // A child ticket has no pull request of its own. Its branch is pushed so the
+      // required checks can report on the commit; the merge itself is a local
+      // compare-and-swap under the cross-process lock, then pushed.
+      const pushBlocker = await this.pushCandidateBranch(run);
+      if (pushBlocker) {
+        return await this.block(
+          run,
+          [pushBlocker],
+          acceptance,
+          publication,
+          targetBefore,
+          submission,
+        );
+      }
 
       // Distinguish a real content conflict from mere stale evidence: both hold,
       // but the operator needs the precise reason to reverify or rebase.
@@ -320,7 +334,7 @@ export class ChildIntegrationService {
         }
       }
 
-      const blockers = this.localBlockers(run, acceptance, publication);
+      const blockers = this.localBlockers(run, acceptance);
       if (blockers.length > 0) {
         return await this.block(run, blockers, acceptance, publication, targetBefore, submission);
       }
@@ -388,150 +402,6 @@ export class ChildIntegrationService {
         );
       }
 
-      const activePullRequest = publication!.pullRequests.find((pr) => pr.active) ?? null;
-      if (!activePullRequest || !activePullRequest.number) {
-        return await this.block(
-          run,
-          [
-            {
-              code: "integration_publication_missing",
-              message: "No active child pull request exists to merge",
-            },
-          ],
-          acceptance,
-          publication,
-          targetBefore,
-          submission,
-        );
-      }
-
-      const remotePullRequest = await this.readRemotePullRequest(run, activePullRequest.number);
-      if (!remotePullRequest) {
-        return await this.block(
-          run,
-          [
-            {
-              code: "integration_remote_unreadable",
-              message: `Pull request #${activePullRequest.number} could not be read from the remote`,
-            },
-          ],
-          acceptance,
-          publication,
-          targetBefore,
-          submission,
-        );
-      }
-
-      if (remotePullRequest.state === "MERGED") {
-        return await this.verifyAndRecord(run, acceptance, publication!, remotePullRequest, {
-          targetBefore,
-          expectedCandidate: run.head_sha!,
-          expectedBase: run.target_branch,
-          actor: submission.actor ?? "operator",
-          reconciliation: true,
-          checks: checks.checks,
-        });
-      }
-
-      const bindingBlocker = this.pullRequestBindingBlocker(run, remotePullRequest);
-      if (bindingBlocker) {
-        return await this.block(
-          run,
-          [bindingBlocker],
-          acceptance,
-          publication,
-          targetBefore,
-          submission,
-        );
-      }
-      if (remotePullRequest.state !== "OPEN") {
-        return await this.block(
-          run,
-          [
-            {
-              code: "integration_pull_request_closed",
-              message: `Pull request #${remotePullRequest.number} is ${remotePullRequest.state}, not open`,
-            },
-          ],
-          acceptance,
-          publication,
-          targetBefore,
-          submission,
-        );
-      }
-
-      if (remotePullRequest.draft) {
-        if (!this.forge.updatePullRequest) {
-          return await this.block(
-            run,
-            [
-              {
-                code: "integration_merge_rejected",
-                message: "The configured forge cannot mark a draft pull request ready",
-              },
-            ],
-            acceptance,
-            publication,
-            targetBefore,
-            submission,
-          );
-        }
-        try {
-          const ready = await this.forge.updatePullRequest(
-            run.repo_name,
-            activePullRequest.number,
-            {
-              draft: false,
-            },
-          );
-          if (ready.draft) {
-            return await this.block(
-              run,
-              [
-                {
-                  code: "integration_merge_rejected",
-                  message: `Pull request #${activePullRequest.number} is still a draft`,
-                },
-              ],
-              acceptance,
-              publication,
-              targetBefore,
-              submission,
-            );
-          }
-        } catch (error) {
-          return await this.block(
-            run,
-            [
-              {
-                code: "integration_merge_rejected",
-                message: `Could not mark pull request #${activePullRequest.number} ready: ${this.message(error)}`,
-              },
-            ],
-            acceptance,
-            publication,
-            targetBefore,
-            submission,
-          );
-        }
-      }
-
-      if (!this.forge.mergePullRequest) {
-        return await this.block(
-          run,
-          [
-            {
-              code: "integration_merge_rejected",
-              message: "The configured forge does not support pull request merging",
-            },
-          ],
-          acceptance,
-          publication,
-          targetBefore,
-          submission,
-        );
-      }
-
       let mergeSha: string | null = null;
       let effectiveChecks = checks;
       try {
@@ -575,7 +445,7 @@ export class ChildIntegrationService {
             message: `Acceptance target tip ${freshAcceptance.targetTipSha} no longer matches ${targetBefore}`,
           });
         }
-        freshBlockerList.push(...this.localBlockers(run, freshAcceptance, freshPublication));
+        freshBlockerList.push(...this.localBlockers(run, freshAcceptance));
 
         // A Stop issued during the pre-merge awaits must block the merge too.
         const control = this.readControl?.({
@@ -608,69 +478,26 @@ export class ChildIntegrationService {
 
         effectiveChecks = freshChecks;
         this.assertInstallationReady();
-        const merged = await this.forge.mergePullRequest(run.repo_name, activePullRequest.number, {
-          expectedHeadSha: run.head_sha!,
-          mergeMethod: "merge",
+        const merged = this.mergeManager.mergeSerializedWhileLocked({
+          repoRoot: run.checkout_path,
+          integrationBranch: run.target_branch,
+          expectedIntegrationSha: targetBefore,
+          childBranch: run.branch,
+          childIssueNumber: run.issue_number,
+          childHeadSha: run.head_sha!,
+          gitRunner: this.gitRunner,
         });
-        if (!merged.merged) {
-          return await this.block(
-            run,
-            [
-              {
-                code: "integration_merge_rejected",
-                message:
-                  merged.message ??
-                  `Remote refused to merge pull request #${activePullRequest.number}`,
-              },
-            ],
-            freshAcceptance,
-            freshPublication,
-            targetBefore,
-            submission,
-          );
-        }
-        mergeSha = merged.sha ?? null;
+        mergeSha = merged.newSha;
       } catch (error) {
-        // Re-read authoritative state before classifying an ambiguous merge failure.
-        const observed = await this.readRemotePullRequest(run, activePullRequest.number).catch(
-          () => null,
-        );
-        if (!observed || observed.state !== "MERGED") {
-          return await this.block(
-            run,
-            [
-              {
-                code: observed ? "integration_merge_rejected" : "integration_merge_unknown",
-                message: `Remote merge of pull request #${activePullRequest.number} was not verified: ${this.message(error)}`,
-              },
-            ],
-            acceptance,
-            publication,
-            targetBefore,
-            submission,
-          );
-        }
-        const rereadBound = this.pullRequestBindingBlocker(run, observed);
-        if (rereadBound) {
-          return await this.block(
-            run,
-            [rereadBound],
-            acceptance,
-            publication,
-            targetBefore,
-            submission,
-          );
-        }
-      }
-
-      const confirmed = await this.readRemotePullRequest(run, activePullRequest.number);
-      if (!confirmed || confirmed.state !== "MERGED") {
         return await this.block(
           run,
           [
             {
-              code: "integration_merge_unknown",
-              message: `Pull request #${activePullRequest.number} is not verified MERGED`,
+              code:
+                error instanceof IntegrationError
+                  ? "integration_merge_rejected"
+                  : "integration_merge_unknown",
+              message: `Child merge into ${run.target_branch} was not applied: ${this.message(error)}`,
             },
           ],
           acceptance,
@@ -680,14 +507,82 @@ export class ChildIntegrationService {
         );
       }
 
-      return await this.verifyAndRecord(run, acceptance, publication!, confirmed, {
+      if (!mergeSha) {
+        return await this.block(
+          run,
+          [
+            {
+              code: "integration_merge_unknown",
+              message: `Child merge into ${run.target_branch} produced no merge commit`,
+            },
+          ],
+          acceptance,
+          publication,
+          targetBefore,
+          submission,
+        );
+      }
+
+      // The merge commit only counts once the remote integration lineage contains it.
+      const pushed = await this.remoteRunner(
+        ["push", "origin", `refs/heads/${run.target_branch}:refs/heads/${run.target_branch}`],
+        run.checkout_path,
+      );
+      if (pushed.exitCode !== 0) {
+        return await this.block(
+          run,
+          [
+            {
+              code: "integration_merge_unknown",
+              message: `Integration branch ${run.target_branch} could not be pushed: ${
+                (pushed.stderr || pushed.stdout).trim() || `exit ${pushed.exitCode}`
+              }`,
+            },
+          ],
+          acceptance,
+          publication,
+          targetBefore,
+          submission,
+        );
+      }
+      const targetAfter = await this.readRemoteTarget(run);
+      if (!targetAfter || !this.isAncestor(run, mergeSha, targetAfter)) {
+        return await this.block(
+          run,
+          [
+            {
+              code: "integration_merge_unknown",
+              message: `Merge ${mergeSha} is not included in the remote ${run.target_branch} lineage`,
+            },
+          ],
+          acceptance,
+          publication,
+          targetBefore,
+          submission,
+        );
+      }
+      await this.syncLocalTarget(run, targetAfter);
+
+      const recorded = this.recordIntegration(run, {
+        acceptance,
+        mergeSha,
         targetBefore,
-        expectedCandidate: run.head_sha!,
-        expectedBase: run.target_branch,
+        targetAfter,
+        remotePullRequest: null,
+        targetId: null,
+        pullRequestId: null,
         actor: submission.actor ?? "operator",
-        mergeShaHint: mergeSha,
         reconciliation: false,
+      });
+
+      return this.buildStatus(run, {
+        state: "integrated",
+        blockers: [],
+        acceptance,
+        publication,
         checks: effectiveChecks.checks,
+        integration: recorded,
+        events: this.listEvents(run.project_id, run.id),
       });
     } finally {
       release();
@@ -698,153 +593,6 @@ export class ChildIntegrationService {
   // Completion verification and durable recording
   // -------------------------------------------------------------------------
 
-  private async verifyAndRecord(
-    run: RunRow,
-    acceptance: AcceptanceDecision,
-    publication: PublicationStatus,
-    remotePullRequest: ForgePullRequest,
-    options: {
-      targetBefore: string;
-      expectedCandidate: string;
-      expectedBase: string;
-      actor: string;
-      mergeShaHint?: string | null;
-      reconciliation: boolean;
-      checks: RequiredCheck[];
-    },
-  ): Promise<IntegrationStatus> {
-    if (
-      remotePullRequest.base !== options.expectedBase ||
-      (remotePullRequest.headRefOid !== undefined &&
-        remotePullRequest.headRefOid !== null &&
-        remotePullRequest.headRefOid !== options.expectedCandidate) ||
-      remotePullRequest.head !== run.branch
-    ) {
-      return await this.block(
-        run,
-        [this.pullRequestBindingBlocker(run, remotePullRequest)!],
-        acceptance,
-        publication,
-        options.targetBefore,
-        { actor: options.actor },
-      );
-    }
-
-    const fetched = await this.remoteRunner(
-      ["fetch", "--no-tags", "origin", run.target_branch],
-      run.checkout_path,
-    );
-    if (fetched.exitCode !== 0) {
-      return await this.block(
-        run,
-        [
-          {
-            code: "integration_remote_unreadable",
-            message: `Could not fetch ${run.target_branch} from the remote: ${fetched.stderr}`,
-          },
-        ],
-        acceptance,
-        publication,
-        options.targetBefore,
-        { actor: options.actor },
-      );
-    }
-    const targetAfter = await this.readRemoteTarget(run);
-    if (!targetAfter || targetAfter === options.targetBefore) {
-      return await this.block(
-        run,
-        [
-          {
-            code: "integration_lineage_unverified",
-            message: `Remote ${run.target_branch} did not advance after the merge`,
-            details: { before: options.targetBefore, after: targetAfter },
-          },
-        ],
-        acceptance,
-        publication,
-        options.targetBefore,
-        { actor: options.actor },
-      );
-    }
-
-    if (!this.isAncestor(run, options.expectedCandidate, targetAfter)) {
-      return await this.block(
-        run,
-        [
-          {
-            code: "integration_lineage_unverified",
-            message: `Candidate ${options.expectedCandidate} is not included in remote ${run.target_branch}`,
-            details: { target: targetAfter },
-          },
-        ],
-        acceptance,
-        publication,
-        options.targetBefore,
-        { actor: options.actor },
-      );
-    }
-
-    const mergeSha = options.mergeShaHint ?? targetAfter;
-    if (!this.commitExists(run, mergeSha) || !this.isAncestor(run, mergeSha, targetAfter)) {
-      return await this.block(
-        run,
-        [
-          {
-            code: "integration_lineage_unverified",
-            message: `Merge commit ${mergeSha} is not verifiably reachable from remote ${run.target_branch}`,
-            details: { target: targetAfter },
-          },
-        ],
-        acceptance,
-        publication,
-        options.targetBefore,
-        { actor: options.actor },
-      );
-    }
-
-    // Make the verified remote lineage the local target before recording completion so
-    // dependency release and legacy verified-integration reads observe the same fact.
-    await this.syncLocalTarget(run, targetAfter);
-
-    await this.publishTargetUpdate(run, publication, {
-      kind: "verdict",
-      severity: "info",
-      title: `Integrated #${run.issue_number} into ${run.target_branch}`,
-      body: `Candidate \`${options.expectedCandidate}\` merged at \`${mergeSha}\` and verified on the remote integration lineage \`${run.target_branch}\` (${targetAfter}).`,
-    });
-
-    const activePublication = publication?.pullRequests.find((pr) => pr.active) ?? null;
-    const recorded = this.recordIntegration(run, {
-      acceptance,
-      mergeSha,
-      targetBefore: options.targetBefore,
-      targetAfter,
-      remotePullRequest,
-      targetId: publication?.target.id ?? null,
-      pullRequestId: activePublication?.id ?? null,
-      actor: options.actor,
-      reconciliation: options.reconciliation,
-    });
-
-    // Attempt to publish the queued verdict. A publication failure must stay visible
-    // (the event remains queued) and never turn a verified merge into a fake failure.
-    try {
-      await this.publication.publishByRun(run.project_id, run.id);
-    } catch {
-      // The queued event and target error remain readable through publication status.
-    }
-
-    return this.buildStatus(run, {
-      state: "integrated",
-      blockers: [],
-      acceptance,
-      publication: this.safePublication(run.project_id, run.id),
-      checks: options.checks,
-      integration: recorded,
-      events: this.listEvents(run.project_id, run.id),
-    });
-  }
-
   private recordIntegration(
     run: RunRow,
     details: {
@@ -852,7 +600,7 @@ export class ChildIntegrationService {
       mergeSha: string;
       targetBefore: string;
       targetAfter: string;
-      remotePullRequest: ForgePullRequest;
+      remotePullRequest: ForgePullRequest | null;
       targetId: string | null;
       pullRequestId: string | null;
       actor: string;
@@ -907,8 +655,8 @@ export class ChildIntegrationService {
             details.targetId,
             details.pullRequestId,
             run.repo_name,
-            details.remotePullRequest.number,
-            details.remotePullRequest.html_url ?? null,
+            details.remotePullRequest?.number ?? null,
+            details.remotePullRequest?.html_url ?? null,
             run.branch,
             run.target_branch,
             run.head_sha!,
@@ -1075,11 +823,7 @@ export class ChildIntegrationService {
   // Preconditions
   // -------------------------------------------------------------------------
 
-  private localBlockers(
-    run: RunRow,
-    acceptance: AcceptanceDecision,
-    publication: PublicationStatus | null,
-  ): IntegrationBlocker[] {
+  private localBlockers(run: RunRow, acceptance: AcceptanceDecision): IntegrationBlocker[] {
     const blockers: IntegrationBlocker[] = [];
     if (run.gate_profile !== "child") {
       blockers.push({
@@ -1118,68 +862,51 @@ export class ChildIntegrationService {
         details: { reasons: acceptance.reasons },
       });
     }
-    if (!publication) {
-      blockers.push({
-        code: "integration_publication_missing",
-        message: "No publication target or child pull request exists",
-      });
-      return dedupeBlockers(blockers);
-    }
-    const active = publication.pullRequests.find((pr) => pr.active) ?? null;
-    if (!active || !active.number) {
-      blockers.push({
-        code: "integration_publication_missing",
-        message: "No active child pull request exists",
-      });
-      return dedupeBlockers(blockers);
-    }
-    if (active.state !== "open") {
-      blockers.push({
-        code: "integration_pull_request_closed",
-        message: `Pull request #${active.number} is ${active.state}`,
-        details: { number: active.number },
-      });
-    }
-    if (!publication.auditComplete) {
-      blockers.push({
-        code: "integration_publication_incomplete",
-        message: "Required PR audit or evidence publication is incomplete",
-        details: {
-          queuedEvents: publication.queuedEventCount,
-          failedIntents: publication.failedIntentCount,
-          unknownIntents: publication.unknownIntentCount,
-          remoteStale: publication.remoteStale,
-          targetState: publication.target.state,
-        },
-      });
-    }
     return dedupeBlockers(blockers);
   }
 
-  private pullRequestBindingBlocker(
-    run: RunRow,
-    pullRequest: ForgePullRequest,
-  ): IntegrationBlocker | null {
-    if (pullRequest.head !== run.branch) {
+  /**
+   * Publish the candidate branch itself, without a pull request. Required checks
+   * are read against the commit, so the branch only has to exist on the remote and
+   * point at the exact candidate we verified.
+   */
+  private async pushCandidateBranch(run: RunRow): Promise<IntegrationBlocker | null> {
+    const head = run.head_sha;
+    if (!head) {
       return {
-        code: "integration_remote_binding_mismatch",
-        message: `Pull request source ${pullRequest.head} does not match ${run.branch}`,
+        code: "integration_candidate_missing",
+        message: `Run ${run.id} has no committed candidate head`,
       };
     }
-    if (pullRequest.base !== run.target_branch) {
+    const ref = `refs/heads/${run.branch}`;
+    this.assertInstallationReady();
+    const pushed = await this.remoteRunner(["push", "origin", `${ref}:${ref}`], run.checkout_path);
+    if (pushed.exitCode !== 0) {
       return {
-        code: "integration_remote_binding_mismatch",
-        message: `Pull request target ${pullRequest.base} does not match ${run.target_branch}`,
+        code: "integration_remote_unreadable",
+        message: `Candidate branch ${run.branch} could not be pushed: ${
+          (pushed.stderr || pushed.stdout).trim() || `exit ${pushed.exitCode}`
+        }`,
       };
     }
-    if (
-      pullRequest.headRefOid !== undefined &&
-      pullRequest.headRefOid !== null &&
-      pullRequest.headRefOid !== run.head_sha
-    ) {
+    const listed = await this.remoteRunner(["ls-remote", "origin", ref], run.checkout_path);
+    if (listed.exitCode !== 0) {
+      return {
+        code: "integration_remote_unreadable",
+        message: `Candidate branch ${run.branch} could not be read back from the remote`,
+      };
+    }
+    const remoteSha =
+      listed.stdout
+        .split("\n")
+        .map((line) => line.trim())
+        .find((line) => line.endsWith(`\t${ref}`) || line.endsWith(` ${ref}`))
+        ?.split(/\s+/)[0] ?? null;
+    if (remoteSha !== head) {
       return {
         code: "integration_remote_binding_mismatch",
-        message: `Pull request head ${pullRequest.headRefOid} does not match candidate ${run.head_sha}`,
+        message: `Remote ${run.branch} is ${remoteSha ?? "missing"}, not the candidate ${head}`,
+        details: { expected: head, actual: remoteSha },
       };
     }
     return null;
@@ -1223,18 +950,6 @@ export class ChildIntegrationService {
       };
     });
     return { checks, blockers };
-  }
-
-  private async readRemotePullRequest(
-    run: RunRow,
-    number: number,
-  ): Promise<ForgePullRequest | null> {
-    if (!this.forge.getPullRequest) return null;
-    try {
-      return await this.forge.getPullRequest(run.repo_name, number);
-    } catch {
-      return null;
-    }
   }
 
   // -------------------------------------------------------------------------

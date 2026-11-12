@@ -85,7 +85,7 @@ describe("CLI delivery claim controls use the backend API", () => {
           claim_token, claim_generation, owner_pid, owner_process_start, role_pid, role_pgid,
           role_process_start, lease_expires_at, heartbeat_at, state, result_observation_id, error,
           disposition, disposition_reason, disposition_owner_probe, resolved_at, created_at, updated_at)
-       VALUES ('claim-cli', ?, 'del-cli', ?, 1, 'final_acceptance', ?, 'final_acceptance:claim:x',
+       VALUES ('claim-cli', ?, 'del-cli', ?, 1, 'blackbox_verification', ?, 'blackbox_verification:claim:x',
                'token', 3, 999999, 'dead-start', NULL, NULL, NULL, 0, ?, 'interrupted', NULL,
                'frozen', 'frozen_unknown_owner', 'operator_frozen_unknown_owner', 'dead', NULL, ?, ?)`,
     ).run(project.id, RUN_ID, "a".repeat(40), now, now, now);
@@ -161,7 +161,7 @@ describe("CLI delivery claim controls use the backend API", () => {
       "--project",
       projectId,
       "--stage",
-      "final_acceptance",
+      "blackbox_verification",
       "--lap",
       "1",
       "--expected-generation",
@@ -203,7 +203,7 @@ describe("CLI delivery claim controls use the backend API", () => {
       "--project",
       projectId,
       "--stage",
-      "final_acceptance",
+      "blackbox_verification",
       "--lap",
       "1",
       "--expected-generation",
