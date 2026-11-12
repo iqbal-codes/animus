@@ -343,7 +343,6 @@ describe("durable delivery-role claims", () => {
       budget: a.budget,
       publication: a.publication,
       artifactRoot,
-      technicalChecks: ["echo tech-ok"],
       regressionChecks: ["true"],
       engine: {
         transport,
@@ -364,7 +363,6 @@ describe("durable delivery-role claims", () => {
       budget: b.budget,
       publication: b.publication,
       artifactRoot,
-      technicalChecks: ["echo tech-ok"],
       regressionChecks: ["true"],
       engine: {
         transport,
@@ -411,12 +409,12 @@ describe("durable delivery-role claims", () => {
     expect(integrationCount(dbA)).toBe(1);
     const reviews = a.observations
       .listObservations(projectId, { runId: built.runId })
-      .filter((item) => item.stage === "independent_review");
+      .filter((item) => item.stage === "code_review");
     expect(reviews).toHaveLength(1);
     expect(reviews[0]!.status).toBe("passed");
     const claim = dbA
       .prepare(
-        "SELECT state, claim_generation FROM delivery_role_claims WHERE run_id = ? AND stage = 'independent_review'",
+        "SELECT state, claim_generation FROM delivery_role_claims WHERE run_id = ? AND stage = 'code_review'",
       )
       .get(built.runId) as { state: string; claim_generation: number };
     expect(claim.state).toBe("completed");
@@ -434,7 +432,7 @@ describe("durable delivery-role claims", () => {
       deliveryId: built.deliveryId,
       runId: built.runId,
       lap: built.lap,
-      stage: "independent_review" as const,
+      stage: "code_review" as const,
       candidateHeadSha: built.headSha,
     };
 
@@ -519,7 +517,7 @@ describe("durable delivery-role claims", () => {
       projectId,
       built.runId,
       {
-        stage: "independent_review",
+        stage: "code_review",
         status: "passed",
         producer: reviewer,
         checks: [
@@ -533,7 +531,7 @@ describe("durable delivery-role claims", () => {
         findings: [],
         artifacts: [],
       },
-      { attemptKey: `independent_review:claim:${"a".repeat(36)}` },
+      { attemptKey: `code_review:claim:${"a".repeat(36)}` },
     );
     expect(observations.evaluateAcceptance(projectId, built.runId).authorized).toBe(true);
 
@@ -541,7 +539,7 @@ describe("durable delivery-role claims", () => {
       projectId,
       built.runId,
       {
-        stage: "independent_review",
+        stage: "code_review",
         status: "failed",
         producer: reviewer,
         checks: [
@@ -562,19 +560,19 @@ describe("durable delivery-role claims", () => {
         ],
         artifacts: [],
       },
-      { attemptKey: `independent_review:claim:${"b".repeat(36)}` },
+      { attemptKey: `code_review:claim:${"b".repeat(36)}` },
     );
 
-    const latest = observations.latestObservation(projectId, built.runId, "independent_review");
+    const latest = observations.latestObservation(projectId, built.runId, "code_review");
     expect(latest?.status).toBe("failed");
     const reviews = observations
       .listObservations(projectId, { runId: built.runId })
-      .filter((item) => item.stage === "independent_review");
+      .filter((item) => item.stage === "code_review");
     expect(reviews.map((item) => item.status)).toEqual(["passed", "failed"]);
     expect(reviews[0]!.attemptKey).not.toBe(reviews[1]!.attemptKey);
     const acceptance = observations.evaluateAcceptance(projectId, built.runId);
     expect(acceptance.authorized).toBe(false);
-    expect(acceptance.reasons).toContain("required_stage_not_passed:independent_review:failed");
+    expect(acceptance.reasons).toContain("required_stage_not_passed:code_review:failed");
     expect(acceptance.reasons).toContain("open_blocking_findings");
     expect(observations.listFindings(projectId, { workId: built.workId }).length).toBeGreaterThan(
       0,

@@ -249,7 +249,7 @@ async function integrateChild(issue: number, label: string): Promise<void> {
     checks: [{ name: "unit", command: "bun test", result: "PASS" }],
   });
   observations.recordRunObservation(project.id, run.id, {
-    stage: "independent_review",
+    stage: "code_review",
     status: "passed",
     producer: reviewer.producer,
     checks: [{ name: "standards", command: "review diff", result: "PASS" }],

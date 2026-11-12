@@ -199,7 +199,7 @@ describe("standalone delivery gate through backend HTTP, client and CLI", () => 
     await scoped.recordObservation({
       run_id: run.id,
       producer_credential: reviewer.credential,
-      stage: "independent_review",
+      stage: "code_review",
       status: "passed",
       checks: [
         { name: "standards review", command: "review diff", result: "PASS", kind: "review" },
@@ -208,7 +208,7 @@ describe("standalone delivery gate through backend HTTP, client and CLI", () => 
     await scoped.recordObservation({
       run_id: run.id,
       producer_credential: finalEvaluator.credential,
-      stage: "final_acceptance",
+      stage: "blackbox_verification",
       status: "passed",
       checks: [
         {

@@ -79,8 +79,8 @@ export async function handleProjectDeliveryRoute(
         runId: decodeURIComponent(parts[3]!),
         stage: decodeURIComponent(parts[5]!) as
           | "technical_checks"
-          | "independent_review"
-          | "final_acceptance",
+          | "code_review"
+          | "blackbox_verification",
         lap: parsed.data.lap,
         action: parsed.data.action,
         actor: parsed.data.actor,

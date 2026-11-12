@@ -197,7 +197,7 @@ export const orderedFlags: readonly FlagHelp[] = [
     commands: ["draft"],
   },
   {
-    spec: "--stage <technical_checks|independent_review|final_acceptance>",
+    spec: "--stage <technical_checks|code_review|blackbox_verification>",
     description: "Delivery role claim stage for claim-interrupt/claim-complete",
     commands: ["plan"],
   },

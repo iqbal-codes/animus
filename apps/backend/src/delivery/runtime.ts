@@ -41,7 +41,7 @@ export interface DeliveryRuntimeRoleRequest {
   runId: string;
   lap: number;
   gateProfile: PlanGateProfile;
-  stage: "independent_review" | "final_acceptance";
+  stage: "code_review" | "blackbox_verification";
   projectRoot: string;
   worktreePath: string;
   branch: string;
@@ -143,8 +143,6 @@ export interface DeliveryRuntimeOptions {
   executor?: DeliveryRuntimeRoleExecutor;
   /** Declared ordinary regression commands. Production reads harness/harness.config.json. */
   regressionChecks?: string[];
-  /** Declared child technical/contract commands. Production reads harness/harness.config.json. */
-  technicalChecks?: string[];
   /** Replacement for the child-profile correction dispatch (final-spec repair). */
   correction?: DeliveryRuntimeCorrection;
   /** Durable run/stage ownership shared by every supported tick. */
@@ -243,7 +241,7 @@ export class DeliveryRuntimeCoordinator {
   private readonly executor: DeliveryRuntimeRoleExecutor;
   private readonly artifactRoot: string;
   private readonly roleScratchRoot: string;
-  private readonly maxCorrections: number;
+  private readonly maxCorrections: number | null;
   private readonly claims: DeliveryRoleClaimService;
 
   /** Fail closed before any reviewer/QA transport, evidence write or publication. */
@@ -259,7 +257,7 @@ export class DeliveryRuntimeCoordinator {
     this.artifactRoot = options.artifactRoot ?? join(resolveAnimusStateDir(), "artifacts");
     this.roleScratchRoot =
       options.roleScratchRoot ?? join(dirname(this.artifactRoot), "role-runtime");
-    this.maxCorrections = options.maxCorrections ?? 2;
+    this.maxCorrections = options.maxCorrections ?? null;
     this.claims = options.claims ?? new DeliveryRoleClaimService(db);
   }
 
@@ -299,6 +297,11 @@ export class DeliveryRuntimeCoordinator {
         return { projectId, runId: run.id, action: "stopped", state: null, reasons };
       }
 
+      // Publish the candidate as soon as the builder produced it. Verification and
+      // review then run against the PR head an operator and remote CI can see,
+      // instead of the PR appearing only after every gate already passed.
+      await this.publishIfNeeded(run);
+
       const gate = await this.options.gate.getGate(projectId, run.id);
       if (
         gate.state === "ready_for_operator_review" ||
@@ -316,15 +319,11 @@ export class DeliveryRuntimeCoordinator {
       }
 
       const openFindings = this.openBlockingFindings(run);
-      const review = this.options.observations.latestObservation(
-        projectId,
-        run.id,
-        "independent_review",
-      );
+      const review = this.options.observations.latestObservation(projectId, run.id, "code_review");
       const acceptance = this.options.observations.latestObservation(
         projectId,
         run.id,
-        "final_acceptance",
+        "blackbox_verification",
       );
       const reviewPassed = review?.status === "passed";
       const acceptancePassed = acceptance?.status === "passed";
@@ -340,7 +339,7 @@ export class DeliveryRuntimeCoordinator {
         continue;
       }
       if (openFindings.length > 0 && currentFailed) {
-        if (corrections >= this.maxCorrections) {
+        if (corrections >= this.correctionLimit(run)) {
           return {
             projectId,
             runId: run.id,
@@ -366,23 +365,42 @@ export class DeliveryRuntimeCoordinator {
       }
 
       if (!bothPassed) {
-        if (!reviewPassed) {
-          const outcome = await this.runClaimedStage(run, "independent_review", (claim) =>
-            this.runRole(run, "independent_review", claim),
-          );
-          const terminal = this.claimOutcomeResult(run, outcome, reasons, gate.state);
-          if (terminal) return terminal;
-          if (outcome.status !== "recorded") continue;
-          reasons.push(`independent_review:${outcome.result.status}`);
-        }
         if (!acceptancePassed) {
-          const outcome = await this.runClaimedStage(run, "final_acceptance", (claim) =>
+          const outcome = await this.runClaimedStage(run, "blackbox_verification", (claim) =>
             this.runAcceptance(run, claim),
           );
           const terminal = this.claimOutcomeResult(run, outcome, reasons, gate.state);
           if (terminal) return terminal;
           if (outcome.status !== "recorded") continue;
-          reasons.push(`final_acceptance:${outcome.result.status}`);
+          reasons.push(`blackbox_verification:${outcome.result.status}`);
+          // Stages gate sequentially: a candidate that failed black-box verification
+          // is corrected before the reviewer is asked to spend a pass on it.
+          if (outcome.result.status !== "passed") continue;
+        }
+        if (!reviewPassed) {
+          const outcome = await this.runClaimedStage(run, "code_review", (claim) =>
+            this.runRole(run, "code_review", claim),
+          );
+          const terminal = this.claimOutcomeResult(run, outcome, reasons, gate.state);
+          if (terminal) return terminal;
+          if (outcome.status !== "recorded") continue;
+          reasons.push(`code_review:${outcome.result.status}`);
+        }
+        // The PR already exists from the builder's lap; once every required stage has
+        // passed, republish so the accepted evidence and summary bind to that PR
+        // before the gate is allowed to report readiness.
+        const settledAcceptance = this.options.observations.latestObservation(
+          projectId,
+          run.id,
+          "blackbox_verification",
+        );
+        const settledReview = this.options.observations.latestObservation(
+          projectId,
+          run.id,
+          "code_review",
+        );
+        if (settledAcceptance?.status === "passed" && settledReview?.status === "passed") {
+          await this.options.publication.publishByRun(run.project_id, run.id);
         }
         const refreshed = await this.options.gate.getGate(projectId, run.id);
         if (refreshed.state === "ready_for_operator_review") {
@@ -408,6 +426,8 @@ export class DeliveryRuntimeCoordinator {
           reasons: [...reasons, "stopped_before_publication"],
         };
       }
+      // The PR already exists from the builder's lap; republish so the accepted
+      // evidence, summary and audit bind to the candidate the operator will merge.
       await this.publishIfNeeded(run);
       const finalGate = await this.options.gate.getGate(projectId, run.id);
       return {
@@ -431,11 +451,13 @@ export class DeliveryRuntimeCoordinator {
   }
 
   /**
-   * Child profile: the builder already produced a candidate. This runs the
-   * applicable technical/contract checks and an independent standards/contract
-   * review, then publishes the child PR, reads required remote CI and merges only
-   * through the existing serialized lineage-verified integration service. Full
-   * parent black-box QA is deliberately not part of this profile.
+   * Child profile: the builder already produced a candidate. This runs one
+   * independent standards/contract review, then publishes the child PR, reads
+   * required remote CI and merges only through the existing serialized
+   * lineage-verified integration service. Deterministic checks run on the builder's
+   * commit through the repository's pre-commit hooks and again as required remote
+   * CI, so they are not a delivery stage here. Full parent black-box QA is
+   * deliberately not part of this profile.
    */
   private async processChild(projectId: string, runId: string): Promise<DeliveryRuntimeResult> {
     this.assertInstallationReady();
@@ -476,33 +498,21 @@ export class DeliveryRuntimeCoordinator {
         };
       }
 
-      const technical = this.options.observations.latestObservation(
-        projectId,
-        run.id,
-        "technical_checks",
-      );
-      const review = this.options.observations.latestObservation(
-        projectId,
-        run.id,
-        "independent_review",
-      );
-      const technicalPassed = technical?.status === "passed";
+      const review = this.options.observations.latestObservation(projectId, run.id, "code_review");
       const reviewPassed = review?.status === "passed";
       const openFindings = this.openBlockingFindings(run);
 
-      // A fresh independent pass for the corrected candidate resolves the earlier
+      // A fresh independent review of the corrected candidate resolves the earlier
       // blocking findings; the builder's own fix claim cannot.
-      if (openFindings.length > 0 && technicalPassed && reviewPassed) {
+      if (openFindings.length > 0 && reviewPassed) {
         this.resolveFindings(run, openFindings);
         reasons.push("findings_resolved");
         continue;
       }
 
-      const failedStage =
-        (technical !== null && technical.status !== "passed") ||
-        (review !== null && review.status !== "passed");
+      const failedStage = review !== null && review.status !== "passed";
       if (failedStage) {
-        if (corrections >= this.maxCorrections) {
+        if (corrections >= this.correctionLimit(run)) {
           return {
             projectId,
             runId: run.id,
@@ -530,30 +540,20 @@ export class DeliveryRuntimeCoordinator {
         continue;
       }
 
-      if (!technicalPassed) {
-        const outcome = await this.runClaimedStage(run, "technical_checks", (claim) =>
-          this.runTechnicalChecks(run, claim),
-        );
-        const terminal = this.claimOutcomeResult(run, outcome, reasons, null);
-        if (terminal) return terminal;
-        if (outcome.status !== "recorded") continue;
-        reasons.push(`technical_checks:${outcome.result.status}`);
-        continue;
-      }
       if (!reviewPassed) {
-        const outcome = await this.runClaimedStage(run, "independent_review", (claim) =>
-          this.runRole(run, "independent_review", claim),
+        const outcome = await this.runClaimedStage(run, "code_review", (claim) =>
+          this.runRole(run, "code_review", claim),
         );
         const terminal = this.claimOutcomeResult(run, outcome, reasons, null);
         if (terminal) return terminal;
         if (outcome.status !== "recorded") continue;
-        reasons.push(`independent_review:${outcome.result.status}`);
+        reasons.push(`code_review:${outcome.result.status}`);
         continue;
       }
 
-      // Both child-profile stages passed for this candidate. Publish the child PR,
-      // read required remote CI and merge only when the fresh target/lineage proof
-      // succeeds. Conflicts, drift, missing/failed CI and unverified merges hold.
+      // The required stage passed for this candidate. Remote CI and lineage proof
+      // decide the merge; conflicts, drift, missing/failed CI and unverified merges
+      // hold.
       this.assertInstallationReady();
       if (this.isStopped(run)) {
         return {
@@ -753,7 +753,7 @@ export class DeliveryRuntimeCoordinator {
 
   private failingStageFindings(run: RuntimeRunRow): DeliveryRuntimeFinding[] {
     const findings: DeliveryRuntimeFinding[] = [];
-    for (const stage of ["technical_checks", "independent_review"] as const) {
+    for (const stage of ["code_review"] as const) {
       const observation = this.options.observations.latestObservation(
         run.project_id,
         run.id,
@@ -781,6 +781,31 @@ export class DeliveryRuntimeCoordinator {
     return (
       control?.status === "held" || control?.status === "stopping" || control?.status === "stopped"
     );
+  }
+
+  /**
+   * Correction laps come from the plan budget, not a runtime constant. The manifest
+   * expresses a *total* builder-lap allowance (`DispatchService.budgetBaseLimit`),
+   * so the initial builder run is not a correction: `max_laps` of 1 permits no
+   * correction at all. An explicit option override stays in correction units for
+   * the narrower harnesses that set it.
+   */
+  private correctionLimit(run: RuntimeRunRow): number {
+    if (this.maxCorrections !== null) return this.maxCorrections;
+    const row = this.db
+      .prepare(
+        "SELECT manifest FROM plan_manifests WHERE plan_id = ? AND project_id = ? ORDER BY created_at DESC LIMIT 1",
+      )
+      .get(run.plan_id, run.project_id) as { manifest: string } | undefined;
+    if (!row) return 2;
+    try {
+      const budgets = (JSON.parse(row.manifest) as { budgets?: Record<string, unknown> }).budgets;
+      const laps = budgets?.["max_laps"];
+      if (typeof laps !== "number" || !Number.isSafeInteger(laps) || laps <= 0) return 2;
+      return Math.max(0, laps - 1);
+    } catch {
+      return 2;
+    }
   }
 
   private openBlockingFindings(run: RuntimeRunRow): DeliveryRuntimeFinding[] {
@@ -874,7 +899,7 @@ export class DeliveryRuntimeCoordinator {
 
   private async runRole(
     run: RuntimeRunRow,
-    stage: "independent_review",
+    stage: "code_review",
     claim?: DeliveryRoleClaim,
   ): Promise<DeliveryRuntimeRoleResult> {
     this.assertInstallationReady();
@@ -887,7 +912,7 @@ export class DeliveryRuntimeCoordinator {
     claim?: DeliveryRoleClaim,
   ): Promise<DeliveryRuntimeRoleResult> {
     this.assertInstallationReady();
-    const request = this.roleRequest(run, "final_acceptance", claim);
+    const request = this.roleRequest(run, "blackbox_verification", claim);
     const result = await this.executor(request);
     const regression = await this.runRegressionChecks(run, claim);
     const checks = [...result.checks, regression.check];
@@ -963,72 +988,6 @@ export class DeliveryRuntimeCoordinator {
     };
   }
 
-  /**
-   * Execute the repository's declared technical/contract checks against the real
-   * candidate worktree. Exit status is the only pass signal; a missing declaration
-   * returns null so the caller holds instead of inventing a pass. Each configured
-   * command gets a deterministic ordinal+kind check identity so two commands (or two
-   * intentionally identical commands) remain distinct rows under the observation's
-   * `UNIQUE(observation_id, name)` key instead of aborting the whole observation.
-   */
-  private async runTechnicalChecks(
-    run: RuntimeRunRow,
-    claim?: DeliveryRoleClaim,
-  ): Promise<DeliveryRuntimeRoleResult | null> {
-    this.assertInstallationReady();
-    let commands = this.options.technicalChecks;
-    if (!commands) {
-      try {
-        commands = readHarnessChecks(run.checkout_path).checks;
-      } catch {
-        return null;
-      }
-    }
-    if (commands.length === 0) return null;
-
-    const worktreePath = this.worktreePath(run);
-    const checks: DeliveryRuntimeCheck[] = [];
-    const failures: string[] = [];
-    const runs: RawCommandRun[] = [];
-    for (let index = 0; index < commands.length; index += 1) {
-      const command = commands[index]!;
-      const executed = await this.runCheckCommand(command, worktreePath, claim);
-      runs.push(executed);
-      const passed = executed.exitCode === 0 && !executed.timedOut;
-      const detail = passed
-        ? undefined
-        : `exit ${executed.exitCode}${executed.timedOut ? ", timed out" : ""}`;
-      checks[index] = {
-        name: `declared technical/contract check #${index + 1}`,
-        command,
-        result: passed ? "PASS" : "FAIL",
-        kind: "contract",
-        ...(detail ? { detail } : {}),
-      };
-      if (!passed) {
-        failures.push(`${command} (${detail})`);
-      }
-    }
-    const status = failures.length === 0 ? "passed" : "failed";
-    return {
-      status,
-      summary:
-        status === "passed" ? "Declared technical/contract checks passed" : failures.join("; "),
-      checks,
-      findings:
-        status === "passed"
-          ? []
-          : [
-              {
-                severity: "blocking",
-                fileContext: "technical_checks",
-                summary: `Declared technical/contract checks failed: ${failures.join("; ")}`,
-              },
-            ],
-      rawReport: { commands, checks, runs },
-    };
-  }
-
   private async runCheckCommand(
     command: string,
     cwd: string,
@@ -1055,7 +1014,7 @@ export class DeliveryRuntimeCoordinator {
 
   private async prepareRoleResult(
     run: RuntimeRunRow,
-    stage: "technical_checks" | "independent_review" | "final_acceptance",
+    stage: "technical_checks" | "code_review" | "blackbox_verification",
     result: DeliveryRuntimeRoleResult,
     options: {
       finalizedArtifact?: boolean;
@@ -1075,7 +1034,7 @@ export class DeliveryRuntimeCoordinator {
     }
     const producer = this.ensureProducer(
       run,
-      stage === "independent_review"
+      stage === "code_review"
         ? REVIEW_ROLE
         : stage === "technical_checks"
           ? GATE_ROLE
@@ -1179,7 +1138,7 @@ export class DeliveryRuntimeCoordinator {
 
   private roleRequest(
     run: RuntimeRunRow,
-    stage: "independent_review" | "final_acceptance",
+    stage: "code_review" | "blackbox_verification",
     claim?: DeliveryRoleClaim,
   ): DeliveryRuntimeRoleRequest {
     return {
@@ -1266,7 +1225,7 @@ export function createDeliveryRoleExecutor(
     const transport: AgentTransport = request.onSpawn
       ? (transportRequest) => baseTransport({ ...transportRequest, onSpawn: request.onSpawn })
       : baseTransport;
-    const role: LoopRole = request.stage === "independent_review" ? "reviewer" : "qa";
+    const role: LoopRole = request.stage === "code_review" ? "reviewer" : "qa";
     const provider = engine.provider ?? resolveProviderForRole(request.projectRoot, role);
     const model = engine.model ?? resolveModelForRole(request.projectRoot, role) ?? "small";
     const effort = engine.effort ?? resolveEffortForRole(request.projectRoot, role);
@@ -1279,8 +1238,7 @@ export function createDeliveryRoleExecutor(
       role,
       root: request.projectRoot,
       cwd: request.worktreePath,
-      prompt:
-        request.stage === "independent_review" ? reviewPrompt(request) : acceptancePrompt(request),
+      prompt: request.stage === "code_review" ? reviewPrompt(request) : acceptancePrompt(request),
       sessionDir: join(runDirectory, "session"),
       checkpointPath: join(runDirectory, "checkpoint.md"),
       handoffDir: join(runDirectory, "handoff"),
@@ -1308,7 +1266,7 @@ export function createDeliveryRoleExecutor(
       sessionId: result.sessionId ?? null,
       head: result.head,
     };
-    if (request.stage === "independent_review") {
+    if (request.stage === "code_review") {
       return { ...reviewResult(result.report), rawReport };
     }
     return { ...acceptanceResult(request, result.report), rawReport };

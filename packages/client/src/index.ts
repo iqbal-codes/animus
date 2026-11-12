@@ -1411,7 +1411,7 @@ export function createFactoryClient(options: {
         },
         async reconcileDeliveryClaim(
           runId: string,
-          stage: "technical_checks" | "independent_review" | "final_acceptance",
+          stage: "technical_checks" | "code_review" | "blackbox_verification",
           submission: DeliveryClaimReconcileSubmission,
         ): Promise<DeliveryRoleClaimRecord> {
           return postJson(

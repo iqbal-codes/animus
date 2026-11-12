@@ -27,7 +27,7 @@ export const DELIVERY_CLAIM_MIGRATIONS: Migration[] = [
           delivery_id TEXT NOT NULL,
           run_id TEXT NOT NULL,
           lap INTEGER NOT NULL CHECK(lap > 0),
-          stage TEXT NOT NULL CHECK(stage IN ('technical_checks', 'independent_review', 'final_acceptance')),
+          stage TEXT NOT NULL CHECK(stage IN ('technical_checks', 'code_review', 'blackbox_verification')),
           candidate_head_sha TEXT NOT NULL CHECK(length(candidate_head_sha) > 0),
           attempt_key TEXT NOT NULL CHECK(length(attempt_key) > 0),
           claim_token TEXT NOT NULL CHECK(length(claim_token) > 0),

@@ -204,7 +204,7 @@ describe("authority cutover public acceptance", () => {
 
     register("reviewer-acceptance", "peer_reviewer");
     observations.recordRunObservation(projectId, run.id, {
-      stage: "independent_review",
+      stage: "code_review",
       status: "passed",
       producer: { id: "reviewer-acceptance", role: "peer_reviewer" },
       checks: [
@@ -213,7 +213,7 @@ describe("authority cutover public acceptance", () => {
     });
     register("final-acceptance", "independent_evaluator");
     observations.recordRunObservation(projectId, run.id, {
-      stage: "final_acceptance",
+      stage: "blackbox_verification",
       status: "passed",
       producer: { id: "final-acceptance", role: "independent_evaluator" },
       checks: [

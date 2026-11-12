@@ -127,7 +127,7 @@ writeFileSync(
   "held restore review artifact\n",
 );
 observations.recordRunObservation(project.id, completedRun.id, {
-  stage: "independent_review",
+  stage: "code_review",
   status: "failed",
   producer: reviewer.producer,
   checks: [{ name: "review", command: "review", result: "FAIL", detail: "needs work" }],

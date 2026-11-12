@@ -260,4 +260,85 @@ export const CONSOLIDATION_MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 19,
+    name: "child_merge_without_pull_request",
+    up(db) {
+      // A child ticket integrates into the integration branch with no pull request
+      // of its own, so a verified merge has no PR identity. Everything else about
+      // the record (targets, lineage, merge sha) is unchanged.
+      db.exec("PRAGMA defer_foreign_keys = ON;");
+      db.exec(`
+        CREATE TABLE delivery_merges_v19 (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id),
+          delivery_id TEXT NOT NULL,
+          plan_id TEXT NOT NULL,
+          work_id TEXT NOT NULL,
+          run_id TEXT NOT NULL,
+          gate_profile TEXT NOT NULL CHECK(gate_profile IN ('child', 'standalone', 'final')),
+          issue_number INTEGER NOT NULL CHECK(issue_number > 0),
+          target_id TEXT REFERENCES publication_targets(id),
+          pull_request_id TEXT REFERENCES publication_pull_requests(id),
+          repository TEXT,
+          pr_number INTEGER CHECK(pr_number IS NULL OR pr_number > 0),
+          pr_url TEXT,
+          source_branch TEXT NOT NULL CHECK(length(source_branch) > 0),
+          target_branch TEXT NOT NULL CHECK(length(target_branch) > 0),
+          candidate_head_sha TEXT NOT NULL CHECK(length(candidate_head_sha) > 0),
+          base_sha TEXT,
+          target_tip_before_sha TEXT,
+          target_tip_after_sha TEXT NOT NULL CHECK(length(target_tip_after_sha) > 0),
+          remote_head_ref_oid TEXT,
+          merge_sha TEXT,
+          evidence_identity TEXT,
+          verified_at INTEGER NOT NULL,
+          verified_by TEXT,
+          created_at INTEGER NOT NULL,
+          UNIQUE(id, project_id),
+          FOREIGN KEY(delivery_id, project_id) REFERENCES deliveries(id, project_id),
+          FOREIGN KEY(plan_id, project_id) REFERENCES plans(id, project_id),
+          FOREIGN KEY(work_id, project_id) REFERENCES work_items(id, project_id),
+          FOREIGN KEY(run_id, project_id) REFERENCES dispatch_runs(id, project_id)
+        );
+      `);
+      db.exec("INSERT INTO delivery_merges_v19 SELECT * FROM delivery_merges;");
+      db.exec("DROP TABLE delivery_merges;");
+      db.exec("ALTER TABLE delivery_merges_v19 RENAME TO delivery_merges;");
+      db.exec(`
+        CREATE UNIQUE INDEX uq_delivery_merges_child
+        ON delivery_merges(project_id, delivery_id, work_id, target_branch)
+        WHERE gate_profile = 'child';
+      `);
+      db.exec(`
+        CREATE UNIQUE INDEX uq_delivery_merges_run_candidate
+        ON delivery_merges(project_id, run_id, candidate_head_sha)
+        WHERE gate_profile != 'child';
+      `);
+      db.exec(`
+        CREATE INDEX idx_delivery_merges_project
+        ON delivery_merges(project_id, verified_at DESC);
+      `);
+      db.exec(`
+        CREATE INDEX idx_delivery_merges_delivery
+        ON delivery_merges(delivery_id, target_branch);
+      `);
+      for (const table of ["delivery_merges"]) {
+        db.exec(`
+          CREATE TRIGGER ${table}_immutable_update
+          BEFORE UPDATE ON ${table}
+          BEGIN
+            SELECT RAISE(ABORT, '${table}_immutable');
+          END;
+        `);
+        db.exec(`
+          CREATE TRIGGER ${table}_immutable_delete
+          BEFORE DELETE ON ${table}
+          BEGIN
+            SELECT RAISE(ABORT, '${table}_immutable');
+          END;
+        `);
+      }
+    },
+  },
 ];

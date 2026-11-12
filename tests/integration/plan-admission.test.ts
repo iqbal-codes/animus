@@ -235,8 +235,7 @@ describe("prepared spec and ticket plan admission", () => {
       standalone: "manual",
       final: "manual",
     });
-    expect(manifest!.budgets.child_max_laps).toBeGreaterThan(0);
-    expect(manifest!.budgets.final_max_laps).toBeGreaterThan(0);
+    expect(manifest!.budgets.max_laps).toBeGreaterThan(0);
     expect(manifest!.ac_coverage).toEqual([
       {
         parent_ac_key: "AC1",
@@ -714,7 +713,7 @@ describe("prepared spec and ticket plan admission", () => {
     expect(approved.authority).toBe("admitted");
     expect(approved.dispatchable).toBe(true);
     const manifest = approved.manifest!;
-    expect(manifest.budgets).toEqual({ child_max_laps: 7, final_max_laps: 7 });
+    expect(manifest.budgets).toEqual({ max_laps: 7 });
     expect(manifest.graph_hash).toBe(approved.graph_hash);
     expect(computeGraphHash(graphFromManifest(manifest))).toBe(manifest.graph_hash);
   });
@@ -738,7 +737,7 @@ describe("prepared spec and ticket plan admission", () => {
     expect(approved.authority).toBe("admitted");
     expect(approved.dispatchable).toBe(true);
     const manifest = approved.manifest!;
-    expect(manifest.budgets).toEqual({ child_max_laps: 7, final_max_laps: 7 });
+    expect(manifest.budgets).toEqual({ max_laps: 7 });
     expect(manifest.graph_hash).toBe(approved.graph_hash);
     expect(manifest.ac_coverage.map((group) => group.parent_ac_key)).toEqual(["AC1", "AC2"]);
     expect(computeGraphHash(graphFromManifest(manifest))).toBe(manifest.graph_hash);

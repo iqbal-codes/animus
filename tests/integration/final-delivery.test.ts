@@ -303,7 +303,7 @@ describe("final-spec delivery coordination", () => {
       checks: [{ name: "unit", command: "bun test targeted", result: "PASS" }],
     });
     observations.recordRunObservation(projectId, run.id, {
-      stage: "independent_review",
+      stage: "code_review",
       status: "passed",
       producer: reviewer.producer,
       checks: [{ name: "standards", command: "review diff", result: "PASS" }],
@@ -502,7 +502,7 @@ describe("final-spec delivery coordination", () => {
     const firstRunId = firstAssembly.id;
     const firstObservations = observations.listObservations(projectId, { runId: firstRunId });
     const failedAcceptance = firstObservations.find(
-      (observation) => observation.stage === "final_acceptance",
+      (observation) => observation.stage === "blackbox_verification",
     )!;
     expect(failedAcceptance.status).toBe("failed");
     const findings = observations.listFindings(projectId, { workId: plan.root_work_id });
@@ -541,7 +541,7 @@ describe("final-spec delivery coordination", () => {
     // The successful new candidate carries immutable, hash-verifiable artifacts.
     const acceptance = observations
       .listObservations(projectId, { runId: repaired.runId! })
-      .find((observation) => observation.stage === "final_acceptance")!;
+      .find((observation) => observation.stage === "blackbox_verification")!;
     expect(acceptance.status).toBe("passed");
     expect(
       acceptance.checks
@@ -785,7 +785,7 @@ describe("final-spec delivery coordination", () => {
     expect(
       observations
         .listObservations(projectId, { runId: stopped.runId! })
-        .filter((observation) => observation.stage === "final_acceptance"),
+        .filter((observation) => observation.stage === "blackbox_verification"),
     ).toHaveLength(0);
     expect(repairRuns).toHaveLength(0);
   }, 30_000);
@@ -877,7 +877,7 @@ describe("final-spec delivery coordination", () => {
         .listObservations(projectId, { runId: delivery.runId! })
         .some(
           (observation) =>
-            observation.stage === "final_acceptance" && observation.status === "passed",
+            observation.stage === "blackbox_verification" && observation.status === "passed",
         ),
     ).toBe(true);
   }, 30_000);

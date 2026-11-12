@@ -12,7 +12,7 @@ import {
 import { buildProviderArgv } from "../../scripts/loop/providers";
 import registerLoopGuard from "../../.factory/hooks/loop-guard";
 import { evaluateTriageToolCall, isTriageCommandAllowed } from "../../scripts/loop/triage-policy";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -310,6 +310,31 @@ describe("Triage Read-Only & Command Guard (.factory/hooks/loop-guard.ts)", () =
       expect(evaluateTriageToolCall("bash", { command: "git status" }).allowed).toBe(true);
       expect(evaluateTriageToolCall("bash", { command: "git commit" }).allowed).toBe(false);
       expect(evaluateTriageToolCall("bash", { command: "" }).allowed).toBe(false);
+    });
+    test("falls back to read-only tools when the triage policy module is unavailable", async () => {
+      const isolatedRoot = mkdtempSync(join(tmpdir(), "triage-guard-fallback-"));
+      const hookDir = join(isolatedRoot, ".factory/hooks");
+      mkdirSync(hookDir, { recursive: true });
+      copyFileSync(
+        join(import.meta.dir, "../../.factory/hooks/loop-guard.ts"),
+        join(hookDir, "loop-guard.ts"),
+      );
+      const isolated = await import(`${join(hookDir, "loop-guard.ts")}?fallback=${Date.now()}`);
+      const handlers = new Map<string, (event: any) => Promise<any>>();
+      isolated.default({
+        on: (name: string, handler: (event: any) => Promise<any>) => handlers.set(name, handler),
+      });
+      const call = handlers.get("tool_call")!;
+      expect(await call({ toolName: "read", input: { path: "src/a.ts" } })).toBeUndefined();
+      const bashRes = await call({ toolName: "bash", input: { command: "git status" } });
+      expect(bashRes?.block).toBe(true);
+      expect(bashRes?.reason).toContain("Only read-only inspection tools are permitted");
+      const writeRes = await call({
+        toolName: "write",
+        input: { path: "src/a.ts", content: "x" },
+      });
+      expect(writeRes?.block).toBe(true);
+      rmSync(isolatedRoot, { recursive: true, force: true });
     });
   });
 

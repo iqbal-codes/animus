@@ -16,9 +16,12 @@ import type {
   OperatorBoardParent,
   OperatorBoardProcess,
   OperatorCardKind,
+  OperatorExecutionStep,
+  OperatorRealtimeLogLine,
   OperatorSpecProgress,
   OperatorWorkerUsage,
   OperatorWorkDetail,
+  OperatorWorkLogEntry,
   PlanAuthority,
   PlanDispatchRun,
   PlanGateProfile,
@@ -45,6 +48,8 @@ import type { PublicationService } from "../publication";
 import type { ProjectRegistryService } from "../registry";
 import type { WorkService } from "../work";
 import type { IntakeService } from "../intake";
+import type { DraftService } from "../draft";
+import type { DraftRecord } from "@animus/contracts/operator";
 import { BoardError } from "./errors";
 
 /**
@@ -95,6 +100,7 @@ export interface OperatorBoardServiceOptions {
   gate: DeliveryGateService;
   final: FinalDeliveryService;
   intake?: IntakeService;
+  drafts?: DraftService;
 }
 
 interface PlanMembership {
@@ -636,6 +642,18 @@ export class OperatorBoardService {
       const latestDetail = latestRun ? (snapshot.runDetailByRun.get(latestRun.id) ?? null) : null;
       const evidence = this.evidence(projectId, latestRun);
       const retained = this.retained(seed, latestRun, latestDetail);
+      const draft = this.options.drafts?.getByWork(projectId, workId) ?? null;
+      const { executionSteps, realtimeLogs } = this.buildExecutionStepsAndLogs(
+        work,
+        draft,
+        seed.plan,
+        runs,
+        latestDetail,
+        evidence,
+        card.lane,
+        seed.integration,
+        seed.final,
+      );
       return operatorWorkDetailSchema.parse({
         projectId,
         generatedAt: Date.now(),
@@ -660,6 +678,7 @@ export class OperatorBoardService {
           sourceUrl: work.revision.provenance.source_url,
         },
         plan: seed.plan,
+        draft,
         final: seed.final,
         runs,
         latestRun: latestDetail,
@@ -670,10 +689,303 @@ export class OperatorBoardService {
         retained,
         process: latestDetail?.process ?? null,
         usage: unavailableUsage(),
+        executionSteps,
+        realtimeLogs,
       });
     } catch (error) {
       throw boardError(error);
     }
+  }
+
+  private buildExecutionStepsAndLogs(
+    work: WorkRecord,
+    draft: DraftRecord | null,
+    plan: PlanRecord | null,
+    runs: PlanDispatchRun[],
+    latestDetail: DispatchRunDetail | null,
+    evidence: RunEvidenceReport | null,
+    lane: string,
+    integration: IntegrationStatus | null,
+    final: FinalDeliveryStatus | null,
+  ): {
+    executionSteps: OperatorExecutionStep[];
+    realtimeLogs: OperatorRealtimeLogLine[];
+  } {
+    const formatLogTime = (ts: number): string => {
+      const d = new Date(ts);
+      return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
+    };
+
+    const steps: OperatorExecutionStep[] = [];
+
+    // 1. Created
+    steps.push({
+      id: "step-created",
+      label: "Created",
+      status: "completed",
+      time: formatLogTime(work.created_at),
+      logs: [
+        {
+          timestamp: formatLogTime(work.created_at),
+          event: "created",
+          message: `Issue imported as #${work.issue_number ?? work.id}: ${work.revision.source.title}`,
+        },
+      ],
+    });
+
+    // 2. Triage
+    if (draft) {
+      const isTriageActive =
+        !plan && (draft.status === "needs_clarification" || draft.status === "needs_review");
+      const triageLogs: OperatorWorkLogEntry[] = [
+        {
+          timestamp: formatLogTime(draft.created_at),
+          event: "triage",
+          message: `Draft created in state '${draft.status}'`,
+        },
+      ];
+      if (draft.latest_revision?.planner_metadata) {
+        triageLogs.push({
+          timestamp: formatLogTime(draft.latest_revision.created_at),
+          event: "planner",
+          message: `Planner (${draft.latest_revision.planner_metadata.model ?? "default"}): ${draft.latest_revision.planner_metadata.prompt.slice(0, 90)}`,
+        });
+      }
+      if (draft.latest_decision) {
+        triageLogs.push({
+          timestamp: formatLogTime(draft.latest_decision.decided_at),
+          event: "decision",
+          message: `Decision '${draft.latest_decision.decision}' by ${draft.latest_decision.actor ?? "operator"}${draft.latest_decision.reason ? `: ${draft.latest_decision.reason}` : ""}`,
+        });
+      }
+      steps.push({
+        id: "step-triage",
+        label: "Triage",
+        status: isTriageActive ? "active" : "completed",
+        time: formatLogTime(draft.updated_at),
+        logs: triageLogs,
+      });
+    } else {
+      steps.push({
+        id: "step-triage",
+        label: "Triage",
+        status: plan || runs.length > 0 || lane !== "triage" ? "completed" : "active",
+        time: formatLogTime(work.updated_at),
+        logs: [
+          {
+            timestamp: formatLogTime(work.updated_at),
+            event: "triage",
+            message: "Triage evaluation completed",
+          },
+        ],
+      });
+    }
+
+    // 3. Ready
+    const isReadyCompleted =
+      runs.length > 0 || lane === "working" || lane === "approval" || lane === "merged";
+    const isReadyActive = lane === "ready";
+    steps.push({
+      id: "step-ready",
+      label: "Ready",
+      status: isReadyCompleted ? "completed" : isReadyActive ? "active" : "pending",
+      time: plan ? formatLogTime(plan.created_at) : undefined,
+      logs: plan
+        ? [
+            {
+              timestamp: formatLogTime(plan.created_at),
+              event: "admitted",
+              message: `Plan admitted with ${plan.acceptance_criteria.length} acceptance criteria into ${plan.delivery_branch}`,
+            },
+          ]
+        : [],
+    });
+
+    // 4. Implement & Verification laps
+    if (runs.length > 0) {
+      const sortedRuns = [...runs].sort((a, b) => a.lap - b.lap);
+      for (const run of sortedRuns) {
+        const isRunActive = run.state === "running";
+        const runStatus = isRunActive
+          ? "active"
+          : run.state === "succeeded"
+            ? "completed"
+            : run.state === "failed"
+              ? "failed"
+              : "completed";
+        const runLogs: OperatorWorkLogEntry[] = [];
+        if (run.launched_at) {
+          runLogs.push({
+            timestamp: formatLogTime(run.launched_at),
+            event: "dispatch",
+            message: `Dispatched lap ${run.lap} on branch ${run.branch}`,
+          });
+        }
+        if (latestDetail?.attempts) {
+          const attempts = latestDetail.attempts.filter((a) => a.lap === run.lap);
+          for (const attempt of attempts) {
+            if (attempt.headSha) {
+              runLogs.push({
+                timestamp: formatLogTime(attempt.createdAt),
+                event: "candidate",
+                message: `Candidate commit: ${attempt.headSha.slice(0, 7)}`,
+              });
+            }
+            if (attempt.finishedAt) {
+              runLogs.push({
+                timestamp: formatLogTime(attempt.finishedAt),
+                event: "attempt",
+                message: `Attempt ${attempt.state}${attempt.error ? `: ${attempt.error}` : ""}`,
+              });
+            }
+          }
+        }
+        if (run.finished_at) {
+          runLogs.push({
+            timestamp: formatLogTime(run.finished_at),
+            event: "finish",
+            message: `Run lap ${run.lap} finished (${run.state})${run.error ? `: ${run.error}` : ""}`,
+          });
+        }
+
+        steps.push({
+          id: `step-implement-lap-${run.lap}`,
+          label: `Implement · lap ${run.lap}`,
+          status: runStatus,
+          time: run.launched_at ? formatLogTime(run.launched_at) : undefined,
+          duration:
+            run.launched_at && run.finished_at
+              ? `${Math.max(1, Math.round((run.finished_at - run.launched_at) / 1000))}s`
+              : undefined,
+          meta: isRunActive ? "running" : run.state,
+          logs: runLogs,
+        });
+
+        // Verification for this lap
+        const obs = evidence?.observations?.find((o) => o.runId === run.id || o.lap === run.lap);
+        const verifyLogs: OperatorWorkLogEntry[] = [];
+        if (obs) {
+          for (const check of obs.checks) {
+            verifyLogs.push({
+              timestamp: formatLogTime(check.createdAt),
+              event: check.result === "PASS" ? "PASS" : "FAIL",
+              message: `${check.name}${check.command ? ` ($ ${check.command})` : ""}: ${check.detail || check.result}`,
+            });
+          }
+        }
+        const verifyStatus = obs
+          ? obs.checks.every((c) => c.result === "PASS")
+            ? "completed"
+            : "failed"
+          : isRunActive
+            ? "pending"
+            : lane === "working"
+              ? "active"
+              : "pending";
+
+        steps.push({
+          id: `step-verification-lap-${run.lap}`,
+          label: `Verification · lap ${run.lap}`,
+          status: verifyStatus,
+          time: obs ? formatLogTime(obs.createdAt) : undefined,
+          meta: obs
+            ? `${obs.checks.filter((c) => c.result === "PASS").length}/${obs.checks.length} passed`
+            : undefined,
+          logs: verifyLogs,
+        });
+      }
+    } else if (lane === "working") {
+      steps.push({
+        id: "step-implement-lap-1",
+        label: "Implement · lap 1",
+        status: "active",
+        meta: "running",
+        logs: [
+          {
+            timestamp: formatLogTime(Date.now()),
+            event: "running",
+            message: "Worker dispatch in progress",
+          },
+        ],
+      });
+    }
+
+    if (integration?.state === "integrated") {
+      steps.push({
+        id: "step-integrated",
+        label: `Integrated · ${integration.targetBranch}`,
+        status: "completed",
+        time: formatLogTime(Date.now()),
+        logs: [
+          {
+            timestamp: formatLogTime(Date.now()),
+            event: "integrated",
+            message: `Child sub-ticket integrated into ${integration.targetBranch}`,
+          },
+        ],
+      });
+    }
+
+    if (lane === "merged") {
+      steps.push({
+        id: "step-merged",
+        label: "Merged",
+        status: "completed",
+        time: final?.updatedAt ? formatLogTime(final.updatedAt) : undefined,
+        logs: [
+          {
+            timestamp: formatLogTime(final?.updatedAt ?? Date.now()),
+            event: "merged",
+            message: "Delivery target merge verified",
+          },
+        ],
+      });
+    } else if (lane === "needs-owner") {
+      steps.push({
+        id: "step-needs-owner",
+        label: "Needs owner",
+        status: "failed",
+        logs: [
+          {
+            timestamp: formatLogTime(Date.now()),
+            event: "escalated",
+            message: "Attention required: lap limit or blocker escalated to owner",
+          },
+        ],
+      });
+    } else if (lane === "failed") {
+      steps.push({
+        id: "step-failed",
+        label: "Failed",
+        status: "failed",
+        logs: [
+          {
+            timestamp: formatLogTime(Date.now()),
+            event: "failed",
+            message: "Work item terminated with failure",
+          },
+        ],
+      });
+    }
+
+    const allLogs: OperatorRealtimeLogLine[] = [];
+    let logSeq = 1;
+    for (const step of steps) {
+      for (const log of step.logs) {
+        allLogs.push({
+          id: `log-${logSeq++}`,
+          timestamp: log.timestamp,
+          event: log.event,
+          message: log.message,
+          stepId: step.id,
+        });
+      }
+    }
+
+    allLogs.reverse();
+    const realtimeLogs = allLogs.slice(0, 100);
+
+    return { executionSteps: steps, realtimeLogs };
   }
 
   private async snapshot(projectId: string): Promise<Snapshot> {
@@ -967,7 +1279,7 @@ export class OperatorBoardService {
       };
     }
     const integration = seed.integration?.integration;
-    if (integration) {
+    if (integration?.remotePullRequestNumber) {
       return {
         number: integration.remotePullRequestNumber,
         url: integration.remotePullRequestUrl,

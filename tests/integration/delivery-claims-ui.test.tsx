@@ -93,9 +93,9 @@ function claim(overrides: Partial<Record<string, unknown>> = {}) {
     deliveryId: "del-1",
     runId: "run-1",
     lap: 1,
-    stage: "final_acceptance" as const,
+    stage: "blackbox_verification" as const,
     candidateHeadSha: "c".repeat(40),
-    attemptKey: "final_acceptance:claim:abc",
+    attemptKey: "blackbox_verification:claim:abc",
     claimGeneration: 2,
     ownerPid: 4321,
     ownerProcessStart: null,
@@ -174,7 +174,7 @@ describe("Delivery role claims panel", () => {
     await waitFor(() => expect(backing.dispatchRunDetail).toHaveBeenCalled());
     const panel = await screen.findByLabelText("Delivery role claims");
     expect(panel.textContent).toContain("Held — owner identity unknown");
-    expect(panel.textContent).toContain("final_acceptance");
+    expect(panel.textContent).toContain("blackbox_verification");
     // An unknown owner surfaces the truthful warning, not a fake enable.
     expect(panel.textContent).toMatch(/cannot be proven dead/i);
     expect(screen.getByTestId("claim-claim-1")).toBeTruthy();
@@ -206,7 +206,7 @@ describe("Delivery role claims panel", () => {
     await waitFor(() => expect(backing.reconcileDeliveryClaim).toHaveBeenCalled());
     const [runId, stage, submission] = backing.reconcileDeliveryClaim.mock.calls[0]!;
     expect(runId).toBe("run-1");
-    expect(stage).toBe("final_acceptance");
+    expect(stage).toBe("blackbox_verification");
     expect(submission).toMatchObject({
       action: "interrupt",
       lap: 1,

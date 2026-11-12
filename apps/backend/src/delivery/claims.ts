@@ -9,7 +9,7 @@ import { CommandLedger } from "../command/ledger";
 import { DeliveryError } from "./errors";
 import { pidOrGroupAlive, processStartIdentity } from "../dispatch/ownership";
 
-export type DeliveryClaimStage = "technical_checks" | "independent_review" | "final_acceptance";
+export type DeliveryClaimStage = "technical_checks" | "code_review" | "blackbox_verification";
 export type DeliveryClaimState = "running" | "completed" | "failed" | "interrupted";
 
 export interface DeliveryRoleClaim {
@@ -174,8 +174,8 @@ function parseRow(raw: unknown): ClaimRow {
   const stage = row.stage;
   if (
     stage !== "technical_checks" &&
-    stage !== "independent_review" &&
-    stage !== "final_acceptance"
+    stage !== "code_review" &&
+    stage !== "blackbox_verification"
   ) {
     bounded(stage, "stage");
   }

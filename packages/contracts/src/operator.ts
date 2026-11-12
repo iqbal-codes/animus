@@ -659,8 +659,8 @@ export const planManifestSchema = z.object({
     final: z.literal("manual"),
   }),
   budgets: z.object({
-    child_max_laps: z.number().int().positive(),
-    final_max_laps: z.number().int().positive(),
+    /** Total builder laps allowed for every gate profile: child, standalone and final. */
+    max_laps: z.number().int().positive(),
   }),
   frozen_at: z.number().int().nonnegative(),
 });
@@ -1772,7 +1772,7 @@ export const producerIdentitySchema = z.object({
 });
 export type ProducerIdentity = z.infer<typeof producerIdentitySchema>;
 
-export const independentReviewSchema = z.object({
+export const codeReviewSchema = z.object({
   reviewerId: z.string(),
   role: z.enum(["peer_reviewer", "independent_evaluator"]),
   status: z.enum(["passed", "failed"]),
@@ -1781,7 +1781,7 @@ export const independentReviewSchema = z.object({
   specFindingCount: z.number().int().nonnegative(),
   reviewedAt: z.string(),
 });
-export type IndependentReview = z.infer<typeof independentReviewSchema>;
+export type CodeReview = z.infer<typeof codeReviewSchema>;
 
 export const candidateVerificationStatusSchema = z.enum(["passed", "failed", "unverified"]);
 export type CandidateVerificationStatus = z.infer<typeof candidateVerificationStatusSchema>;
@@ -1801,7 +1801,7 @@ export const candidateVerificationRecordSchema = z.object({
   producerIdentity: producerIdentitySchema,
   verificationStatus: candidateVerificationStatusSchema,
   checks: z.array(verificationCheckItemSchema),
-  review: independentReviewSchema.optional(),
+  review: codeReviewSchema.optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -1820,7 +1820,7 @@ export const candidateVerificationSubmissionSchema = z.object({
   producerIdentity: producerIdentitySchema,
   verificationStatus: candidateVerificationStatusSchema,
   checks: z.array(verificationCheckItemSchema),
-  review: independentReviewSchema.optional(),
+  review: codeReviewSchema.optional(),
 });
 export type CandidateVerificationSubmission = z.infer<typeof candidateVerificationSubmissionSchema>;
 
@@ -1834,8 +1834,8 @@ export const GATE_PROFILE_VERSION = 2;
 export const executionStageSchema = z.enum([
   "builder_execution",
   "technical_checks",
-  "independent_review",
-  "final_acceptance",
+  "code_review",
+  "blackbox_verification",
 ]);
 export type ExecutionStage = z.infer<typeof executionStageSchema>;
 
@@ -2530,7 +2530,8 @@ export const childIntegrationSchema = z.object({
   targetTipBeforeSha: z.string().min(1),
   targetTipAfterSha: z.string().min(1),
   mergeSha: z.string().min(1),
-  remotePullRequestNumber: z.number().int().positive(),
+  /** A child merge has no pull request of its own; the spec PR is the remote artifact. */
+  remotePullRequestNumber: z.number().int().positive().nullable(),
   remotePullRequestUrl: z.string().min(1).nullable(),
   evidenceIdentity: z.string().min(1),
   integratedAt: z.number().int().nonnegative(),
@@ -2605,8 +2606,8 @@ export type DispatchAcceptanceCriterion = z.infer<typeof dispatchAcceptanceCrite
 
 export const deliveryClaimStageSchema = z.enum([
   "technical_checks",
-  "independent_review",
-  "final_acceptance",
+  "code_review",
+  "blackbox_verification",
 ]);
 export type DeliveryClaimStage = z.infer<typeof deliveryClaimStageSchema>;
 
@@ -3210,6 +3211,35 @@ export const operatorBoardSchema = z.object({
 });
 export type OperatorBoard = z.infer<typeof operatorBoardSchema>;
 
+export const operatorWorkLogEntrySchema = z.object({
+  timestamp: z.string(),
+  event: z.string(),
+  message: z.string(),
+});
+export type OperatorWorkLogEntry = z.infer<typeof operatorWorkLogEntrySchema>;
+
+export const operatorExecutionStepSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  status: z.enum(["completed", "active", "pending", "failed"]),
+  time: z.string().optional(),
+  duration: z.string().optional(),
+  tokens: z.number().int().nonnegative().optional(),
+  cost: z.string().optional(),
+  meta: z.string().optional(),
+  logs: z.array(operatorWorkLogEntrySchema).default([]),
+});
+export type OperatorExecutionStep = z.infer<typeof operatorExecutionStepSchema>;
+
+export const operatorRealtimeLogLineSchema = z.object({
+  id: z.string().min(1),
+  timestamp: z.string(),
+  event: z.string(),
+  message: z.string(),
+  stepId: z.string().optional(),
+});
+export type OperatorRealtimeLogLine = z.infer<typeof operatorRealtimeLogLineSchema>;
+
 export const operatorWorkDetailSchema = z.object({
   projectId: z.string().min(1),
   generatedAt: z.number().int().nonnegative(),
@@ -3234,6 +3264,7 @@ export const operatorWorkDetailSchema = z.object({
     sourceUrl: z.string().min(1),
   }),
   plan: planRecordSchema.nullable(),
+  draft: draftRecordSchema.nullable().default(null),
   final: finalDeliveryStatusSchema.nullable(),
   runs: z.array(planDispatchRunSchema),
   latestRun: dispatchRunDetailSchema.nullable(),
@@ -3251,5 +3282,7 @@ export const operatorWorkDetailSchema = z.object({
     .nullable(),
   process: operatorBoardProcessSchema.nullable(),
   usage: operatorWorkerUsageSchema,
+  executionSteps: z.array(operatorExecutionStepSchema).default([]),
+  realtimeLogs: z.array(operatorRealtimeLogLineSchema).default([]),
 });
 export type OperatorWorkDetail = z.infer<typeof operatorWorkDetailSchema>;

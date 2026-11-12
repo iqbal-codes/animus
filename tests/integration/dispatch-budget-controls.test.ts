@@ -370,7 +370,7 @@ describe("bounded attempt budgets and operator controls", () => {
       planId: plan.id,
       workId: plan.root_work_id,
       gateProfile: "final",
-      baseLimit: plan.manifest!.budgets.final_max_laps,
+      baseLimit: plan.manifest!.budgets.max_laps,
       now: Date.now(),
     });
     expect(finalScope.status).toBe("active");
@@ -1070,7 +1070,7 @@ describe("bounded attempt budgets and operator controls", () => {
       });
       lastRunId = run.id;
       observations.recordRunObservation(projectId, run.id, {
-        stage: "independent_review",
+        stage: "code_review",
         status: "failed",
         producer: { id: "reviewer-1", role: "peer_reviewer" },
         checks: [{ name: "review", command: "review diff", result: "FAIL", detail: "rejected" }],

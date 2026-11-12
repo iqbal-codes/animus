@@ -162,6 +162,14 @@ export class SerializedIntegrationManager {
     }
   }
 
+  /**
+   * Merge while the caller already holds the cross-process integration lock.
+   * Used by flows that must keep other fenced work under the same lock.
+   */
+  mergeSerializedWhileLocked(params: IntegrationParams): IntegrationResult {
+    return this.executeCompareAndSwapMerge(params);
+  }
+
   private executeCompareAndSwapMerge(params: IntegrationParams): IntegrationResult {
     const { repoRoot, integrationBranch, expectedIntegrationSha, childBranch, childIssueNumber } =
       params;

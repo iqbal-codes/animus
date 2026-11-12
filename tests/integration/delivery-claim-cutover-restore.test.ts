@@ -323,7 +323,7 @@ describe("delivery role claims: cutover, restore and recovery", () => {
       deliveryId: run.delivery_id,
       runId,
       lap: run.lap,
-      stage: "final_acceptance",
+      stage: "blackbox_verification",
       candidateHeadSha: run.head_sha ?? run.base_sha,
     });
     expect(acquired.status).toBe("acquired");
@@ -395,7 +395,7 @@ describe("delivery role claims: cutover, restore and recovery", () => {
       deliveryId: run.delivery_id,
       runId,
       lap: run.lap,
-      stage: "final_acceptance",
+      stage: "blackbox_verification",
       candidateHeadSha: run.head_sha ?? run.base_sha,
     });
     expect(acquired.status).toBe("acquired");
@@ -461,7 +461,7 @@ describe("delivery role claims: cutover, restore and recovery", () => {
         deliveryId: run.delivery_id,
         runId,
         lap: run.lap,
-        stage: "final_acceptance",
+        stage: "blackbox_verification",
         candidateHeadSha: run.head_sha ?? run.base_sha,
       });
       expect(reacquired.status).toBe("acquired");
@@ -487,13 +487,13 @@ describe("delivery role claims: cutover, restore and recovery", () => {
     const run = dispatch.getRun(projectId, runId);
     const claim = db
       .prepare(
-        "SELECT id, attempt_key, state FROM delivery_role_claims WHERE run_id = ? AND stage = 'independent_review'",
+        "SELECT id, attempt_key, state FROM delivery_role_claims WHERE run_id = ? AND stage = 'code_review'",
       )
       .get(runId) as { id: string; attempt_key: string; state: string };
     expect(claim.state).toBe("completed");
     const observation = db
       .prepare(
-        "SELECT id, status FROM execution_observations WHERE run_id = ? AND stage = 'independent_review' AND attempt_key = ?",
+        "SELECT id, status FROM execution_observations WHERE run_id = ? AND stage = 'code_review' AND attempt_key = ?",
       )
       .get(runId, claim.attempt_key) as { id: string; status: string };
     expect(observation.status).toBe("passed");
@@ -510,7 +510,7 @@ describe("delivery role claims: cutover, restore and recovery", () => {
       deliveryId: run.delivery_id,
       runId,
       lap: run.lap,
-      stage: "independent_review",
+      stage: "code_review",
       candidateHeadSha: run.head_sha ?? run.base_sha,
     });
     expect(recovered.status).toBe("terminal");
@@ -541,7 +541,7 @@ describe("delivery role claims: cutover, restore and recovery", () => {
       deliveryId: run.delivery_id,
       runId,
       lap: run.lap,
-      stage: "final_acceptance",
+      stage: "blackbox_verification",
       candidateHeadSha: run.head_sha ?? run.base_sha,
     });
     expect(acquired.status).toBe("acquired");
@@ -556,7 +556,7 @@ describe("delivery role claims: cutover, restore and recovery", () => {
       deliveryId: run.delivery_id,
       runId,
       lap: run.lap,
-      stage: "final_acceptance",
+      stage: "blackbox_verification",
       candidateHeadSha: run.head_sha ?? run.base_sha,
     });
     expect(blocked.status).toBe("already_running");
@@ -565,7 +565,7 @@ describe("delivery role claims: cutover, restore and recovery", () => {
     const base = {
       projectId,
       runId,
-      stage: "final_acceptance" as const,
+      stage: "blackbox_verification" as const,
       lap: run.lap,
       expectedGeneration: acquired.claim.claimGeneration,
       expectedCandidateHeadSha: acquired.claim.candidateHeadSha,
@@ -602,7 +602,7 @@ describe("delivery role claims: cutover, restore and recovery", () => {
       deliveryId: run.delivery_id,
       runId,
       lap: run.lap,
-      stage: "final_acceptance",
+      stage: "blackbox_verification",
       candidateHeadSha: run.head_sha ?? run.base_sha,
     });
     expect(reacquireFrozen.status).toBe("already_running");
@@ -672,7 +672,7 @@ describe("delivery role claims: cutover, restore and recovery", () => {
       deliveryId: run.delivery_id,
       runId,
       lap: run.lap,
-      stage: "final_acceptance",
+      stage: "blackbox_verification",
       candidateHeadSha: run.head_sha ?? run.base_sha,
     });
     expect(acquired.status).toBe("acquired");
@@ -685,7 +685,7 @@ describe("delivery role claims: cutover, restore and recovery", () => {
     const reconciled = reconcileDeliveryClaim(db, {
       projectId,
       runId,
-      stage: "final_acceptance",
+      stage: "blackbox_verification",
       lap: run.lap,
       expectedGeneration: acquired.claim.claimGeneration,
       expectedCandidateHeadSha: acquired.claim.candidateHeadSha,
@@ -705,7 +705,7 @@ describe("delivery role claims: cutover, restore and recovery", () => {
       deliveryId: run.delivery_id,
       runId,
       lap: run.lap,
-      stage: "final_acceptance",
+      stage: "blackbox_verification",
       candidateHeadSha: run.head_sha ?? run.base_sha,
     });
     expect(reacquired.status).toBe("acquired");

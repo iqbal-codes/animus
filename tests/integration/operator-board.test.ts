@@ -105,7 +105,7 @@ describe("operator board projection", () => {
       role: "peer_reviewer",
     });
     fixture.observations.recordRunObservation(fixture.projectId, run.id, {
-      stage: "independent_review",
+      stage: "code_review",
       status: "failed",
       producer: reviewer.producer,
       checks: [{ name: "standards", command: "review diff", result: "FAIL" }],
@@ -187,13 +187,13 @@ describe("operator board projection", () => {
       role: "independent_evaluator",
     });
     fixture.observations.recordRunObservation(fixture.projectId, run.id, {
-      stage: "independent_review",
+      stage: "code_review",
       status: "passed",
       producer: reviewer.producer,
       checks: [{ name: "standards", command: "review diff", result: "PASS", kind: "review" }],
     });
     fixture.observations.recordRunObservation(fixture.projectId, run.id, {
-      stage: "final_acceptance",
+      stage: "blackbox_verification",
       status: "passed",
       producer: evaluator.producer,
       checks: [
@@ -231,13 +231,13 @@ describe("operator board projection", () => {
       role: "independent_evaluator",
     });
     fixture.observations.recordRunObservation(fixture.projectId, run.id, {
-      stage: "independent_review",
+      stage: "code_review",
       status: "passed",
       producer: reviewer.producer,
       checks: [{ name: "standards", command: "review diff", result: "PASS", kind: "review" }],
     });
     fixture.observations.recordRunObservation(fixture.projectId, run.id, {
-      stage: "final_acceptance",
+      stage: "blackbox_verification",
       status: "passed",
       producer: evaluator.producer,
       checks: [
@@ -425,7 +425,7 @@ describe("operator board projection", () => {
       role: "peer_reviewer",
     });
     fixture.observations.recordRunObservation(fixture.projectId, run.id, {
-      stage: "independent_review",
+      stage: "code_review",
       status: "failed",
       producer: reviewer.producer,
       checks: [{ name: "standards", command: "review diff", result: "FAIL" }],

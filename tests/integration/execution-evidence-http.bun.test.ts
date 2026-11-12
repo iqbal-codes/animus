@@ -261,6 +261,19 @@ describe("candidate-bound evidence through backend HTTP, client and CLI", () => 
     });
     expect(resolved.status).toBe("resolved");
 
+    // Standalone delivery also requires black-box verification of the candidate.
+    const blackbox = producers.registerTrustedProducer(projectId, {
+      id: "blackbox-1",
+      role: "independent_evaluator",
+    });
+    await scoped.recordObservation({
+      run_id: run.id,
+      producer_credential: blackbox.credential,
+      stage: "blackbox_verification",
+      status: "passed",
+      checks: [{ name: "AC1 black-box", command: "acceptance AC1", result: "PASS" }],
+    });
+
     const report = await scoped.runEvidence(run.id);
     expect(report.acceptance.authorized).toBe(true);
     expect(report.acceptance.reasons).toEqual([]);
@@ -377,7 +390,7 @@ describe("candidate-bound evidence through backend HTTP, client and CLI", () => 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           run_id: run.id,
-          stage: "independent_review",
+          stage: "code_review",
           status: "passed",
           producer: { id: "reviewer-1", role: "peer_reviewer" },
           checks: [{ name: "review", command: "review", result: "PASS" }],
@@ -394,7 +407,7 @@ describe("candidate-bound evidence through backend HTTP, client and CLI", () => 
         body: JSON.stringify({
           run_id: run.id,
           producer_credential: "prd_fresh_unregistered",
-          stage: "independent_review",
+          stage: "code_review",
           status: "passed",
           checks: [{ name: "review", command: "review", result: "PASS" }],
         }),
@@ -417,7 +430,7 @@ describe("candidate-bound evidence through backend HTTP, client and CLI", () => 
         body: JSON.stringify({
           run_id: run.id,
           producer_credential: builder.credential,
-          stage: "independent_review",
+          stage: "code_review",
           status: "passed",
           checks: [{ name: "review", command: "review", result: "PASS" }],
         }),

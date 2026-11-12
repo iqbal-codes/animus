@@ -10,7 +10,38 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { evaluateTriageToolCall } from "../../scripts/loop/triage-policy";
+
+const READ_ONLY_TRIAGE_TOOLS = new Set([
+  "read",
+  "read_file",
+  "list_dir",
+  "readdir",
+  "ls",
+  "search",
+  "grep",
+  "find",
+  "glob",
+]);
+
+type TriagePolicy = (
+  toolName: string,
+  input?: Record<string, any>,
+) => { allowed: boolean; reason?: string };
+
+let triagePolicyPromise: Promise<TriagePolicy | null> | undefined;
+
+async function resolveTriagePolicy(): Promise<TriagePolicy | null> {
+  if (triagePolicyPromise === undefined) {
+    triagePolicyPromise = import("../../scripts/loop/triage-policy")
+      .then((mod) =>
+        typeof mod.evaluateTriageToolCall === "function"
+          ? (mod.evaluateTriageToolCall as TriagePolicy)
+          : null,
+      )
+      .catch(() => null);
+  }
+  return triagePolicyPromise;
+}
 
 export interface CodebaseRule {
   id: string;
@@ -177,7 +208,15 @@ export default function registerLoopGuard(api: any) {
     const args = (event?.input ?? event?.args ?? {}) as Record<string, any>;
 
     if (process.env.FACTORY_LOOP_ROLE === "triage") {
-      const triageCheck = evaluateTriageToolCall(toolName, args);
+      const evaluateTriageToolCall = await resolveTriagePolicy();
+      const triageCheck = evaluateTriageToolCall
+        ? evaluateTriageToolCall(toolName, args)
+        : READ_ONLY_TRIAGE_TOOLS.has(toolName)
+          ? { allowed: true }
+          : {
+              allowed: false,
+              reason: `TRIAGE GUARD: Tool '${toolName}' is forbidden during triage passes. Only read-only inspection tools are permitted.`,
+            };
       if (!triageCheck.allowed) {
         return {
           block: true,

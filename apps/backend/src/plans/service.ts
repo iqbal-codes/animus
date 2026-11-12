@@ -120,7 +120,7 @@ interface PlanDraft {
   evidenceMembers: EvidenceMember[];
   deliveryBranch: string;
   integrationBranch: string | null;
-  budgets: { child_max_laps: number; final_max_laps: number };
+  budgets: { max_laps: number };
   graph: unknown;
   graphHash: string;
 }
@@ -813,7 +813,7 @@ export class PlanService {
         standalone: "manual" as const,
         final: "manual" as const,
       },
-      budgets: { child_max_laps: maxLaps, final_max_laps: maxLaps },
+      budgets: { max_laps: maxLaps },
     };
 
     return {
@@ -827,7 +827,7 @@ export class PlanService {
       evidenceMembers,
       deliveryBranch,
       integrationBranch,
-      budgets: { child_max_laps: maxLaps, final_max_laps: maxLaps },
+      budgets: { max_laps: maxLaps },
       graph,
       graphHash: computeGraphHash(graph),
     };
@@ -1469,7 +1469,7 @@ export class PlanService {
       evidenceMembers: [],
       deliveryBranch: record.delivery_branch,
       integrationBranch: record.integration_branch,
-      budgets: record.manifest?.budgets ?? { child_max_laps: 3, final_max_laps: 3 },
+      budgets: record.manifest?.budgets ?? { max_laps: 3 },
       graph: { graph_hash: record.graph_hash },
       graphHash: record.graph_hash,
     };

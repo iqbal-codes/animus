@@ -56,7 +56,7 @@ export const EVIDENCE_MIGRATIONS: Migration[] = [
           run_id TEXT NOT NULL,
           lap INTEGER NOT NULL CHECK(lap > 0),
           attempt_key TEXT NOT NULL CHECK(length(attempt_key) > 0),
-          stage TEXT NOT NULL CHECK(stage IN ('builder_execution', 'technical_checks', 'independent_review', 'final_acceptance')),
+          stage TEXT NOT NULL CHECK(stage IN ('builder_execution', 'technical_checks', 'code_review', 'blackbox_verification')),
           status TEXT NOT NULL CHECK(status IN ('running', 'passed', 'failed', 'inconclusive', 'interrupted')),
           candidate_head_sha TEXT NOT NULL CHECK(length(candidate_head_sha) > 0),
           target_tip_sha TEXT NOT NULL CHECK(length(target_tip_sha) > 0),

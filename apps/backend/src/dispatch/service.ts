@@ -1990,7 +1990,7 @@ export class DispatchService {
         gateProfile: member.gate_profile,
       };
       const scope = this.budget.ensureScope(
-        { ...budgetKey, baseLimit: this.budgetBaseLimit(manifest, member), now },
+        { ...budgetKey, baseLimit: this.budgetBaseLimit(manifest), now },
         true,
       );
       if (lap > scope.allowedAttempts) {
@@ -2278,10 +2278,8 @@ export class DispatchService {
     return member.role === "ticket" && member.gate_profile === "standalone";
   }
 
-  private budgetBaseLimit(manifest: PlanManifest, member: PlanMember): number {
-    return member.gate_profile === "final"
-      ? manifest.budgets.final_max_laps
-      : manifest.budgets.child_max_laps;
+  private budgetBaseLimit(manifest: PlanManifest): number {
+    return manifest.budgets.max_laps;
   }
 
   private deliveryIdForPlan(projectId: string, planId: string): string | null {

@@ -464,6 +464,13 @@ export class PublicationService {
 
   private async reconcileTarget(target: TargetRow): Promise<void> {
     let pr = this.activePullRequest(target);
+    // A candidate change clears the recorded source ref. When a PR already exists
+    // (for example after a correction lap) re-verify the ref here, otherwise a plain
+    // publish could never leave the 'publishing' state. A first publish keeps the
+    // create-intent path so its push failures retain explicit unknown semantics.
+    if (pr && target.candidate_head_sha !== target.base_sha && !this.remoteSourceVerified(target)) {
+      await this.ensureRemoteSourceRef(target, this.loadProject(target.project_id));
+    }
     const createIntent = this.ensureCreateIntent(target);
     if (createIntent) {
       // A new candidate (or a failed earlier attempt) needs its own PR. The create
@@ -717,6 +724,24 @@ export class PublicationService {
   private async ensureRemoteSourceRef(target: TargetRow, project: ProjectRow): Promise<void> {
     this.assertInstallationReady();
     const ref = `refs/heads/${target.source_branch}`;
+
+    const readRemote = async (): Promise<string | null> => {
+      const listed = await this.gitRemote(["ls-remote", "origin", ref], project.checkout_path);
+      if (listed.timedOut || listed.exitCode !== 0) return null;
+      const entry = listed.stdout
+        .split("\n")
+        .map((line) => line.trim())
+        .find((line) => line.endsWith(`\t${ref}`) || line.endsWith(` ${ref}`));
+      return entry?.split(/\s+/)[0] ?? null;
+    };
+
+    // A concurrent publish may already have created the ref. Accept it only when it
+    // points at exactly this candidate; otherwise push and verify.
+    if ((await readRemote()) === target.candidate_head_sha) {
+      this.recordRemoteSource(target, ref, target.candidate_head_sha);
+      return;
+    }
+
     const push = await this.gitRemote(
       ["push", "--porcelain", "origin", `${ref}:${ref}`],
       project.checkout_path,
@@ -728,6 +753,11 @@ export class PublicationService {
       );
     }
     if (push.exitCode !== 0) {
+      // A racing publish can make the ref creation fail after another writer won.
+      if ((await readRemote()) === target.candidate_head_sha) {
+        this.recordRemoteSource(target, ref, target.candidate_head_sha);
+        return;
+      }
       throw new PublicationError(
         "publication_push_failed",
         `git push ${ref} failed: ${(push.stderr || push.stdout).trim() || `exit ${push.exitCode}`}`,
@@ -763,14 +793,7 @@ export class PublicationService {
         `Remote source ref ${ref} is ${remoteSha}, not the committed candidate ${target.candidate_head_sha}`,
       );
     }
-    this.db
-      .prepare(
-        `UPDATE publication_targets
-            SET remote_source_ref = ?, remote_source_sha = ?, remote_verified_at = ?,
-                updated_at = ?
-          WHERE id = ?`,
-      )
-      .run(ref, remoteSha, this.clock(), this.clock(), target.id);
+    this.recordRemoteSource(target, ref, remoteSha);
   }
 
   /**
@@ -819,6 +842,17 @@ export class PublicationService {
         `Remote PR #${remote.number} head ${remote.headRefOid} does not match the pushed candidate ${target.candidate_head_sha}`,
       );
     }
+  }
+
+  private recordRemoteSource(target: TargetRow, ref: string, sha: string): void {
+    this.db
+      .prepare(
+        `UPDATE publication_targets
+            SET remote_source_ref = ?, remote_source_sha = ?, remote_verified_at = ?,
+                updated_at = ?
+          WHERE id = ?`,
+      )
+      .run(ref, sha, this.clock(), this.clock(), target.id);
   }
 
   private remoteSourceVerified(target: TargetRow): boolean {

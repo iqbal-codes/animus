@@ -604,20 +604,40 @@ export function mapHarnessMetrics(detail: OperatorWorkDetail): IssueHarnessMetri
     usage.available && usage.costMicros !== null
       ? formatCost(usage.costMicros)
       : usage.available
-        ? undefined
+        ? "$0.00"
         : "Cost not recorded";
   const tokensIn = usage.available && usage.tokensIn !== null ? usage.tokensIn : undefined;
   const tokensOut = usage.available && usage.tokensOut !== null ? usage.tokensOut : undefined;
   const cacheReadTokens =
     usage.available && usage.cacheReadTokens !== null ? usage.cacheReadTokens : undefined;
 
+  const plannerMeta = (detail.draft?.latest_revision?.planner_metadata ?? null) as Record<
+    string,
+    unknown
+  > | null;
+  const recordedModel =
+    typeof plannerMeta?.model === "string"
+      ? plannerMeta.model
+      : typeof (usage as Record<string, unknown>).model === "string"
+        ? String((usage as Record<string, unknown>).model)
+        : null;
+  const recordedProvider = typeof plannerMeta?.provider === "string" ? plannerMeta.provider : null;
+
+  const provider =
+    recordedProvider ??
+    (detail.process ? "Command Code" : detail.latestRun ? "Pi Local Loop" : "Local Runner");
+
+  const model =
+    recordedModel ??
+    (usage.available && usage.detail
+      ? usage.detail
+      : usage.available
+        ? "Local Model"
+        : "Not recorded");
+
   return {
-    provider: detail.process
-      ? "Command Code"
-      : detail.latestRun
-        ? "Pi Local Loop"
-        : "Claude Runner",
-    model: "Sonnet 4.5",
+    provider,
+    model,
     tier: "Standard",
     tokensIn,
     tokensOut,

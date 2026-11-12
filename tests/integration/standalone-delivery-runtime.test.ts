@@ -194,7 +194,6 @@ describe("standalone delivery runtime producer", () => {
         },
       },
       regressionChecks: ["true"],
-      maxCorrections: 2,
       correction: {
         dispatch: (request) => finalService.dispatchCorrection(request),
       },
@@ -295,18 +294,22 @@ describe("standalone delivery runtime producer", () => {
     });
 
     const firstEvidence = observations.listObservations(projectId, { runId: firstRun.id });
+    // Black-box verification runs first and gates the reviewer: a candidate that
+    // fails QA goes straight to correction without spending a review pass.
+    expect(firstEvidence.map((observation) => observation.stage)).toEqual([
+      "builder_execution",
+      "blackbox_verification",
+    ]);
     const failedAcceptance = firstEvidence.find(
-      (observation) => observation.stage === "final_acceptance",
+      (observation) => observation.stage === "blackbox_verification",
     )!;
     expect(failedAcceptance.status).toBe("failed");
     expect(observations.listFindings(projectId, { runId: firstRun.id }).length).toBeGreaterThan(0);
 
     const secondEvidence = observations.listObservations(projectId, { runId: secondRun.id });
-    const review = secondEvidence.find(
-      (observation) => observation.stage === "independent_review",
-    )!;
+    const review = secondEvidence.find((observation) => observation.stage === "code_review")!;
     const acceptance = secondEvidence.find(
-      (observation) => observation.stage === "final_acceptance",
+      (observation) => observation.stage === "blackbox_verification",
     )!;
     expect(review.status).toBe("passed");
     expect(acceptance.status).toBe("passed");
@@ -335,10 +338,14 @@ describe("standalone delivery runtime producer", () => {
     expect(findings.every((finding) => finding.status === "resolved")).toBe(true);
 
     // Publication is real, but the manual audit remains incomplete until evidence
-    // hosting is bound. The runtime never marks a remote merge.
+    // hosting is bound. The runtime never marks a remote merge. Each candidate gets
+    // its own PR, so the corrected lap supersedes the one published for lap 1.
     const published = publication.getStatusByRun(projectId, secondRun.id);
     expect(published.pullRequests.length).toBeGreaterThan(0);
-    expect(published.pullRequests[0]!.state).toBe("open");
+    const activePullRequest = published.pullRequests.find((pullRequest) => pullRequest.active);
+    expect(activePullRequest).toBeTruthy();
+    expect(activePullRequest!.state).toBe("open");
+    expect(activePullRequest!.candidateHeadSha).toBe(secondRun.head_sha);
     const gate = await delivery.getGate(projectId, secondRun.id);
     expect(gate.state).toBe("awaiting_publication");
     expect(gate.manualMergeRequired).toBe(true);

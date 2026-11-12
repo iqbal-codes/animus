@@ -135,14 +135,14 @@ export class GateAndReleaseManager {
     // Stage 2: Independent Review
     const reviewPassed = verif !== null && verif.review?.status === "passed";
     stages.push({
-      stage: "independent_review",
+      stage: "code_review",
       passed: Boolean(reviewPassed),
       status: reviewPassed ? "passed" : verif?.review ? "failed" : "pending",
       details: verif?.review
         ? `Review status: ${verif.review.status}`
         : "No independent review completed",
     });
-    if (!reviewPassed) pendingStages.push("independent_review");
+    if (!reviewPassed) pendingStages.push("code_review");
 
     // Stage 3: Quality Gate Approval
     const gateApproval = this.db

@@ -227,7 +227,7 @@ describe("child gate integration", () => {
       checks: [{ name: "unit", command: "bun test", result: "PASS" }],
     });
     observations.recordRunObservation(projectId, runId, {
-      stage: "independent_review",
+      stage: "code_review",
       status: "passed",
       producer: reviewer.producer,
       checks: [{ name: "standards", command: "review diff", result: "PASS" }],
@@ -285,7 +285,7 @@ describe("child gate integration", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  test("AC1/AC4: a child runs through gates, publishes a real PR, merges and releases its dependent", async () => {
+  test("AC1/AC4: a child runs through gates, merges into the integration branch and releases its dependent", async () => {
     const { plan, branch } = await importSpec(900, [
       { issue: 901 },
       { issue: 902, dependsOn: [901] },
@@ -306,7 +306,6 @@ describe("child gate integration", () => {
     expect(run.state).toBe("succeeded");
 
     await recordPassingGates(run.id);
-    await publication.publishByRun(projectId, run.id);
 
     const status = await integration.land(projectId, run.id);
     expect(status.state).toBe("integrated");
@@ -325,11 +324,10 @@ describe("child gate integration", () => {
     // The remote merge commit includes the candidate.
     git(checkoutPath, "merge-base", "--is-ancestor", run.head_sha!, row.merge_sha as string);
 
-    // The PR is MERGED and the dependent is now dispatchable.
-    const publicationStatus = publication.getStatusByRun(projectId, run.id);
-    const mergedPullRequest = publicationStatus.pullRequests.find((pr) => pr.number)!;
-    const remote = await forge.getPullRequest(REPO, mergedPullRequest.number!);
-    expect(remote?.state).toBe("MERGED");
+    // A child ticket integrates with no pull request of its own.
+    expect(db.prepare("SELECT COUNT(*) AS count FROM publication_pull_requests").get()).toEqual({
+      count: 0,
+    });
 
     const dependent = await makeDispatch(committingRunner("impl-b.txt")).dispatch(projectId, {
       plan_id: plan.id,
@@ -372,14 +370,14 @@ describe("child gate integration", () => {
 
     const missing = await integration.land(projectId, run.id);
     expect(missing.state).toBe("blocked");
-    expect(missing.acceptance.reasons).toContain("required_stage_missing:independent_review");
+    expect(missing.acceptance.reasons).toContain("required_stage_missing:code_review");
     expect(remoteHead("factory/spec-910-integration")).toBe(run.base_sha);
 
     // A builder identity cannot certify its own independent stage.
     const builder = { id: "operator", role: "builder" as const };
     expect(() =>
       observations.recordRunObservation(projectId, run.id, {
-        stage: "independent_review",
+        stage: "code_review",
         status: "passed",
         producer: builder,
         checks: [{ name: "review", command: "self", result: "PASS" }],
@@ -603,88 +601,6 @@ describe("child gate integration", () => {
     git(checkoutPath, "merge-base", "--is-ancestor", rebound.head_sha!, tipAfterSecond!);
   });
 
-  test("AC2/AC4: a closed pull request never satisfies the dependency", async () => {
-    const { plan } = await importSpec(970, [{ issue: 971 }, { issue: 972, dependsOn: [971] }]);
-    const dispatch = makeDispatch(committingRunner("impl-closed.txt"));
-    const integration = makeIntegration();
-    const run = await dispatch.dispatch(projectId, {
-      plan_id: plan.id,
-      issue_number: 971,
-      actor: "operator",
-    });
-    await recordPassingGates(run.id);
-    const published = await publication.publishByRun(projectId, run.id);
-    const active = published.pullRequests.find((pr) => pr.active)!;
-    await forge.updatePullRequest(REPO, active.number!, { state: "closed" });
-    // Re-publish so the stored target reflects the closed remote PR state.
-    await publication.publishByRun(projectId, run.id);
-
-    const blocked = await integration.land(projectId, run.id);
-    expect(blocked.state).toBe("blocked");
-    expect(integrationRow(run.id)).toBeUndefined();
-    await expect(
-      dispatch.dispatch(projectId, { plan_id: plan.id, issue_number: 972, actor: "operator" }),
-    ).rejects.toMatchObject({ code: "dependency_pending_integration" });
-  });
-
-  test("AC4: a remote MERGED state without lineage inclusion is not recorded as integrated", async () => {
-    const fakeForge = new SyntheticForgeAdapter(
-      { [REPO]: 823 },
-      {
-        requireRemoteSourceRef: true,
-        resolveHeadRefOid: (_repo, branch) => remoteHead(branch),
-        // Marks the PR merged without advancing the remote target: not enough proof.
-        mergeRemote: () => ({ sha: "b".repeat(40) }),
-      },
-    );
-    fakeForge.addIssue(REPO, {
-      number: 980,
-      title: "Issue 980",
-      body: specBody(["ticket 981"]),
-      state: "OPEN",
-      labels: [{ name: "ready-for-agent" }, { name: "spec" }],
-      comments: [],
-    });
-    fakeForge.addIssue(REPO, {
-      number: 981,
-      title: "Issue 981",
-      body: ticketBody({ partOf: 980, coverage: "AC1" }),
-      state: "OPEN",
-      labels: [{ name: "ready-for-agent" }],
-      comments: [],
-    });
-    const fakePlans = new PlanService(db, fakeForge);
-    const fakePlan = await fakePlans.importPlan(projectId, { issue_number: 980, kind: "spec" });
-    const branch = "factory/spec-980-integration";
-    git(checkoutPath, "branch", "-f", branch, "main");
-    git(checkoutPath, "push", "-q", "origin", branch);
-    const fakeDispatch = new DispatchService(db, {
-      plans: fakePlans,
-      ledger,
-      brakes,
-      observations,
-      processAlive: () => true,
-      ownerPid: () => 4242,
-      runner: committingRunner("impl-fake-merge.txt"),
-    });
-    const run = await fakeDispatch.dispatch(projectId, {
-      plan_id: fakePlan.id,
-      issue_number: 981,
-      actor: "operator",
-    });
-    await recordPassingGates(run.id);
-    await new PublicationService(db, fakeForge).publishByRun(projectId, run.id);
-
-    const status = await new ChildIntegrationService(db, {
-      observations,
-      publication: new PublicationService(db, fakeForge),
-      forge: fakeForge,
-    }).land(projectId, run.id);
-    expect(status.state).toBe("blocked");
-    expect(status.blockers.map((b) => b.code)).toContain("integration_lineage_unverified");
-    expect(integrationRow(run.id)).toBeUndefined();
-  });
-
   test("AC2: an exhausted ticket budget blocks the merge", async () => {
     const { plan } = await importSpec(990, [{ issue: 991 }]);
     const dispatch = makeDispatch(committingRunner("impl-budget.txt"));
@@ -721,92 +637,6 @@ describe("child gate integration", () => {
     expect(integrationRow(lastRunId)).toBeUndefined();
   });
 
-  test("AC2: a forge merge rejection fails closed without recording integration", async () => {
-    const { plan } = await importSpec(1000, [{ issue: 1001 }]);
-    const dispatch = makeDispatch(committingRunner("impl-reject.txt"));
-    const integration = makeIntegration();
-    const run = await dispatch.dispatch(projectId, {
-      plan_id: plan.id,
-      issue_number: 1001,
-      actor: "operator",
-    });
-    await recordPassingGates(run.id);
-    await publication.publishByRun(projectId, run.id);
-
-    forge.failNextMerge = true;
-    const status = await integration.land(projectId, run.id);
-    expect(status.state).toBe("blocked");
-    expect(status.blockers.map((b) => b.code)).toContain("integration_merge_rejected");
-    expect(integrationRow(run.id)).toBeUndefined();
-  });
-
-  test("AC3: a wrong remote PR binding is rejected before any merge", async () => {
-    const { plan } = await importSpec(1010, [{ issue: 1011 }]);
-    const dispatch = makeDispatch(committingRunner("impl-binding.txt"));
-    const integration = makeIntegration();
-    const run = await dispatch.dispatch(projectId, {
-      plan_id: plan.id,
-      issue_number: 1011,
-      actor: "operator",
-    });
-    await recordPassingGates(run.id);
-    const published = await publication.publishByRun(projectId, run.id);
-    const active = published.pullRequests.find((pr) => pr.active)!;
-    // Rewrite the remote base so the read-back no longer matches the frozen target.
-    const pr = await forge.getPullRequest(REPO, active.number!);
-    forge.addPullRequest(REPO, { ...pr!, base: "main" });
-
-    const status = await integration.land(projectId, run.id);
-    expect(status.state).toBe("blocked");
-    expect(status.blockers.map((b) => b.code)).toEqual(
-      expect.arrayContaining([
-        expect.stringMatching(
-          /integration_remote_binding_mismatch|integration_publication_incomplete/,
-        ),
-      ]),
-    );
-    expect(integrationRow(run.id)).toBeUndefined();
-  });
-
-  test("S-D-1: a required check that fails during the FINAL pre-merge read blocks the merge with no integration row", async () => {
-    const { plan, branch } = await importSpec(1030, [{ issue: 1031, dependsOn: undefined }]);
-    const dispatch = makeDispatch(committingRunner("impl-late-ci.txt"));
-    const integration = makeIntegration();
-    const run = await dispatch.dispatch(projectId, {
-      plan_id: plan.id,
-      issue_number: 1031,
-      actor: "operator",
-    });
-    await recordPassingGates(run.id, "late-ci");
-    await publication.publishByRun(projectId, run.id);
-    forge.setRequiredStatusChecks(REPO, branch, ["ci/verify"]);
-    forge.setCheckRuns(REPO, run.head_sha!, [
-      { name: "ci/verify", status: "completed", conclusion: "success" },
-    ]);
-
-    // The initial `requiredChecks` read passes; only the FRESH pre-merge read (the
-    // second call, taken after the acceptance snapshot) sees the failure. This
-    // would not be caught by a regression that only fires on the initial read.
-    let checkReads = 0;
-    const originalListCheckRuns = forge.listCheckRuns!.bind(forge);
-    forge.listCheckRuns = async (repo, ref) => {
-      const result = await originalListCheckRuns(repo, ref);
-      checkReads += 1;
-      if (checkReads === 1) return result;
-      return [{ name: "ci/verify", status: "completed", conclusion: "failure" }];
-    };
-
-    const status = await integration.land(projectId, run.id);
-    expect(checkReads).toBeGreaterThanOrEqual(2);
-    expect(status.state).toBe("blocked");
-    expect(status.blockers.map((blocker) => blocker.code)).toContain("integration_ci_failed");
-    expect(integrationRow(run.id)).toBeUndefined();
-    // No dependent release and no remote merge happened for this candidate.
-    expect(
-      db.prepare("SELECT COUNT(*) AS c FROM delivery_merges WHERE run_id = ?").get(run.id),
-    ).toEqual({ c: 0 });
-  });
-
   test("AC3: a late failed review recorded during the pre-merge remote read blocks the merge", async () => {
     const { plan, branch } = await importSpec(1020, [{ issue: 1021 }]);
     const dispatch = makeDispatch(committingRunner("impl-late-review.txt"));
@@ -817,22 +647,21 @@ describe("child gate integration", () => {
       actor: "operator",
     });
     await recordPassingGates(run.id, "late");
-    await publication.publishByRun(projectId, run.id);
 
     // A concurrent reviewer records a blocking failure after acceptance was
-    // snapshotted but before the forge merge. The freshness fence must see it.
+    // snapshotted but before the merge effect. The freshness fence must see it.
     const lateReviewer = register("late-concurrent-reviewer", "peer_reviewer");
-    const originalGetPullRequest = forge.getPullRequest.bind(forge);
+    const originalRequiredStatusChecks = forge.getRequiredStatusChecks.bind(forge);
     let fired = false;
-    forge.getPullRequest = async (repo, number) => {
-      const result = await originalGetPullRequest(repo, number);
+    forge.getRequiredStatusChecks = async (repo, branch) => {
+      const result = await originalRequiredStatusChecks(repo, branch);
       if (!fired) {
         fired = true;
         observations.recordRunObservation(
           projectId,
           run.id,
           {
-            stage: "independent_review",
+            stage: "code_review",
             status: "failed",
             producer: lateReviewer.producer,
             checks: [{ name: "late review", command: "review diff", result: "FAIL" }],
@@ -860,7 +689,7 @@ describe("child gate integration", () => {
     expect(remoteHead(branch)).toBeTruthy();
     const reviews = observations
       .listObservations(projectId, { runId: run.id })
-      .filter((observation) => observation.stage === "independent_review");
+      .filter((observation) => observation.stage === "code_review");
     expect(reviews.map((review) => review.status)).toContain("failed");
     expect(reviews).toHaveLength(2);
   });

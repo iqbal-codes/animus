@@ -377,6 +377,7 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     gate: deliveryService,
     final: finalService,
     intake: sharedIntakeService,
+    drafts: draftService,
   });
 
   const monitorRuntime =
