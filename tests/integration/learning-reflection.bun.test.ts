@@ -1,8 +1,12 @@
 import { test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, symlinkSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { runPostIssueReflection } from "../../scripts/loop/reflector";
+import { dirname, join } from "node:path";
+import {
+  runPostIssueReflection,
+  type RunPostIssueReflectionOptions,
+} from "../../scripts/loop/reflector";
 import type { LearningCommandRecord } from "../../scripts/loop/learning-schema";
 
 const approved = {
@@ -69,6 +73,62 @@ function fixture() {
     proposalEvaluator: async () => approved,
   };
   return { root, artifacts, proposal, options };
+}
+
+type AttemptStatus = "failed" | "sent_back" | "waiting_approval" | "merged" | "needs_owner";
+
+/** A real checkout whose lap commits a guard rule can be replayed against. */
+function checkedOutHistory(): { root: string; commit: (files: Record<string, string>) => string } {
+  const root = mkdtempSync(join(tmpdir(), "learning-history-"));
+  const run = (...args: string[]) =>
+    execFileSync("git", ["-C", root, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  run("init", "-b", "main");
+  run("config", "user.name", "Learning Test");
+  run("config", "user.email", "learning@example.invalid");
+  let count = 0;
+  return {
+    root,
+    commit(files) {
+      for (const [path, content] of Object.entries(files)) {
+        mkdirSync(dirname(join(root, path)), { recursive: true });
+        writeFileSync(join(root, path), content);
+      }
+      run("add", "--", ...Object.keys(files));
+      run("commit", "-m", `history ${(count += 1)}`);
+      return run("rev-parse", "HEAD");
+    },
+  };
+}
+
+/** The same proposal seam, pointed at a real checkout and a dossier of real commits. */
+function guardOptions(
+  root: string,
+  guard: Record<string, unknown>,
+  attempts: Array<{ status: AttemptStatus; head: string; files: string[] }>,
+): RunPostIssueReflectionOptions {
+  const f = fixture();
+  const mutation = f.proposal.mutations[0]!;
+  Object.assign(mutation, { category: "guard", value: guard });
+  mutation.evidence[0]!.candidate = attempts[0]!.head;
+  return {
+    ...f.options,
+    root,
+    worktree: root,
+    dossier: {
+      ...f.options.dossier,
+      attempts: attempts.map((attempt, index) => ({
+        ...f.options.dossier.attempts[0]!,
+        runId: index === 0 ? "run-1" : `run-${index + 1}`,
+        lapIndex: index,
+        status: attempt.status,
+        candidateHead: attempt.head,
+        changedFiles: attempt.files,
+      })),
+    },
+  };
 }
 
 test("reflection proposes evidence-backed memory without activating root or candidate", async () => {
@@ -166,7 +226,7 @@ test("tools need host execution, guards need distinguishing fixtures, skills nee
   }
 });
 
-test("host successful command and valid guard independently admit while failed execution holds", async () => {
+test("host successful command admits while failed execution holds", async () => {
   const f = fixture();
   Object.assign(f.proposal.mutations[0]!, {
     category: "tool",
@@ -190,18 +250,68 @@ test("host successful command and valid guard independently admit while failed e
     (await runPostIssueReflection({ ...f.options, commandRecords: [{ ...command, exitCode: 1 }] }))
       .status,
   ).toBe("held");
-  Object.assign(f.proposal.mutations[0]!, {
-    category: "guard",
-    value: {
-      id: "port",
-      description: "Require explicit port",
-      file_glob: "*.ts",
-      forbid_regex: "listen\\(0\\)",
-      replacement_hint: "Assign a port.",
-      fixtures: { valid: ["listen(3000)"], invalid: ["listen(0)"] },
+});
+
+const PORT_GUARD = {
+  id: "port",
+  description: "Require explicit port",
+  file_glob: "**/*.ts",
+  forbid_regex: "listen\\(0\\)",
+  replacement_hint: "Assign a port.",
+  fixtures: { valid: ["listen(3000)"], invalid: ["listen(0)"] },
+};
+
+test("a guard admits when it blocks the failing lap's commit and spares the delivered one", async () => {
+  const history = checkedOutHistory();
+  const failing = history.commit({ "src/port.ts": "server.listen(0);\n" });
+  const delivered = history.commit({ "src/port.ts": "server.listen(3000);\n" });
+  const options = guardOptions(history.root, PORT_GUARD, [
+    { status: "failed", head: failing, files: ["src/port.ts"] },
+    { status: "waiting_approval", head: delivered, files: ["src/port.ts"] },
+  ]);
+  expect((await runPostIssueReflection(options)).status).toBe("proposed");
+});
+
+test("a guard that never fires on the failing lap's own commit is held", async () => {
+  const history = checkedOutHistory();
+  const failing = history.commit({ "src/port.ts": "server.listen(0);\n" });
+  const options = guardOptions(
+    history.root,
+    {
+      ...PORT_GUARD,
+      forbid_regex: "openFileDescriptor\\(0\\)",
+      fixtures: { valid: ["bind()"], invalid: ["openFileDescriptor(0)"] },
     },
-  });
-  expect((await runPostIssueReflection(f.options)).status).toBe("proposed");
+    [{ status: "failed", head: failing, files: ["src/port.ts"] }],
+  );
+  const result = await runPostIssueReflection(options);
+  expect(result.status).toBe("held");
+  expect(result.reasons).toContain("explicit-port:guard_replay_no_positive");
+});
+
+test("a guard that also blocks the delivered lap's commit is held as indistinguishable", async () => {
+  const history = checkedOutHistory();
+  const failing = history.commit({ "src/port.ts": "server.listen(0);\n" });
+  const delivered = history.commit({ "src/port.ts": "server.listen(3000);\n" });
+  const options = guardOptions(
+    history.root,
+    { ...PORT_GUARD, forbid_regex: "listen", fixtures: { valid: ["bind()"], invalid: ["listen"] } },
+    [
+      { status: "failed", head: failing, files: ["src/port.ts"] },
+      { status: "waiting_approval", head: delivered, files: ["src/port.ts"] },
+    ],
+  );
+  const result = await runPostIssueReflection(options);
+  expect(result.status).toBe("held");
+  expect(result.reasons).toContain("explicit-port:guard_replay_indistinguishable");
+});
+
+test("a guard with no replayable lap history is held", async () => {
+  const f = fixture();
+  Object.assign(f.proposal.mutations[0]!, { category: "guard", value: PORT_GUARD });
+  const result = await runPostIssueReflection(f.options);
+  expect(result.status).toBe("held");
+  expect(result.reasons).toContain("explicit-port:guard_replay_no_history");
 });
 
 test("default harness evaluator executes via transport and admits valid proposals when approved", async () => {

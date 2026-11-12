@@ -10,6 +10,7 @@ import {
   acquireIssueLock,
   prepareLoopWorktree,
   assertCandidate,
+  readHarnessChecks,
 } from "../../scripts/loop/worktree";
 import * as loopExports from "../../scripts/loop/index";
 import {
@@ -39,6 +40,19 @@ async function initGitRepo(): Promise<string> {
   await git(dir, "commit", "-m", "initial commit");
   return dir;
 }
+
+test("declared protections extend the code baseline and never weaken it", async () => {
+  const root = await initGitRepo();
+  await mkdir(join(root, "harness"), { recursive: true });
+  await writeFile(
+    join(root, "harness/harness.config.json"),
+    JSON.stringify({ static: "true", unit: "true", protected_paths: "harness/**" }),
+  );
+  const { protectedPaths } = readHarnessChecks(root);
+  expect(protectedPaths).toContain("harness/**");
+  expect(protectedPaths).toContain(".agents/skills/**");
+  expect(protectedPaths).toContain("AGENTS.md");
+});
 
 describe("scripts/loop/worktree", () => {
   describe("AC1: git helper", () => {

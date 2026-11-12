@@ -10,6 +10,8 @@ import { CoordinationError } from "../../apps/backend/src/coordination/errors";
 export const DEFAULT_PROTECTED_PATHS = [
   ".animus/holdout/**",
   ".animus/hooks/**",
+  ".agents/skills/**",
+  "AGENTS.md",
   ".factory/holdout/**",
   ".factory/hooks/**",
   ".claude/settings.json",
@@ -32,13 +34,15 @@ export function readHarnessChecks(root: string): {
   if (checks.length === 0) {
     throw new Error("No declared ordinary project checks in harness/harness.config.json");
   }
-  const protectedPaths =
+  const declared =
     typeof raw.protected_paths === "string"
       ? raw.protected_paths
           .split(",")
           .map((p: string) => p.trim())
           .filter(Boolean)
-      : [...DEFAULT_PROTECTED_PATHS];
+      : [];
+  // The baseline lives in code; a repository config may add protections, never remove them.
+  const protectedPaths = [...new Set([...DEFAULT_PROTECTED_PATHS, ...declared])];
   return { checks, protectedPaths };
 }
 

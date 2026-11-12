@@ -15,6 +15,7 @@ export const guardDraftSchema = z.strictObject({
   replacement_hint: text, mode: z.enum(["warn", "block"]).default("warn"),
   fixtures: z.strictObject({ valid: z.array(text).min(1), invalid: z.array(text).min(1) }),
 }).refine(v => Boolean(v.forbid_regex || v.require_regex), "guard requires a regex");
+export type GuardDraft = z.infer<typeof guardDraftSchema>;
 export const skillDraftSchema = z.strictObject({ skill_name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/), description: text, agents_md_pointer: text, skill_markdown: text });
 export const learningMutationSchema = z.discriminatedUnion("category", [
   z.strictObject({ ...base, category: z.literal("lesson"), value: lessonDraftSchema }),
