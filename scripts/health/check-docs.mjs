@@ -51,6 +51,8 @@ const OPTIONAL_PATHS = new Set([
   ".factory/STOP",
   ".factory/PAUSE",
   "harness/.results/",
+  "apps/web/dist",
+  "apps/web/dist/",
 ]);
 
 /**
