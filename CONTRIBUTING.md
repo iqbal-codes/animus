@@ -7,7 +7,7 @@ Thank you for contributing to `animus`! This repository operates an autonomous, 
 This repository enforces pinned runtime and toolchain versions:
 
 - **Node.js**: `26.13.0` (used for repository tooling and static qualification)
-- **Bun**: `1.4.2` (used for package execution, application runtimes, and fast tests)
+- **Bun**: `1.4.4` (used for package execution, application runtimes, and fast tests)
 - **Vite+**: `1.4.0` (used for workspace task orchestration)
 
 Verify your local environment with:
