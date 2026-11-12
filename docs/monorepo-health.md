@@ -11,7 +11,7 @@ scheduling, or promotion.
 
 ## Qualified environment and install
 
-Use exactly **Bun 1.4.2**, **Node 26.13.0**, and project-local **Vite+ 1.4.0**.
+Use exactly **Bun 1.4.4**, **Node 26.13.0**, and project-local **Vite+ 1.4.0**.
 `.bun-version`, `.node-version`, root engines and `packageManager` record these
 versions. Provision the runtimes before running commands; put the selected Bun on
 `PATH`. No command upgrades a global runtime. Install from the checkout root:

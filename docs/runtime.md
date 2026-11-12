@@ -3,7 +3,7 @@
 - **Status:** Active
 - **Last verified:** 2026-11-10
 
-The application requires Bun 1.4.2 and Node 26.13.0. Run from the
+The application requires Bun 1.4.4 and Node 26.13.0. Run from the
 delivering checkout's root:
 
 ```sh
@@ -302,7 +302,7 @@ The repository's declared ordinary gates are `bun run check` and `vp run verify-
 
 The unified factory operates `apps/backend` and `apps/engine-host`
 via `apps/launcher/src/main.ts`. See [monorepo health instructions](monorepo-health.md)
-for pinned Bun 1.4.2 / Node 26.13.0 / Vite+ 1.4.0, exact start argv, private credential provisioning and checks.
+for pinned Bun 1.4.4 / Node 26.13.0 / Vite+ 1.4.0, exact start argv, private credential provisioning and checks.
 Backend API serves on loopback or configured host, while engine-host remains strictly loopback private.
 
 ## Execution authority cutover

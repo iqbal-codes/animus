@@ -787,7 +787,7 @@ describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollba
 
       const contributing = readFileSync(join(process.cwd(), "CONTRIBUTING.md"), "utf-8");
       expect(contributing).toContain("26.13.0");
-      expect(contributing).toContain("1.4.2");
+      expect(contributing).toContain("1.4.4");
       expect(contributing).toContain("animus setup --local-only");
       expect(contributing).toContain("bun run check");
       expect(contributing).toContain("bun run test");
@@ -1249,7 +1249,7 @@ describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollba
         );
         writeFileSync(
           join(dir, "CONTRIBUTING.md"),
-          `# Contributing\n\nNode 26.13.0\nBun 1.4.2\nanimus setup --local-only\nbun run check\nbun run test\nbun run verify\n@animus/contracts\n@animus/client\napps/backend\napps/engine-host`,
+          `# Contributing\n\nNode 26.13.0\nBun 1.4.4\nanimus setup --local-only\nbun run check\nbun run test\nbun run verify\n@animus/contracts\n@animus/client\napps/backend\napps/engine-host`,
         );
         writeFileSync(join(dir, "SECURITY.md"), "# Security Policy\n");
         writeFileSync(join(dir, "CHANGELOG.md"), "# Changelog\n");
@@ -1449,7 +1449,7 @@ describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollba
         );
         writeFileSync(
           join(dir, "CONTRIBUTING.md"),
-          `# Contributing\n\nNode 26.13.0\nBun 1.4.2\nanimus setup --local-only\nbun run check\nbun run test\nbun run verify\n@animus/contracts\n@animus/client\napps/backend\napps/engine-host`,
+          `# Contributing\n\nNode 26.13.0\nBun 1.4.4\nanimus setup --local-only\nbun run check\nbun run test\nbun run verify\n@animus/contracts\n@animus/client\napps/backend\napps/engine-host`,
         );
         writeFileSync(join(dir, "SECURITY.md"), "# Security Policy\n");
         writeFileSync(join(dir, "CHANGELOG.md"), "# Changelog\n");
@@ -1700,7 +1700,7 @@ Depends on: None
         );
         writeFileSync(
           join(dir, "CONTRIBUTING.md"),
-          "# Contributing\n\nNode 26.13.0\nBun 1.4.2\nanimus setup --local-only\nbun run check\nbun run test\nbun run verify\n@animus/contracts\n@animus/client\napps/backend\napps/engine-host\n",
+          "# Contributing\n\nNode 26.13.0\nBun 1.4.4\nanimus setup --local-only\nbun run check\nbun run test\nbun run verify\n@animus/contracts\n@animus/client\napps/backend\napps/engine-host\n",
         );
         writeFileSync(join(dir, "SECURITY.md"), "# Security Policy\n");
         writeFileSync(join(dir, "CHANGELOG.md"), "# Changelog\n");
@@ -1854,7 +1854,7 @@ Depends on: None
         );
         writeFileSync(
           join(dir, "CONTRIBUTING.md"),
-          "# Contributing\n\nNode 26.13.0\nBun 1.4.2\nanimus setup --local-only\nbun run check\nbun run test\nbun run verify\n@animus/contracts\n@animus/client\napps/backend\napps/engine-host\n",
+          "# Contributing\n\nNode 26.13.0\nBun 1.4.4\nanimus setup --local-only\nbun run check\nbun run test\nbun run verify\n@animus/contracts\n@animus/client\napps/backend\napps/engine-host\n",
         );
         writeFileSync(join(dir, "SECURITY.md"), "# Security Policy\n");
         writeFileSync(join(dir, "CHANGELOG.md"), "# Changelog\n");
@@ -2087,7 +2087,7 @@ Depends on: None
         );
         writeFileSync(
           join(dir, "CONTRIBUTING.md"),
-          "# Contributing\n\nNode: 26.13.0\nBun: 1.4.2\n\nSetup:\nanimus setup --local-only\n\nCheck commands:\nbun run check\nbun run test\nbun run verify\n\nBoundaries: @animus/contracts, @animus/client, apps/backend, apps/engine-host\n",
+          "# Contributing\n\nNode: 26.13.0\nBun: 1.4.4\n\nSetup:\nanimus setup --local-only\n\nCheck commands:\nbun run check\nbun run test\nbun run verify\n\nBoundaries: @animus/contracts, @animus/client, apps/backend, apps/engine-host\n",
         );
         writeFileSync(join(dir, "SECURITY.md"), "# Security Policy\n");
         writeFileSync(join(dir, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n");
@@ -2249,7 +2249,7 @@ Depends on: None
         );
         writeFileSync(
           join(dir, "CONTRIBUTING.md"),
-          "# Contributing\n\nNode: 26.13.0\nBun: 1.4.2\n\nSetup:\nanimus setup --local-only\n\nCheck commands:\nbun run check\nbun run test\nbun run verify\n\nBoundaries: @animus/contracts, @animus/client, apps/backend, apps/engine-host\n",
+          "# Contributing\n\nNode: 26.13.0\nBun: 1.4.4\n\nSetup:\nanimus setup --local-only\n\nCheck commands:\nbun run check\nbun run test\nbun run verify\n\nBoundaries: @animus/contracts, @animus/client, apps/backend, apps/engine-host\n",
         );
         writeFileSync(join(dir, "SECURITY.md"), "# Security Policy\n");
         writeFileSync(join(dir, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n");
@@ -2373,7 +2373,7 @@ Depends on: None
         );
         writeFileSync(
           join(dir, "CONTRIBUTING.md"),
-          "# Contributing\n\nNode: 26.13.0\nBun: 1.4.2\n\nSetup:\nanimus setup --local-only\n\nCheck commands:\nbun run check\nbun run test\nbun run verify\n\nBoundaries: @animus/contracts, @animus/client, apps/backend, apps/engine-host\n",
+          "# Contributing\n\nNode: 26.13.0\nBun: 1.4.4\n\nSetup:\nanimus setup --local-only\n\nCheck commands:\nbun run check\nbun run test\nbun run verify\n\nBoundaries: @animus/contracts, @animus/client, apps/backend, apps/engine-host\n",
         );
         writeFileSync(join(dir, "SECURITY.md"), "# Security Policy\n");
         writeFileSync(join(dir, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n");
@@ -2788,7 +2788,7 @@ Depends on: None
           `
           const args = process.argv.slice(2);
           if (args[0] === "version") {
-            console.log("animus v0.2.0 (source, commit: dev, Bun 1.4.2)");
+            console.log("animus v0.2.0 (source, commit: dev, Bun 1.4.4)");
             process.exit(0);
           }
           if (args[0] === "--help") {

@@ -32,14 +32,14 @@ describe("Repository-wide Task, Checker, and Cache Correctness", () => {
     expect(launcherPkg.name).toBe("@animus/launcher");
   });
 
-  test("AC2: Toolchain check enforces Node 26.13.0, Bun 1.4.2, and local Vite+ 1.4.0", () => {
+  test("AC2: Toolchain check enforces Node 26.13.0, Bun 1.4.4, and local Vite+ 1.4.0", () => {
     const toolchain = spawnSync("node", ["scripts/health/check-toolchain.mjs"], {
       cwd: root,
       encoding: "utf-8",
     });
     expect(toolchain.status).toBe(0);
     expect(toolchain.stdout).toContain("Node");
-    expect(toolchain.stdout).toContain("Bun 1.4.2");
+    expect(toolchain.stdout).toContain("Bun 1.4.4");
     expect(toolchain.stdout).toContain("Vite+ 1.4.0");
   });
 

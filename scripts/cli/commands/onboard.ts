@@ -21,7 +21,7 @@ import { parseWorkWindow } from "../work-window";
 import { probeServiceHealth } from "./serve";
 
 /** Minimum runtime used when `ANIMUS_SOURCE_ROOT` has no package.json to read. */
-export const MINIMUM_BUN_VERSION = "1.4.2";
+export const MINIMUM_BUN_VERSION = "1.4.4";
 const BACKEND_PORT = 3000;
 const ENGINE_PORT = 4001;
 
@@ -178,7 +178,7 @@ export async function collectOnboardChecks(
     detail: bunActual
       ? `${bunActual} (requires >= ${requiredBun})`
       : "not found on PATH; the Animus runtime is Bun-based",
-    fix: "Install Bun >= 1.4.2: https://bun.sh",
+    fix: "Install Bun >= 1.4.4: https://bun.sh",
   });
 
   const git = exec("git", ["--version"]);
