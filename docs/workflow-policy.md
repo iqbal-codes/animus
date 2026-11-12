@@ -1,12 +1,15 @@
 # Factory workflow policy
 
+- **Status:** Active
+- **Last verified:** 2026-11-12
+
 This project uses Animus's shared SDLC workflows. The requirements below are
 project guidance for those workflows; they do not replace workflow gates or grant
 permission to publish, comment, merge, deploy, or change schedules.
 
 ## Scope and backlog bootstrap
 
-Read `MISSION.md` in full. Its product scope, exclusions, hard invariants, and
+Read `PRD.md` in full. Its product scope, exclusions, hard invariants, and
 human-owned decisions govern every backlog and delivery decision. Leave work that
 contradicts them out of a proposed backlog and report the conflict.
 
@@ -22,10 +25,10 @@ first story.
 
 ## Factory-owned workflow inputs
 
-Factory supplies `holdout=.factory/holdout/HOLDOUT.md` to `animus-loop`, `animus-manager` and
+Factory supplies `holdout=.animus/holdout/HOLDOUT.md` to `animus-loop`, `animus-manager` and
 `animus-holdouts`, and the project's `protected_paths` (from `harness/harness.config.json`) to
 `animus-loop` and `animus-merge-queue`, unless the caller supplies them. The holdout scenarios are
-read only by the `holdout-verifier` and `holdout-writer` agents; `.factory/hooks/holdout_fence.py`
+read only by the `holdout-verifier` and `holdout-writer` agents; `.animus/hooks/holdout_fence.py`
 refuses every other agent.
 
 ## Runtime and review evidence

@@ -74,4 +74,4 @@ All unit and integration tests must run fully offline. Tests must never make liv
    - Changed Seams
    - Evidence (concrete verification logs, command output, or test assertions)
 3. **Conventional Commits**: Format commit messages using conventional commits (e.g. `feat(...)`, `fix(...)`, `docs(...)`).
-4. **No Protected File Edits**: Never modify protected factory paths (`MISSION.md`, `FACTORY.md`, `FACTORY_RULES.md`, `harness/**`, `.claude/settings.json`, `.ignore`, `.factory/holdout/**`, `.factory/hooks/**`) without human owner authorization.
+4. **No Protected File Edits**: Never modify protected factory paths (`harness/**`, `.claude/settings.json`, `.ignore`, `.animus/holdout/**`, `.animus/hooks/**`) without human owner authorization.

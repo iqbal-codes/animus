@@ -21,10 +21,26 @@ const HELP_SPEC_WRAP_THRESHOLD = 36;
 
 export const helpEntries: readonly HelpEntry[] = [
   {
+    command: "onboard",
+    spec: "onboard [--yes] [--accept-unverified-auth] [--reconfigure]",
+    description:
+      "Machine-wide onboarding: prerequisites, live harness detection, GitHub auth, ~/.animus/config.yaml",
+  },
+  {
+    command: "start",
+    spec: "start [--foreground] [--port <port>] [--web-dir <path>]",
+    description: "Start Backend, Engine-Host and the web console from the resolved runtime",
+  },
+  {
+    command: "stop",
+    spec: "stop",
+    description: "Stop the running Backend and Engine-Host",
+  },
+  {
     command: "setup",
     spec: "setup [--yes] [options]",
     description:
-      "Interactive onboarding wizard (detects harnesses, configures tiers, laps & checks)",
+      "Per-repository onboarding wizard (harnesses, tiers, laps & checks) for one checkout",
   },
   {
     command: "config",
@@ -95,7 +111,8 @@ export const helpEntries: readonly HelpEntry[] = [
   {
     command: "plan",
     spec: "plan <list|get|import|approve|revoke|dispatch|runs|run|detail|evidence|findings|grants|grant|hold|resume|stop|takeover|claims|claim-interrupt|claim-complete|reconcile|publication|audit|publish|bind-evidence|integration|integrations|land> --project <project-id>",
-    description: "Inspect, decide and dispatch frozen local execution plans with budgets, run controls and publication audit",
+    description:
+      "Inspect, decide and dispatch frozen local execution plans with budgets, run controls and publication audit",
   },
   {
     command: "project",
@@ -138,8 +155,19 @@ export const orderedFlags: readonly FlagHelp[] = [
   },
   {
     spec: "--yes, -y",
-    description: "Accept detected defaults non-interactively during 'setup'",
-    commands: ["setup"],
+    description: "Accept detected defaults non-interactively during 'onboard' and 'setup'",
+    commands: ["onboard", "setup"],
+  },
+  {
+    spec: "--accept-unverified-auth",
+    description:
+      "Non-interactive 'onboard': accept that harness sign-in cannot be verified automatically",
+    commands: ["onboard"],
+  },
+  {
+    spec: "--reconfigure",
+    description: "Re-run machine onboarding choices even when already onboarded",
+    commands: ["onboard"],
   },
   {
     spec: "--factory-url <url>",
@@ -226,7 +254,7 @@ export const orderedFlags: readonly FlagHelp[] = [
     spec: "--provider <id>",
     description:
       "Default agent harness provider (pi, claude, omp, commandcode; codex, opencode coming soon)",
-    commands: ["setup", "config"],
+    commands: ["onboard", "setup", "config"],
   },
   {
     spec: "--small-tier <spec>",
@@ -250,13 +278,13 @@ export const orderedFlags: readonly FlagHelp[] = [
   },
   {
     spec: "--max-laps <n>",
-    description: "Maximum laps per issue before escalating to owner (default: 3)",
-    commands: ["setup", "config"],
+    description: "Maximum laps per issue before escalating to owner (default: machine policy)",
+    commands: ["onboard", "setup", "config"],
   },
   {
     spec: "--parallel <n>",
-    description: "Maximum parallel autonomous laps (default: 1)",
-    commands: ["setup", "config"],
+    description: "Maximum parallel autonomous laps (default: machine policy)",
+    commands: ["onboard", "setup", "config"],
   },
   {
     spec: "--base-branch <branch>",
@@ -275,8 +303,8 @@ export const orderedFlags: readonly FlagHelp[] = [
   },
   {
     spec: "--work-window <HH:MM-HH:MM|off>",
-    description: "Schedule work window (e.g. 20:00-05:00 or off)",
-    commands: ["setup", "config"],
+    description: "Schedule work window (e.g. 20:00-05:00 or off); onboard sets the machine default",
+    commands: ["onboard", "setup", "config"],
   },
   {
     spec: "--agents-md <keep|overwrite>",
@@ -284,34 +312,39 @@ export const orderedFlags: readonly FlagHelp[] = [
     commands: ["setup", "config"],
   },
   {
+    spec: "--foreground, -f",
+    description: "Run services in the foreground instead of detaching into the background",
+    commands: ["start", "serve"],
+  },
+  {
     spec: "--host <address>",
     description: "Bind address for serve/backend/engine (default: 127.0.0.1)",
-    commands: ["serve", "backend", "engine", "status"],
+    commands: ["start", "serve", "backend", "engine", "status"],
   },
   {
     spec: "--port, -p <port>",
     description: "HTTP port for serve/backend (default: 3000) or engine (default: 4001)",
-    commands: ["serve", "backend", "engine", "status"],
+    commands: ["start", "serve", "backend", "engine", "status"],
   },
   {
     spec: "--engine-port <port>",
-    description: "Dedicated loopback port for engine-host under 'serve' (default: dynamic)",
-    commands: ["serve"],
+    description: "Dedicated loopback port for engine-host under 'start'/'serve' (default: dynamic)",
+    commands: ["start", "serve"],
   },
   {
     spec: "--remote-access",
     description: "Enable private network access mode with operator token auth",
-    commands: ["serve", "backend"],
+    commands: ["start", "serve", "backend"],
   },
   {
     spec: "--state-dir <path>",
-    description: "Override runtime state directory (default: .factory/state)",
-    commands: ["serve", "backend", "engine", "command"],
+    description: "Override runtime state directory (default: ~/.animus/state)",
+    commands: ["start", "stop", "serve", "backend", "engine", "command"],
   },
   {
     spec: "--web-dir <path>",
     description: "Optional static web directory to serve (headless by default)",
-    commands: ["serve", "backend"],
+    commands: ["start", "serve", "backend"],
   },
   {
     spec: "--issue, -i <number>",
@@ -345,8 +378,8 @@ export const orderedFlags: readonly FlagHelp[] = [
   },
   {
     spec: "--interval <seconds>",
-    description: "Polling interval in seconds for scheduler/setup",
-    commands: ["scheduler", "setup", "config"],
+    description: "Polling interval in seconds for scheduler/onboard/setup",
+    commands: ["onboard", "scheduler", "setup", "config"],
   },
   {
     spec: "--refresh",
@@ -390,6 +423,10 @@ export const orderedFlags: readonly FlagHelp[] = [
 
 export const orderedExamples: readonly ExampleHelp[] = [
   { text: "animus setup", command: "setup" },
+  {
+    text: "animus onboard --yes --accept-unverified-auth --max-laps 4 --parallel 2 --interval 120",
+    command: "onboard",
+  },
   {
     text: "animus setup --yes --provider claude --max-laps 4 --parallel 2",
     command: "setup",

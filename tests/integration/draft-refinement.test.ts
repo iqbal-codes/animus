@@ -206,9 +206,9 @@ function makeCheckout(root: string): string {
     "# animus-triage\nTriage playbook",
     "utf-8",
   );
-  mkdirSync(join(checkout, ".factory/hooks"), { recursive: true });
+  mkdirSync(join(checkout, ".animus/hooks"), { recursive: true });
   writeFileSync(
-    join(checkout, ".factory/hooks/loop-guard.ts"),
+    join(checkout, ".animus/hooks/loop-guard.ts"),
     "export default function registerLoopGuard() {}",
     "utf-8",
   );

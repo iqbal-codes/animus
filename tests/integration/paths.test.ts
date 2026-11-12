@@ -9,6 +9,7 @@ import {
   readFileSync,
 } from "node:fs";
 import { tmpdir, homedir } from "node:os";
+import { platformSettingsSchema, writeMachineConfig } from "@animus/contracts/machine-config";
 import { join } from "node:path";
 import {
   resolveAnimusHome,
@@ -193,11 +194,11 @@ describe("Local Application State Paths (~/.animus/)", () => {
     process.env.ANIMUS_HOME = userAnimus;
     const repoPath = join(tempDir, "repo-schedule-test");
     mkdirSync(repoPath, { recursive: true });
-    mkdirSync(join(repoPath, ".factory"), { recursive: true });
+    mkdirSync(join(repoPath, ".animus"), { recursive: true });
 
     // Repo defines team workflow and inputs
     writeFileSync(
-      join(repoPath, ".factory/schedule.json"),
+      join(repoPath, ".animus/schedule.json"),
       JSON.stringify({ workflow: "team-workflow", parallel: 1 }),
     );
 
@@ -221,6 +222,52 @@ describe("Local Application State Paths (~/.animus/)", () => {
     expect(config.parallel).toBe(4); // overridden by user home
     expect(config.work_window?.enabled).toBe(true); // overridden by user home
     expect(config.work_window?.start_time).toBe("21:00");
+  });
+
+  test("machine onboarding policy feeds the schedule cascade as defaults", () => {
+    const userAnimus = join(tempDir, "user-animus-machine");
+    process.env.ANIMUS_HOME = userAnimus;
+    const repoPath = join(tempDir, "repo-machine");
+    mkdirSync(join(repoPath, ".animus"), { recursive: true });
+
+    mkdirSync(userAnimus, { recursive: true });
+    writeMachineConfig(
+      platformSettingsSchema.parse({
+        schemaVersion: 1,
+        automation: {
+          parallelJobs: 5,
+          maxLaps: 9,
+          pollInterval: 42,
+          limitWorkWindow: true,
+          startTime: "22:00",
+          endTime: "04:00",
+        },
+      }),
+      userAnimus,
+    );
+
+    // Without repository configuration the machine policy supplies every value.
+    const inherited = loadScheduleConfig(repoPath);
+    expect(inherited.parallel).toBe(5);
+    expect(inherited.max_laps).toBe(9);
+    expect(inherited.interval_seconds).toBe(42);
+    expect(inherited.work_window?.enabled).toBe(true);
+    expect(inherited.work_window?.start_time).toBe("22:00");
+    expect(inherited.work_window?.end_time).toBe("04:00");
+
+    // Repository configuration is explicit policy and beats the machine default.
+    writeFileSync(
+      join(repoPath, ".animus/schedule.json"),
+      JSON.stringify({ parallel: 1, max_laps: 2 }),
+    );
+    const repoOverride = loadScheduleConfig(repoPath);
+    expect(repoOverride.parallel).toBe(1);
+    expect(repoOverride.max_laps).toBe(2);
+    expect(repoOverride.interval_seconds).toBe(42);
+
+    // An explicit user schedule file still wins over both.
+    writeFileSync(join(userAnimus, "schedule.json"), JSON.stringify({ parallel: 7 }));
+    expect(loadScheduleConfig(repoPath).parallel).toBe(7);
   });
 
   test("resolveProjectWorkspace resolves canonical paths and fallback runs", () => {

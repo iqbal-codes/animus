@@ -11,9 +11,12 @@
     "./sanitizer": "./src/sanitizer.ts",
     "./inline-artifact": "./src/inline-artifact.ts",
     "./ticket": "./src/ticket.ts",
-    "./installation-hold": "./src/installation-hold.ts"
+    "./installation-hold": "./src/installation-hold.ts",
+    "./machine-config": "./src/machine-config.ts",
+    "./repo-config": "./src/repo-config.ts"
   },
   "dependencies": {
+    "yaml": "^2.9.1",
     "zod": "4.1.12"
   }
 }

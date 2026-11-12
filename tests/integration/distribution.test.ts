@@ -9,6 +9,7 @@ import {
   rmSync,
   cpSync,
   symlinkSync,
+  mkdtempSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -17,6 +18,23 @@ import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { parse as parseYaml } from "yaml";
+
+/**
+ * Packaging tests ship shell scripts, not native executables, so they write one
+ * fixture binary per release target and disable content verification. The real
+ * release path resolves `dist/release/<platform>-<arch>` and refuses anything
+ * that is not a native executable for its target.
+ */
+function mockTargetBinaries(content: string | Buffer): string {
+  const root = mkdtempSync(join(tmpdir(), "animus-mock-bins-"));
+  for (const target of ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"]) {
+    const dir = join(root, target);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "animus"), content, { mode: 0o755 });
+    writeFileSync(join(dir, "factory"), content, { mode: 0o755 });
+  }
+  return root;
+}
 
 describe("Unified Launcher, Private Access, Closed CI Gates, and Snapshot Rollback (Issue #65)", () => {
   let tempDir: string;
@@ -3479,7 +3497,8 @@ Depends on: None
           platform: "darwin",
           arch: "arm64",
           outDir,
-          binaryPath: mockBinaryPath,
+          binaryDir: mockTargetBinaries(readFileSync(mockBinaryPath)),
+          requireNativeBinary: false,
         });
 
         expect(result.tarballPath).toBe(join(outDir, "animus-v0.2.0-darwin-arm64.tar.gz"));
@@ -3513,7 +3532,8 @@ Depends on: None
         const { tarballs, checksums } = await packageAllCliDistributionTarballs({
           version: "0.2.0",
           outDir,
-          binaryPath: mockBinaryPath,
+          binaryDir: mockTargetBinaries(readFileSync(mockBinaryPath)),
+          requireNativeBinary: false,
         });
 
         expect(tarballs).toHaveLength(4);
@@ -3554,7 +3574,8 @@ Depends on: None
           platform: "linux",
           arch: "x64",
           outDir,
-          binaryPath: mockBinaryPath,
+          binaryDir: mockTargetBinaries(readFileSync(mockBinaryPath)),
+          requireNativeBinary: false,
         });
 
         await generateReleaseChecksums(outDir);
@@ -3695,7 +3716,8 @@ Depends on: None
         platform,
         arch,
         outDir: releaseDir,
-        binaryContent: mockCliScript,
+        binaryDir: mockTargetBinaries(mockCliScript),
+        requireNativeBinary: false,
       });
 
       await generateReleaseChecksums(releaseDir);
@@ -3757,7 +3779,8 @@ Depends on: None
         platform,
         arch,
         outDir: releaseDir,
-        binaryContent: "#!/bin/sh\necho ok\n",
+        binaryDir: mockTargetBinaries("#!/bin/sh\necho ok\n"),
+        requireNativeBinary: false,
       });
 
       await generateReleaseChecksums(releaseDir);
@@ -3809,7 +3832,8 @@ Depends on: None
         platform,
         arch,
         outDir: releaseDir,
-        binaryContent: "#!/bin/sh\necho ok\n",
+        binaryDir: mockTargetBinaries("#!/bin/sh\necho ok\n"),
+        requireNativeBinary: false,
       });
 
       // Write checksums.txt with unrelated entry
@@ -3860,7 +3884,8 @@ Depends on: None
         platform,
         arch,
         outDir: releaseDir,
-        binaryContent: "#!/bin/sh\necho ok\n",
+        binaryDir: mockTargetBinaries("#!/bin/sh\necho ok\n"),
+        requireNativeBinary: false,
       });
 
       // Deliberately omit checksums.txt
@@ -3904,7 +3929,8 @@ Depends on: None
         platform,
         arch,
         outDir: releaseDir,
-        binaryContent: "#!/bin/sh\necho 'animus v0.2.0'\n",
+        binaryDir: mockTargetBinaries("#!/bin/sh\necho 'animus v0.2.0'\n"),
+        requireNativeBinary: false,
       });
 
       await generateReleaseChecksums(releaseDir);
@@ -3943,7 +3969,8 @@ Depends on: None
         platform,
         arch,
         outDir: releaseDir,
-        binaryContent: "#!/bin/sh\necho 'animus v0.2.0'\n",
+        binaryDir: mockTargetBinaries("#!/bin/sh\necho 'animus v0.2.0'\n"),
+        requireNativeBinary: false,
       });
 
       await generateReleaseChecksums(releaseDir);

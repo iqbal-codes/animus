@@ -27,6 +27,7 @@ past, never a specification for new work.
 - [Harness authoring standard](agents/harness-authoring-standard.md) — **Active**. How to curate lessons, rules, and skills.
 - [Issue tracker contract](agents/issue-tracker.md) — **Active**. `gh` conventions, dependencies, and triage labels.
 - [PR and evidence contract](agents/pr-evidence-contract.md) — **Active**. PR bodies, evidence matrices, and finding rechecks.
+- [Workflow policy](workflow-policy.md) — **Active**. Shared SDLC workflow requirements, bootstrap guidelines, and workflow inputs.
 - [Design system](design/animus-design-system.md) — **Active**. Semantic tokens, primitives, and applied UI surfaces.
 
 ## Historical Archive

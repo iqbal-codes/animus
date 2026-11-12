@@ -99,7 +99,7 @@ test("3. Merge Queue: enforces review approval and protected paths", () => {
       number: 11,
       url: "https://github.com/repo/pull/11",
       headSha: "def",
-      changedFiles: ["MISSION.md"], // Protected path!
+      changedFiles: ["harness/harness.config.json"], // Protected path!
       reviewApproved: true,
     },
     {
@@ -114,7 +114,7 @@ test("3. Merge Queue: enforces review approval and protected paths", () => {
   const plan = assessMergeBatchDeterministic("owner/repo", "main", "sha-base", candidates);
   expect(plan.eligible).toBe(false);
   expect(plan.pull_requests).toHaveLength(1); // Only PR #10 is eligible
-  expect(plan.reasons.some((r: string) => r.includes("MISSION.md"))).toBe(true);
+  expect(plan.reasons.some((r: string) => r.includes("harness/harness.config.json"))).toBe(true);
   expect(plan.reasons.some((r: string) => r.includes("independent review"))).toBe(true);
 });
 
@@ -459,7 +459,7 @@ test("11. Multiple Provider Harness Support: resolves and formats argv for Pi, C
 test("accepted harness injection, terminal trigger, and fail-closed legacy learning proposals", async () => {
   const dir = mkdtempSync(join(tmpdir(), "harness-evolution-"));
   try {
-    mkdirSync(join(dir, ".factory/hooks"), { recursive: true });
+    mkdirSync(join(dir, ".animus/hooks"), { recursive: true });
     mkdirSync(join(dir, ".agents/skills/tdd"), { recursive: true });
     mkdirSync(join(dir, ".agents/skills/animus-harness"), { recursive: true });
     mkdirSync(join(dir, ".agents/skills/animus-learn"), { recursive: true });
@@ -485,13 +485,13 @@ test("accepted harness injection, terminal trigger, and fail-closed legacy learn
       join(dir, ".agents/skills/skill-creator/SKILL.md"),
       "---\nname: skill-creator\ndescription: creator\n---\n",
     );
-    writeFileSync(join(dir, ".factory/hooks/loop-guard.ts"), "export default function() {}");
+    writeFileSync(join(dir, ".animus/hooks/loop-guard.ts"), "export default function() {}");
     writeFileSync(
       join(dir, "AGENTS.md"),
       "# Instructions\n- Post-lap memory & lesson synthesis: `/animus-harness`\n",
     );
     writeFileSync(
-      join(dir, ".factory/lessons.jsonl"),
+      join(dir, ".animus/lessons.jsonl"),
       JSON.stringify({
         id: "lsn-20261028-01",
         topic: "port-binding",
@@ -528,9 +528,9 @@ test("accepted harness injection, terminal trigger, and fail-closed legacy learn
     expect(exts).toHaveLength(1);
 
     // Verify deterministic codebase-rules.json enforcement in loop-guard.ts
-    const { evaluateCodebaseRulesOnEdit } = await import("../../.factory/hooks/loop-guard");
+    const { evaluateCodebaseRulesOnEdit } = await import("../../.animus/hooks/loop-guard");
     writeFileSync(
-      join(dir, ".factory/codebase-rules.json"),
+      join(dir, ".animus/codebase-rules.json"),
       JSON.stringify({
         rules: [
           {

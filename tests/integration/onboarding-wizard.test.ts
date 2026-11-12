@@ -1,9 +1,11 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyRepositorySetup, runConfigCliCommand } from "../../scripts/cli/commands/setup";
+import { installOnboardedAnimusHome, type OnboardedHomeFixture } from "./machine-home-fixture";
+import { platformSettingsSchema, writeMachineConfig } from "@animus/contracts/machine-config";
 import { readAnimusConfig, writeAnimusConfig } from "../../scripts/loop/config";
 import {
   OnboardingCancelled,
@@ -26,7 +28,12 @@ function repo() {
   ]);
   return root;
 }
+let machineHome: OnboardedHomeFixture;
+beforeEach(() => {
+  machineHome = installOnboardedAnimusHome();
+});
 afterEach(() => {
+  machineHome?.restore();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -88,6 +95,7 @@ describe("onboarding wizard setup", () => {
       await expect(
         applyRepositorySetup({ repoRoot: root, nonInteractive: true, [field]: 0 }, offline),
       ).rejects.toThrow("positive safe integer");
+      expect(existsSync(join(root, ".animus"))).toBe(false);
       expect(existsSync(join(root, ".factory"))).toBe(false);
     },
   );
@@ -113,6 +121,54 @@ describe("onboarding wizard setup", () => {
     expect(result.scheduleConfig.max_laps).toBe(5);
   });
 
+  test("setup inherits machine automation policy while explicit flags still win", async () => {
+    writeMachineConfig(
+      platformSettingsSchema.parse({
+        schemaVersion: 1,
+        system: { onboardedAt: "2026-01-01T00:00:00.000Z", defaultProvider: "pi" },
+        providers: [],
+        automation: {
+          parallelJobs: 4,
+          maxLaps: 7,
+          pollInterval: 45,
+          continuations: 1,
+          limitWorkWindow: true,
+          startTime: "21:00",
+          endTime: "03:00",
+          timezone: "UTC",
+          schedulePaused: false,
+          globalBrake: false,
+        },
+      }),
+      machineHome.home,
+    );
+
+    const inherited = await applyRepositorySetup(
+      { repoRoot: repo(), nonInteractive: true },
+      offline,
+    );
+    expect(inherited.scheduleConfig).toMatchObject({
+      parallel: 4,
+      max_laps: 7,
+      interval_seconds: 45,
+    });
+    expect(inherited.scheduleConfig.work_window).toMatchObject({
+      enabled: true,
+      start_time: "21:00",
+      end_time: "03:00",
+    });
+
+    const overridden = await applyRepositorySetup(
+      { repoRoot: repo(), nonInteractive: true, parallel: 2, maxLaps: 3 },
+      offline,
+    );
+    expect(overridden.scheduleConfig).toMatchObject({
+      parallel: 2,
+      max_laps: 3,
+      interval_seconds: 45,
+    });
+  });
+
   test.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(
     "rejects invalid numeric flags before writing (%s)",
     async (value) => {
@@ -124,18 +180,11 @@ describe("onboarding wizard setup", () => {
     },
   );
 
-  test("numeric prompts retain default preview and reprompt until a positive safe integer", async () => {
+  test("interactive setup prompts for base branch and respects user input", async () => {
     const root = repo();
-    const prompts = new Answers(
-      ["codex"],
-      ["continue"],
-      ["0", "2.5", "9007199254740992", "4", "2", "60"],
-    );
+    const prompts = new Answers(["codex"], ["continue"], ["develop"]);
     const result = await applyRepositorySetup({ repoRoot: root }, { ...offline, prompts });
-    expect(result.scheduleConfig.max_laps).toBe(4);
-    expect(result.scheduleConfig.parallel).toBe(2);
-    expect(result.scheduleConfig.interval_seconds).toBe(60);
-    expect(prompts.notes.filter((note) => note.includes("positive safe integer"))).toHaveLength(3);
+    expect(result.animusConfig.worktree?.baseBranch).toBe("develop");
   });
 
   test.each([
@@ -253,6 +302,7 @@ describe("onboarding wizard setup", () => {
     );
     expect(prompts.closed).toBe(true);
     expect(readFileSync(join(root, ".animus/config.yaml"), "utf-8")).toBe(before);
+    expect(existsSync(join(root, ".animus/schedule.json"))).toBe(false);
     expect(existsSync(join(root, ".factory"))).toBe(false);
   });
 

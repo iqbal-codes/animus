@@ -1,7 +1,7 @@
 {
   "description": "Project scenario/environment data for shared runtime verification. Producer input flags require final integration mapping; this file executes nothing.",
   "scenarios": "harness/END-TO-END.md",
-  "holdout": ".factory/holdout/HOLDOUT.md",
+  "holdout": ".animus/holdout/HOLDOUT.md",
   "driver": "http",
   "http": {
     "start": "",

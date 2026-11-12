@@ -1,1 +1,1 @@
-See [factory workflow policy](factory/WORKFLOW_POLICY.md) for factory-specific shared-workflow requirements.
+See [workflow policy](docs/workflow-policy.md) for shared-workflow requirements.

@@ -19,7 +19,7 @@ Use this playbook when:
 ## Steps
 
 1. **Extract architectural drivers and legacy freeze markers.**
-   Read all target product specs (`docs/spec-*.md` or spec issues), any `docs/brainstorm-<slug>.md` map, existing repository conventions (`AGENTS.md`, `GLOSSARY.md`, `docs/adr/`), and any `[LEGACY - FREEZE]` markers or rules recorded in `.factory/codebase-rules.json` by `/animus-harness`. Identify:
+   Read all target product specs (`docs/spec-*.md` or spec issues), any `docs/brainstorm-<slug>.md` map, existing repository conventions (`AGENTS.md`, `GLOSSARY.md`, `docs/adr/`), and any `[LEGACY - FREEZE]` markers or rules recorded in `.animus/codebase-rules.json` by `/animus-harness`. Identify:
    - **Delivery & runtime drivers**: public SEO / SSR vs authenticated internal SPA, offline/local-first vs online-only, realtime vs request/response.
    - **Data & state drivers**: relational integrity, concurrency, auditability, and multi-tenancy requirements.
    - **Cross-spec repeating patterns & legacy seams**: scan across settled product specs and legacy paths to identify recurring UI/domain structures that belong in a shared reusable module catalog, along with superseded paths requiring strangler migration.
@@ -38,8 +38,8 @@ Use this playbook when:
    *Completion Criterion*: Every chosen framework and library pattern is verified against official primary-source documentation and cited in an `Active` `docs/research-*.md` or `docs/architecture.md`; archived notes never count as current evidence.
 
 4. **Write `docs/architecture.md` and hand off to `/animus-tickets`.**
-   Write `docs/architecture.md` (and any load-bearing ADRs in `docs/adr/`) using the shape below, including Foundation / Strangler Slice (`S0`) prerequisites. Synchronize module boundary rules into `.factory/codebase-rules.json` (using `mode: "warn"` on legacy paths or target-scoped globs until `S0` completes) and `AGENTS.md`. Present the completed architecture doc and suggest `/animus-tickets` next. Hand off cleanly without automatic invocation.
-   *Completion Criterion*: `docs/architecture.md`, updated `.factory/codebase-rules.json`, and `AGENTS.md` are written and confirmed with the user.
+   Write `docs/architecture.md` (and any load-bearing ADRs in `docs/adr/`) using the shape below, including Foundation / Strangler Slice (`S0`) prerequisites. Synchronize module boundary rules into `.animus/codebase-rules.json` (using `mode: "warn"` on legacy paths or target-scoped globs until `S0` completes) and `AGENTS.md`. Present the completed architecture doc and suggest `/animus-tickets` next. Hand off cleanly without automatic invocation.
+   *Completion Criterion*: `docs/architecture.md`, updated `.animus/codebase-rules.json`, and `AGENTS.md` are written and confirmed with the user.
 
 ## Architecture document shape
 
@@ -67,5 +67,5 @@ Use this playbook when:
 
 ## 4. Foundation Prerequisites for `/animus-tickets`
 - **Foundation Slice (`S0`)**: <Project scaffold, shared UI/CRUD primitives, and core seams that must complete before parallel feature tickets>
-- **Enforced Codebase Rules**: <Rules recorded in `.factory/codebase-rules.json` or `AGENTS.md`>
+- **Enforced Codebase Rules**: <Rules recorded in `.animus/codebase-rules.json` or `AGENTS.md`>
 ```

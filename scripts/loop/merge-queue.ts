@@ -83,12 +83,12 @@ export function assessMergeBatchDeterministic(
 ): MergeQueuePlan {
   const method = options.method ?? "squash";
   const protectedPatterns = options.protectedPaths ?? [
-    "MISSION.md",
-    "FACTORY_RULES.md",
-    "FACTORY.md",
     ".claude/settings.json",
     "harness",
+    ".animus/holdout",
+    ".animus/hooks",
     ".factory/holdout",
+    ".factory/hooks",
   ];
 
   const reasons: string[] = [];
@@ -144,12 +144,12 @@ export async function generateMergePlan(
 ): Promise<{ plan: MergeQueuePlan; prompt: string }> {
   const configPath = join(root, "harness/harness.config.json");
   let protectedPaths = [
-    "MISSION.md",
-    "FACTORY_RULES.md",
-    "FACTORY.md",
     ".claude/settings.json",
     "harness",
+    ".animus/holdout",
+    ".animus/hooks",
     ".factory/holdout",
+    ".factory/hooks",
   ];
 
   if (existsSync(configPath)) {
@@ -205,11 +205,10 @@ export interface EvaluateSubticketAutoMergeParams {
 }
 
 const DEFAULT_PROTECTED_PATHS = [
-  "MISSION.md",
-  "FACTORY_RULES.md",
-  "FACTORY.md",
   ".claude/settings.json",
   "harness",
+  ".animus/holdout",
+  ".animus/hooks",
   ".factory/holdout",
   ".factory/hooks",
 ];
@@ -305,7 +304,7 @@ export function analyzeCriticalDiffImpact(
     (f) =>
       /(?:^|\/|_|-)(?:security|auth|sanitizer|permissions|holdout_fence|loop-guard)(?:\/|_|-|\.|$)/i.test(
         f,
-      ) || f.startsWith(".factory/hooks/"),
+      ) || f.startsWith(".animus/hooks/") || f.startsWith(".factory/hooks/"),
   );
   if (securityFiles.length > 0) {
     categories.add("security_auth_or_trust_boundary");

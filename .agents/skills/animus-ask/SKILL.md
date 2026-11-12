@@ -42,7 +42,7 @@ The canonical path for designing, specifying, executing, and reviewing features 
 6. .agents/skills/pr                  ──► Visual-first PR description with evidence matrix
        │
        ▼
-7. /retro & /animus-learn             ──► Capture verified lessons into .factory/lessons.jsonl
+7. /retro & /animus-learn             ──► Capture verified lessons into .animus/lessons.jsonl
 ```
 
 ### Detailed Lifecycle Steps
@@ -55,7 +55,7 @@ The canonical path for designing, specifying, executing, and reviewing features 
    - **`/animus-spec`**: Authors a cohesive, structured specification document. In GitHub mode, publishes a parent tracking issue labeled `spec` and `ready-for-human`. In local mode, writes `.animus/specs/<slug>/spec.md` with companion issue metadata.
 
 3. **Architecture & Boundary Design**:
-   - **`/animus-architecture`**: Formalizes deep modules with small interfaces. Establishes module seams, adapters, and patterns, writing to `docs/architecture.md` and updating `.factory/codebase-rules.json`.
+   - **`/animus-architecture`**: Formalizes deep modules with small interfaces. Establishes module seams, adapters, and patterns, writing to `docs/architecture.md` and updating `.animus/codebase-rules.json`.
 
 4. **Tracer Bullet Ticket Decomposition**:
    - **`/animus-tickets`**: Splits the specification into thin, independently verifiable tickets. Defines explicit `Depends on:` lines to construct the dependency DAG. Flags admitted work as `ready-for-agent`.
@@ -72,7 +72,7 @@ The canonical path for designing, specifying, executing, and reviewing features 
 
 8. **Post-Lap Memory Synthesis**:
    - **`/retro`**: Retrospective analysis of the session. Focuses on environment improvements and toolchain rules.
-   - **`/animus-learn`**: Synthesizes verified operational lessons from past runs into `.factory/lessons.jsonl` or specialized regression playbooks (such as `policy-verifier-regressions`).
+   - **`/animus-learn`**: Synthesizes verified operational lessons from past runs into `.animus/lessons.jsonl` or specialized regression playbooks (such as `policy-verifier-regressions`).
 
 ---
 
@@ -96,7 +96,7 @@ The canonical path for designing, specifying, executing, and reviewing features 
   - Configures the repository for Animus: selects Issue Tracker Mode (GitHub vs Local `.animus/`), configures triage labels, establishes domain documentation, and scaffolds `AGENTS.md`.
 
 - **Harness Verification & Fences** → **`/animus-harness`**:
-  - Audits harness plumbing, discovers and verifies real `exit 0` baseline checks, installs security hooks, and establishes domain holdouts in `.factory/holdout/`.
+  - Audits harness plumbing, discovers and verifies real `exit 0` baseline checks, installs security hooks, and establishes domain holdouts in `.animus/holdout/`.
 
 ---
 

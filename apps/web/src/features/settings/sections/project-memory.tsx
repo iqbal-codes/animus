@@ -111,7 +111,7 @@ export function ProjectMemorySection() {
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium leading-[1.4] text-foreground">Safe mode</span>
                 <span className="rounded bg-white/5 px-1.5 py-0.5 font-mono text-[11px] text-text-secondary">
-                  .factory/NO_HARNESS_MEMORY
+                  .animus/NO_HARNESS_MEMORY
                 </span>
               </div>
               <span className="text-[13px] leading-[1.45] text-text-secondary">

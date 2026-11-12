@@ -23,11 +23,11 @@
   - Retrospective & post-lap memory synthesis: `/retro`, `/animus-learn`, `.agents/skills/writing-for-agents`, `.agents/skills/skill-creator`
 - **Learned Repo Playbooks** (synthesized via `/animus-learn` from past issue laps):
   - When implementing or repairing governance policy verifiers, read `.agents/skills/policy-verifier-regressions/SKILL.md` and follow it.
-- **Verified Tool Guidance**: Inspect `.factory/tool-guidance.json` for validated CLI recipes (test, lint, format, typecheck, build) that exited code 0.
+- **Verified Tool Guidance**: Inspect `.animus/tool-guidance.json` for validated CLI recipes (test, lint, format, typecheck, build) that exited code 0.
 - **Execution Authority Cutover**: Read `docs/authority-cutover.md` before changing the authority marker, migration 15, legacy launchers, webhook classification or cutover CLI/app surfaces. There is one durable `execution-authority.json` (`legacy|migrating|local`); never add a second marker, engine or workflow database.
-- **Evidence-Backed Lessons**: Inspect `.factory/lessons.jsonl` for repo-specific gotchas matching target files before editing.
+- **Evidence-Backed Lessons**: Inspect `.animus/lessons.jsonl` for repo-specific gotchas matching target files before editing.
 - **Harness Authoring Standard**: Adhere to `docs/agents/harness-authoring-standard.md` when curating lessons or skills.
-- **Harness Safe Mode**: Bypass dynamic harness memory and use base tooling when `.factory/NO_HARNESS_MEMORY` is present.
+- **Harness Safe Mode**: Bypass dynamic harness memory and use base tooling when `.animus/NO_HARNESS_MEMORY` is present.
 
 ## Domain & Workflow Documentation
 

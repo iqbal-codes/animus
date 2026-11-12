@@ -14,11 +14,22 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { extractChangelogNotes } from "./extract-changelog";
 import { generateHomebrewFormula, stageReleaseHomebrewFormula } from "./homebrew-formula";
+import {
+  RELEASE_TARGETS,
+  type ReleaseArch,
+  type ReleasePlatform,
+  type ReleaseTarget,
+  type ReleaseTargetKey,
+  releaseBinaryDir,
+  releaseTargetKey,
+} from "./targets";
+import { assertNativeBinaryForTarget, type DetectedNativeBinary } from "./verify-binary";
 
 export { extractChangelogNotes, generateHomebrewFormula, stageReleaseHomebrewFormula };
+export { RELEASE_TARGETS };
 
 export interface ReleasePackageOptions {
   version: string;
@@ -54,19 +65,28 @@ export interface ChecksumEntry {
   sha256: string;
 }
 
+export interface TargetBinaries {
+  animus?: Buffer | string;
+  factory?: Buffer | string;
+}
+
 export interface CliDistributionPackageOptions {
   version: string;
-  platform: "darwin" | "linux";
-  arch: "arm64" | "x64";
+  platform: ReleasePlatform;
+  arch: ReleaseArch;
   outDir: string;
   gitSha?: string;
   repoRoot?: string;
-  binaryPath?: string;
-  binaryContent?: Buffer | string;
-  binaries?: {
-    animus?: Buffer | string;
-    factory?: Buffer | string;
-  };
+  /**
+   * Root holding one directory per target (`<platform>-<arch>/animus` and
+   * `factory`). Defaults to `<repoRoot>/dist/release`, which is where
+   * `bun run build:cli:release` writes.
+   */
+  binaryDir?: string;
+  /** Explicit per-target binaries, keyed by `<platform>-<arch>`; overrides `binaryDir`. */
+  binariesByTarget?: Partial<Record<ReleaseTargetKey, TargetBinaries>>;
+  /** Defaults to true: refuse to package a member that is not a native executable for its target. */
+  requireNativeBinary?: boolean;
   buildTimestamp?: string;
 }
 
@@ -75,22 +95,21 @@ export interface CliDistributionTarballResult {
   bundlePath: string;
   filename: string;
   version: string;
-  platform: "darwin" | "linux";
-  arch: "arm64" | "x64";
+  platform: ReleasePlatform;
+  arch: ReleaseArch;
   sha256: string;
   executables: string[];
+  /** Header parsed out of the packaged `animus` member; null when content verification is disabled. */
+  binary: DetectedNativeBinary | null;
 }
 
 export interface PackageAllCliDistributionTarballsOptions {
   version: string;
   outDir: string;
   repoRoot?: string;
-  binaryPath?: string;
-  binaryContent?: Buffer | string;
-  binaries?: {
-    animus?: Buffer | string;
-    factory?: Buffer | string;
-  };
+  binaryDir?: string;
+  binariesByTarget?: Partial<Record<ReleaseTargetKey, TargetBinaries>>;
+  requireNativeBinary?: boolean;
   buildTimestamp?: string;
 }
 
@@ -100,13 +119,6 @@ export interface ReleaseChecksumsResult {
   entries: ChecksumEntry[];
   checksums: Record<string, string>;
 }
-
-export const RELEASE_TARGETS = [
-  { platform: "darwin" as const, arch: "arm64" as const },
-  { platform: "darwin" as const, arch: "x64" as const },
-  { platform: "linux" as const, arch: "x64" as const },
-  { platform: "linux" as const, arch: "arm64" as const },
-] as const;
 
 export async function packageReleaseBundle(
   opts: ReleasePackageOptions,
@@ -287,6 +299,47 @@ export async function packageAllReleaseBundles(opts: {
   return { bundles, checksums };
 }
 
+const ARCHIVE_HEADER_BYTES = 4096;
+
+/**
+ * Reads the first bytes of one tarball member without extracting it: `head`
+ * closes the pipe once it has enough, so inspecting a ~100 MB binary costs one
+ * page of I/O and one page of memory.
+ */
+function readArchiveMemberHeader(tarballPath: string, member: string): Buffer {
+  const res = spawnSync(
+    "sh",
+    ["-c", `tar -xOf "$1" "$2" | head -c ${ARCHIVE_HEADER_BYTES}`, "sh", tarballPath, member],
+    { maxBuffer: ARCHIVE_HEADER_BYTES * 2 },
+  );
+  if (res.error) {
+    throw new Error(`Failed to read ${member} from ${tarballPath}: ${res.error.message}`);
+  }
+  return Buffer.isBuffer(res.stdout) ? res.stdout : Buffer.alloc(0);
+}
+
+/**
+ * Proves what actually shipped, not what was staged: parses the executable
+ * headers back out of the archive and fails when a member is missing, is not a
+ * native executable, or was built for a different platform/arch.
+ */
+export function verifyDistributionTarball(
+  tarballPath: string,
+  target: ReleaseTarget,
+  executables: string[] = ["animus", "factory"],
+): Record<string, DetectedNativeBinary> {
+  const verified: Record<string, DetectedNativeBinary> = {};
+  const archiveName = basename(tarballPath);
+  for (const name of executables) {
+    const header = readArchiveMemberHeader(tarballPath, name);
+    if (header.length === 0) {
+      throw new Error(`${archiveName} does not contain a readable ${name} member`);
+    }
+    verified[name] = assertNativeBinaryForTarget(header, target, `${archiveName}:${name}`);
+  }
+  return verified;
+}
+
 export async function packageCliDistributionTarball(
   opts: CliDistributionPackageOptions,
 ): Promise<CliDistributionTarballResult> {
@@ -302,51 +355,26 @@ export async function packageCliDistributionTarball(
 
   const stageDir = mkdtempSync(join(tmpdir(), `animus-dist-${platform}-${arch}-`));
   const executables = ["animus", "factory"];
+  const target: ReleaseTarget = { platform, arch };
+  const targetKey = releaseTargetKey(target);
 
   try {
     const resolveBinaryData = (binName: string): Buffer => {
-      if (opts.binaries && opts.binaries[binName as keyof typeof opts.binaries]) {
-        const val = opts.binaries[binName as keyof typeof opts.binaries]!;
-        return Buffer.isBuffer(val) ? val : Buffer.from(val);
+      const override = opts.binariesByTarget?.[targetKey]?.[binName as keyof TargetBinaries];
+      if (override !== undefined) {
+        return Buffer.isBuffer(override) ? override : Buffer.from(override);
       }
 
-      if (opts.binaryContent) {
-        return Buffer.isBuffer(opts.binaryContent)
-          ? opts.binaryContent
-          : Buffer.from(opts.binaryContent);
+      const candidate = opts.binaryDir
+        ? join(resolve(opts.binaryDir), targetKey, binName)
+        : join(releaseBinaryDir(repoRoot, target), binName);
+      if (existsSync(candidate)) {
+        return readFileSync(candidate);
       }
 
-      if (opts.binaryPath) {
-        const directPath = resolve(opts.binaryPath);
-        if (existsSync(directPath)) {
-          if (statSync(directPath).isDirectory()) {
-            const nested = join(directPath, binName);
-            if (existsSync(nested)) return readFileSync(nested);
-          } else {
-            const sibling = join(dirname(directPath), binName);
-            if (existsSync(sibling)) return readFileSync(sibling);
-            return readFileSync(directPath);
-          }
-        }
-      }
-
-      const candidateBin = join(repoRoot, "dist/bin", binName);
-      if (existsSync(candidateBin)) {
-        return readFileSync(candidateBin);
-      }
-      const candidateMainBin = join(repoRoot, "dist/bin/animus");
-      if (existsSync(candidateMainBin)) {
-        return readFileSync(candidateMainBin);
-      }
-
-      const candidateCliJs = join(repoRoot, "dist/cli.js");
-      if (existsSync(candidateCliJs)) {
-        return readFileSync(candidateCliJs);
-      }
-
-      return Buffer.from(
-        ["#!/usr/bin/env bun", `console.log("animus v${version}");`, ""].join("\n"),
-        "utf-8",
+      throw new Error(
+        `Missing ${targetKey} ${binName} binary at ${candidate}. ` +
+          "Every release target needs its own compiled binary: run `bun run build:cli:release` first.",
       );
     };
 
@@ -382,6 +410,11 @@ export async function packageCliDistributionTarball(
     const archiveBytes = readFileSync(tarballPath);
     const sha256 = createHash("sha256").update(archiveBytes).digest("hex");
 
+    const binary =
+      opts.requireNativeBinary === false
+        ? null
+        : verifyDistributionTarball(tarballPath, target, executables).animus;
+
     return {
       tarballPath,
       bundlePath: tarballPath,
@@ -391,6 +424,7 @@ export async function packageCliDistributionTarball(
       arch,
       sha256,
       executables,
+      binary,
     };
   } finally {
     try {
@@ -437,9 +471,9 @@ export async function packageAllCliDistributionTarballs(
       arch: t.arch,
       outDir: opts.outDir,
       repoRoot: opts.repoRoot,
-      binaryPath: opts.binaryPath,
-      binaryContent: opts.binaryContent,
-      binaries: opts.binaries,
+      binaryDir: opts.binaryDir,
+      binariesByTarget: opts.binariesByTarget,
+      requireNativeBinary: opts.requireNativeBinary,
       buildTimestamp: opts.buildTimestamp,
     });
     tarballs.push(tarball);
@@ -477,8 +511,11 @@ if (isMain) {
     outDir,
   });
   for (const t of tarballs) {
+    const shipped = t.binary
+      ? `${t.binary.format}/${t.binary.archs.join("+")} verified`
+      : "content verification skipped";
     console.log(
-      `Packaged CLI tarball ${t.platform}-${t.arch}: ${t.tarballPath} (${t.sha256.slice(0, 12)}...)`,
+      `Packaged CLI tarball ${t.platform}-${t.arch}: ${t.tarballPath} (${t.sha256.slice(0, 12)}..., ${shipped})`,
     );
   }
 

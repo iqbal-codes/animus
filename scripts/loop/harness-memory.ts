@@ -62,7 +62,10 @@ function baselineText(root: string, ref: string, path: string): string | undefin
 }
 
 export function isHarnessSafeMode(root: string): boolean {
-  return existsSync(join(root, ".factory/NO_HARNESS_MEMORY"));
+  return (
+    existsSync(join(root, ".animus/NO_HARNESS_MEMORY")) ||
+    existsSync(join(root, ".factory/NO_HARNESS_MEMORY"))
+  );
 }
 
 export function resolveAllowedSkills(root: string, role: LoopRole, acceptedRef?: string): string[] {
@@ -213,22 +216,32 @@ function baselineDirectoryMatches(root: string, ref: string, path: string): bool
 export function resolveLoopExtensions(root: string, acceptedRef?: string): string[] {
   if (isHarnessSafeMode(root)) return [];
   const ref = resolveAcceptedMemoryRef(root, acceptedRef);
-  if (!ref || baselineText(root, ref, ".factory/hooks/loop-guard.ts") === undefined) return [];
+  if (!ref) return [];
+
+  const hookRel = baselineText(root, ref, ".animus/hooks/loop-guard.ts") !== undefined
+    ? ".animus/hooks/loop-guard.ts"
+    : baselineText(root, ref, ".factory/hooks/loop-guard.ts") !== undefined
+      ? ".factory/hooks/loop-guard.ts"
+      : undefined;
+  if (!hookRel) return [];
+
+  const hookDirRel = hookRel.startsWith(".animus/") ? ".animus/hooks" : ".factory/hooks";
+
   // Hooks can import repository code: refuse a mismatching checkout rather than copy executable files.
   // Check untracked and modified files, but do not consider standard ignored files (e.g. node_modules, build caches).
   const status = gitRead(root, "status", "--porcelain", "--untracked-files=all") ?? "";
   if (!baselineTrackedFilesMatch(root, ref)
     || gitRead(root, "diff", "--no-ext-diff", "--no-textconv", ref, "--") !== ""
     || status !== ""
-    || !baselineDirectoryMatches(root, ref, ".factory/hooks")) return [];
-  return [join(root, ".factory/hooks/loop-guard.ts")];
+    || !baselineDirectoryMatches(root, ref, hookDirRel)) return [];
+  return [join(root, hookRel)];
 }
 
 export function loadActiveLessons(root: string, acceptedRef?: string): LessonEntry[] {
   if (isHarnessSafeMode(root)) return [];
   const ref = resolveAcceptedMemoryRef(root, acceptedRef);
   if (!ref) return [];
-  const raw = baselineText(root, ref, ".factory/lessons.jsonl");
+  const raw = baselineText(root, ref, ".animus/lessons.jsonl") ?? baselineText(root, ref, ".factory/lessons.jsonl");
   if (raw === undefined) return [];
 
   const lessons: LessonEntry[] = [];

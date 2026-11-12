@@ -15,7 +15,7 @@ durable persistence, and private engine-host coordination on Bun/Vite+.
 
 ## Installation
 
-Install `animus` (and its CLI symlinks `factory` and `animus`) across three zero-server distribution channels:
+Install `animus` (and its CLI symlinks `factory` and `animus`) across three zero-server distribution channels, then onboard the machine once:
 
 ### 1. POSIX Shell Installer (macOS & Linux)
 
@@ -40,6 +40,17 @@ Install deterministic prebuilt binaries via the Homebrew formula:
 ```sh
 brew install iqbal-codes/tap/animus
 ```
+
+Then onboard the machine and start the services:
+
+```sh
+animus onboard   # prerequisites, harness detection, GitHub auth, ~/.animus/config.yaml
+animus start     # backend + engine-host + web console
+```
+
+`animus onboard` is a hard prerequisite for `animus setup`: per-repository setup refuses to run
+against an un-onboarded machine rather than inventing machine-wide defaults. Services are started
+explicitly; nothing installs a boot-time daemon.
 
 ## Run an issue through the local loop
 

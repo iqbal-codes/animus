@@ -32,17 +32,10 @@ import {
   type HarnessAuditReport,
   type ScaffoldHarnessResult,
 } from "./harness-scaffold";
-
-export interface DetectedHarnessProvider {
-  id: SupportedProvider;
-  displayName: string;
-  binaryName: string;
-  installed: boolean;
-  binaryPath: string | null;
-  version: string | null;
-  status: "active" | "coming_soon";
-  supportedEfforts: readonly EffortRung[];
-}
+import { detectAvailableHarnesses, type DetectedHarnessProvider } from "./harness-detection";
+import { requireMachineConfig } from "@animus/contracts/machine-config";
+import { writeRepoConfig, type RepoConfigFile } from "@animus/contracts/repo-config";
+import { parseWorkWindow } from "../work-window";
 
 export interface DetectedRepoCommands {
   projectType:
@@ -72,8 +65,7 @@ export interface HarnessConfigFile {
 export interface SetupConfigSummary {
   repoRoot: string;
   detectedHarnesses: DetectedHarnessProvider[];
-  animusConfigPath: string;
-  scheduleConfigPath: string;
+  configPath: string;
   harnessConfigPath: string;
   toolGuidancePath: string;
   animusConfig: AnimusConfig;
@@ -118,45 +110,6 @@ export const DEFAULT_PROVIDER_MODELS: Record<
   },
 };
 
-export function detectAvailableHarnesses(): DetectedHarnessProvider[] {
-  const results: DetectedHarnessProvider[] = [];
-
-  for (const id of SUPPORTED_PROVIDERS) {
-    const desc = PROVIDER_DESCRIPTORS[id];
-    const whichRes = spawnSync("which", [desc.binaryName], {
-      encoding: "utf-8",
-      timeout: 3000,
-    });
-    const installed = whichRes.status === 0 && Boolean((whichRes.stdout || "").trim());
-    const binaryPath = installed ? (whichRes.stdout || "").trim() : null;
-
-    let version: string | null = null;
-    if (installed) {
-      try {
-        const verRes = spawnSync(desc.binaryName, ["--version"], {
-          encoding: "utf-8",
-          timeout: 3000,
-        });
-        const firstLine = ((verRes.stdout || verRes.stderr || "").split("\n")[0] || "").trim();
-        if (firstLine) version = firstLine.slice(0, 80);
-      } catch {}
-    }
-
-    results.push({
-      id,
-      displayName: desc.displayName,
-      binaryName: desc.binaryName,
-      installed,
-      binaryPath,
-      version,
-      status: desc.status,
-      supportedEfforts: desc.supportedEfforts,
-    });
-  }
-
-  return results;
-}
-
 export function detectRepoCheckCommands(repoRoot: string): DetectedRepoCommands {
   const existingHarnessPath = join(repoRoot, "harness/harness.config.json");
   if (existsSync(existingHarnessPath)) {
@@ -171,8 +124,7 @@ export function detectRepoCheckCommands(repoRoot: string): DetectedRepoCommands 
           unitTest: existing.unit,
           unitCountPattern: existing.unit_count_pattern ?? "Tests\\s+(\\d+)\\s+passed",
           protectedPaths:
-            existing.protected_paths ??
-            "MISSION.md,FACTORY.md,FACTORY_RULES.md,harness/**,.claude/settings.json,.ignore",
+            existing.protected_paths ?? "harness/**,.animus/**,.claude/settings.json,.ignore",
         };
       }
     } catch {}
@@ -215,8 +167,7 @@ export function detectRepoCheckCommands(repoRoot: string): DetectedRepoCommands 
         staticCheck,
         unitTest,
         unitCountPattern: "Tests\\s+(\\d+)\\s+passed|(\\d+)\\s+pass",
-        protectedPaths:
-          "MISSION.md,FACTORY.md,FACTORY_RULES.md,harness/**,.claude/settings.json,.ignore",
+        protectedPaths: "harness/**,.animus/**,.claude/settings.json,.ignore",
       };
     } catch {}
   }
@@ -227,7 +178,7 @@ export function detectRepoCheckCommands(repoRoot: string): DetectedRepoCommands 
       staticCheck: "cargo check",
       unitTest: "cargo test",
       unitCountPattern: "(\\d+)\\s+passed",
-      protectedPaths: "MISSION.md,FACTORY.md,FACTORY_RULES.md,harness/**",
+      protectedPaths: "harness/**,.animus/**",
     };
   }
 
@@ -237,7 +188,7 @@ export function detectRepoCheckCommands(repoRoot: string): DetectedRepoCommands 
       staticCheck: "go vet ./...",
       unitTest: "go test ./...",
       unitCountPattern: "ok\\s+",
-      protectedPaths: "MISSION.md,FACTORY.md,FACTORY_RULES.md,harness/**",
+      protectedPaths: "harness/**,.animus/**",
     };
   }
 
@@ -247,7 +198,7 @@ export function detectRepoCheckCommands(repoRoot: string): DetectedRepoCommands 
       staticCheck: "flutter analyze",
       unitTest: "flutter test",
       unitCountPattern: "All tests passed|\\+(\\d+)",
-      protectedPaths: "MISSION.md,FACTORY.md,FACTORY_RULES.md,harness/**",
+      protectedPaths: "harness/**,.animus/**",
     };
   }
 
@@ -263,7 +214,7 @@ export function detectRepoCheckCommands(repoRoot: string): DetectedRepoCommands 
       staticCheck: isGradle ? "./gradlew check -x test" : "mvn test-compile",
       unitTest: isGradle ? "./gradlew test" : "mvn test",
       unitCountPattern: "BUILD SUCCESSFUL|Tests run:\\s*(\\d+)",
-      protectedPaths: "MISSION.md,FACTORY.md,FACTORY_RULES.md,harness/**",
+      protectedPaths: "harness/**,.animus/**",
     };
   }
 
@@ -276,7 +227,7 @@ export function detectRepoCheckCommands(repoRoot: string): DetectedRepoCommands 
       staticCheck: "python3 -m compileall .",
       unitTest: "pytest",
       unitCountPattern: "(\\d+)\\s+passed",
-      protectedPaths: "MISSION.md,FACTORY.md,FACTORY_RULES.md,harness/**",
+      protectedPaths: "harness/**,.animus/**",
     };
   }
 
@@ -285,7 +236,7 @@ export function detectRepoCheckCommands(repoRoot: string): DetectedRepoCommands 
     staticCheck: "true",
     unitTest: "true",
     unitCountPattern: "",
-    protectedPaths: "MISSION.md,FACTORY.md,FACTORY_RULES.md,harness/**",
+    protectedPaths: "harness/**,.animus/**",
   };
 }
 
@@ -398,6 +349,10 @@ export async function applyRepositorySetup(
   })) {
     if (value !== undefined) positiveInteger(value, name);
   }
+  // Machine onboarding is a hard prerequisite. Per-repository setup must never
+  // invent machine-wide defaults or enroll a project the factory cannot run.
+  const machine = requireMachineConfig();
+
   const repoRoot = resolve(opts.repoRoot);
   verifyGitHubRepositoryPreflight(repoRoot);
   const detectedHarnesses = (interaction.detectHarnesses ?? detectAvailableHarnesses)();
@@ -449,15 +404,17 @@ export async function applyRepositorySetup(
     effort: "high",
   };
 
-  let maxLaps = opts.maxLaps ?? existingSchedule.max_laps ?? 3;
-  let parallel = opts.parallel ?? existingSchedule.parallel ?? 1;
-  let intervalSeconds = opts.intervalSeconds ?? existingSchedule.interval_seconds ?? 300;
+  let maxLaps = opts.maxLaps ?? existingSchedule.max_laps ?? machine.automation.maxLaps;
+  let parallel = opts.parallel ?? existingSchedule.parallel ?? machine.automation.parallelJobs;
+  let intervalSeconds =
+    opts.intervalSeconds ?? existingSchedule.interval_seconds ?? machine.automation.pollInterval;
   let baseBranch = opts.baseBranch ?? detectBaseBranch(repoRoot);
   let staticCheck = opts.staticCmd ?? detectedCommands.staticCheck;
   let unitTest = opts.unitCmd ?? detectedCommands.unitTest;
-  let workWindowEnabled = existingSchedule.work_window?.enabled ?? false;
-  let workWindowStart = existingSchedule.work_window?.start_time ?? "20:00";
-  let workWindowEnd = existingSchedule.work_window?.end_time ?? "05:00";
+  let workWindowEnabled =
+    existingSchedule.work_window?.enabled ?? machine.automation.limitWorkWindow;
+  let workWindowStart = existingSchedule.work_window?.start_time ?? machine.automation.startTime;
+  let workWindowEnd = existingSchedule.work_window?.end_time ?? machine.automation.endTime;
   let workWindowTz =
     opts.timezone ??
     existingSchedule.work_window?.timezone ??
@@ -465,8 +422,7 @@ export async function applyRepositorySetup(
     "Asia/Jakarta";
 
   let agentsMdAction: "keep" | "overwrite" =
-    opts.agentsMdAction ??
-    (!harnessAudit.agentsMd.exists ? "overwrite" : "keep");
+    opts.agentsMdAction ?? (!harnessAudit.agentsMd.exists ? "overwrite" : "keep");
 
   if (opts.provider && isSupportedProvider(opts.provider)) {
     selectedProvider = opts.provider;
@@ -497,15 +453,13 @@ export async function applyRepositorySetup(
   }
 
   if (opts.workWindow !== undefined) {
-    if (opts.workWindow === "off" || opts.workWindow === "false" || opts.workWindow === "none") {
-      workWindowEnabled = false;
-    } else {
-      const match = /^(\d{2}:\d{2})-(\d{2}:\d{2})$/.exec(opts.workWindow.trim());
-      if (!match || !match.slice(1).every((time) => /^([01]\d|2[0-3]):[0-5]\d$/.test(time!)))
-        throw new Error("Work window must be HH:MM-HH:MM with valid 24-hour times, or off.");
+    const window = parseWorkWindow(opts.workWindow);
+    if (window) {
       workWindowEnabled = true;
-      workWindowStart = match[1]!;
-      workWindowEnd = match[2]!;
+      workWindowStart = window.start;
+      workWindowEnd = window.end;
+    } else {
+      workWindowEnabled = false;
     }
   }
 
@@ -643,20 +597,7 @@ Target: ${repoRoot}`);
       smallBinding = bindings.small;
       mediumBinding = bindings.medium;
       largeBinding = bindings.large;
-      const askInteger = async (message: string, initial: number): Promise<number> => {
-        for (;;) {
-          const answer = await ask(message, String(initial));
-          const value = Number(answer);
-          if (/^\d+$/.test(answer) && Number.isSafeInteger(value) && value > 0) return value;
-          prompts.note(`${message} must be a positive safe integer. Try again.`);
-        }
-      };
-      maxLaps = await askInteger("Max laps per issue", maxLaps);
-      parallel = await askInteger("Max parallel autonomous laps", parallel);
-      intervalSeconds = await askInteger("Scheduler polling interval (seconds)", intervalSeconds);
       baseBranch = await ask("Default base branch", baseBranch);
-      staticCheck = await ask("Static check command", staticCheck);
-      unitTest = await ask("Unit test command", unitTest);
     } finally {
       prompts.close();
     }
@@ -675,7 +616,7 @@ Target: ${repoRoot}`);
       throw new Error("Tier harness must be selected.");
   }
 
-  // Scaffold Harness Structure (AGENTS.md, CLAUDE.md, .agents/skills, .factory/hooks, HOLDOUT.md, etc.)
+  // Scaffold Harness Structure (AGENTS.md, CLAUDE.md, .agents/skills, .animus/hooks, HOLDOUT.md, etc.)
   const scaffoldResult = scaffoldRepositoryHarness({
     targetRepoRoot: repoRoot,
     detectedCommands: {
@@ -724,9 +665,7 @@ Target: ${repoRoot}`);
       baseBranch,
     },
   };
-  const animusConfigPath = writeAnimusConfig(repoRoot, animusConfig);
-
-  // Persist 2: .factory/schedule.json
+  // The loop policy lives in the same layer file as the model bindings.
   const scheduleConfig: ScheduleConfig = {
     workflow: existingSchedule.workflow || "animus-loop",
     parallel,
@@ -740,9 +679,15 @@ Target: ${repoRoot}`);
       timezone: workWindowTz,
     },
   };
-  const scheduleConfigPath = join(repoRoot, ".factory/schedule.json");
-  mkdirSync(join(repoRoot, ".factory"), { recursive: true });
-  writeFileSync(scheduleConfigPath, JSON.stringify(scheduleConfig, null, 2) + "\n", "utf-8");
+  const configPath = writeRepoConfig(repoRoot, {
+    ...(existingAnimus as RepoConfigFile),
+    assistant: selectedProvider,
+    assistants: animusConfig.assistants,
+    tiers: animusConfig.tiers as RepoConfigFile["tiers"],
+    aliases: animusConfig.aliases as RepoConfigFile["aliases"],
+    worktree: { ...(existingAnimus.worktree ?? {}), baseBranch },
+    schedule: scheduleConfig,
+  });
 
   // Persist 3: harness/harness.config.json
   const harnessConfig: HarnessConfigFile = {
@@ -767,13 +712,20 @@ Target: ${repoRoot}`);
   }
   writeFileSync(harnessConfigPath, JSON.stringify(harnessConfig, null, 2) + "\n", "utf-8");
 
-  // Persist 4: .factory/tool-guidance.json
-  const toolGuidancePath = join(repoRoot, ".factory/tool-guidance.json");
+  // Persist 4: .animus/tool-guidance.json
+  const toolGuidancePath = join(repoRoot, ".animus/tool-guidance.json");
   let existingTools: Record<string, string> = {};
   if (existsSync(toolGuidancePath)) {
     try {
       existingTools = JSON.parse(readFileSync(toolGuidancePath, "utf-8"));
     } catch {}
+  } else {
+    const legacyGuidance = join(repoRoot, ".factory/tool-guidance.json");
+    if (existsSync(legacyGuidance)) {
+      try {
+        existingTools = JSON.parse(readFileSync(legacyGuidance, "utf-8"));
+      } catch {}
+    }
   }
   const updatedTools: Record<string, string> = {
     ...(unitTest && unitTest !== "true" ? { test: existingTools.test ?? unitTest } : {}),
@@ -791,8 +743,7 @@ Target: ${repoRoot}`);
   return {
     repoRoot,
     detectedHarnesses,
-    animusConfigPath,
-    scheduleConfigPath,
+    configPath,
     harnessConfigPath,
     toolGuidancePath,
     animusConfig,
@@ -865,8 +816,7 @@ export async function runSetupCommand(
     console.log(`  Static Check:     ${summary.harnessConfig.static}`);
     console.log(`  Unit Test:        ${summary.harnessConfig.unit}`);
     console.log("\nWritten / Verified Files:");
-    console.log(`  - ${summary.animusConfigPath}`);
-    console.log(`  - ${summary.scheduleConfigPath}`);
+    console.log(`  - ${summary.configPath}`);
     console.log(`  - ${summary.harnessConfigPath}`);
     console.log(`  - ${summary.toolGuidancePath}`);
     for (const p of summary.scaffoldResult.createdOrUpdatedPaths) {
@@ -974,7 +924,9 @@ export async function runConfigCliCommand(opts: {
       console.log(
         `  AGENTS.md:         ${harnessAudit.agentsMd.status.toUpperCase()} (lines: ${harnessAudit.agentsMd.lineCount})`,
       );
-      console.log(`  Skills Installed:  ${harnessAudit.skillsInstalled.length}/${CANONICAL_SKILL_NAMES.length}`);
+      console.log(
+        `  Skills Installed:  ${harnessAudit.skillsInstalled.length}/${CANONICAL_SKILL_NAMES.length}`,
+      );
 
       console.log("\nModel Tiers (.animus/config.yaml):");
       console.log(`  Default Assistant: ${animusConfig.assistant ?? "pi"}`);
@@ -992,7 +944,7 @@ export async function runConfigCliCommand(opts: {
         }
       }
 
-      console.log("\nLoop & Laps (.factory/schedule.json):");
+      console.log("\nLoop & Laps (.animus/config.yaml → schedule):");
       console.log(`  Workflow:          ${scheduleConfig.workflow}`);
       console.log(`  Max Laps / Issue:  ${scheduleConfig.max_laps}`);
       console.log(`  Parallel Laps:     ${scheduleConfig.parallel}`);
@@ -1155,7 +1107,9 @@ export async function runConfigCliCommand(opts: {
       const domainKey = opts.positionals[2];
       const guidanceText = opts.positionals.slice(3).join(" ").trim();
       const { persistCodebaseRulesUpdates } = await import("../../loop/reflector");
-      const rulesPath = join(repoRoot, ".factory/codebase-rules.json");
+      const animusRules = join(repoRoot, ".animus/codebase-rules.json");
+      const factoryRules = join(repoRoot, ".factory/codebase-rules.json");
+      const rulesPath = existsSync(animusRules) ? animusRules : factoryRules;
 
       if (!domainKey) {
         const current = existsSync(rulesPath)
@@ -1165,7 +1119,7 @@ export async function runConfigCliCommand(opts: {
         if (opts.json) {
           console.log(JSON.stringify(reg, null, 2));
         } else {
-          console.log("Registered Shared Patterns & Modules (.factory/codebase-rules.json):");
+          console.log("Registered Shared Patterns & Modules (.animus/codebase-rules.json):");
           for (const [k, v] of Object.entries(reg)) {
             console.log(`  - [${k}] ${typeof v === "string" ? v : JSON.stringify(v)}`);
           }
@@ -1191,7 +1145,9 @@ export async function runConfigCliCommand(opts: {
       // Usage: animus config rule <id> --glob "<glob>" --forbid "<regex>" --hint "<hint>" [--mode warn|block]
       const ruleId = opts.positionals[2];
       const { persistCodebaseRulesUpdates } = await import("../../loop/reflector");
-      const rulesPath = join(repoRoot, ".factory/codebase-rules.json");
+      const animusRules = join(repoRoot, ".animus/codebase-rules.json");
+      const factoryRules = join(repoRoot, ".factory/codebase-rules.json");
+      const rulesPath = existsSync(animusRules) ? animusRules : factoryRules;
 
       if (!ruleId) {
         const current = existsSync(rulesPath)

@@ -1315,7 +1315,7 @@ async function triageSingleIssue(
         return {
           issueNumber,
           status: "held",
-          reason: `Safety guard extension hook (.factory/hooks/loop-guard.ts) could not be verified for provider '${provider}'.`,
+          reason: `Safety guard extension hook (.animus/hooks/loop-guard.ts) could not be verified for provider '${provider}'.`,
         };
       }
     } else if (provider === "claude") {

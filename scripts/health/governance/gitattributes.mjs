@@ -96,6 +96,7 @@ export function validateGitAttributes(repoRoot, readRequiredFile, violations) {
           entry.name === "node_modules" ||
           entry.name === ".git" ||
           entry.name === "dist" ||
+          entry.name === ".animus" ||
           entry.name === ".factory" ||
           entry.name === "coverage" ||
           entry.name === ".cache" ||
@@ -292,6 +293,7 @@ export function validateGitAttributes(repoRoot, readRequiredFile, violations) {
           entry.name === "node_modules" ||
           entry.name === ".git" ||
           entry.name === "dist" ||
+          entry.name === ".animus" ||
           entry.name === ".factory" ||
           entry.name === "coverage" ||
           entry.name === ".cache" ||

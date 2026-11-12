@@ -279,8 +279,8 @@ describe("CLI animus intake triage", () => {
   });
 
   test("honors filesystem STOP and PAUSE brakes", async () => {
-    mkdirSync(join(checkout, ".factory"), { recursive: true });
-    writeFileSync(join(checkout, ".factory/STOP"), "stop");
+    mkdirSync(join(checkout, ".animus"), { recursive: true });
+    writeFileSync(join(checkout, ".animus/STOP"), "stop");
 
     const logs: string[] = [];
     const origLog = console.log;
@@ -303,8 +303,8 @@ describe("CLI animus intake triage", () => {
       console.log = origLog;
     }
 
-    rmSync(join(checkout, ".factory/STOP"));
-    writeFileSync(join(checkout, ".factory/PAUSE"), "pause");
+    rmSync(join(checkout, ".animus/STOP"));
+    writeFileSync(join(checkout, ".animus/PAUSE"), "pause");
 
     logs.length = 0;
     console.log = (...args: unknown[]) => logs.push(args.join(" "));
@@ -327,9 +327,9 @@ describe("CLI animus intake triage", () => {
   });
 
   test("honors work window in schedule.json", async () => {
-    mkdirSync(join(checkout, ".factory"), { recursive: true });
+    mkdirSync(join(checkout, ".animus"), { recursive: true });
     writeFileSync(
-      join(checkout, ".factory/schedule.json"),
+      join(checkout, ".animus/schedule.json"),
       JSON.stringify({
         work_window: { enabled: true, start_time: "00:00", end_time: "00:00", timezone: "UTC" },
       }),
@@ -404,9 +404,9 @@ describe("CLI animus intake triage", () => {
     console.log = (...args: unknown[]) => logs.push(args.join(" "));
 
     try {
-      // When executed via runCli on a repo with .factory/STOP, returns exit code 1
-      mkdirSync(join(checkout, ".factory"), { recursive: true });
-      writeFileSync(join(checkout, ".factory/STOP"), "stop");
+      // When executed via runCli on a repo with .animus/STOP, returns exit code 1
+      mkdirSync(join(checkout, ".animus"), { recursive: true });
+      writeFileSync(join(checkout, ".animus/STOP"), "stop");
 
       const exitCode = await runCli([
         "intake",
@@ -454,8 +454,8 @@ describe("CLI animus intake triage", () => {
   });
 
   test("malformed schedule.json fails closed and reports error", async () => {
-    mkdirSync(join(checkout, ".factory"), { recursive: true });
-    writeFileSync(join(checkout, ".factory/schedule.json"), "invalid json {");
+    mkdirSync(join(checkout, ".animus"), { recursive: true });
+    writeFileSync(join(checkout, ".animus/schedule.json"), "invalid json {");
 
     const logs: string[] = [];
     const origLog = console.log;
@@ -481,9 +481,9 @@ describe("CLI animus intake triage", () => {
   });
 
   test("invalid work window timezone fails closed and reports error", async () => {
-    mkdirSync(join(checkout, ".factory"), { recursive: true });
+    mkdirSync(join(checkout, ".animus"), { recursive: true });
     writeFileSync(
-      join(checkout, ".factory/schedule.json"),
+      join(checkout, ".animus/schedule.json"),
       JSON.stringify({
         work_window: {
           enabled: true,
@@ -536,8 +536,8 @@ describe("CLI animus intake triage", () => {
     execFileSync("git", ["-C", checkout, "worktree", "add", "-b", "feature", worktreeDir]);
 
     // Place STOP brake in primary checkout only
-    mkdirSync(join(checkout, ".factory"), { recursive: true });
-    writeFileSync(join(checkout, ".factory/STOP"), "stop in primary");
+    mkdirSync(join(checkout, ".animus"), { recursive: true });
+    writeFileSync(join(checkout, ".animus/STOP"), "stop in primary");
 
     const logs: string[] = [];
     const origLog = console.log;

@@ -76,6 +76,7 @@ test("reflection proposes evidence-backed memory without activating root or cand
   const result = await runPostIssueReflection(f.options);
   expect(result.status).toBe("proposed");
   expect(result.proposalPath).toBeDefined();
+  expect(existsSync(join(f.root, ".animus/lessons.jsonl"))).toBe(false);
   expect(existsSync(join(f.root, ".factory/lessons.jsonl"))).toBe(false);
   expect(result.persistedLessons).toEqual([]);
 });

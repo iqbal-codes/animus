@@ -52,6 +52,7 @@ describe("repository onboarding factory registration", () => {
     const output = JSON.parse(vi.mocked(console.log).mock.calls[0]![0] as string);
     expect(output.registration.project.id).toBe("proj_example");
     expect(output.registration.status).toBe("registered");
+    expect(existsSync(join(repoRoot, ".animus/state/console.db"))).toBe(false);
     expect(existsSync(join(repoRoot, ".factory/state/console.db"))).toBe(false);
   });
 

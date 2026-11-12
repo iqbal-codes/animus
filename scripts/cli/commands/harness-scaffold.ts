@@ -46,8 +46,6 @@ export interface HarnessAuditReport {
     codebaseRulesJson: boolean;
     holdoutMd: boolean;
     ignoreFile: boolean;
-    factoryMd: boolean;
-    factoryRulesMd: boolean;
     harnessCiRunner: boolean;
   };
 }
@@ -69,8 +67,8 @@ export interface ScaffoldHarnessResult {
 
 const REQUIRED_SKILL_POINTERS = [
   { key: ".agents/skills/", label: "Repository skills directory (.agents/skills/)" },
-  { key: ".factory/tool-guidance.json", label: "Verified tool guidance (.factory/tool-guidance.json)" },
-  { key: ".factory/lessons.jsonl", label: "Evidence-backed lessons (.factory/lessons.jsonl)" },
+  { key: "tool-guidance.json", label: "Verified tool guidance (.animus/tool-guidance.json)" },
+  { key: "lessons.jsonl", label: "Evidence-backed lessons (.animus/lessons.jsonl)" },
   { key: "tdd", label: "TDD / Red-Green execution rule (.agents/skills/tdd)" },
 ];
 
@@ -123,6 +121,8 @@ export function auditAgentsMd(repoRoot: string): AgentsMdAudit {
 
 export const CANONICAL_SKILL_CATALOG = [
   ["animus-triage", "Repository-grounded issue triage and executable-brief playbook."],
+  ["animus-ask", "Repository skill router and interactive assistance playbook."],
+  ["animus-setup", "Repository setup, onboarding, and environment readiness playbook."],
   ["tdd", "Test-driven development red-green-refactor playbook."],
   ["diagnosing-bugs", "Systematic root-cause bug diagnosis playbook."],
   ["unstick", "Two-strike failure recovery and premise probing playbook."],
@@ -138,6 +138,9 @@ export const CANONICAL_SKILL_CATALOG = [
   ["animus-spec", "Synthesize agreed discussion into a software factory specification."],
   ["animus-architecture", "Derive tech stack, module topology, and reusable components from product specs."],
   ["animus-tickets", "Split an agreed spec into vertical tickets with parser-readable dependencies."],
+  ["pr", "Autonomous and operator pull request authoring and evidence contract playbook."],
+  ["retro", "Autonomous retrospective and post-lap reflection synthesis playbook."],
+  ["policy-verifier-regressions", "Learned repository policy verifier regression playbook."],
   ["security-hardening", "Harden software against vulnerabilities, validate trust boundaries, enforce least privilege, and prevent OWASP Top 10 defects."],
   ["writing-for-agents", "Authoring concise, positive imperative agent instructions."],
   ["skill-creator", "Creating structured procedural skills with completion criteria."],
@@ -200,20 +203,30 @@ export function auditRepositoryHarness(repoRoot: string): HarnessAuditReport {
     learnedSkills,
     claudeSkillsSymlink,
     hooksInstalled: {
-      loopGuard: existsSync(join(root, ".factory/hooks/loop-guard.ts")),
-      holdoutFence: existsSync(join(root, ".factory/hooks/holdout_fence.py")),
+      loopGuard:
+        existsSync(join(root, ".animus/hooks/loop-guard.ts")) ||
+        existsSync(join(root, ".factory/hooks/loop-guard.ts")),
+      holdoutFence:
+        existsSync(join(root, ".animus/hooks/holdout_fence.py")) ||
+        existsSync(join(root, ".factory/hooks/holdout_fence.py")),
       claudeSettings: existsSync(join(root, ".claude/settings.json")),
       piSettings: existsSync(join(root, ".pi/settings.json")),
       ompSettings: existsSync(join(root, ".omp/settings.json")),
     },
     governanceFiles: {
-      lessonsJsonl: existsSync(join(root, ".factory/lessons.jsonl")),
-      toolGuidanceJson: existsSync(join(root, ".factory/tool-guidance.json")),
-      codebaseRulesJson: existsSync(join(root, ".factory/codebase-rules.json")),
-      holdoutMd: existsSync(join(root, ".factory/holdout/HOLDOUT.md")),
+      lessonsJsonl:
+        existsSync(join(root, ".animus/lessons.jsonl")) ||
+        existsSync(join(root, ".factory/lessons.jsonl")),
+      toolGuidanceJson:
+        existsSync(join(root, ".animus/tool-guidance.json")) ||
+        existsSync(join(root, ".factory/tool-guidance.json")),
+      codebaseRulesJson:
+        existsSync(join(root, ".animus/codebase-rules.json")) ||
+        existsSync(join(root, ".factory/codebase-rules.json")),
+      holdoutMd:
+        existsSync(join(root, ".animus/holdout/HOLDOUT.md")) ||
+        existsSync(join(root, ".factory/holdout/HOLDOUT.md")),
       ignoreFile: existsSync(join(root, ".ignore")),
-      factoryMd: existsSync(join(root, "FACTORY.md")),
-      factoryRulesMd: existsSync(join(root, "FACTORY_RULES.md")),
       harnessCiRunner: existsSync(join(root, "harness/ci.ts")),
     },
   };
@@ -225,7 +238,13 @@ export function generateCanonicalAgentsMd(
 ): string {
   const projectName = basename(resolve(repoRoot)) || "Repository";
   const sourceRoot = resolveFactorySourceRoot();
-  const templatePath = sourceRoot ? join(sourceRoot, "factory/templates/AGENTS.template.md") : null;
+  const templatePath = sourceRoot
+    ? existsSync(join(sourceRoot, "templates/AGENTS.template.md"))
+      ? join(sourceRoot, "templates/AGENTS.template.md")
+      : existsSync(join(sourceRoot, "factory/templates/AGENTS.template.md"))
+        ? join(sourceRoot, "factory/templates/AGENTS.template.md")
+        : null
+    : null;
 
   if (templatePath && existsSync(templatePath)) {
     const rawTemplate = readFileSync(templatePath, "utf-8");
@@ -250,14 +269,14 @@ export function generateCanonicalAgentsMd(
     "",
     "- **Canonical Configuration**: \`AGENTS.md\` and \`.agents/skills/\` are authoritative sources of truth (\`CLAUDE.md -> AGENTS.md\`, \`.claude/skills -> ../.agents/skills\`).",
     "- **Stage & Workflow Boundary**: Stage playbooks in \`.agents/skills/\` are strictly user- or engine-invoked (\`disable-model-invocation: true\`). Never self-invoke, chain, or combine stage playbooks unless explicitly requested for the current turn.",
-    "- **Verified Tool Guidance**: Inspect \`.factory/tool-guidance.json\` for validated CLI recipes (\`static\`: \`" +
+    "- **Verified Tool Guidance**: Inspect \`.animus/tool-guidance.json\` for validated CLI recipes (\`static\`: \`" +
       commands.staticCheck +
       "\`, \`unit\`: \`" +
       commands.unitTest +
       "\`).",
-    "- **Evidence-Backed Lessons**: Inspect \`.factory/lessons.jsonl\` for repository-specific gotchas matching target files before editing.",
+    "- **Evidence-Backed Lessons**: Inspect \`.animus/lessons.jsonl\` for repository-specific gotchas matching target files before editing.",
     "- **Harness Authoring Standard**: Adhere to \`docs/agents/harness-authoring-standard.md\` when curating lessons, rules, or skills.",
-    "- **Harness Safe Mode**: Bypass dynamic harness memory and use base tooling when \`.factory/NO_HARNESS_MEMORY\` is present.",
+    "- **Harness Safe Mode**: Bypass dynamic harness memory and use base tooling when \`.animus/NO_HARNESS_MEMORY\` is present.",
     "",
     "## Domain & Workflow Documentation",
     "",
@@ -269,7 +288,7 @@ export function generateCanonicalAgentsMd(
     "## Execution Rules",
     "",
     "- **Red -> Green Loop**: Write failing tests first at public seams using \`.agents/skills/tdd/SKILL.md\`, then implement minimal passing code.",
-    "- **Protected Governance Paths**: Keep \`MISSION.md\`, \`FACTORY.md\`, \`FACTORY_RULES.md\`, \`harness/**\`, \`.factory/holdout/**\`, and \`.factory/hooks/**\` untouched during delivery laps.",
+    "- **Protected Governance Paths**: Keep \`harness/**\`, \`.animus/holdout/**\`, and \`.animus/hooks/**\` untouched during delivery laps.",
     "- **Clean Cutover**: Migrate all callers when modifying contracts; keep one canonical implementation without dead shims.",
   ];
 
@@ -278,29 +297,65 @@ export function generateCanonicalAgentsMd(
 
 function defaultLoopGuardTs(): string {
   return `/**
- * Pi Extension Hook (-e .factory/hooks/loop-guard.ts)
+ * Pi Extension Hook (-e .animus/hooks/loop-guard.ts)
  * Enforces protected path invariants and appends verified CLI guidance on tool failures.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 
 const DEFAULT_PROTECTED_PATTERNS = [
+  /^\\.animus\\/holdout(\\/|$)/,
+  /^\\.animus\\/hooks(\\/|$)/,
   /^\\.factory\\/holdout(\\/|$)/,
   /^\\.factory\\/hooks(\\/|$)/,
-  /^\\.claude\\/settings\\.json$/,
+  /^\\.claude\\/settings(?:\\.local)?\\.json$/,
+  /^\\.ignore$/,
   /^harness(\\/|$)/,
-  /^MISSION\\.md$/,
-  /^FACTORY\\.md$/,
-  /^FACTORY_RULES\\.md$/,
 ];
 
-function isProtectedPath(relPath: string): boolean {
-  const normalized = relPath.replace(/\\\\/g, "/").replace(/^\\.\\//, "");
-  return DEFAULT_PROTECTED_PATTERNS.some((rx) => rx.test(normalized));
+function globMatchesPath(globPattern: string, targetPath: string): boolean {
+  const normPath = targetPath.replace(/\\\\/g, "/").replace(/^\\.\\//, "");
+  try {
+    const rxStr =
+      "^" +
+      globPattern
+        .replace(/[.+^$\${}()|[\\]\\\\]/g, "\\\\$&")
+        .replace(/\\*\\*/g, ".*")
+        .replace(/(?<!\\.)\\*/g, "[^/]*") +
+      "$";
+    if (new RegExp(rxStr, "i").test(normPath)) return true;
+  } catch {}
+  const cleanToken = globPattern.replace(/\\*+/g, "").toLowerCase();
+  return cleanToken.length >= 3 && normPath.toLowerCase().includes(cleanToken);
+}
+
+function isProtectedPath(targetPath: string, cwd: string = process.cwd()): boolean {
+  if (!targetPath || typeof targetPath !== "string") return false;
+  const rawClean = targetPath.trim().replace(/^["']|["']$/g, "");
+  const norm = isAbsolute(rawClean) ? relative(cwd, rawClean) : rawClean;
+  const normalized = norm.replace(/\\\\/g, "/").replace(/^\\.\\//, "");
+  if (DEFAULT_PROTECTED_PATTERNS.some((rx) => rx.test(normalized))) return true;
+
+  const configPath = join(cwd, "harness/harness.config.json");
+  if (existsSync(configPath)) {
+    try {
+      const cfg = JSON.parse(readFileSync(configPath, "utf-8"));
+      const rawPaths = cfg?.protected_paths;
+      if (typeof rawPaths === "string" && rawPaths.trim()) {
+        const globs = rawPaths.split(",").map((s: string) => s.trim()).filter(Boolean);
+        for (const g of globs) {
+          if (globMatchesPath(g, normalized)) return true;
+        }
+      }
+    } catch {}
+  }
+  return false;
 }
 
 function loadToolGuidance(cwd: string): Record<string, string> {
-  const p = join(cwd, ".factory/tool-guidance.json");
+  const primaryPath = join(cwd, ".animus/tool-guidance.json");
+  const fallbackPath = join(cwd, ".factory/tool-guidance.json");
+  const p = existsSync(primaryPath) ? primaryPath : fallbackPath;
   if (!existsSync(p)) return {};
   try {
     return JSON.parse(readFileSync(p, "utf-8"));
@@ -313,14 +368,77 @@ export default function registerLoopGuard(api: any) {
   if (!api || typeof api.on !== "function") return;
 
   api.on("tool_call", async (event: any) => {
-    const toolName = String(event?.toolName ?? "");
-    const args = event?.args ?? {};
+    const toolName = String(event?.toolName ?? "").toLowerCase().trim();
+    const args = (event?.input ?? event?.args ?? {}) as Record<string, any>;
 
-    if ((toolName === "write" || toolName === "edit") && typeof args.path === "string") {
-      if (isProtectedPath(args.path)) {
+    if (toolName === "bash" && typeof args.command === "string") {
+      const cmd = args.command;
+      if (
+        /(?:^|[;&|\\n]\\s*)\\bgit\\s+(?:[^;&|\\n]*?\\s+)?(?:commit|push|merge)\\s+[^;&|\\n]*?(?:--no-verify|-n\\b)/i.test(cmd) ||
+        /(?:^|[;&|\\n]\\s*)\\bgit\\s+[^;&|\\n]*?(?:--no-verify|-n\\b)[^;&|\\n]*?\\s+(?:commit|push|merge)\\b/i.test(cmd) ||
+        /\\bgit\\b.*-c\\s+core\\.hooksPath=(?:\\/dev\\/null|""|'')/i.test(cmd)
+      ) {
         return {
           block: true,
-          reason: \`HARNESS GUARD: Modifying protected path '\${args.path}' inside a delivery lap is forbidden.\`,
+          reason:
+            "HARNESS GUARD: Bypassing git hooks with --no-verify, -n, or overriding core.hooksPath is strictly prohibited. All commits must pass deterministic pre-commit CI gates.",
+        };
+      }
+
+      const hasMutation =
+        /(?:>|>>|\\btee\\b|\\b(?:sed|perl)\\s+-[a-zA-Z]*i|\\b(?:rm|mv|cp|chmod|truncate|ln|install)\\b|\\bgit\\s+(?:checkout|restore|rm|mv|reset|stash)\\b)/i.test(
+          cmd,
+        );
+      if (hasMutation) {
+        const protectedTokens = [
+          ".animus/holdout",
+          ".animus/hooks",
+          ".factory/holdout",
+          ".factory/hooks",
+          ".claude/settings",
+          "harness/",
+          ".ignore",
+        ];
+        for (const tok of protectedTokens) {
+          if (cmd.includes(tok)) {
+            return {
+              block: true,
+              reason: \`HARNESS GUARD: Modifying protected path '\${tok}' via shell command is forbidden.\`,
+            };
+          }
+        }
+      }
+    }
+
+    const isWriteTool =
+      toolName === "write" ||
+      toolName === "edit" ||
+      toolName === "write_file" ||
+      toolName === "edit_file" ||
+      toolName === "multiedit" ||
+      toolName === "strreplace" ||
+      toolName === "str_replace_editor";
+
+    const targetPath =
+      typeof args.path === "string"
+        ? args.path
+        : typeof args.Path === "string"
+          ? args.Path
+          : typeof args.file_path === "string"
+            ? args.file_path
+            : typeof args.filePath === "string"
+              ? args.filePath
+              : typeof args.target_file === "string"
+                ? args.target_file
+                : typeof args.file === "string"
+                  ? args.file
+                  : null;
+
+    if (isWriteTool && targetPath) {
+      if (isProtectedPath(targetPath, process.cwd())) {
+        return {
+          block: true,
+          reason: \`HARNESS GUARD: Modifying protected path '\${targetPath}' inside a delivery lap is forbidden.\`,
         };
       }
     }
@@ -491,7 +609,7 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
     createdOrUpdatedPaths.push(agentsPath);
   } else if (desiredAction === "overwrite") {
     const existingText = readFileSync(agentsPath, "utf-8");
-    agentsMdBackupPath = join(targetRoot, ".factory/AGENTS.md.bak");
+    agentsMdBackupPath = join(targetRoot, ".animus/AGENTS.md.bak");
     mkdirSync(dirname(agentsMdBackupPath), { recursive: true });
     writeFileSync(agentsMdBackupPath, existingText, "utf-8");
 
@@ -520,7 +638,11 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
   if (sourceRoot && resolve(sourceRoot) !== targetRoot) {
     const sourceSkillsDir = join(sourceRoot, ".agents/skills");
     if (existsSync(sourceSkillsDir)) {
-      for (const skillName of CANONICAL_SKILL_NAMES) {
+      const sourceSkillDirs = readdirSync(sourceSkillsDir, { withFileTypes: true })
+        .filter((d) => d.isDirectory() && existsSync(join(sourceSkillsDir, d.name, "SKILL.md")))
+        .map((d) => d.name);
+      const allSkillsToCopy = new Set([...CANONICAL_SKILL_NAMES, ...sourceSkillDirs]);
+      for (const skillName of allSkillsToCopy) {
         const srcSkill = join(sourceSkillsDir, skillName);
         const dstSkill = join(targetSkillsDir, skillName);
         if (existsSync(srcSkill) && !existsSync(dstSkill)) {
@@ -600,7 +722,7 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
                 hooks: [
                   {
                     type: "command",
-                    command: 'python "$CLAUDE_PROJECT_DIR/.factory/hooks/holdout_fence.py" pre',
+                    command: 'python "$CLAUDE_PROJECT_DIR/.animus/hooks/holdout_fence.py" pre',
                   },
                 ],
               },
@@ -611,7 +733,7 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
                 hooks: [
                   {
                     type: "command",
-                    command: 'python "$CLAUDE_PROJECT_DIR/.factory/hooks/holdout_fence.py" post',
+                    command: 'python "$CLAUDE_PROJECT_DIR/.animus/hooks/holdout_fence.py" post',
                   },
                 ],
               },
@@ -634,7 +756,7 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
       piSettingsPath,
       JSON.stringify(
         {
-          extensions: ["./.factory/hooks/loop-guard.ts"],
+          extensions: ["./.animus/hooks/loop-guard.ts"],
         },
         null,
         2,
@@ -651,7 +773,7 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
       ompSettingsPath,
       JSON.stringify(
         {
-          extensions: ["./.factory/hooks/loop-guard.ts"],
+          extensions: ["./.animus/hooks/loop-guard.ts"],
         },
         null,
         2,
@@ -661,11 +783,17 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
     createdOrUpdatedPaths.push(ompSettingsPath);
   }
 
-  // 5. Ensure .factory/hooks/loop-guard.ts & holdout_fence.py
-  const loopGuardPath = join(targetRoot, ".factory/hooks/loop-guard.ts");
+  // 5. Ensure .animus/hooks/loop-guard.ts & holdout_fence.py
+  const loopGuardPath = join(targetRoot, ".animus/hooks/loop-guard.ts");
   if (!existsSync(loopGuardPath)) {
     mkdirSync(dirname(loopGuardPath), { recursive: true });
-    const srcGuard = sourceRoot ? join(sourceRoot, ".factory/hooks/loop-guard.ts") : null;
+    const srcGuard = sourceRoot
+      ? existsSync(join(sourceRoot, ".animus/hooks/loop-guard.ts"))
+        ? join(sourceRoot, ".animus/hooks/loop-guard.ts")
+        : existsSync(join(sourceRoot, ".factory/hooks/loop-guard.ts"))
+          ? join(sourceRoot, ".factory/hooks/loop-guard.ts")
+          : null
+      : null;
     if (srcGuard && existsSync(srcGuard)) {
       cpSync(srcGuard, loopGuardPath);
     } else {
@@ -674,10 +802,16 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
     createdOrUpdatedPaths.push(loopGuardPath);
   }
 
-  const holdoutFencePath = join(targetRoot, ".factory/hooks/holdout_fence.py");
+  const holdoutFencePath = join(targetRoot, ".animus/hooks/holdout_fence.py");
   if (!existsSync(holdoutFencePath)) {
     mkdirSync(dirname(holdoutFencePath), { recursive: true });
-    const srcFence = sourceRoot ? join(sourceRoot, ".factory/hooks/holdout_fence.py") : null;
+    const srcFence = sourceRoot
+      ? existsSync(join(sourceRoot, ".animus/hooks/holdout_fence.py"))
+        ? join(sourceRoot, ".animus/hooks/holdout_fence.py")
+        : existsSync(join(sourceRoot, ".factory/hooks/holdout_fence.py"))
+          ? join(sourceRoot, ".factory/hooks/holdout_fence.py")
+          : null
+      : null;
     if (srcFence && existsSync(srcFence)) {
       cpSync(srcFence, holdoutFencePath);
     } else {
@@ -690,15 +824,15 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
     createdOrUpdatedPaths.push(holdoutFencePath);
   }
 
-  // 6. Ensure .factory/lessons.jsonl, .factory/codebase-rules.json, .factory/holdout/HOLDOUT.md, .ignore
-  const lessonsPath = join(targetRoot, ".factory/lessons.jsonl");
+  // 6. Ensure .animus/lessons.jsonl, .animus/codebase-rules.json, .animus/holdout/HOLDOUT.md, .ignore
+  const lessonsPath = join(targetRoot, ".animus/lessons.jsonl");
   if (!existsSync(lessonsPath)) {
     mkdirSync(dirname(lessonsPath), { recursive: true });
     writeFileSync(lessonsPath, "", "utf-8");
     createdOrUpdatedPaths.push(lessonsPath);
   }
 
-  const codebaseRulesPath = join(targetRoot, ".factory/codebase-rules.json");
+  const codebaseRulesPath = join(targetRoot, ".animus/codebase-rules.json");
   if (!existsSync(codebaseRulesPath)) {
     mkdirSync(dirname(codebaseRulesPath), { recursive: true });
     writeFileSync(
@@ -717,7 +851,7 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
     createdOrUpdatedPaths.push(codebaseRulesPath);
   }
 
-  const holdoutMdPath = join(targetRoot, ".factory/holdout/HOLDOUT.md");
+  const holdoutMdPath = join(targetRoot, ".animus/holdout/HOLDOUT.md");
   if (!existsSync(holdoutMdPath)) {
     mkdirSync(dirname(holdoutMdPath), { recursive: true });
     writeFileSync(holdoutMdPath, defaultHoldoutMd(), "utf-8");
@@ -726,50 +860,17 @@ export function scaffoldRepositoryHarness(opts: ScaffoldHarnessOptions): Scaffol
 
   const ignorePath = join(targetRoot, ".ignore");
   if (!existsSync(ignorePath)) {
-    writeFileSync(ignorePath, ".factory/holdout/\n", "utf-8");
+    writeFileSync(ignorePath, ".animus/holdout/\n", "utf-8");
     createdOrUpdatedPaths.push(ignorePath);
   } else {
     const igContent = readFileSync(ignorePath, "utf-8");
-    if (!igContent.includes(".factory/holdout")) {
-      writeFileSync(ignorePath, igContent.trimEnd() + "\n.factory/holdout/\n", "utf-8");
+    if (!igContent.includes(".animus/holdout")) {
+      writeFileSync(ignorePath, igContent.trimEnd() + "\n.animus/holdout/\n", "utf-8");
       createdOrUpdatedPaths.push(ignorePath);
     }
   }
 
-  // 7. Ensure FACTORY.md, FACTORY_RULES.md, and harness/ci.ts
-  const factoryMdPath = join(targetRoot, "FACTORY.md");
-  if (!existsSync(factoryMdPath)) {
-    writeFileSync(
-      factoryMdPath,
-      [
-        "# Factory Operations",
-        "",
-        "Managed by Animus CLI (`animus`).",
-        "- Holdout scenarios: `.factory/holdout/HOLDOUT.md`",
-        "- Ordinary checks: `bun harness/ci.ts`",
-        "",
-      ].join("\n"),
-      "utf-8",
-    );
-    createdOrUpdatedPaths.push(factoryMdPath);
-  }
-
-  const factoryRulesPath = join(targetRoot, "FACTORY_RULES.md");
-  if (!existsSync(factoryRulesPath)) {
-    writeFileSync(
-      factoryRulesPath,
-      [
-        "# Project Workflow Guidance",
-        "",
-        "Preserve scope, tests, security invariants, and secrets.",
-        "Irreversible actions (auth changes, destructive migrations) require human approval.",
-        "",
-      ].join("\n"),
-      "utf-8",
-    );
-    createdOrUpdatedPaths.push(factoryRulesPath);
-  }
-
+  // 7. Ensure harness/ci.ts
   const isNodeOrBun =
     opts.detectedCommands.projectType === "typescript-bun" ||
     opts.detectedCommands.projectType === "node";

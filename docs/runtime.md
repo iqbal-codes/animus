@@ -222,7 +222,7 @@ target, lists delivered ticket numbers, reports candidate-freeze state, and desc
 an open promotion PR. `POST /api/v1/promotion/prepare` refuses with 409
 `no_unpromoted_commits` or `promotion_pr_already_open`, compiles the delivered-work
 summary, creates the promotion PR, and activates candidate freeze through
-`.factory/PAUSE`.
+`.animus/PAUSE`.
 
 ### Engine discovery and diagnostics
 

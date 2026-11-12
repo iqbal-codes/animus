@@ -7,18 +7,19 @@ import { parseCliArgs } from "../../scripts/cli/args";
 import { renderHelp } from "../../scripts/cli/help";
 import { runCli, formatVersionOutput } from "../../scripts/cli/cli";
 import { runServeCommand } from "../../scripts/cli/commands/serve";
-import {
-  detectAvailableHarnesses,
-  detectRepoCheckCommands,
-} from "../../scripts/cli/commands/setup";
+import { detectAvailableHarnesses } from "../../scripts/cli/commands/harness-detection";
+import { detectRepoCheckCommands } from "../../scripts/cli/commands/setup";
 import { readAnimusConfig } from "../../scripts/loop/config";
 import { loadScheduleConfig } from "../../scripts/loop/scheduler";
 import { FactoryLauncher } from "../../apps/launcher/src/launcher";
+import { installOnboardedAnimusHome, type OnboardedHomeFixture } from "./machine-home-fixture";
 
 describe("Animus Unified CLI & Repository Setup Onboarding", () => {
   let tempDir: string;
+  let machineHome: OnboardedHomeFixture;
 
   beforeEach(() => {
+    machineHome = installOnboardedAnimusHome();
     tempDir = join(
       tmpdir(),
       `factory-cli-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -36,6 +37,7 @@ describe("Animus Unified CLI & Repository Setup Onboarding", () => {
   });
 
   afterEach(() => {
+    machineHome?.restore();
     try {
       rmSync(tempDir, { recursive: true, force: true });
     } catch {}
@@ -57,6 +59,25 @@ describe("Animus Unified CLI & Repository Setup Onboarding", () => {
     expect(parsed.values.provider).toBe("claude");
     expect(parsed.values["max-laps"]).toBe("5");
     expect(parsed.values.parallel).toBe("2");
+  });
+
+  test("exposes machine onboarding and service commands as first-class CLI surface", () => {
+    const onboard = parseCliArgs(["onboard", "--yes", "--reconfigure", "--accept-unverified-auth"]);
+    expect(onboard.command).toBe("onboard");
+    expect(onboard.values.yes).toBe(true);
+    expect(onboard.values.reconfigure).toBe(true);
+    expect(onboard.values["accept-unverified-auth"]).toBe(true);
+
+    expect(parseCliArgs(["start", "--port", "3010"]).values.port).toBe("3010");
+    expect(parseCliArgs(["stop"]).command).toBe("stop");
+
+    const globalHelp = renderHelp();
+    expect(globalHelp).toContain("onboard [--yes] [--accept-unverified-auth] [--reconfigure]");
+    expect(globalHelp).toContain("start [--foreground] [--port <port>] [--web-dir <path>]");
+    expect(globalHelp).toContain("stop");
+    expect(renderHelp("onboard")).toContain("--accept-unverified-auth");
+    expect(renderHelp("start")).toContain("--web-dir <path>");
+    expect(renderHelp("setup")).toContain("--local-only");
   });
 
   test("renders global and command-scoped help tables cleanly", () => {
@@ -156,7 +177,7 @@ describe("Animus Unified CLI & Repository Setup Onboarding", () => {
     expect(animusCfg.tiers?.large?.model).toBe("default");
     expect(animusCfg.worktree?.baseBranch).toBe("develop");
 
-    // Verify .factory/schedule.json was created with max_laps=4, parallel=2, interval=120
+    // Verify .animus/schedule.json was created with max_laps=4, parallel=2, interval=120
     const schedCfg = loadScheduleConfig(tempDir);
     expect(schedCfg.max_laps).toBe(4);
     expect(schedCfg.parallel).toBe(2);
@@ -176,9 +197,9 @@ describe("Animus Unified CLI & Repository Setup Onboarding", () => {
     expect(existsSync(join(tempDir, ".pi/settings.json"))).toBe(true);
     expect(existsSync(join(tempDir, ".omp/settings.json"))).toBe(true);
     const piSettings = JSON.parse(readFileSync(join(tempDir, ".pi/settings.json"), "utf-8"));
-    expect(piSettings.extensions).toContain("./.factory/hooks/loop-guard.ts");
+    expect(piSettings.extensions).toContain("./.animus/hooks/loop-guard.ts");
     const ompSettings = JSON.parse(readFileSync(join(tempDir, ".omp/settings.json"), "utf-8"));
-    expect(ompSettings.extensions).toContain("./.factory/hooks/loop-guard.ts");
+    expect(ompSettings.extensions).toContain("./.animus/hooks/loop-guard.ts");
 
     // 2. Reconfigure a specific model tier via 'config tier'
     const tierCode = await runCli([
@@ -268,12 +289,16 @@ describe("Animus Unified CLI & Repository Setup Onboarding", () => {
     expect(existsSync(join(tempDir, "docs/agents/issue-tracker.md"))).toBe(true);
     expect(existsSync(join(tempDir, "docs/agents/domain.md"))).toBe(true);
     expect(existsSync(join(tempDir, "docs/agents/pr-evidence-contract.md"))).toBe(true);
+    expect(existsSync(join(tempDir, ".agents/skills/animus-ask/SKILL.md"))).toBe(true);
+    expect(existsSync(join(tempDir, ".agents/skills/animus-setup/SKILL.md"))).toBe(true);
+    expect(existsSync(join(tempDir, ".agents/skills/pr/SKILL.md"))).toBe(true);
+    expect(existsSync(join(tempDir, ".agents/skills/retro/SKILL.md"))).toBe(true);
     expect(existsSync(join(tempDir, ".claude/skills"))).toBe(true);
     expect(existsSync(join(tempDir, ".claude/settings.json"))).toBe(true);
-    expect(existsSync(join(tempDir, ".factory/hooks/loop-guard.ts"))).toBe(true);
-    expect(existsSync(join(tempDir, ".factory/codebase-rules.json"))).toBe(true);
-    expect(existsSync(join(tempDir, ".factory/hooks/holdout_fence.py"))).toBe(true);
-    expect(existsSync(join(tempDir, ".factory/holdout/HOLDOUT.md"))).toBe(true);
+    expect(existsSync(join(tempDir, ".animus/hooks/loop-guard.ts"))).toBe(true);
+    expect(existsSync(join(tempDir, ".animus/codebase-rules.json"))).toBe(true);
+    expect(existsSync(join(tempDir, ".animus/hooks/holdout_fence.py"))).toBe(true);
+    expect(existsSync(join(tempDir, ".animus/holdout/HOLDOUT.md"))).toBe(true);
     expect(existsSync(join(tempDir, "harness/ci.ts"))).toBe(true);
   }, 30_000);
 
@@ -285,7 +310,7 @@ describe("Animus Unified CLI & Repository Setup Onboarding", () => {
     expect(setupCode).toBe(0);
 
     expect(readFileSync(join(tempDir, "AGENTS.md"), "utf-8")).toBe(existingAgents);
-    expect(existsSync(join(tempDir, ".factory/AGENTS.md.bak"))).toBe(false);
+    expect(existsSync(join(tempDir, ".animus/AGENTS.md.bak"))).toBe(false);
 
     const overwriteCode = await runCli([
       "setup",
@@ -299,7 +324,7 @@ describe("Animus Unified CLI & Repository Setup Onboarding", () => {
     ]);
     expect(overwriteCode).toBe(0);
 
-    const backupPath = join(tempDir, ".factory/AGENTS.md.bak");
+    const backupPath = join(tempDir, ".animus/AGENTS.md.bak");
     expect(existsSync(backupPath)).toBe(true);
     expect(readFileSync(backupPath, "utf-8")).toBe(existingAgents);
     const newAgents = readFileSync(join(tempDir, "AGENTS.md"), "utf-8");

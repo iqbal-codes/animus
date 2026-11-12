@@ -3,7 +3,7 @@
 - **Status:** Active
 - **Last verified:** 2026-11-10
 
-Authoritative schema and formatting constraints for agent-authored repository memory (`.factory/*`) and procedural skills (`.agents/skills/<name>/SKILL.md`). For context-pointer design, information hierarchy, and completion-criteria mechanics, follow `.agents/skills/writing-for-agents/SKILL.md`.
+Authoritative schema and formatting constraints for agent-authored repository memory (`.animus/*`) and procedural skills (`.agents/skills/<name>/SKILL.md`). For context-pointer design, information hierarchy, and completion-criteria mechanics, follow `.agents/skills/writing-for-agents/SKILL.md`.
 
 ## 1. Core Principles & 5-Level Enforcement Hierarchy
 
@@ -18,9 +18,9 @@ Authoritative schema and formatting constraints for agent-authored repository me
   5. **Reviewer Coding Standards (`CODING_STANDARDS.md`)**: Place architectural judgment calls, module-depth expectations, and code-smell rules in `CODING_STANDARDS.md` for the Reviewer, keeping the Builder's context window free of instruction bloat.
   6. **File-Scoped Prose Lesson (`lessons.jsonl`)**: Reserve strictly for file-scoped runtime bug traps that levels 1–4 cannot enforce mechanically.
 
-## 2. Codebase Rules & Pattern Registry Schema (`.factory/codebase-rules.json`)
+## 2. Codebase Rules & Pattern Registry Schema (`.animus/codebase-rules.json`)
 
-`.factory/codebase-rules.json` stores automated static guard rules and the repository's canonical pattern registry:
+`.animus/codebase-rules.json` stores automated static guard rules and the repository's canonical pattern registry:
 
 ```json
 {
@@ -46,9 +46,9 @@ Authoritative schema and formatting constraints for agent-authored repository me
 }
 ```
 
-## 3. Lessons Schema (`.factory/lessons.jsonl`)
+## 3. Lessons Schema (`.animus/lessons.jsonl`)
 
-Each line in `.factory/lessons.jsonl` must be a valid JSON object matching this schema:
+Each line in `.animus/lessons.jsonl` must be a valid JSON object matching this schema:
 
 ```json
 {
@@ -69,7 +69,7 @@ Each line in `.factory/lessons.jsonl` must be a valid JSON object matching this 
 4. `evidence`: Verifiable execution evidence grounded in lap logs or commits (harness-evaluated grounding and quality confidence each at least 0.70).
 5. `vetoed`: Boolean flag indicating whether an operator deprecated the lesson.
 
-## 4. Tool Guidance Schema (`.factory/tool-guidance.json`)
+## 4. Tool Guidance Schema (`.animus/tool-guidance.json`)
 
 Every CLI recipe must be executed and verified to exit with code 0 before recording:
 

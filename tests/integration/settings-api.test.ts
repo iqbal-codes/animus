@@ -1,7 +1,13 @@
 import { describe, expect, test, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  machineConfigPath,
+  platformSettingsSchema,
+  readMachineConfig,
+  writeMachineConfig,
+} from "@animus/contracts/machine-config";
 import { SettingsService } from "../../apps/backend/src/settings/service";
 import {
   handleSettingsRoute,
@@ -46,7 +52,7 @@ describe("Settings Service & Backend Routes", () => {
     expect(onDisk.startupView).toBe("jobs");
   });
 
-  test("Platform settings read default and write persists to config.json", async () => {
+  test("Platform settings read default and write persists to config.yaml", async () => {
     const initial = service.getPlatformSettings();
     expect(initial.system.remoteAccess).toBe(false);
 
@@ -73,12 +79,12 @@ describe("Settings Service & Backend Routes", () => {
     expect(updated.system.remoteAccess).toBe(true);
     expect(updated.automation.parallelJobs).toBe(4);
 
-    const onDisk = JSON.parse(readFileSync(join(testUserDir, "config.json"), "utf-8"));
+    const onDisk = readMachineConfig(testUserDir)!;
     expect(onDisk.system.remoteAccess).toBe(true);
     expect(onDisk.automation.parallelJobs).toBe(4);
   });
 
-  test("Project settings update writes to .animus/config.yaml, .factory/tool-guidance.json, and rules", async () => {
+  test("Project settings update writes to .animus/config.yaml, .animus/tool-guidance.json, and rules", async () => {
     const updated = service.updateProjectSettings({
       models: {
         defaultModel: "claude-3-5-sonnet",
@@ -102,12 +108,16 @@ describe("Settings Service & Backend Routes", () => {
     expect(updated.models.concurrencyLimit).toBe(3);
 
     expect(existsSync(join(testRepoDir, ".animus/config.yaml"))).toBe(true);
-    expect(existsSync(join(testRepoDir, ".factory/tool-guidance.json"))).toBe(true);
-    expect(existsSync(join(testRepoDir, ".factory/codebase-rules.json"))).toBe(true);
+    expect(existsSync(join(testRepoDir, ".animus/tool-guidance.json"))).toBe(true);
+    expect(existsSync(join(testRepoDir, ".animus/codebase-rules.json"))).toBe(true);
 
     const yamlContent = readFileSync(join(testRepoDir, ".animus/config.yaml"), "utf-8");
-    expect(yamlContent).toContain("defaultModel: claude-3-5-sonnet");
+    expect(yamlContent).toContain("claude-3-5-sonnet");
     expect(yamlContent).toContain("concurrencyLimit: 3");
+    // Derived UI projections are computed on read and never persisted.
+    expect(yamlContent).not.toContain("defaultModel:");
+    expect(yamlContent).not.toContain("plannerModel:");
+    expect(yamlContent).not.toContain("reviewerModel:");
   });
 
   test("handleSettingsRoute handles HTTP GET and PUT for personal and platform", async () => {
@@ -162,6 +172,33 @@ describe("Settings Service & Backend Routes", () => {
     expect(scopedRes?.status).toBe(200);
     const scopedData = await scopedRes?.json();
     expect(scopedData.models.concurrencyLimit).toBe(4);
+  });
+
+  test("platform settings updates preserve the onboarding marker and owner-only permissions", () => {
+    const configPath = machineConfigPath(testUserDir);
+    writeMachineConfig(
+      platformSettingsSchema.parse({
+        schemaVersion: 1,
+        system: {
+          onboardedAt: "2026-01-01T00:00:00.000Z",
+          runtimeRoot: "/opt/animus/source",
+          defaultProvider: "pi",
+        },
+        providers: [],
+      }),
+      testUserDir,
+    );
+
+    const updated = service.updatePlatformSettings({ system: { remoteAccess: true } });
+
+    expect(updated.system.onboardedAt).toBe("2026-01-01T00:00:00.000Z");
+    expect(updated.system.runtimeRoot).toBe("/opt/animus/source");
+    expect(updated.schemaVersion).toBe(1);
+
+    const stored = readMachineConfig(testUserDir)!;
+    expect(stored.system.onboardedAt).toBe("2026-01-01T00:00:00.000Z");
+    expect(stored.system.remoteAccess).toBe(true);
+    expect(statSync(configPath).mode & 0o777).toBe(0o600);
   });
 
   test("Harness models dynamic discovery returns real models and supported efforts", async () => {

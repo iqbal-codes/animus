@@ -6,7 +6,7 @@ These standards are enforced during **Code Review** (`loop-review` and `/animus-
 
 - **Deep Modules**: Modules must hide meaningful complexity behind a small, simple public interface. Callers should know *what* the module does without knowing *how* it works internally.
 - **The Deletion Test**: Reject shallow pass-through wrappers, single-caller helper functions, and middle-man abstractions where the interface is nearly as complex as the implementation. If deleting a wrapper and calling the target directly concentrates logic without leaking complexity, flag it as a blocking defect.
-- **Canonical Shared Primitives**: Reuse registered building blocks from `.factory/codebase-rules.json` (`pattern_registry`) instead of creating duplicate parsers, transport wrappers, or UI tables/forms.
+- **Canonical Shared Primitives**: Reuse registered building blocks from `.animus/codebase-rules.json` (`pattern_registry`) instead of creating duplicate parsers, transport wrappers, or UI tables/forms.
 
 ## 2. Test Quality & Behavioral Seams (`tdd`)
 

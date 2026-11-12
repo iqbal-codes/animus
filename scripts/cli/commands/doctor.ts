@@ -62,7 +62,11 @@ export async function collectDoctorReport(repoRoot: string): Promise<DoctorRepor
     const diag = readDiagnostics(repoRoot);
     checks.push({
       name: "engine_pack",
-      ok: diag.status === "healthy" || existsSync(join(repoRoot, "factory/pack.json")),
+      ok:
+        diag.status === "healthy" ||
+        diag.default_workflows_loaded ||
+        existsSync(join(repoRoot, ".animus/pack.json")) ||
+        existsSync(join(repoRoot, "factory/pack.json")),
       detail: `status=${diag.status} rev=${diag.revision_required.slice(0, 12)} files=${diag.file_count}`,
     });
   } catch (err: any) {

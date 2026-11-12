@@ -21,7 +21,7 @@ Use this playbook when:
    Write a direction note of 5 lines or fewer specifying: purpose, target user, primary action, density mode (`persuade` = airy, `operate` = compact tool, `read` = editorial), and the focal point. Define or reuse project tokens in shared styles before writing component markup:
    - **Typography**: Intentional display and body font pairing, consistent 5–7 step type scale, body text >= 16px, and line measure under 80ch.
    - **Color**: One dominant surface color and one high-contrast accent reserved for primary actions; zero scattered raw hex literals in component trees.
-   - **Spatial rhythm**: Strict 4px or 8px spacing scale, consistent border-radius tokens, and shared primitives from `.factory/codebase-rules.json` (`pattern_registry`).
+   - **Spatial rhythm**: Strict 4px or 8px spacing scale, consistent border-radius tokens, and shared primitives from `.animus/codebase-rules.json` (`pattern_registry`).
    - **Positive visual identity**: Replace generic AI template habits (decorative purple-blue gradients, emoji used as functional icons, glassmorphism on every card, centered hero over three identical cards, all-caps eyebrows on every heading, or stock filler copy like "Unlock your potential") with domain-specific copy and clean SVG iconography.
    *Completion Criterion*: Component styles reference semantic tokens and shared UI primitives with zero raw placeholder copy (`lorem ipsum`) or banned template defaults.
 

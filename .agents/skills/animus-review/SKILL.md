@@ -12,7 +12,7 @@ Review candidate code diffs strictly and objectively without editing, auto-fixin
 
 Use this skill when:
 - Conducting an independent code review of a candidate branch, pull request, or staged diff.
-- Evaluating a candidate against `CODING_STANDARDS.md` and `.factory/codebase-rules.json`.
+- Evaluating a candidate against `CODING_STANDARDS.md` and `.animus/codebase-rules.json`.
 - Inspecting external blast-radius safety, module depth, test adequacy, and schema boundaries.
 - Rechecking remediated review findings on a fresh candidate SHA.
 
@@ -31,7 +31,7 @@ The builder/author cannot independently review their own work due to confirmatio
    *Completion Criterion*: Target-base tip, candidate SHA, and changed file list are pinned to immutable references.
 
 2. **Conduct line-by-line code inspection against standards.**
-   Inspect the line-numbered diff line by line against `CODING_STANDARDS.md`, `.factory/codebase-rules.json` (`pattern_registry`), and repository conventions:
+   Inspect the line-numbered diff line by line against `CODING_STANDARDS.md`, `.animus/codebase-rules.json` (`pattern_registry`), and repository conventions:
    - **Module Depth & Deletion Test:** Reject shallow wrappers and pass-through functions that add no value. Enforce deep modules with simple interfaces hiding complex implementations.
    - **External Blast Radius & Callers:** Verify all unmodified callers remain safe. Require Proof Level 4 (tests or executable probe evidence) when shared interfaces, schemas, or lifecycle methods change.
    - **Test Quality:** Reject tautological tests, mock-heavy implementation-coupled checks, and happy-path-only additions missing negative/error cases.

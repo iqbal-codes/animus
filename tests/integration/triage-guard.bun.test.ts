@@ -1,16 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
-  parseYamlSimple,
+  readAnimusConfig,
   resolveEffortForRole,
   resolveModelForRole,
   resolveModelTier,
   resolveProviderForRole,
   resolveRoleConfig,
-  serializeAnimusConfigYaml,
+  writeAnimusConfig,
   type AnimusConfig,
 } from "../../scripts/loop/config";
 import { buildProviderArgv } from "../../scripts/loop/providers";
-import registerLoopGuard from "../../.factory/hooks/loop-guard";
+import registerLoopGuard from "../../.animus/hooks/loop-guard";
 import { evaluateTriageToolCall, isTriageCommandAllowed } from "../../scripts/loop/triage-policy";
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -41,9 +41,7 @@ describe("Triage Role Configuration & Tier Resolution", () => {
     const root = mkdtempSync(join(tmpdir(), "triage-config-test-"));
     tempDirs.push(root);
     if (config) {
-      const cfgDir = join(root, ".animus");
-      mkdirSync(cfgDir, { recursive: true });
-      writeFileSync(join(cfgDir, "config.yaml"), serializeAnimusConfigYaml(config));
+      writeAnimusConfig(root, config);
     }
     return root;
   }
@@ -167,7 +165,7 @@ describe("Triage Role Configuration & Tier Resolution", () => {
     expect(resolveRoleConfig(root, "triage", explicitEnv).effort).toBe("low");
   });
 
-  test("serializeAnimusConfigYaml and parseYamlSimple round-trip roles configuration cleanly", () => {
+  test("writeAnimusConfig and readAnimusConfig round-trip roles configuration cleanly", () => {
     const config: AnimusConfig = {
       assistant: "pi",
       tiers: {
@@ -183,19 +181,17 @@ describe("Triage Role Configuration & Tier Resolution", () => {
       },
     };
 
-    const yaml = serializeAnimusConfigYaml(config);
-    expect(yaml).toContain("roles:");
-    expect(yaml).toContain("  triage:");
-    expect(yaml).toContain("    tier: medium");
-    expect(yaml).toContain("    provider: claude");
-    expect(yaml).toContain("    model: claude-3-5-haiku");
-    expect(yaml).toContain("    effort: low");
+    const root = makeRepo();
+    writeAnimusConfig(root, config);
 
-    const parsed = parseYamlSimple(yaml);
-    expect(parsed.roles?.triage?.tier).toBe("medium");
-    expect(parsed.roles?.triage?.provider).toBe("claude");
-    expect(parsed.roles?.triage?.model).toBe("claude-3-5-haiku");
-    expect(parsed.roles?.triage?.effort).toBe("low");
+    const parsed = readAnimusConfig(root);
+    const triage = parsed.roles?.triage as
+      | { tier?: string; provider?: string; model?: string; effort?: string }
+      | undefined;
+    expect(triage?.tier).toBe("medium");
+    expect(triage?.provider).toBe("claude");
+    expect(triage?.model).toBe("claude-3-5-haiku");
+    expect(triage?.effort).toBe("low");
   });
 });
 
@@ -313,10 +309,10 @@ describe("Triage Read-Only & Command Guard (.factory/hooks/loop-guard.ts)", () =
     });
     test("falls back to read-only tools when the triage policy module is unavailable", async () => {
       const isolatedRoot = mkdtempSync(join(tmpdir(), "triage-guard-fallback-"));
-      const hookDir = join(isolatedRoot, ".factory/hooks");
+      const hookDir = join(isolatedRoot, ".animus/hooks");
       mkdirSync(hookDir, { recursive: true });
       copyFileSync(
-        join(import.meta.dir, "../../.factory/hooks/loop-guard.ts"),
+        join(import.meta.dir, "../../.animus/hooks/loop-guard.ts"),
         join(hookDir, "loop-guard.ts"),
       );
       const isolated = await import(`${join(hookDir, "loop-guard.ts")}?fallback=${Date.now()}`);

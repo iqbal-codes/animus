@@ -14,6 +14,7 @@
   "scripts": {
     "build:cli": "bun scripts/release/build-cli.ts",
     "build:cli:bundle": "bun scripts/release/build-cli.ts --bundle-only",
+    "build:cli:release": "bun scripts/release/build-cli.ts --release-targets",
     "build:web": "vp -C apps/web build",
     "check": "node scripts/health/check-architecture.mjs && bun run format && bun run lint && bun run typecheck",
     "check:architecture": "node scripts/health/check-architecture.mjs",

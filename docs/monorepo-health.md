@@ -23,7 +23,7 @@ bun run toolchain
 
 Root Bun workspaces and the single `bun.lock` own all dependencies. Workspace
 references use `workspace:*`; library exports are TypeScript source, not published
-build artifacts. External Animus remains pinned by `factory/pack.json` and located
+build artifacts. External Animus remains pinned by `.animus/pack.json` and located
 by the existing consumer settings; it is **not** a workspace dependency. Bun 1.4.4
 matches that engine revision's requirement. CLI boot compatibility is not native
 workflow/recovery qualification (#29 and later slices own that evidence).

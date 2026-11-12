@@ -29,7 +29,7 @@ async function createGitRepoFixture(): Promise<string> {
     JSON.stringify({
       static: "echo static-ok",
       unit: "echo unit-ok",
-      protected_paths: ".factory/holdout/**,harness/**",
+      protected_paths: ".animus/holdout/**,harness/**",
     }),
   );
 
@@ -388,7 +388,7 @@ describe("Canonical Animus Loop Orchestrator & Facade Shim", () => {
     const root = await createGitRepoFixture();
     try {
       await Bun.write(
-        join(root, ".factory/schedule.json"),
+        join(root, ".animus/schedule.json"),
         JSON.stringify({ workflow: "animus-loop", max_laps: 1 }),
       );
 

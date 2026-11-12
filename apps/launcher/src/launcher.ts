@@ -1,10 +1,10 @@
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveAnimusStateDir } from "@animus/contracts/paths";
+import { resolveAnimusLogsDir, resolveAnimusStateDir } from "@animus/contracts/paths";
 import { validateBindAddress, ensureSessionSecret } from "./security";
 
 export interface LauncherOptions {
@@ -12,11 +12,13 @@ export interface LauncherOptions {
   port?: number;
   enginePort?: number;
   stateDir?: string;
+  logsDir?: string;
   webDir?: string;
   remoteAccess?: boolean;
   operatorToken?: string;
   sessionSecretPath?: string;
   repoRoot?: string;
+  detached?: boolean;
 }
 
 export interface LauncherStatus {
@@ -110,11 +112,12 @@ function resolveLauncherRepoRoot(provided?: string): string {
 
 export class FactoryLauncher {
   private readonly options: Required<
-    Omit<LauncherOptions, "sessionSecretPath" | "operatorToken" | "webDir">
+    Omit<LauncherOptions, "sessionSecretPath" | "operatorToken" | "webDir" | "logsDir">
   > & {
     sessionSecretPath?: string;
     operatorToken?: string;
     webDir?: string;
+    logsDir?: string;
   };
   private status: LauncherStatus = { state: "stopped" };
   private backendProcess: any = null;
@@ -128,11 +131,13 @@ export class FactoryLauncher {
       port: opts.port ?? 3000,
       enginePort: opts.enginePort ?? 0,
       stateDir: opts.stateDir ?? resolveAnimusStateDir(),
+      logsDir: opts.logsDir ?? resolveAnimusLogsDir(),
       webDir: opts.webDir ?? join(resolvedRepoRoot, "apps/web/dist"),
       remoteAccess: opts.remoteAccess ?? false,
       repoRoot: resolvedRepoRoot,
       sessionSecretPath: opts.sessionSecretPath,
       operatorToken: opts.operatorToken,
+      detached: opts.detached ?? false,
     };
 
     validateBindAddress(this.options.host, this.options.remoteAccess);
@@ -247,6 +252,17 @@ export class FactoryLauncher {
     const effectiveBackendPort =
       this.options.port > 0 ? this.options.port : await allocateLoopbackPort().catch(() => 3000);
 
+    let outFd: number | undefined;
+    let errFd: number | undefined;
+    if (this.options.detached) {
+      const logsDir = this.options.logsDir ?? resolveAnimusLogsDir();
+      try {
+        mkdirSync(logsDir, { recursive: true });
+        outFd = openSync(join(logsDir, "daemon.stdout.log"), "a");
+        errFd = openSync(join(logsDir, "daemon.stderr.log"), "a");
+      } catch {}
+    }
+
     // 1. Start engine-host on loopback
     try {
       this.engineHostProcess = Bun.spawn(
@@ -267,8 +283,10 @@ export class FactoryLauncher {
             FACTORY_HOST_TOKEN: hostToken,
             FACTORY_RUNTIME_STATE: this.options.stateDir,
           },
-          stdout: "pipe",
-          stderr: "pipe",
+          stdin: this.options.detached ? "ignore" : undefined,
+          stdout: outFd !== undefined ? outFd : "pipe",
+          stderr: errFd !== undefined ? errFd : "pipe",
+          detached: Boolean(this.options.detached),
         },
       );
       succeeded.push("engine-host");
@@ -302,14 +320,27 @@ export class FactoryLauncher {
                 ? { FACTORY_OPERATOR_TOKEN: this.options.operatorToken }
                 : {}),
             },
-            stdout: "pipe",
-            stderr: "pipe",
+            stdin: this.options.detached ? "ignore" : undefined,
+            stdout: outFd !== undefined ? outFd : "pipe",
+            stderr: errFd !== undefined ? errFd : "pipe",
+            detached: Boolean(this.options.detached),
           },
         );
         succeeded.push("backend");
       } catch {
         failed.push("backend");
       }
+    }
+
+    if (outFd !== undefined) {
+      try {
+        closeSync(outFd);
+      } catch {}
+    }
+    if (errFd !== undefined) {
+      try {
+        closeSync(errFd);
+      } catch {}
     }
 
     if (failed.length > 0) {
@@ -360,6 +391,15 @@ export class FactoryLauncher {
       backendPid: this.backendProcess?.pid,
       engineHostPid: this.engineHostProcess?.pid,
     };
+
+    if (this.options.detached) {
+      try {
+        this.engineHostProcess?.unref();
+      } catch {}
+      try {
+        this.backendProcess?.unref();
+      } catch {}
+    }
 
     return {
       status: "running",

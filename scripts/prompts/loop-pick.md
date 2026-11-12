@@ -16,7 +16,7 @@ Read current state directly from GitHub:
 - **Open pull requests:** Read open PRs, their CI checks (`gh pr checks <n>`), review comments, and head branches.
 - **Open issues:** Read open issues, labels, and dependencies (`Depends on: #n`).
 - **Active claims:** Look for comments starting with `Loop claim: run <id>` and their stated `Area`. A claim is live until explicitly released or until it exceeds $INPUTS.claim_hours hours. Skip claimed work items and changes that overlap a claimed area.
-- **Project direction:** Review `engineering.md`, `MISSION.md`, and product specifications in `docs/`.
+- **Project direction:** Review `engineering.md` and product specifications in `docs/` or `PRD.md`.
 
 ## 2. Priority Order
 

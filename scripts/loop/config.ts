@@ -1,5 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import {
+  readRepoConfig,
+  writeRepoConfig,
+  type RepoConfigFile,
+} from "../../packages/contracts/src/repo-config";
 import type { LoopRole, ModelTier } from "./types";
 import { type EffortRung, isEffortRung } from "./providers";
 
@@ -22,153 +25,23 @@ export interface AnimusConfig {
   tiers?: Partial<Record<ModelTier, TierBinding>>;
   aliases?: Record<string, TierBinding>;
   roles?: Partial<Record<LoopRole, RoleBinding | ModelTier>>;
-  worktree?: { baseBranch?: string };
+  worktree?: { baseBranch?: string; strategy?: string };
   loop?: { resumeBuilderSession?: boolean | string };
+  concurrencyLimit?: number;
+  releases?: Record<string, unknown>;
 }
 
-export function parseYamlSimple(text: string): Record<string, any> {
-  const result: Record<string, any> = {};
-  let currentSection: string | null = null;
-  let currentSubSection: string | null = null;
-
-  for (const rawLine of text.split("\n")) {
-    const line = rawLine.trimEnd();
-    if (!line || line.trim().startsWith("#")) continue;
-
-    // Top-level key: value or section:
-    const topMatch = /^['"]?([a-zA-Z0-9_@-]+)['"]?:(?:\s*(.*))?$/.exec(line);
-    if (topMatch && !line.startsWith(" ")) {
-      const [, key, val] = topMatch;
-      const cleanVal = val !== undefined ? val.trim().replace(/^['"]|['"]$/g, "") : undefined;
-      if (cleanVal !== undefined && cleanVal !== "") {
-        result[key!] = cleanVal;
-        currentSection = null;
-      } else {
-        result[key!] = {};
-        currentSection = key!;
-      }
-      currentSubSection = null;
-      continue;
-    }
-
-    // 2-space indented key
-    const subMatch = /^ {2}['"]?([a-zA-Z0-9_@-]+)['"]?:(?:\s*(.*))?$/.exec(line);
-    if (subMatch && currentSection) {
-      const [, key, val] = subMatch;
-      const cleanVal = val !== undefined ? val.trim().replace(/^['"]|['"]$/g, "") : undefined;
-      if (cleanVal !== undefined && cleanVal !== "") {
-        result[currentSection][key!] = cleanVal;
-        currentSubSection = null;
-      } else {
-        result[currentSection][key!] = {};
-        currentSubSection = key!;
-      }
-      continue;
-    }
-
-    // 4-space indented key
-    const subSubMatch = /^ {4}['"]?([a-zA-Z0-9_@-]+)['"]?:\s*(.*)$/.exec(line);
-    if (subSubMatch && currentSection && currentSubSection) {
-      const [, key, val] = subSubMatch;
-      result[currentSection][currentSubSection][key!] = val!.trim().replace(/^['"]|['"]$/g, "");
-    }
-  }
-
-  return result;
-}
-
-export function serializeAnimusConfigYaml(config: AnimusConfig): string {
-  const lines: string[] = ["# Animus Repository Configuration for animus"];
-  if (config.assistant) {
-    lines.push(`assistant: ${config.assistant}`, "");
-  }
-
-  if (config.assistants && Object.keys(config.assistants).length > 0) {
-    lines.push("assistants:");
-    for (const [provider, settings] of Object.entries(config.assistants)) {
-      lines.push(`  ${provider}:`);
-      lines.push(`    model: ${settings.model}`);
-    }
-    lines.push("");
-  }
-
-  if (config.tiers && Object.keys(config.tiers).length > 0) {
-    lines.push("tiers:");
-    for (const tier of ["small", "medium", "large"] as const) {
-      const binding = config.tiers[tier];
-      if (!binding) continue;
-      lines.push(`  ${tier}:`);
-      lines.push(`    provider: ${binding.provider}`);
-      lines.push(`    model: ${binding.model}`);
-      if (binding.effort) {
-        lines.push(`    effort: ${binding.effort}`);
-      }
-    }
-    lines.push("");
-  }
-
-  if (config.aliases && Object.keys(config.aliases).length > 0) {
-    lines.push("aliases:");
-    for (const [alias, binding] of Object.entries(config.aliases)) {
-      const keyStr = alias.startsWith("@") ? `'${alias}'` : alias;
-      lines.push(`  ${keyStr}:`);
-      lines.push(`    provider: ${binding.provider}`);
-      lines.push(`    model: ${binding.model}`);
-      if (binding.effort) {
-        lines.push(`    effort: ${binding.effort}`);
-      }
-    }
-    lines.push("");
-  }
-
-  if (config.roles && Object.keys(config.roles).length > 0) {
-    lines.push("roles:");
-    for (const [role, binding] of Object.entries(config.roles)) {
-      if (!binding) continue;
-      lines.push(`  ${role}:`);
-      if (typeof binding === "string") {
-        lines.push(`    tier: ${binding}`);
-      } else {
-        if (binding.tier) lines.push(`    tier: ${binding.tier}`);
-        if (binding.provider) lines.push(`    provider: ${binding.provider}`);
-        if (binding.model) lines.push(`    model: ${binding.model}`);
-        if (binding.effort) lines.push(`    effort: ${binding.effort}`);
-      }
-    }
-    lines.push("");
-  }
-
-  if (config.worktree?.baseBranch) {
-    lines.push("worktree:");
-    lines.push(`  baseBranch: ${config.worktree.baseBranch}`);
-    lines.push("");
-  }
-
-  if (config.loop?.resumeBuilderSession !== undefined) {
-    lines.push("loop:");
-    lines.push(`  resumeBuilderSession: ${config.loop.resumeBuilderSession}`);
-    lines.push("");
-  }
-
-  return lines.join("\n");
-}
-
+/**
+ * Reads `<repo>/.animus/config.yaml`, migrating a legacy `schedule.json` into
+ * the same file on first read. Unknown keys are preserved for whoever wrote them.
+ */
 export function readAnimusConfig(root: string): AnimusConfig {
-  const configPath = join(root, ".animus/config.yaml");
-  if (!existsSync(configPath)) return {};
-  try {
-    const content = readFileSync(configPath, "utf-8");
-    return parseYamlSimple(content);
-  } catch {
-    return {};
-  }
+  return readRepoConfig(root) as AnimusConfig;
 }
 
+/** Merges `config` into the repository YAML file; keys not mentioned survive. */
 export function writeAnimusConfig(root: string, config: AnimusConfig): string {
-  const configPath = join(root, ".animus/config.yaml");
-  mkdirSync(dirname(configPath), { recursive: true });
-  writeFileSync(configPath, serializeAnimusConfigYaml(config), "utf-8");
-  return configPath;
+  return writeRepoConfig(root, config as RepoConfigFile);
 }
 
 export function resolveModelTier(role: LoopRole, rootOrConfig?: string | AnimusConfig): ModelTier {

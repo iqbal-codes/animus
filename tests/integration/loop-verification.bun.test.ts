@@ -33,7 +33,7 @@ async function createRepoFixture(): Promise<string> {
     JSON.stringify({
       static: "echo static-ok",
       unit: "echo unit-ok",
-      protected_paths: "harness/**,.factory/holdout/**",
+      protected_paths: "harness/**,.animus/holdout/**",
     }),
   );
 
@@ -258,9 +258,9 @@ describe("scripts/loop/verification (migrated to public runAnimusLoop seam)", ()
     await git(root, "push", "-u", "origin", "main");
 
     const { mkdir: mkdirAsync, writeFile } = await import("node:fs/promises");
-    await mkdirAsync(join(root, ".factory"), { recursive: true });
+    await mkdirAsync(join(root, ".animus"), { recursive: true });
     await writeFile(
-      join(root, ".factory/schedule.json"),
+      join(root, ".animus/schedule.json"),
       JSON.stringify({ workflow: "animus-loop", max_laps: 1 }),
     );
 

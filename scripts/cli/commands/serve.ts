@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
+  resolveAnimusLogsDir,
   resolveAnimusStateDir,
   ensureSecureDirectory,
   enforceSecureFilePermissions,
@@ -88,8 +89,10 @@ export interface ServeCommandOptions {
   port?: number;
   enginePort?: number;
   stateDir?: string;
+  logsDir?: string;
   webDir?: string;
   remoteAccess?: boolean;
+  foreground?: boolean;
   json?: boolean;
 }
 
@@ -102,6 +105,8 @@ export async function runServeCommand(
   const host = opts.host ?? "127.0.0.1";
   const port = opts.port ?? 3000;
   const sub = opts.subcommand ?? "start";
+  const logsDir = opts.logsDir ?? resolveAnimusLogsDir();
+  const isForeground = Boolean(opts.foreground);
 
   if (sub === "status") {
     return await runStatusCommand({
@@ -149,18 +154,56 @@ export async function runServeCommand(
     return 1;
   }
 
+  const existingMeta = readRuntimeMetadata(stateDir);
+  if (existingMeta) {
+    const targetBackendUrl = existingMeta.backendUrl ?? `http://${host}:${port}`;
+    const probe = await probeServiceHealth(targetBackendUrl);
+    if (probe.healthy) {
+      if (opts.json) {
+        console.log(
+          JSON.stringify(
+            {
+              ok: true,
+              status: "already_running",
+              backendUrl: existingMeta.backendUrl,
+              engineHostUrl: existingMeta.engineHostUrl,
+              backendPid: existingMeta.backendPid,
+              engineHostPid: existingMeta.engineHostPid,
+            },
+            null,
+            2,
+          ),
+        );
+      } else {
+        console.log(`Animus services are already running:`);
+        console.log(
+          `  Backend:     ${existingMeta.backendUrl}${existingMeta.backendPid ? ` (PID: ${existingMeta.backendPid})` : ""}`,
+        );
+        console.log(
+          `  Engine-Host: ${existingMeta.engineHostUrl}${existingMeta.engineHostPid ? ` (PID: ${existingMeta.engineHostPid})` : ""}`,
+        );
+        console.log(`Use \`animus status\` to inspect or \`animus stop\` to stop.`);
+      }
+      return 0;
+    }
+    clearRuntimeMetadata(stateDir);
+  }
+
   const launcher = launcherFactory({
     host,
     port,
     enginePort: opts.enginePort ?? 0,
     stateDir,
+    logsDir,
     webDir: opts.webDir,
     remoteAccess: opts.remoteAccess ?? false,
     repoRoot: opts.repoRoot,
+    detached: !isForeground,
   });
 
   if (!opts.json) {
-    console.log(`Starting Animus Services (Backend + Engine-Host) on ${host}:${port}...`);
+    const modeDesc = isForeground ? "in foreground" : "in background";
+    console.log(`Starting Animus Services (Backend + Engine-Host) on ${host}:${port} ${modeDesc}...`);
   }
 
   const result = await launcher.start();
@@ -175,7 +218,7 @@ export async function runServeCommand(
 
   const status = launcher.getStatus();
   writeRuntimeMetadata(stateDir, {
-    pid: process.pid,
+    pid: status.backendPid ?? process.pid,
     backendUrl: result.backendUrl ?? `http://${host}:${port}`,
     engineHostUrl: result.engineHostUrl ?? "http://127.0.0.1:0",
     backendPid: status.backendPid,
@@ -189,19 +232,35 @@ export async function runServeCommand(
         {
           ok: true,
           status: "running",
+          detached: !isForeground,
           backendUrl: result.backendUrl,
           engineHostUrl: result.engineHostUrl,
           backendPid: status.backendPid,
           engineHostPid: status.engineHostPid,
+          ...(!isForeground ? { logsDir } : {}),
         },
         null,
         2,
       ),
     );
+  } else if (!isForeground) {
+    console.log(`✓ Animus started in background:`);
+    console.log(`  Backend:     ${result.backendUrl}`);
+    console.log(`  Engine-Host: ${result.engineHostUrl}`);
+    if (opts.webDir) {
+      console.log(`  Console:     ${result.backendUrl}`);
+    }
+    console.log(`  Logs:        ${logsDir}`);
+    console.log(``);
+    console.log(`Run \`animus status\` to inspect or \`animus stop\` to shut down.`);
   } else {
     console.log(`Backend API running at ${result.backendUrl}`);
     console.log(`Engine-Host running on loopback at ${result.engineHostUrl}`);
     console.log("Press Ctrl+C to stop both services gracefully.");
+  }
+
+  if (!isForeground) {
+    return 0;
   }
 
   if (!status.backendPid && !status.engineHostPid) {

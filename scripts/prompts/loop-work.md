@@ -23,7 +23,7 @@ The host process has pre-packed the issue specification, description, and commen
   - Code defects or failed pipeline steps: fix the root cause.
   - Base branch drift: merge the default branch in cleanly.
   - Review or evidence documentation gaps: update the record without touching working code.
-- Read project steering conventions: `engineering.md`, `MISSION.md`, `.factory/codebase-rules.json` (`pattern_registry` & `rules`), and product specs at the root or under `docs/`.
+- Read project steering conventions: `engineering.md`, `.animus/codebase-rules.json` (`pattern_registry` & `rules`), and product specs at the root or under `docs/`.
 - Reuse canonical building blocks across backend services, persistence, CLI, UI, and shared contracts. Propose new registry entries in your handoff; changes to harness standards require separate reviewed delivery rather than automatic registration during implementation.
 - **Verify callers & baseline first:** Locate every caller of a function or contract before changing its behavior, and run the narrowest existing check once before editing to establish a clean baseline. On `continue` laps or post-deadline continuations, treat prior builder handoff notes as unverified hints—verify the live state yourself and inspect `git range-diff` after merging base to confirm no landed fixes are regressed.
 - **Authoritative tooling & native delegation:** Validate file formats, syntax, line endings, and protocols by delegating directly to authoritative platform binaries, compilers, or established ecosystem libraries. Do not re-implement parsers, lexers, or specification engines inline.

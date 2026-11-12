@@ -167,8 +167,8 @@ describe("Canonical ProjectWorkspace Resolution & Unified Preflight (Issue #142)
     });
 
     test("detects filesystem STOP brake in checkout root and blocks preflight", () => {
-      mkdirSync(join(repoDir, ".factory"), { recursive: true });
-      writeFileSync(join(repoDir, ".factory/STOP"), "Halted for maintenance\n");
+      mkdirSync(join(repoDir, ".animus"), { recursive: true });
+      writeFileSync(join(repoDir, ".animus/STOP"), "Halted for maintenance\n");
 
       const preflight = evaluateWorkspacePreflight(repoDir);
       expect(preflight.ok).toBe(false);
@@ -190,8 +190,8 @@ describe("Canonical ProjectWorkspace Resolution & Unified Preflight (Issue #142)
       writeFileSync(join(wtGitDir, "commondir"), "../../\n");
 
       // Place STOP in primary repo root
-      mkdirSync(join(repoDir, ".factory"), { recursive: true });
-      writeFileSync(join(repoDir, ".factory/STOP"), "Primary stop\n");
+      mkdirSync(join(repoDir, ".animus"), { recursive: true });
+      writeFileSync(join(repoDir, ".animus/STOP"), "Primary stop\n");
 
       const preflight = evaluateWorkspacePreflight(wtDir);
       expect(preflight.ok).toBe(false);
@@ -201,8 +201,8 @@ describe("Canonical ProjectWorkspace Resolution & Unified Preflight (Issue #142)
     });
 
     test("detects filesystem PAUSE brake and blocks schedule ticks", () => {
-      mkdirSync(join(repoDir, ".factory"), { recursive: true });
-      writeFileSync(join(repoDir, ".factory/PAUSE"), "Paused\n");
+      mkdirSync(join(repoDir, ".animus"), { recursive: true });
+      writeFileSync(join(repoDir, ".animus/PAUSE"), "Paused\n");
 
       const schedulePreflight = evaluateWorkspacePreflight(repoDir, { mode: "schedule" });
       expect(schedulePreflight.ok).toBe(false);
@@ -320,9 +320,9 @@ describe("Canonical ProjectWorkspace Resolution & Unified Preflight (Issue #142)
       mkdirSync(animusHome, { recursive: true });
       const slug = getProjectSlug(repoDir);
 
-      mkdirSync(join(repoDir, ".factory"), { recursive: true });
+      mkdirSync(join(repoDir, ".animus"), { recursive: true });
       writeFileSync(
-        join(repoDir, ".factory/schedule.json"),
+        join(repoDir, ".animus/schedule.json"),
         JSON.stringify({ workflow: "repo-workflow", parallel: 2, interval_seconds: 120 }),
       );
 
@@ -349,13 +349,13 @@ describe("Canonical ProjectWorkspace Resolution & Unified Preflight (Issue #142)
     });
 
     test("fails closed on malformed schedule JSON or invalid timezone", () => {
-      mkdirSync(join(repoDir, ".factory"), { recursive: true });
-      writeFileSync(join(repoDir, ".factory/schedule.json"), "{ invalid-json ");
+      mkdirSync(join(repoDir, ".animus"), { recursive: true });
+      writeFileSync(join(repoDir, ".animus/schedule.json"), "{ invalid-json ");
 
       expect(() => loadCascadedScheduleConfig(repoDir)).toThrow(/Malformed schedule config/);
 
       writeFileSync(
-        join(repoDir, ".factory/schedule.json"),
+        join(repoDir, ".animus/schedule.json"),
         JSON.stringify({
           work_window: {
             enabled: true,

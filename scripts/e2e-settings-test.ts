@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { stringify as stringifyYaml } from "yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { serve } from "bun";
 import { SettingsService } from "../apps/backend/src/settings/service";
 import { handleSettingsRoute } from "../apps/backend/src/settings/routes";
@@ -50,7 +50,7 @@ writeFileSync(
       staticCmd: "bun run check",
       unitCmd: "bun test",
       countPattern: "Tests\\s+(\\d+)\\s+passed",
-      protectedPaths: ["MISSION.md", "FACTORY.md", "harness/**"],
+      protectedPaths: ["harness/**", ".animus/holdout/**", ".animus/hooks/**"],
     },
     null,
     2,
@@ -308,12 +308,12 @@ async function run() {
     await page.screenshot({ path: path.join(EVIDENCE_DIR, '03-platform-providers.png') });
     results.push({ name: "Platform Providers Management", status: "PASS", evidence: "03-platform-providers.png" });
 
-    // Assert disk persistence in config.json
-    const configDiskPath = path.join(testUserAnimusDir, 'config.json');
-    assert(fs.existsSync(configDiskPath), "config.json must exist on disk");
-    const configData1 = JSON.parse(fs.readFileSync(configDiskPath, 'utf-8'));
-    assert.strictEqual(configData1.system.defaultProvider, 'claude', 'defaultProvider must be claude in config.json');
-    console.log("  ✓ config.json providers verified on disk");
+    // Assert disk persistence in config.yaml
+    const configDiskPath = path.join(testUserAnimusDir, 'config.yaml');
+    assert(fs.existsSync(configDiskPath), "config.yaml must exist on disk");
+    const configData1 = parseYaml(fs.readFileSync(configDiskPath, 'utf-8'));
+    assert.strictEqual(configData1.system.defaultProvider, 'claude', 'defaultProvider must be claude in config.yaml');
+    console.log("  ✓ config.yaml providers verified on disk");
 
     // =========================================================================
     // Scenario 5: Platform / Automation (Capacity, Work window, Brakes)
@@ -335,12 +335,12 @@ async function run() {
     await page.screenshot({ path: path.join(EVIDENCE_DIR, '04-platform-automation.png') });
     results.push({ name: "Platform Automation & Brakes", status: "PASS", evidence: "04-platform-automation.png" });
 
-    // Assert disk persistence in config.json
-    const configData2 = JSON.parse(fs.readFileSync(configDiskPath, 'utf-8'));
-    assert.strictEqual(configData2.automation.parallelJobs, 4, 'parallelJobs must be 4 in config.json');
-    assert.strictEqual(configData2.automation.maxLaps, 5, 'maxLaps must be 5 in config.json');
-    assert.strictEqual(configData2.automation.pollInterval, 60, 'pollInterval must be 60 in config.json');
-    console.log("  ✓ config.json automation verified on disk:", configData2.automation);
+    // Assert disk persistence in config.yaml
+    const configData2 = parseYaml(fs.readFileSync(configDiskPath, 'utf-8'));
+    assert.strictEqual(configData2.automation.parallelJobs, 4, 'parallelJobs must be 4 in config.yaml');
+    assert.strictEqual(configData2.automation.maxLaps, 5, 'maxLaps must be 5 in config.yaml');
+    assert.strictEqual(configData2.automation.pollInterval, 60, 'pollInterval must be 60 in config.yaml');
+    console.log("  ✓ config.yaml automation verified on disk:", configData2.automation);
 
     // =========================================================================
     // Scenario 6: Platform / GitHub (Wake event toggles & disk persistence)
@@ -357,9 +357,9 @@ async function run() {
     await page.screenshot({ path: path.join(EVIDENCE_DIR, '05-platform-github.png') });
     results.push({ name: "Platform GitHub Integration", status: "PASS", evidence: "05-platform-github.png" });
 
-    const configData3 = JSON.parse(fs.readFileSync(configDiskPath, 'utf-8'));
-    assert.strictEqual(configData3.github.reviewEvent, false, 'reviewEvent must be false in config.json');
-    console.log("  ✓ config.json github verified on disk:", configData3.github);
+    const configData3 = parseYaml(fs.readFileSync(configDiskPath, 'utf-8'));
+    assert.strictEqual(configData3.github.reviewEvent, false, 'reviewEvent must be false in config.yaml');
+    console.log("  ✓ config.yaml github verified on disk:", configData3.github);
 
     // =========================================================================
     // Scenario 7: Project / Models (Dynamic Harness, Models & Reasoning Effort)

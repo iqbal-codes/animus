@@ -15,6 +15,16 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { mergeYamlFile, readYamlObject, removeFileIfExists } from "./config-file";
+import { readProjectSchedule, readRepoSchedule } from "./repo-config";
+import {
+  normalizeScheduleBlock,
+  type ScheduleConfig,
+  type ScheduleLayer,
+  type WorkWindowConfig,
+} from "./schedule-config";
+
+export type { ScheduleConfig, WorkWindowConfig } from "./schedule-config";
 /** Serialize owner inspection and replacement; abandoned guards require operator recovery. */
 export async function withLockMutation<T>(lock: string, mutate: () => T): Promise<T> {
   const guard = `${lock}.mutex`;
@@ -55,22 +65,6 @@ export function withLockMutationSync<T>(lock: string, mutate: () => T): T {
       rmSync(guard, { recursive: true, force: true });
     } catch {}
   }
-}
-
-export interface WorkWindowConfig {
-  enabled: boolean;
-  start_time: string;
-  end_time: string;
-  timezone: string;
-}
-
-export interface ScheduleConfig {
-  workflow: string;
-  parallel: number;
-  max_laps: number;
-  interval_seconds: number;
-  inputs?: Record<string, unknown>;
-  work_window?: WorkWindowConfig;
 }
 
 export interface ProjectWorkspace {
@@ -704,7 +698,10 @@ export function resolveProjectWorkspace(
   const animusHome = resolveAnimusHome(options?.customHome);
   const legacyRunsDir = join(animusHome, "runs", projectSlug);
   const localCommonRunsDir = join(canonicalGitCommon, "factory-local-loop", "runs");
-  const primaryDotRunsDir = join(primaryRoot, ".factory-local-loop", "runs");
+  const animusDotRunsDir = join(primaryRoot, ".animus-local-loop", "runs");
+  const primaryDotRunsDir = existsSync(animusDotRunsDir)
+    ? animusDotRunsDir
+    : join(primaryRoot, ".factory-local-loop", "runs");
 
   const fallbackRunsDirs: string[] = [];
   if (legacyRunsDir !== runsDir && !fallbackRunsDirs.includes(legacyRunsDir)) {
@@ -820,10 +817,19 @@ export function checkWorkspaceBrakes(
   let pausePath: string | undefined;
 
   for (const dir of rootsToCheck) {
-    const s = join(dir, ".factory", "STOP");
-    if (!stopPath && existsSync(s)) stopPath = s;
-    const p = join(dir, ".factory", "PAUSE");
-    if (!pausePath && existsSync(p)) pausePath = p;
+    const animusStop = join(dir, ".animus", "STOP");
+    const factoryStop = join(dir, ".factory", "STOP");
+    if (!stopPath) {
+      if (existsSync(animusStop)) stopPath = animusStop;
+      else if (existsSync(factoryStop)) stopPath = factoryStop;
+    }
+
+    const animusPause = join(dir, ".animus", "PAUSE");
+    const factoryPause = join(dir, ".factory", "PAUSE");
+    if (!pausePath) {
+      if (existsSync(animusPause)) pausePath = animusPause;
+      else if (existsSync(factoryPause)) pausePath = factoryPause;
+    }
   }
 
   const halted = Boolean(stopPath);
@@ -884,16 +890,20 @@ export function mutateWorkspaceBrakes(
       ? resolveProjectWorkspace(workspaceOrRoot)
       : workspaceOrRoot;
 
-  const primaryFactoryDir = join(ws.primaryRoot, ".factory");
-  if (!existsSync(primaryFactoryDir)) {
+  const primaryAnimusDir = join(ws.primaryRoot, ".animus");
+  if (!existsSync(primaryAnimusDir)) {
     try {
-      mkdirSync(primaryFactoryDir, { recursive: true });
+      mkdirSync(primaryAnimusDir, { recursive: true });
     } catch {}
   }
-  const stopPath = join(primaryFactoryDir, "STOP");
-  const pausePath = join(primaryFactoryDir, "PAUSE");
-  const localStopPath = join(ws.root, ".factory", "STOP");
-  const localPausePath = join(ws.root, ".factory", "PAUSE");
+  const stopPath = join(primaryAnimusDir, "STOP");
+  const pausePath = join(primaryAnimusDir, "PAUSE");
+  const legacyStopPath = join(ws.primaryRoot, ".factory", "STOP");
+  const legacyPausePath = join(ws.primaryRoot, ".factory", "PAUSE");
+  const localStopPath = join(ws.root, ".animus", "STOP");
+  const localPausePath = join(ws.root, ".animus", "PAUSE");
+  const localLegacyStopPath = join(ws.root, ".factory", "STOP");
+  const localLegacyPausePath = join(ws.root, ".factory", "PAUSE");
 
   switch (action) {
     case "halt":
@@ -902,15 +912,12 @@ export function mutateWorkspaceBrakes(
       }
       break;
     case "unhalt":
-      if (existsSync(stopPath)) {
-        try {
-          unlinkSync(stopPath);
-        } catch {}
-      }
-      if (existsSync(localStopPath)) {
-        try {
-          unlinkSync(localStopPath);
-        } catch {}
+      for (const p of [stopPath, legacyStopPath, localStopPath, localLegacyStopPath]) {
+        if (existsSync(p)) {
+          try {
+            unlinkSync(p);
+          } catch {}
+        }
       }
       break;
     case "pause":
@@ -919,15 +926,12 @@ export function mutateWorkspaceBrakes(
       }
       break;
     case "unpause":
-      if (existsSync(pausePath)) {
-        try {
-          unlinkSync(pausePath);
-        } catch {}
-      }
-      if (existsSync(localPausePath)) {
-        try {
-          unlinkSync(localPausePath);
-        } catch {}
+      for (const p of [pausePath, legacyPausePath, localPausePath, localLegacyPausePath]) {
+        if (existsSync(p)) {
+          try {
+            unlinkSync(p);
+          } catch {}
+        }
       }
       break;
     default:
@@ -938,86 +942,117 @@ export function mutateWorkspaceBrakes(
 }
 
 /**
- * Parses and strictly validates a schedule.json configuration file.
+ * Reads a legacy `schedule.json` file and validates it with the shared
+ * schedule schema. Kept for `.factory/schedule.json` and pre-migration user
+ * overrides; the runtime policy itself now lives in each layer's `config.yaml`.
  */
 export function parseScheduleJson(filePath: string): Partial<ScheduleConfig> | null {
   if (!existsSync(filePath)) return null;
-  let raw: any;
+  let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(filePath, "utf-8"));
-  } catch (err: any) {
-    throw new Error(
-      `Malformed schedule config in '${filePath}': ${err?.message || "invalid JSON"}`,
-    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "invalid JSON";
+    throw new Error(`Malformed schedule config in '${filePath}': ${message}`);
   }
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     throw new Error(`Invalid schedule config in '${filePath}': expected an object`);
   }
+  return normalizeScheduleBlock(raw, filePath) as Partial<ScheduleConfig> | null;
+}
 
-  if (
-    raw.interval_seconds !== undefined &&
-    (!Number.isFinite(raw.interval_seconds) || raw.interval_seconds <= 0)
-  ) {
-    throw new Error(`Invalid schedule interval in '${filePath}': must be a positive number`);
+/**
+ * Maps the machine policy block (`automation`) onto schedule keys.
+ * `animus onboard` owns that block in `~/.animus/config.yaml`, so the cascade
+ * and per-repository setup share one machine-wide source of truth.
+ */
+function machineLayerFromAutomation(automation: unknown): ScheduleLayer | null {
+  if (typeof automation !== "object" || automation === null) return null;
+  const policy = automation as Record<string, unknown>;
+
+  const layer: ScheduleLayer = {};
+  if (typeof policy.parallelJobs === "number" && policy.parallelJobs > 0) {
+    layer.parallel = policy.parallelJobs;
   }
-  if (raw.parallel !== undefined && (!Number.isSafeInteger(raw.parallel) || raw.parallel <= 0)) {
-    throw new Error(
-      `Invalid schedule parallel capacity in '${filePath}': must be a positive integer`,
+  if (typeof policy.maxLaps === "number" && policy.maxLaps > 0) {
+    layer.max_laps = policy.maxLaps;
+  }
+  if (typeof policy.pollInterval === "number" && policy.pollInterval > 0) {
+    layer.interval_seconds = policy.pollInterval;
+  }
+
+  const enabled = typeof policy.limitWorkWindow === "boolean" ? policy.limitWorkWindow : undefined;
+  const start = typeof policy.startTime === "string" ? policy.startTime : undefined;
+  const end = typeof policy.endTime === "string" ? policy.endTime : undefined;
+  if (enabled !== undefined || start !== undefined || end !== undefined) {
+    layer.work_window = {
+      ...(enabled !== undefined ? { enabled } : {}),
+      ...(start !== undefined ? { start_time: start } : {}),
+      ...(end !== undefined ? { end_time: end } : {}),
+    };
+  }
+  return Object.keys(layer).length > 0 ? layer : null;
+}
+
+/**
+ * Reads the machine layer (`automation`) and the user-global override
+ * (`schedule`) from the single home configuration file. A pre-existing
+ * `~/.animus/schedule.json` is folded into that file on first read.
+ */
+function loadHomeScheduleLayers(): {
+  machine: ScheduleLayer | null;
+  override: ScheduleLayer | null;
+} {
+  const home = resolveAnimusHome();
+  const configPath = join(home, "config.yaml");
+  const raw = readYamlObject(configPath);
+  const machine = raw ? machineLayerFromAutomation(raw.automation) : null;
+
+  if (raw && raw.schedule !== undefined) {
+    return { machine, override: normalizeScheduleBlock(raw.schedule, configPath) };
+  }
+
+  const legacyPath = join(home, "schedule.json");
+  const legacy = parseScheduleJson(legacyPath);
+  if (!legacy) return { machine, override: null };
+
+  const guard = join(home, ".config-migration.lock");
+  try {
+    mkdirSync(guard);
+    try {
+      mergeYamlFile(configPath, { schedule: legacy }, { mode: 0o600 });
+      removeFileIfExists(legacyPath);
+    } finally {
+      rmSync(guard, { recursive: true, force: true });
+    }
+  } catch {
+    // Another process owns the migration or the home is read-only: the legacy
+    // value still applies for this read.
+  }
+  return { machine, override: legacy };
+}
+
+function resolveRepoScheduleLayer(ws: ProjectWorkspace): ScheduleLayer | null {
+  const fromRoot = readRepoSchedule(ws.root);
+  if (fromRoot) return fromRoot;
+
+  const factorySchedule = parseScheduleJson(join(ws.root, ".factory/schedule.json"));
+  if (factorySchedule) return factorySchedule as ScheduleLayer;
+
+  if (ws.primaryRoot !== ws.root) {
+    return (
+      readRepoSchedule(ws.primaryRoot) ??
+      (parseScheduleJson(join(ws.primaryRoot, ".factory/schedule.json")) as ScheduleLayer | null)
     );
   }
-  if (raw.max_laps !== undefined && (!Number.isSafeInteger(raw.max_laps) || raw.max_laps <= 0)) {
-    throw new Error(`Invalid schedule max_laps in '${filePath}': must be a positive integer`);
-  }
-
-  if (raw.work_window !== undefined && raw.work_window !== null) {
-    if (typeof raw.work_window !== "object" || Array.isArray(raw.work_window)) {
-      throw new Error(`Invalid schedule work_window in '${filePath}': expected an object`);
-    }
-    const window = raw.work_window;
-    if (window.enabled) {
-      if (
-        typeof window.start_time !== "string" ||
-        typeof window.end_time !== "string" ||
-        !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(window.start_time) ||
-        !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(window.end_time)
-      ) {
-        throw new Error(
-          `Invalid schedule work window times in '${filePath}': expected HH:MM format`,
-        );
-      }
-      const tz = window.timezone || "Asia/Jakarta";
-      try {
-        new Intl.DateTimeFormat("en-US", { timeZone: tz }).format();
-      } catch {
-        throw new Error(`Invalid timezone in schedule config '${filePath}': '${tz}'`);
-      }
-    }
-  }
-
-  return {
-    ...(typeof raw.workflow === "string" ? { workflow: raw.workflow } : {}),
-    ...(typeof raw.parallel === "number" && raw.parallel > 0 ? { parallel: raw.parallel } : {}),
-    ...(typeof raw.max_laps === "number" && raw.max_laps > 0 ? { max_laps: raw.max_laps } : {}),
-    ...(typeof raw.interval_seconds === "number" && raw.interval_seconds > 0
-      ? { interval_seconds: raw.interval_seconds }
-      : {}),
-    ...(typeof raw.inputs === "object" && raw.inputs !== null ? { inputs: raw.inputs } : {}),
-    ...(typeof raw.work_window === "object" && raw.work_window !== null
-      ? {
-          work_window: {
-            enabled: Boolean(raw.work_window.enabled),
-            start_time: raw.work_window.start_time || "20:00",
-            end_time: raw.work_window.end_time || "05:00",
-            timezone: raw.work_window.timezone || "Asia/Jakarta",
-          },
-        }
-      : {}),
-  };
+  return null;
 }
 
 /**
  * Loads cascaded schedule configuration with strict validation:
- * defaults -> repo .factory/schedule.json -> global ~/.animus/schedule.json -> project ~/.animus/projects/<slug>/schedule.json -> caller override
+ * defaults -> machine policy (`automation` in ~/.animus/config.yaml) ->
+ * repo `.animus/config.yaml` -> user-global `schedule` in ~/.animus/config.yaml ->
+ * per-project `~/.animus/projects/<slug>/config.yaml` -> caller override.
  */
 export function loadCascadedScheduleConfig(
   workspaceOrRoot: ProjectWorkspace | string,
@@ -1042,56 +1077,26 @@ export function loadCascadedScheduleConfig(
     },
   };
 
-  const repoSchedule =
-    parseScheduleJson(join(ws.root, ".factory/schedule.json")) ??
-    (ws.primaryRoot !== ws.root
-      ? parseScheduleJson(join(ws.primaryRoot, ".factory/schedule.json"))
-      : null);
-  const userGlobal = parseScheduleJson(join(resolveAnimusHome(), "schedule.json"));
-  const userProject = parseScheduleJson(
-    join(resolveAnimusHome(), "projects", ws.projectSlug, "schedule.json"),
-  );
+  const home = loadHomeScheduleLayers();
+  const userProject = readProjectSchedule(ws.projectSlug, resolveAnimusHome());
 
-  return {
-    ...defaults,
-    ...repoSchedule,
-    ...userGlobal,
-    ...userProject,
-    ...override,
-    inputs: {
-      ...defaults.inputs,
-      ...repoSchedule?.inputs,
-      ...userGlobal?.inputs,
-      ...userProject?.inputs,
-      ...override?.inputs,
-    },
-    work_window: {
-      enabled:
-        override?.work_window?.enabled ??
-        userProject?.work_window?.enabled ??
-        userGlobal?.work_window?.enabled ??
-        repoSchedule?.work_window?.enabled ??
-        defaults.work_window!.enabled,
-      start_time:
-        override?.work_window?.start_time ??
-        userProject?.work_window?.start_time ??
-        userGlobal?.work_window?.start_time ??
-        repoSchedule?.work_window?.start_time ??
-        defaults.work_window!.start_time,
-      end_time:
-        override?.work_window?.end_time ??
-        userProject?.work_window?.end_time ??
-        userGlobal?.work_window?.end_time ??
-        repoSchedule?.work_window?.end_time ??
-        defaults.work_window!.end_time,
-      timezone:
-        override?.work_window?.timezone ??
-        userProject?.work_window?.timezone ??
-        userGlobal?.work_window?.timezone ??
-        repoSchedule?.work_window?.timezone ??
-        defaults.work_window!.timezone,
-    },
-  };
+  let layer: ScheduleLayer = defaults;
+  for (const next of [
+    home.machine,
+    resolveRepoScheduleLayer(ws),
+    home.override,
+    userProject,
+    (override ?? null) as ScheduleLayer | null,
+  ]) {
+    if (!next) continue;
+    layer = {
+      ...layer,
+      ...next,
+      inputs: { ...layer.inputs, ...next.inputs },
+      work_window: { ...layer.work_window, ...next.work_window },
+    };
+  }
+  return layer as ScheduleConfig;
 }
 
 /**
