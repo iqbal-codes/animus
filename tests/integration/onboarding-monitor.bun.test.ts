@@ -12,6 +12,7 @@ import { RegisteredProjectMonitor } from "../../apps/backend/src/monitor/service
 import { loadMonitorRuntime, type MonitorRuntime } from "../../apps/backend/src/monitor/runtime";
 import { BrakeService } from "../../apps/backend/src/command/brakes";
 import { resolveProjectWorkspace } from "@animus/contracts/paths";
+import { writeRepoConfig } from "@animus/contracts/repo-config";
 
 describe("registered project monitoring", () => {
   let root: string;
@@ -159,8 +160,8 @@ describe("registered project monitoring", () => {
       join(alpha.checkout_path, "harness/harness.config.json"),
       JSON.stringify({ unit: "bun test" }),
     );
-    mkdirSync(join(alpha.checkout_path, ".factory"));
-    writeFileSync(join(alpha.checkout_path, ".factory/schedule.json"), "not json");
+    mkdirSync(join(alpha.checkout_path, ".animus"), { recursive: true });
+    writeFileSync(join(alpha.checkout_path, ".animus/schedule.json"), "not json");
     await monitor.stop();
     monitor = new RegisteredProjectMonitor(registry, { runtime });
     await monitor.tick();
@@ -199,13 +200,13 @@ describe("registered project monitoring", () => {
 
   test("filesystem brakes and failed label provisioning block monitoring", async () => {
     const alpha = await project("alpha");
-    mkdirSync(join(alpha.checkout_path, ".factory"));
-    writeFileSync(join(alpha.checkout_path, ".factory/PAUSE"), "paused");
+    mkdirSync(join(alpha.checkout_path, ".animus"), { recursive: true });
+    writeFileSync(join(alpha.checkout_path, ".animus/PAUSE"), "paused");
     await monitor.tick();
     await monitor.drain();
     expect(launches).toEqual([]);
     expect(monitor.status().projects[0]?.error).toContain("PAUSE brake is active");
-    rmSync(join(alpha.checkout_path, ".factory/PAUSE"));
+    rmSync(join(alpha.checkout_path, ".animus/PAUSE"));
     await monitor.stop();
     monitor = new RegisteredProjectMonitor(registry, { runtime });
     forge.failNextLabel = true;
@@ -262,18 +263,17 @@ describe("registered project monitoring", () => {
 
   test("scheduler respects work windows and actual git-common local-loop capacity", async () => {
     const alpha = await project("alpha");
-    mkdirSync(join(alpha.checkout_path, ".factory"));
-    writeFileSync(
-      join(alpha.checkout_path, ".factory/schedule.json"),
-      JSON.stringify({
+    mkdirSync(join(alpha.checkout_path, ".animus"), { recursive: true });
+    writeRepoConfig(alpha.checkout_path, {
+      schedule: {
         work_window: { enabled: true, start_time: "00:00", end_time: "00:00", timezone: "UTC" },
-      }),
-    );
+      },
+    });
     await monitor.tick();
     await monitor.drain();
     expect(launches).toEqual([]);
     expect(monitor.status().projects[0]?.reason).toBe("outside_work_window");
-    rmSync(join(alpha.checkout_path, ".factory/schedule.json"));
+    writeRepoConfig(alpha.checkout_path, { schedule: {} });
     mkdirSync(join(alpha.checkout_path, ".git/factory-local-loop/runs/existing"), {
       recursive: true,
     });
@@ -457,15 +457,15 @@ describe("registered project monitoring", () => {
     await monitor.stop();
     monitor = new RegisteredProjectMonitor(registry, { runtime, intervalMs: 60_000 });
 
-    // AC4: .factory/STOP filesystem brake
-    mkdirSync(join(alpha.checkout_path, ".factory"), { recursive: true });
-    writeFileSync(join(alpha.checkout_path, ".factory/STOP"), "stopped");
+    // AC4: .animus/STOP filesystem brake
+    mkdirSync(join(alpha.checkout_path, ".animus"), { recursive: true });
+    writeFileSync(join(alpha.checkout_path, ".animus/STOP"), "stopped");
     const stopWake = monitor.wakeProject(alpha.id);
     expect(stopWake.triggered).toBe(true);
     await monitor.drain();
     expect(launches).toEqual([]);
     expect(monitor.status().projects[0]?.error).toContain("STOP brake is active");
-    rmSync(join(alpha.checkout_path, ".factory/STOP"));
+    rmSync(join(alpha.checkout_path, ".animus/STOP"));
 
     // AC4: DB launch brake
     const brakes = new BrakeService(db);
@@ -478,7 +478,7 @@ describe("registered project monitoring", () => {
 
     // AC5: Outside work window
     writeFileSync(
-      join(alpha.checkout_path, ".factory/schedule.json"),
+      join(alpha.checkout_path, ".animus/schedule.json"),
       JSON.stringify({
         work_window: { enabled: true, start_time: "00:00", end_time: "00:00", timezone: "UTC" },
       }),
@@ -920,37 +920,36 @@ describe("registered project monitoring", () => {
     brakes.setProjectSchedulePause(alpha.id, false, "test-proj-pause");
 
     // 3. Filesystem STOP brake stops triage
-    mkdirSync(join(alpha.checkout_path, ".factory"), { recursive: true });
-    writeFileSync(join(alpha.checkout_path, ".factory/STOP"), "stop");
+    mkdirSync(join(alpha.checkout_path, ".animus"), { recursive: true });
+    writeFileSync(join(alpha.checkout_path, ".animus/STOP"), "stop");
     await monitor.stop();
     monitor = new RegisteredProjectMonitor(registry, { runtime: brakingRuntime });
     await monitor.tick();
     await monitor.drain();
     expect(triageExecuted).toBe(false);
-    rmSync(join(alpha.checkout_path, ".factory/STOP"));
+    rmSync(join(alpha.checkout_path, ".animus/STOP"));
 
     // 4. Filesystem PAUSE brake stops triage
-    writeFileSync(join(alpha.checkout_path, ".factory/PAUSE"), "pause");
+    writeFileSync(join(alpha.checkout_path, ".animus/PAUSE"), "pause");
     await monitor.stop();
     monitor = new RegisteredProjectMonitor(registry, { runtime: brakingRuntime });
     await monitor.tick();
     await monitor.drain();
     expect(triageExecuted).toBe(false);
-    rmSync(join(alpha.checkout_path, ".factory/PAUSE"));
+    rmSync(join(alpha.checkout_path, ".animus/PAUSE"));
 
     // 5. Outside work window stops triage
-    writeFileSync(
-      join(alpha.checkout_path, ".factory/schedule.json"),
-      JSON.stringify({
+    writeRepoConfig(alpha.checkout_path, {
+      schedule: {
         work_window: { enabled: true, start_time: "00:00", end_time: "00:00", timezone: "UTC" },
-      }),
-    );
+      },
+    });
     await monitor.stop();
     monitor = new RegisteredProjectMonitor(registry, { runtime: brakingRuntime });
     await monitor.tick();
     await monitor.drain();
     expect(triageExecuted).toBe(false);
-    rmSync(join(alpha.checkout_path, ".factory/schedule.json"));
+    writeRepoConfig(alpha.checkout_path, { schedule: {} });
   });
 
   test("honest triage status errors are inspectable without unhandled promise rejections", async () => {
@@ -1052,8 +1051,8 @@ describe("registered project monitoring", () => {
     db.prepare("UPDATE projects SET checkout_path = ? WHERE id = ?").run(worktreeDir, alpha.id);
 
     // Put STOP brake in primary checkout (alpha.checkout_path)
-    mkdirSync(join(alpha.checkout_path, ".factory"), { recursive: true });
-    writeFileSync(join(alpha.checkout_path, ".factory/STOP"), "stop in primary");
+    mkdirSync(join(alpha.checkout_path, ".animus"), { recursive: true });
+    writeFileSync(join(alpha.checkout_path, ".animus/STOP"), "stop in primary");
 
     await monitor.stop();
     monitor = new RegisteredProjectMonitor(registry, { runtime: trackingRuntime });
@@ -1064,7 +1063,7 @@ describe("registered project monitoring", () => {
     // Triage must not execute on either the primary or the worktree
     expect(triageExecuted).toBe(false);
 
-    rmSync(join(alpha.checkout_path, ".factory/STOP"));
+    rmSync(join(alpha.checkout_path, ".animus/STOP"));
   });
 
   test("rechecking BrakeService immediately before dispatch after awaits stops triage", async () => {
@@ -1122,8 +1121,8 @@ describe("registered project monitoring", () => {
     const _beta = await project("beta");
 
     // Alpha has malformed schedule JSON
-    mkdirSync(join(alpha.checkout_path, ".factory"), { recursive: true });
-    writeFileSync(join(alpha.checkout_path, ".factory/schedule.json"), "invalid json {");
+    mkdirSync(join(alpha.checkout_path, ".animus"), { recursive: true });
+    writeFileSync(join(alpha.checkout_path, ".animus/schedule.json"), "invalid json {");
 
     let betaTriageRan = false;
     const isolatingRuntime = await loadMonitorRuntime({
@@ -1158,7 +1157,7 @@ describe("registered project monitoring", () => {
     // Beta triage ran despite alpha's malformed schedule
     expect(betaTriageRan).toBe(true);
 
-    rmSync(join(alpha.checkout_path, ".factory/schedule.json"));
+    rmSync(join(alpha.checkout_path, ".animus/schedule.json"));
   });
 
   test("candidateLock release in finally block does not delete replaced lock directory", async () => {

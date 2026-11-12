@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { runChecks } from "../../harness/ci";
 import { classifyLog, applyDefect, type Defect } from "../../harness/mutations/mutator";
 import { HarnessService, handleHarnessRoute } from "../../apps/backend/src/harness";
-import registerLoopGuard from "../../.factory/hooks/loop-guard";
+import registerLoopGuard from "../../.animus/hooks/loop-guard";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -179,6 +179,22 @@ describe("TypeScript Harness and Mutation Verification", () => {
       args: { command: "git commit -m 'feat: normal commit'" },
     });
     expect(normalGitAllowed).toBeUndefined();
+
+    // Guardrail: blocks absolute path and case-insensitive tool names
+    const absPathBlocked = await handlers.tool_call!({
+      toolName: "Edit",
+      args: { path: join(process.cwd(), ".claude/settings.json") },
+    });
+    expect(absPathBlocked?.block).toBe(true);
+    expect(absPathBlocked?.reason).toContain("HARNESS GUARD");
+
+    // Guardrail: blocks shell mutations to protected paths
+    const bashMutationBlocked = await handlers.tool_call!({
+      toolName: "bash",
+      args: { command: "echo hacked > harness/ci.ts" },
+    });
+    expect(bashMutationBlocked?.block).toBe(true);
+    expect(bashMutationBlocked?.reason).toContain("HARNESS GUARD: Modifying protected path");
 
     // First bash failure: tool guidance hint only, no unstick trigger yet
     const fail1 = await handlers.tool_result!({

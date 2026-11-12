@@ -614,9 +614,11 @@ export class LapSession {
       checks_status: existsSync(join(this.artifactsDir, "builder-checks.log"))
         ? "passed"
         : "pending",
-      holdout: existsSync(join(this.root, ".factory/holdout/HOLDOUT.md"))
-        ? join(this.root, ".factory/holdout/HOLDOUT.md")
-        : "",
+      holdout: existsSync(join(this.root, ".animus/holdout/HOLDOUT.md"))
+        ? join(this.root, ".animus/holdout/HOLDOUT.md")
+        : existsSync(join(this.root, ".factory/holdout/HOLDOUT.md"))
+          ? join(this.root, ".factory/holdout/HOLDOUT.md")
+          : "",
       protected_paths: this.protectedPaths.join(", "),
       handoff: this.handoffDir,
       evidence_ok: extraVars.evidence_ok ?? "true",

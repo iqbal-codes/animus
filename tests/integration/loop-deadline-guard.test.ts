@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import registerLoopGuard from "../../.factory/hooks/loop-guard";
+import registerLoopGuard from "../../.animus/hooks/loop-guard";
 
 function guard() {
   const handlers = new Map<string, (event: any) => Promise<any>>();

@@ -5,7 +5,7 @@ not from the issues or the code, and they test the space between issues: one rul
 sequences, what must never happen by any route, and old behaviour that has to keep working.
 
 This file is committed so the team shares it. People read and edit it freely. Agents cannot: the hook
-in `.factory/hooks/holdout_fence.py` refuses every agent except the `holdout-writer` and
+in `.animus/hooks/holdout_fence.py` refuses every agent except the `holdout-writer` and
 `holdout-verifier` subagents, and `.ignore` keeps the folder out of searches. The app check and the
 manager run these through the verifier, which reports only a verdict and what a user sees.
 

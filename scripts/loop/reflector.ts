@@ -75,7 +75,9 @@ export function persistCodebaseRulesUpdates(
   patternUpdates?: Record<string, string>,
   ruleUpdates?: CodebaseRuleDraft[],
 ): { updatedComponents: string[]; updatedRules: string[] } {
-  const filePath = join(root, ".factory/codebase-rules.json");
+  const primaryPath = join(root, ".animus/codebase-rules.json");
+  const fallbackPath = join(root, ".factory/codebase-rules.json");
+  const filePath = existsSync(primaryPath) || !existsSync(fallbackPath) ? primaryPath : fallbackPath;
   let current: {
     schema_version?: number;
     description?: string;

@@ -97,6 +97,8 @@ export class PromotionService {
 
     const shared = resolveSharedRoot(this.repoRoot);
     const pauseExists =
+      existsSync(join(this.repoRoot, ".animus/PAUSE")) ||
+      existsSync(join(shared, ".animus/PAUSE")) ||
       existsSync(join(this.repoRoot, ".factory/PAUSE")) ||
       existsSync(join(shared, ".factory/PAUSE"));
     const existingPr = this.getExistingPromotionPr();
@@ -133,7 +135,7 @@ export class PromotionService {
         ? `Delivered work items: ${status.delivered_tickets.map((t) => `#${t}`).join(", ")}`
         : "",
       options?.summary ? `\n### Summary\n${options.summary}\n` : "",
-      "Candidate freeze set via .factory/PAUSE.",
+      "Candidate freeze set via .animus/PAUSE.",
     ]
       .filter(Boolean)
       .join("\n");

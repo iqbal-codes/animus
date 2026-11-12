@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { PassThrough, Writable } from "node:stream";
 import { TerminalWizardPrompts } from "../../scripts/cli/commands/onboarding-prompts";
 
-function terminal() {
+function terminal(options: { columns?: number } = {}) {
   const input = new PassThrough() as PassThrough & {
     isTTY: boolean;
     isRaw: boolean;
@@ -19,9 +19,64 @@ function terminal() {
       transcript += chunk;
       done();
     },
-  });
+  }) as Writable & { columns: number };
+  output.columns = options.columns ?? 80;
   const prompts = new TerminalWizardPrompts(input, output);
   return { input, prompts, output, transcript: () => transcript };
+}
+
+/**
+ * Minimal terminal emulator: applies cursor-up, erase-below, carriage return,
+ * newline and hard wrapping so a test can assert what the user would actually
+ * see instead of what was written to the stream.
+ */
+const ESC = String.fromCharCode(27);
+const CURSOR_UP = new RegExp(`^${ESC}\\[(\\d*)A`);
+const ERASE_BELOW = `${ESC}[0J`;
+const ANY_CSI = new RegExp(`^${ESC}\\[[0-9;?]*[A-Za-z]`);
+
+function renderScreen(transcript: string, columns: number): string[] {
+  const rows: string[] = [""];
+  let row = 0;
+  let column = 0;
+  const newline = () => {
+    row += 1;
+    column = 0;
+    if (rows[row] === undefined) rows[row] = "";
+  };
+  for (let index = 0; index < transcript.length;) {
+    const rest = transcript.slice(index);
+    const move = CURSOR_UP.exec(rest);
+    if (move) {
+      row = Math.max(0, row - Number(move[1] || 1));
+      column = 0;
+      index += move[0].length;
+      continue;
+    }
+    if (rest.startsWith(ERASE_BELOW)) {
+      rows[row] = (rows[row] ?? "").slice(0, column);
+      rows.length = row + 1;
+      index += 4;
+      continue;
+    }
+    const other = ANY_CSI.exec(rest);
+    if (other) {
+      index += other[0].length;
+      continue;
+    }
+    const character = Array.from(rest)[0]!;
+    if (character === "\r") {
+      column = 0;
+    } else if (character === "\n") {
+      newline();
+    } else {
+      if (column >= columns) newline();
+      rows[row] = (rows[row] ?? "").padEnd(column, " ") + character;
+      column += 1;
+    }
+    index += character.length;
+  }
+  return rows.map((line) => line.trimEnd());
 }
 
 const choices = [
@@ -86,7 +141,7 @@ describe("onboarding keyboard prompts", () => {
       label: `Model ${index}`,
     }));
     const answer = t.prompts.select("Model", models, "90", true);
-    expect(t.transcript()).toContain("> Model 90");
+    expect(t.transcript()).toContain("❯ Model 90");
     expect(t.transcript().split("\n").length).toBeLessThan(20);
     t.input.write("\r");
     expect(await answer).toBe("90");
@@ -122,5 +177,35 @@ describe("onboarding keyboard prompts", () => {
     } finally {
       t.prompts.close();
     }
+  });
+
+  test("a wrapped prompt is redrawn in place instead of stacking on every keypress", async () => {
+    const columns = 40;
+    const t = terminal({ columns });
+    const message =
+      "Confirm these harnesses are signed in: pi, claude, omp, commandcode, codex, opencode";
+    const answer = t.prompts.select(message, choices, "pi");
+    t.input.write("\u001b[B");
+    t.input.write("\r");
+    expect(await answer).toBe("codex");
+    t.prompts.close();
+
+    const screen = renderScreen(t.transcript(), columns).join("\n");
+    expect(screen.split("Confirm these harnesses").length - 1).toBe(1);
+    expect(screen.split("Codex — missing").length - 1).toBe(1);
+    expect(screen.split("Pi — installed").length - 1).toBe(0);
+  });
+
+  test("checkbox help text stays on its own short line even on a narrow terminal", async () => {
+    const columns = 40;
+    const t = terminal({ columns });
+    const answer = t.prompts.checkbox("Agent harnesses", choices, ["pi", "codex"]);
+    t.input.write("\u001b[B");
+    t.input.write("\r");
+    expect(await answer).toEqual(["pi", "codex"]);
+    t.prompts.close();
+
+    const screen = renderScreen(t.transcript(), columns).join("\n");
+    expect(screen.split("Agent harnesses").length - 1).toBe(1);
   });
 });

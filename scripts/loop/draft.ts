@@ -236,7 +236,7 @@ function assertProviderGuard(provider: string, extensions: string[]): void {
   if (provider === "pi" || provider === "omp") {
     if (extensions.length === 0) {
       throw new Error(
-        `Safety guard extension hook (.factory/hooks/loop-guard.ts) could not be verified for provider '${provider}'.`,
+        `Safety guard extension hook (.animus/hooks/loop-guard.ts) could not be verified for provider '${provider}'.`,
       );
     }
     return;

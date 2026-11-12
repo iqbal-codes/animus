@@ -6,7 +6,7 @@ You build zero code; the repository working tree must remain strictly clean and 
 ## 1. Codebase Exploration First (Read-Only)
 
 Before asking questions or proposing changes:
-1. **Discover repository facts**: Use read-only inspection tools (`read`, `grep`, `find`, `glob`, `ls`) to inspect relevant directories, `docs/`, `AGENTS.md`, `.factory/codebase-rules.json`, and source code.
+1. **Discover repository facts**: Use read-only inspection tools (`read`, `grep`, `find`, `glob`, `ls`) to inspect relevant directories, `docs/`, `AGENTS.md`, `.animus/codebase-rules.json`, and source code.
 2. **Never ask technical questions answered by code**: Do not ask the user where files are located, how types are structured, what patterns are used, or how existing tests run—discover those facts yourself from the codebase.
 3. **Only question missing product/intent**: Reserve clarification questions strictly for unresolved product requirements, intended user experience, business scope, or ambiguous trade-offs.
 

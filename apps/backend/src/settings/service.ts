@@ -2,75 +2,37 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
-  type PersonalPreferences,
-  personalPreferencesSchema,
   type PlatformSettings,
   platformSettingsSchema,
   type PlatformSettingsUpdate,
+  readMachineConfig,
+  writeMachineConfig,
+} from "@animus/contracts/machine-config";
+import {
+  readRepoConfig,
+  writeRepoConfig,
+  type RepoConfigFile,
+} from "@animus/contracts/repo-config";
+import {
+  type PersonalPreferences,
+  personalPreferencesSchema,
   type ProjectSettings,
   projectSettingsSchema,
   type ProjectSettingsUpdate,
 } from "./types";
 
-const DEFAULT_PLATFORM_PROVIDERS = [
-  {
-    id: "pi",
-    name: "Pi Coding Agent",
-    binary: "pi",
-    path: "/opt/homebrew/bin/pi",
-    version: "v0.42.1",
-    efforts: "minimal · low · medium · high · xhigh · max",
-    capabilities: "Resume · Fork · Native Tools",
-    status: "INSTALLED" as const,
-    enabled: true,
-  },
-  {
-    id: "claude",
-    name: "Claude Code",
-    binary: "claude",
-    path: "/usr/local/bin/claude",
-    version: "v1.0.24 (built-in)",
-    efforts: "low · medium · high · xhigh · max",
-    capabilities: "Resume · Fork · Strict MCP",
-    status: "INSTALLED" as const,
-    enabled: true,
-  },
-  {
-    id: "omp",
-    name: "Oh-My-Pi (OMP)",
-    binary: "omp",
-    path: "/Users/efishery/.bun/bin/omp",
-    version: "v0.9.4",
-    efforts: "minimal · low · medium · high · xhigh · max",
-    capabilities: "Resume · Fork · Extension Hooks",
-    status: "INSTALLED" as const,
-    enabled: false,
-  },
-  {
-    id: "codex",
-    name: "OpenAI Codex CLI",
-    binary: "codex",
-    path: "codex exec --json",
-    version: "built-in adapter",
-    efforts: "minimal · low · medium · high · xhigh · max · ultra",
-    capabilities: "Resume · Effort Clamping",
-    status: "COMING SOON" as const,
-    enabled: false,
-  },
-  {
-    id: "opencode",
-    name: "OpenCode",
-    binary: "opencode",
-    path: "opencode run --format json",
-    version: "standalone",
-    efforts: "low · medium · high",
-    capabilities: "Resume · Auto Mode",
-    status: "COMING SOON" as const,
-    enabled: false,
-  },
-];
+/**
+ * A partial settings update must never erase a stored value by passing the key
+ * as `undefined`. The onboarding marker and runtime root are owned by
+ * `animus onboard` and must survive every platform settings save.
+ */
+function omitUndefined<T extends object>(value: T | undefined): Partial<T> {
+  if (!value) return {};
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => entry !== undefined),
+  ) as Partial<T>;
+}
 
 const FALLBACK_HARNESS_MODELS: Record<string, string[]> = {
   pi: [
@@ -179,39 +141,28 @@ export class SettingsService {
   }
 
   // ==========================================
-  // Platform Settings (~/.animus/config.json)
+  // Platform Settings (~/.animus/config.yaml)
   // ==========================================
+  /**
+   * Absent or unreadable machine configuration returns schema defaults with an
+   * empty provider list. Provider rows are never invented here: `animus onboard`
+   * writes the fleet it actually detected on this machine.
+   */
   getPlatformSettings(): PlatformSettings {
-    const filePath = join(this.userAnimusDir, "config.json");
-    if (!existsSync(filePath)) {
-      return platformSettingsSchema.parse({
-        providers: DEFAULT_PLATFORM_PROVIDERS,
-      });
-    }
-    try {
-      const raw = JSON.parse(readFileSync(filePath, "utf-8"));
-      if (!raw.providers || raw.providers.length === 0) {
-        raw.providers = DEFAULT_PLATFORM_PROVIDERS;
-      }
-      return platformSettingsSchema.parse(raw);
-    } catch {
-      return platformSettingsSchema.parse({
-        providers: DEFAULT_PLATFORM_PROVIDERS,
-      });
-    }
+    return readMachineConfig(this.userAnimusDir) ?? platformSettingsSchema.parse({});
   }
 
   updatePlatformSettings(updates: PlatformSettingsUpdate): PlatformSettings {
     const current = this.getPlatformSettings();
     const merged = {
-      system: { ...current.system, ...updates.system },
+      schemaVersion: current.schemaVersion,
+      system: { ...current.system, ...omitUndefined(updates.system) },
       providers: updates.providers ?? current.providers,
-      automation: { ...current.automation, ...updates.automation },
-      github: { ...current.github, ...updates.github },
+      automation: { ...current.automation, ...omitUndefined(updates.automation) },
+      github: { ...current.github, ...omitUndefined(updates.github) },
     };
     const validated = platformSettingsSchema.parse(merged);
-    const filePath = join(this.userAnimusDir, "config.json");
-    this.atomicWrite(filePath, JSON.stringify(validated, null, 2));
+    writeMachineConfig(validated, this.userAnimusDir);
     return validated;
   }
 
@@ -272,48 +223,17 @@ export class SettingsService {
   // Project Settings (<repoRoot>)
   // ==========================================
   getProjectSettings(repoRoot = this.defaultRepoRoot): ProjectSettings {
-    // 1. Models & Releases: .animus/config.yaml
-    const animusYamlPath = join(repoRoot, ".animus/config.yaml");
-    let modelsData: any = {};
-    let releasesData = {};
-    if (existsSync(animusYamlPath)) {
-      try {
-        const parsed = parseYaml(readFileSync(animusYamlPath, "utf-8"));
-        if (parsed && typeof parsed === "object") {
-          const assistant = typeof parsed.assistant === "string" ? parsed.assistant : "pi";
-          const defaultModel =
-            parsed.assistants?.[assistant]?.model ||
-            parsed.defaultModel ||
-            parsed.tiers?.medium?.model ||
-            "default";
-          const effort =
-            parsed.tiers?.medium?.effort ||
-            parsed.aliases?.["@reasoning"]?.effort ||
-            parsed.effort ||
-            "high";
-          const concurrencyLimit =
-            typeof parsed.concurrencyLimit === "number" ? parsed.concurrencyLimit : 2;
+    // 1. Models, releases, and loop policy: <repo>/.animus/config.yaml
+    //    A pre-existing schedule.json is folded in and removed by this read.
+    const repoConfig = readRepoConfig(repoRoot);
+    const modelsData = projectModelsFromConfig(repoConfig);
 
-          modelsData = {
-            assistant,
-            defaultModel,
-            effort,
-            concurrencyLimit,
-            plannerModel: parsed.tiers?.large?.model || defaultModel,
-            builderModel: parsed.tiers?.medium?.model || defaultModel,
-            reviewerModel: parsed.aliases?.["@reasoning"]?.model || defaultModel,
-            worktreeStrategy: parsed.worktree?.strategy || "isolated",
-            ...parsed,
-          };
-          if (parsed.releases && typeof parsed.releases === "object") {
-            releasesData = parsed.releases;
-          }
-        }
-      } catch {}
-    }
-
-    // 2. Checks: .factory/tool-guidance.json
-    const toolGuidancePath = join(repoRoot, ".factory/tool-guidance.json");
+    // 2. Checks: .animus/tool-guidance.json (with fallback to .factory/tool-guidance.json)
+    const animusToolGuidance = join(repoRoot, ".animus/tool-guidance.json");
+    const factoryToolGuidance = join(repoRoot, ".factory/tool-guidance.json");
+    const toolGuidancePath = existsSync(animusToolGuidance)
+      ? animusToolGuidance
+      : factoryToolGuidance;
     let checksData: any = {};
     if (existsSync(toolGuidancePath)) {
       try {
@@ -336,15 +256,17 @@ export class SettingsService {
                     .split(",")
                     .map((s: string) => s.trim())
                     .filter(Boolean)
-                : ["MISSION.md", "FACTORY.md", "harness/**"],
+                : ["harness/**", ".animus/holdout/**", ".animus/hooks/**"],
             toolGuidance: rawGuidance,
           };
         }
       } catch {}
     }
 
-    // 3. Rules: .factory/codebase-rules.json
-    const rulesPath = join(repoRoot, ".factory/codebase-rules.json");
+    // 3. Rules: .animus/codebase-rules.json (with fallback to .factory/codebase-rules.json)
+    const animusRules = join(repoRoot, ".animus/codebase-rules.json");
+    const factoryRules = join(repoRoot, ".factory/codebase-rules.json");
+    const rulesPath = existsSync(animusRules) ? animusRules : factoryRules;
     let rulesData = [];
     if (existsSync(rulesPath)) {
       try {
@@ -357,24 +279,11 @@ export class SettingsService {
       } catch {}
     }
 
-    // 4. Schedule: .factory/schedule.json
-    const schedulePath = join(repoRoot, ".factory/schedule.json");
-    let scheduleData = {};
-    if (existsSync(schedulePath)) {
-      try {
-        const parsed = JSON.parse(readFileSync(schedulePath, "utf-8"));
-        if (parsed && typeof parsed === "object") {
-          scheduleData = parsed;
-        }
-      } catch {}
-    }
-
     return projectSettingsSchema.parse({
       models: modelsData,
       checks: checksData,
       rules: rulesData,
-      schedule: scheduleData,
-      releases: releasesData,
+      releases: repoConfig.releases ?? {},
     });
   }
 
@@ -382,94 +291,72 @@ export class SettingsService {
     updates: ProjectSettingsUpdate,
     repoRoot = this.defaultRepoRoot,
   ): ProjectSettings {
+    const currentConfig = readRepoConfig(repoRoot);
     const current = this.getProjectSettings(repoRoot);
-    const merged = {
-      models: { ...current.models, ...updates.models },
-      checks: { ...current.checks, ...updates.checks },
+    const nextModels = { ...current.models, ...omitUndefined(updates.models) };
+    const nextChecks = { ...current.checks, ...omitUndefined(updates.checks) };
+    const nextReleases = updates.releases
+      ? { ...current.releases, ...omitUndefined(updates.releases) }
+      : current.releases;
+
+    const validated = projectSettingsSchema.parse({
+      models: nextModels,
+      checks: nextChecks,
       rules: updates.rules ?? current.rules,
-      schedule: { ...current.schedule, ...updates.schedule },
-      releases: { ...current.releases, ...updates.releases },
+      releases: nextReleases,
+    });
+
+    // The UI's model fields are a projection over `assistant`, `assistants`,
+    // `tiers`, `aliases`, and `worktree`. Map them back onto those keys and
+    // never persist the derived duplicates (plannerModel, reviewerModel, ...).
+    const assistant = validated.models.assistant || currentConfig.assistant || "pi";
+    const tiers = { ...currentConfig.tiers } as Record<string, Record<string, unknown>>;
+    const defaultTierEfforts: Record<string, string> = {
+      small: "medium",
+      medium: validated.models.effort,
+      large:
+        validated.models.effort === "max" || validated.models.effort === "xhigh"
+          ? validated.models.effort
+          : "high",
     };
-    const validated = projectSettingsSchema.parse(merged);
-
-    // Write 1. .animus/config.yaml
-    const animusYamlPath = join(repoRoot, ".animus/config.yaml");
-    let existingYaml: Record<string, any> = {};
-    if (existsSync(animusYamlPath)) {
-      try {
-        const parsed = parseYaml(readFileSync(animusYamlPath, "utf-8"));
-        if (parsed && typeof parsed === "object") {
-          existingYaml = parsed as Record<string, any>;
-        }
-      } catch {}
+    for (const tier of ["small", "medium", "large"]) {
+      const existing = tiers[tier];
+      tiers[tier] = existing
+        ? { ...existing, provider: assistant }
+        : {
+            provider: assistant,
+            model: validated.models.defaultModel,
+            effort: defaultTierEfforts[tier],
+          };
     }
+    if (tiers.medium) tiers.medium.effort = validated.models.effort;
 
-    const nextAssistant = validated.models.assistant || existingYaml.assistant || "pi";
-    const nextModel =
-      validated.models.defaultModel || existingYaml.assistants?.[nextAssistant]?.model || "default";
-    const nextEffort = validated.models.effort || existingYaml.tiers?.medium?.effort || "high";
-    const nextConcurrency = validated.models.concurrencyLimit ?? existingYaml.concurrencyLimit ?? 2;
+    const aliases = { ...currentConfig.aliases } as Record<string, Record<string, unknown>>;
+    aliases["@reasoning"] = {
+      provider: assistant,
+      model:
+        (typeof aliases["@reasoning"]?.model === "string" && aliases["@reasoning"].model) ||
+        validated.models.defaultModel,
+      effort: validated.models.effort === "max" ? "max" : "high",
+    };
 
-    const mergedYaml: Record<string, any> = {
-      ...existingYaml,
-      ...validated.models,
-      assistant: nextAssistant,
+    const nextConfig: RepoConfigFile = {
+      ...currentConfig,
+      assistant,
       assistants: {
-        ...existingYaml.assistants,
-        [nextAssistant]: { model: nextModel },
+        ...currentConfig.assistants,
+        [assistant]: { model: validated.models.defaultModel },
       },
-      tiers: {
-        small: {
-          provider: nextAssistant,
-          model: nextModel,
-          effort: "medium",
-        },
-        medium: {
-          provider: nextAssistant,
-          model: nextModel,
-          effort: nextEffort,
-        },
-        large: {
-          provider: nextAssistant,
-          model: nextModel,
-          effort: nextEffort === "max" || nextEffort === "xhigh" ? nextEffort : "high",
-        },
-        ...existingYaml.tiers,
-      },
-      aliases: {
-        ...existingYaml.aliases,
-        "@reasoning": {
-          provider: nextAssistant,
-          model: nextModel,
-          effort: nextEffort === "max" ? "max" : "high",
-        },
-      },
-      concurrencyLimit: nextConcurrency,
+      tiers,
+      aliases,
+      concurrencyLimit: validated.models.concurrencyLimit,
+      worktree: { ...currentConfig.worktree, strategy: validated.models.worktreeStrategy },
       releases: validated.releases,
     };
+    writeRepoConfig(repoRoot, nextConfig);
 
-    if (mergedYaml.tiers?.small) {
-      mergedYaml.tiers.small.provider = nextAssistant;
-      mergedYaml.tiers.small.model = nextModel;
-    }
-    if (mergedYaml.tiers?.medium) {
-      mergedYaml.tiers.medium.provider = nextAssistant;
-      mergedYaml.tiers.medium.model = nextModel;
-      mergedYaml.tiers.medium.effort = nextEffort;
-    }
-    if (mergedYaml.tiers?.large) {
-      mergedYaml.tiers.large.provider = nextAssistant;
-      mergedYaml.tiers.large.model = nextModel;
-    }
-    if (mergedYaml.aliases?.["@reasoning"]) {
-      mergedYaml.aliases["@reasoning"].provider = nextAssistant;
-      mergedYaml.aliases["@reasoning"].model = nextModel;
-    }
-
-    this.atomicWrite(animusYamlPath, stringifyYaml(mergedYaml));
-
-    // Write 2. .factory/tool-guidance.json
-    const toolGuidancePath = join(repoRoot, ".factory/tool-guidance.json");
+    // Write side files: tool guidance and codebase rules.
+    const toolGuidancePath = join(repoRoot, ".animus/tool-guidance.json");
     const guidanceContent = {
       ...validated.checks.toolGuidance,
       staticCmd: validated.checks.staticCmd,
@@ -479,14 +366,34 @@ export class SettingsService {
     };
     this.atomicWrite(toolGuidancePath, JSON.stringify(guidanceContent, null, 2));
 
-    // Write 3. .factory/codebase-rules.json
-    const rulesPath = join(repoRoot, ".factory/codebase-rules.json");
+    const rulesPath = join(repoRoot, ".animus/codebase-rules.json");
     this.atomicWrite(rulesPath, JSON.stringify(validated.rules, null, 2));
-
-    // Write 4. .factory/schedule.json
-    const schedulePath = join(repoRoot, ".factory/schedule.json");
-    this.atomicWrite(schedulePath, JSON.stringify(validated.schedule, null, 2));
 
     return validated;
   }
+}
+
+/**
+ * Projects the stored repository configuration onto the settings-API view.
+ * The derived fields exist only in the response; they are never written back.
+ */
+function projectModelsFromConfig(config: RepoConfigFile): Record<string, unknown> {
+  const assistant =
+    typeof config.assistant === "string" && config.assistant ? config.assistant : "pi";
+  const assistants = (config.assistants ?? {}) as Record<string, { model?: string }>;
+  const tiers = (config.tiers ?? {}) as Record<string, { model?: string; effort?: string }>;
+  const aliases = (config.aliases ?? {}) as Record<string, { model?: string; effort?: string }>;
+  const worktree = (config.worktree ?? {}) as Record<string, unknown>;
+
+  const defaultModel = assistants[assistant]?.model || tiers.medium?.model || "default";
+  return {
+    assistant,
+    defaultModel,
+    effort: tiers.medium?.effort || aliases["@reasoning"]?.effort || "high",
+    concurrencyLimit: typeof config.concurrencyLimit === "number" ? config.concurrencyLimit : 2,
+    plannerModel: tiers.large?.model || defaultModel,
+    builderModel: tiers.medium?.model || defaultModel,
+    reviewerModel: aliases["@reasoning"]?.model || defaultModel,
+    worktreeStrategy: typeof worktree.strategy === "string" ? worktree.strategy : "isolated",
+  };
 }

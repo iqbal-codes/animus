@@ -9,7 +9,7 @@ Authoritative specification for human-friendly PR bodies (`.agents/skills/pr/SKI
 
 - **Host owns publication and state transitions**: The engine/host orchestrator pins commit identities, validates evidence files, renders delimited PR sections, and posts inline review comments. Agents supply structured observations and local artifact paths; agent text never conveys merge authority or changes lifecycle state.
 - **QA blindfold & fast-fail**: Black-box QA evaluates acceptance criteria (`AC1..ACn`) against an isolated integration checkout without reading builder PR prose. If QA fails, the loop fast-fails (`sent_back`) immediately to the builder without invoking the Code Reviewer.
-- **1-Axis Code & Architecture Review**: Once QA passes, the Code Reviewer inspects the line-numbered `git diff` against `CODING_STANDARDS.md`, `.factory/codebase-rules.json`, external blast radius, module depth, and test quality, posting line-by-line inline diff comments and a summary verdict.
+- **1-Axis Code & Architecture Review**: Once QA passes, the Code Reviewer inspects the line-numbered `git diff` against `CODING_STANDARDS.md`, `.animus/codebase-rules.json`, external blast radius, module depth, and test quality, posting line-by-line inline diff comments and a summary verdict.
 
 ## Identity Distinctions and Candidate Binding
 

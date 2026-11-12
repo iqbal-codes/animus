@@ -469,8 +469,8 @@ for (const terminalPath of ["approved", "failed"] as const) {
       process.env.PATH = `${bin}:${path}`;
       const dossierPath = join(root, ".git/factory-local-loop/dossiers/issue-1.json");
       await mkdir(join(root, ".git/factory-local-loop/dossiers"), { recursive: true });
-      await mkdir(join(root, ".factory"), { recursive: true });
-      await Bun.write(join(root, ".factory/schedule.json"), JSON.stringify({ max_laps: 1 }));
+      await mkdir(join(root, ".animus"), { recursive: true });
+      await Bun.write(join(root, ".animus/schedule.json"), JSON.stringify({ max_laps: 1 }));
       await Bun.write(
         dossierPath,
         JSON.stringify({

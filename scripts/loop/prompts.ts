@@ -3,7 +3,11 @@ import { join } from "node:path";
 import { BUNDLED_PROMPTS } from "./bundled-prompts";
 
 export function resolveAnimusCommandsDir(root: string): string | null {
-  const packPath = join(root, "factory/pack.json");
+  const packPath = existsSync(join(root, ".animus/pack.json"))
+    ? join(root, ".animus/pack.json")
+    : existsSync(join(root, "pack.json"))
+      ? join(root, "pack.json")
+      : join(root, "factory/pack.json");
   if (!existsSync(packPath)) return null;
   try {
     const pack = JSON.parse(readFileSync(packPath, "utf-8"));

@@ -108,8 +108,8 @@ jobs:
       - name: Frozen dependency install
         run: bun install --frozen-lockfile
 
-      - name: Build standalone CLI binary
-        run: bun run build:cli
+      - name: Build per-target CLI binaries
+        run: bun run build:cli:release
 
       - name: Verify release packaging and checksum generation
         run: bun run package:release
@@ -119,9 +119,32 @@ jobs:
           bun -e "
             import { verifyCliBinarySmoke } from './scripts/release/build-cli.ts';
             await verifyCliBinarySmoke({
-              binaryPath: './dist/bin/animus',
+              binaryPath: './dist/release/linux-x64/animus',
             });
             console.log('CLI binary smoke verification passed');
+          "
+
+      - name: Verify every packaged binary matches its target
+        run: |
+          bun -e "
+            import { readdirSync } from 'node:fs';
+            import { join } from 'node:path';
+            import { verifyDistributionTarball } from './scripts/release/package.ts';
+
+            const dir = 'dist/releases';
+            const cliTarball = /^animus-v[0-9.]+-(darwin|linux)-(arm64|x64)\\.tar\\.gz$/;
+            let verified = 0;
+
+            for (const file of readdirSync(dir)) {
+              const match = cliTarball.exec(file);
+              if (!match) continue;
+              const target = { platform: match[1], arch: match[2] };
+              const members = verifyDistributionTarball(join(dir, file), target);
+              console.log(file + ' -> ' + members.animus.format + '/' + members.animus.archs.join('+'));
+              verified += 1;
+            }
+
+            if (verified !== 4) throw new Error('Expected 4 verified CLI tarballs, saw ' + verified);
           "
 
       - name: Verify SHA-256 checksums

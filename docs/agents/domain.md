@@ -10,7 +10,7 @@ How planning, architecture, and implementation skills consume and maintain this 
 - **`GLOSSARY.md`** at the repository root (or **`GLOSSARY-MAP.md`** in multi-context repositories, which points to each context's `GLOSSARY.md`).
 - **`docs/architecture.md`**: settled technology stack, folder/module topology, and the shared reusable component/module catalog produced by `/animus-architecture`.
 - **`docs/adr/`**: Architectural Decision Records covering the area you are about to modify (and `src/<context>/docs/adr/` in multi-context repositories).
-- **`.factory/codebase-rules.json`**: enforced structural rules (`rules`) and canonical shared building blocks (`pattern_registry`) across backend, frontend, CLI, and database layers.
+- **`.animus/codebase-rules.json`**: enforced structural rules (`rules`) and canonical shared building blocks (`pattern_registry`) across backend, frontend, CLI, and database layers.
 
 If `GLOSSARY.md`, `docs/architecture.md`, or `docs/adr/` do not exist yet, **proceed silently**. Do not flag their absence or create empty boilerplate upfront; `/animus-grill`, `/animus-spec`, and `/animus-architecture` establish them when domain terms and architectural boundaries are settled.
 
@@ -54,7 +54,7 @@ If a needed domain concept is missing from the glossary, treat that as a signal:
 
 ## Reuse shared primitives and flag ADR conflicts
 
-- Consult `docs/architecture.md` and `pattern_registry` in `.factory/codebase-rules.json` before creating new UI primitives, data adapters, or service helpers. Reuse registered shared components rather than duplicating patterns across slices.
+- Consult `docs/architecture.md` and `pattern_registry` in `.animus/codebase-rules.json` before creating new UI primitives, data adapters, or service helpers. Reuse registered shared components rather than duplicating patterns across slices.
 - If a proposed change or implementation conflicts with an existing ADR in `docs/adr/`, surface the conflict explicitly rather than overriding it silently:
 
 > _Contradicts ADR-0002 (postgres-for-write-model), but worth reopening because…_

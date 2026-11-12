@@ -1,6 +1,7 @@
 import type { ProjectRegistryService } from "../registry";
 import { SettingsService } from "./service";
-import { personalPreferencesSchema, platformSettingsSchema, projectSettingsSchema } from "./types";
+import { platformSettingsSchema } from "@animus/contracts/machine-config";
+import { personalPreferencesSchema, projectSettingsSchema } from "./types";
 
 export interface SettingsRouteContext {
   settingsService?: SettingsService;

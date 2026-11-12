@@ -57,9 +57,9 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
     execFileSync("git", ["config", "user.name", "Triage Test"], { cwd: root });
     execFileSync("git", ["config", "user.email", "triage@test.local"], { cwd: root });
 
-    mkdirSync(join(root, ".factory/hooks"), { recursive: true });
+    mkdirSync(join(root, ".animus/hooks"), { recursive: true });
     writeFileSync(
-      join(root, ".factory/hooks/loop-guard.ts"),
+      join(root, ".animus/hooks/loop-guard.ts"),
       "export default function registerLoopGuard() {}",
       "utf-8",
     );
@@ -566,6 +566,7 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
 
       expect(result.processed).toHaveLength(1);
       expect(existsSync(join(stateRoot, "runs"))).toBe(false);
+      expect(existsSync(join(root, ".animus/runs"))).toBe(false);
       expect(existsSync(join(root, ".factory/runs"))).toBe(false);
     });
   });
@@ -791,6 +792,7 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
       });
 
       // Delete loop-guard.ts while keeping the accepted triage and planning skills intact
+      rmSync(join(root, ".animus/hooks/loop-guard.ts"), { force: true });
       rmSync(join(root, ".factory/hooks/loop-guard.ts"), { force: true });
 
       const result = await runTriagePass({

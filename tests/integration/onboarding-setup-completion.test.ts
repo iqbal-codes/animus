@@ -1,13 +1,19 @@
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runSetupCommand } from "../../scripts/cli/commands/setup";
+import { installOnboardedAnimusHome, type OnboardedHomeFixture } from "./machine-home-fixture";
 
 const roots: string[] = [];
+let machineHome: OnboardedHomeFixture;
+beforeEach(() => {
+  machineHome = installOnboardedAnimusHome();
+});
 afterEach(() => {
   vi.restoreAllMocks();
+  machineHome?.restore();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 function checkout() {
@@ -26,6 +32,29 @@ function checkout() {
 }
 
 describe("setup enrollment completion", () => {
+  test("refuses to configure a repository before machine onboarding", async () => {
+    const root = checkout();
+    machineHome.restore();
+    const emptyHome = mkdtempSync(join(tmpdir(), "animus-home-empty-"));
+    roots.push(emptyHome);
+    process.env.ANIMUS_HOME = emptyHome;
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
+      logged.push(String(message));
+    });
+
+    const code = await runSetupCommand(
+      { repoRoot: root, json: true, nonInteractive: true, localOnly: true },
+      { detectHarnesses: () => [] },
+    );
+
+    expect(code).toBe(1);
+    expect(logged.join("\n")).toContain("animus onboard");
+    expect(existsSync(join(root, "harness/harness.config.json"))).toBe(false);
+    expect(existsSync(join(root, ".animus/config.yaml"))).toBe(false);
+  });
+
   test("setup registers its configured checkout through the factory and prints one verified result", async () => {
     const root = checkout();
     const output = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -58,6 +87,7 @@ describe("setup enrollment completion", () => {
     expect(output).toHaveBeenCalledTimes(1);
     const result = JSON.parse(String(output.mock.calls[0]![0]));
     expect(result.registration.project.id).toBe("proj_test");
+    expect(existsSync(join(root, ".animus/state/console.db"))).toBe(false);
     expect(existsSync(join(root, ".factory/state/console.db"))).toBe(false);
   });
 

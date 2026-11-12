@@ -51,8 +51,8 @@ describe("Native machine-state controls", () => {
   test("AC3: control state reports truthful brake distinction and never a merge freeze", () => {
     const tmp = mkdtempSync(join(tmpdir(), "control-test-"));
     try {
-      mkdirSync(join(tmp, ".factory"), { recursive: true });
-      writeFileSync(join(tmp, ".factory/PAUSE"), "Paused\n");
+      mkdirSync(join(tmp, ".animus"), { recursive: true });
+      writeFileSync(join(tmp, ".animus/PAUSE"), "Paused\n");
       const state = readControlState(tmp);
       expect(state.paused).toBe(true);
       expect(state.halted).toBe(false);

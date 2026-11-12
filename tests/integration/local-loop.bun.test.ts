@@ -453,6 +453,7 @@ test("triggers post-issue terminal reflection when Lap 0 is sent_back and Lap 1 
     "1:reflector",
   ]);
   expect(existsSync(join(resLap1.runDirectory, "artifacts", "reflection.json"))).toBe(true);
+  expect(existsSync(join(root, ".animus/lessons.jsonl"))).toBe(false);
   expect(existsSync(join(root, ".factory/lessons.jsonl"))).toBe(false);
   const reflection = await Bun.file(join(resLap1.runDirectory, "artifacts/reflection.json")).json();
   expect(reflection.status).toBe("held");
@@ -622,9 +623,9 @@ test("runLocalLoop transitions to needs_owner when review returns outcome needs-
 test("runLocalLoop transitions to needs_owner when lap count reaches max_laps on sent_back", async () => {
   const root = await fixture();
   // Set max_laps = 1 in schedule.json
-  await mkdir(join(root, ".factory"), { recursive: true });
+  await mkdir(join(root, ".animus"), { recursive: true });
   await Bun.write(
-    join(root, ".factory", "schedule.json"),
+    join(root, ".animus", "schedule.json"),
     JSON.stringify({ workflow: "animus-loop", max_laps: 1 }),
   );
 

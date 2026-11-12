@@ -19,12 +19,21 @@ export class HarnessService {
     this.repoRoot = repoRoot;
   }
 
+  private resolvePath(animusRel: string, factoryRel: string): string {
+    const primary = join(this.repoRoot, animusRel);
+    const fallback = join(this.repoRoot, factoryRel);
+    return existsSync(primary) || !existsSync(fallback) ? primary : fallback;
+  }
+
   isSafeMode(): boolean {
-    return existsSync(join(this.repoRoot, ".factory/NO_HARNESS_MEMORY"));
+    return (
+      existsSync(join(this.repoRoot, ".animus/NO_HARNESS_MEMORY")) ||
+      existsSync(join(this.repoRoot, ".factory/NO_HARNESS_MEMORY"))
+    );
   }
 
   readLessons(): HarnessLesson[] {
-    const filePath = join(this.repoRoot, ".factory/lessons.jsonl");
+    const filePath = this.resolvePath(".animus/lessons.jsonl", ".factory/lessons.jsonl");
     if (!existsSync(filePath)) return [];
     const raw = readFileSync(filePath, "utf-8");
     const lessons: HarnessLesson[] = [];
@@ -47,7 +56,7 @@ export class HarnessService {
   }
 
   readTools(): Record<string, string> {
-    const filePath = join(this.repoRoot, ".factory/tool-guidance.json");
+    const filePath = this.resolvePath(".animus/tool-guidance.json", ".factory/tool-guidance.json");
     if (!existsSync(filePath)) return {};
     try {
       const parsed = JSON.parse(readFileSync(filePath, "utf-8"));
@@ -69,7 +78,7 @@ export class HarnessService {
   }
 
   vetoLesson(id: string): HarnessVetoResult | null {
-    const filePath = join(this.repoRoot, ".factory/lessons.jsonl");
+    const filePath = this.resolvePath(".animus/lessons.jsonl", ".factory/lessons.jsonl");
     const lessons = this.readLessons();
     let found = false;
     const updated = lessons.map((lesson) => {

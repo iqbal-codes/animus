@@ -118,10 +118,10 @@ describe("Triage State Containment & Linked Worktrees (#122 / #123 remediation)"
       join(import.meta.dir, "../../.agents/skills"),
       join(repoDir, ".agents/skills"),
     ]);
-    mkdirSync(join(repoDir, ".factory/hooks"), { recursive: true });
+    mkdirSync(join(repoDir, ".animus/hooks"), { recursive: true });
     execFileSync("cp", [
-      join(import.meta.dir, "../../.factory/hooks/loop-guard.ts"),
-      join(repoDir, ".factory/hooks/loop-guard.ts"),
+      join(import.meta.dir, "../../.animus/hooks/loop-guard.ts"),
+      join(repoDir, ".animus/hooks/loop-guard.ts"),
     ]);
     execFileSync("git", ["-C", repoDir, "add", "."]);
     execFileSync("git", [

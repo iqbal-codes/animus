@@ -5,6 +5,8 @@ import { parseCliArgs } from "./args";
 import { BUNDLED_GIT_COMMIT, BUNDLED_IS_BINARY, BUNDLED_VERSION } from "./bundled-build";
 import { renderHelp } from "./help";
 import { runServeCommand, runStandaloneBackend, runStatusCommand } from "./commands/serve";
+import { runStartCommand, runStopCommand } from "./commands/service";
+import { runOnboardCommand } from "./commands/onboard";
 import { runEngineCommand, runLapCommand } from "./commands/engine";
 import { runDoctorCommand } from "./commands/doctor";
 import {
@@ -76,14 +78,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     return 0;
   }
 
-  const managedRepositoryCommand = [
-    "setup",
-    "init",
-    "onboard",
-    "config",
-    "project",
-    "projects",
-  ].includes(command);
+  const managedRepositoryCommand = ["setup", "config", "project", "projects"].includes(command);
   const repoRoot = managedRepositoryCommand
     ? resolve(values.cwd ?? process.cwd())
     : resolveRepoRoot(values.cwd);
@@ -115,8 +110,6 @@ export async function runCli(argv: readonly string[]): Promise<number> {
 
   switch (command) {
     case "setup":
-    case "init":
-    case "onboard":
       return await runSetupCommand({
         repoRoot,
         nonInteractive: Boolean(values.yes),
@@ -164,6 +157,40 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         json: values.json,
       });
 
+    case "onboard":
+      return await runOnboardCommand({
+        cwd: values.cwd,
+        nonInteractive: Boolean(values.yes),
+        json: values.json,
+        reconfigure: Boolean(values.reconfigure),
+        acceptUnverifiedAuth: Boolean(values["accept-unverified-auth"]),
+        provider: values.provider,
+        maxLaps: values["max-laps"] ? Number(values["max-laps"]) : undefined,
+        parallel: values.parallel ? Number(values.parallel) : undefined,
+        intervalSeconds: values.interval ? Number(values.interval) : undefined,
+        workWindow: values["work-window"],
+      });
+
+    case "start":
+      return await runStartCommand({
+        cwd: values.cwd,
+        host: values.host,
+        port,
+        enginePort,
+        stateDir: values["state-dir"],
+        webDir: values["web-dir"],
+        remoteAccess: values["remote-access"],
+        foreground: Boolean(values.foreground),
+        json: values.json,
+      });
+
+    case "stop":
+      return await runStopCommand({
+        cwd: values.cwd,
+        stateDir: values["state-dir"],
+        json: values.json,
+      });
+
     case "serve":
     case "up":
       return await runServeCommand({
@@ -175,6 +202,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         stateDir: values["state-dir"],
         webDir: values["web-dir"],
         remoteAccess: values["remote-access"],
+        foreground: values.foreground !== undefined ? Boolean(values.foreground) : true,
         json: values.json,
       });
 

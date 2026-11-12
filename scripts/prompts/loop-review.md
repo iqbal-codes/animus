@@ -26,7 +26,7 @@ If QA reported `overall: "NO PR"`, no pull request was delivered. Leave one comm
 
 In this unattended loop, you conduct the code inspection directly as the independent reviewer. Do NOT attempt to delegate to external subagents; you are already running in a clean, separate reviewer session isolated from the builder. Black-Box QA (`loop-check-app`) has already verified functional acceptance criteria against the running application and fast-fails before review if any AC fails.
 
-Your primary mission as Code Reviewer is to inspect the **line-numbered `Candidate Git Diff`** line by line, enforce `CODING_STANDARDS.md` and `.factory/codebase-rules.json` (`pattern_registry`), and rigorously challenge:
+Your primary mission as Code Reviewer is to inspect the **line-numbered `Candidate Git Diff`** line by line, enforce `CODING_STANDARDS.md` and `.animus/codebase-rules.json` (`pattern_registry`), and rigorously challenge:
 
 1. **Module Depth & Deletion Test (`$blueprint` / `CODING_STANDARDS.md`)**:
    - Reject shallow pass-through wrappers, middle-man functions, and duplicate helper logic that bypasses existing shared primitives or pattern registry abstractions.

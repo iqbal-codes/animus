@@ -4,10 +4,12 @@ import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { processRun } from "./process";
-import { evaluateCodebaseRulesOnEdit } from "../../.factory/hooks/loop-guard";
+import { evaluateCodebaseRulesOnEdit } from "../../.animus/hooks/loop-guard";
 import { CoordinationError } from "../../apps/backend/src/coordination/errors";
 
 export const DEFAULT_PROTECTED_PATHS = [
+  ".animus/holdout/**",
+  ".animus/hooks/**",
   ".factory/holdout/**",
   ".factory/hooks/**",
   ".claude/settings.json",
@@ -81,7 +83,10 @@ export async function inspectLocalLoop(root: string): Promise<{ common: string; 
     .replace(/^worktree /, "");
   for (const directory of new Set([root, primary, common])) {
     for (const brake of ["STOP", "PAUSE"]) {
-      if (existsSync(join(directory, ".factory", brake)))
+      if (
+        existsSync(join(directory, ".animus", brake)) ||
+        existsSync(join(directory, ".factory", brake))
+      )
         throw new Error(`${brake} brake is active`);
     }
   }
@@ -240,6 +245,7 @@ export async function prepareLoopWorktree(
       "set",
       "--no-cone",
       "/*",
+      "!/.animus/holdout/",
       "!/.factory/holdout/",
     ).catch(() => {});
     await git(worktreePath, "clean", "-fd");
@@ -257,6 +263,7 @@ export async function prepareLoopWorktree(
         "set",
         "--no-cone",
         "/*",
+        "!/.animus/holdout/",
         "!/.factory/holdout/",
       );
       await git(
@@ -275,6 +282,7 @@ export async function prepareLoopWorktree(
         "set",
         "--no-cone",
         "/*",
+        "!/.animus/holdout/",
         "!/.factory/holdout/",
       );
       await git(worktreePath, "checkout", "--ignore-other-worktrees", branch);
@@ -447,8 +455,8 @@ export function allocateWorktree(options: WorktreeAllocationOptions): WorktreeAl
         throw err;
       }
     }
-    // Enforce sparse-checkout Holdout fencing (!/.factory/holdout/)
-    runner(["sparse-checkout", "set", "--no-cone", "/*", "!/.factory/holdout/"], {
+    // Enforce sparse-checkout Holdout fencing (!/.animus/holdout/ and !/.factory/holdout/)
+    runner(["sparse-checkout", "set", "--no-cone", "/*", "!/.animus/holdout/", "!/.factory/holdout/"], {
       cwd: worktreeDir,
     });
     // Checkout target branch into fenced worktree
@@ -456,7 +464,7 @@ export function allocateWorktree(options: WorktreeAllocationOptions): WorktreeAl
   } else {
     // Existing worktree: ensure sparse-checkout holdout fencing is applied
     try {
-      runner(["sparse-checkout", "set", "--no-cone", "/*", "!/.factory/holdout/"], {
+      runner(["sparse-checkout", "set", "--no-cone", "/*", "!/.animus/holdout/", "!/.factory/holdout/"], {
         cwd: worktreeDir,
       });
     } catch {}

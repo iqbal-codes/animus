@@ -10,10 +10,10 @@
 
 - **Canonical Configuration**: `AGENTS.md` and `.agents/skills/` are authoritative sources of truth (`CLAUDE.md -> AGENTS.md`, `.claude/skills -> ../.agents/skills`).
 - **Stage & Workflow Boundary**: Stage playbooks in `.agents/skills/` (`animus-*`, `retro`, `pr`, `skill-creator`, `writing-for-agents`) are **strictly user- or engine-invoked (`disable-model-invocation: true`)**. Never self-invoke, read, chain, or combine stage playbooks unless explicitly requested for the current turn.
-- **Verified Tool Guidance**: Inspect `.factory/tool-guidance.json` for validated CLI recipes (`static`: `$STATIC_CHECK`, `unit`: `$UNIT_TEST`).
-- **Evidence-Backed Lessons**: Inspect `.factory/lessons.jsonl` for repository-specific gotchas matching target files before editing.
+- **Verified Tool Guidance**: Inspect `.animus/tool-guidance.json` for validated CLI recipes (`static`: `$STATIC_CHECK`, `unit`: `$UNIT_TEST`).
+- **Evidence-Backed Lessons**: Inspect `.animus/lessons.jsonl` for repository-specific gotchas matching target files before editing.
 - **Harness Authoring Standard**: Adhere to `docs/agents/harness-authoring-standard.md` when curating lessons, rules, or skills.
-- **Harness Safe Mode**: Bypass dynamic harness memory and use base tooling when `.factory/NO_HARNESS_MEMORY` is present.
+- **Harness Safe Mode**: Bypass dynamic harness memory and use base tooling when `.animus/NO_HARNESS_MEMORY` is present.
 
 ## Domain & Workflow Documentation
 
@@ -26,5 +26,5 @@
 
 - **Red -> Green Loop**: Write failing tests first at agreed public seams using `.agents/skills/tdd/SKILL.md`, then implement minimal passing code.
 - **Blueprint & Two-Strike Unstick**: Compile domain types and stub signatures before bodies (`.agents/skills/blueprint/SKILL.md`). After 2 consecutive check failures, stop editing, probe the shared assumption, and revert scratch debris (`.agents/skills/unstick/SKILL.md`).
-- **Protected Governance Paths**: Keep `MISSION.md`, `FACTORY.md`, `FACTORY_RULES.md`, `harness/**`, `.factory/holdout/**`, and `.factory/hooks/**` untouched during delivery laps.
+- **Protected Governance Paths**: Keep `harness/**`, `.animus/holdout/**`, and `.animus/hooks/**` untouched during delivery laps.
 - **Clean Cutover**: Migrate all callers when modifying contracts; keep one canonical implementation without deprecated shims.

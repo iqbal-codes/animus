@@ -27,3 +27,8 @@ aliases:
 
 worktree:
   baseBranch: main
+schedule:
+  workflow: animus-loop
+  parallel: 1
+  inputs:
+    merge: approve

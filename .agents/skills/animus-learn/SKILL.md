@@ -12,7 +12,7 @@ Authoritative procedure for extracting, curating, and persisting repository less
 
 Use `/animus-learn` when:
 - A delivery lap has completed, and you need to capture discovered quirks, CLI recipes, or gotchas.
-- The repository requires updating `.factory/tool-guidance.json` with verified zero-exit commands.
+- The repository requires updating `.animus/tool-guidance.json` with verified zero-exit commands.
 - You need to evaluate candidate lessons through the configured coding harness before proposing repository memory changes.
 - You are authoring or updating multi-step procedural skills in `.agents/skills/` or `.claude/skills/`.
 
@@ -23,11 +23,11 @@ Use `/animus-learn` when:
    *Completion Criterion*: A structured list of raw candidate observations citing specific log lines or lap identifiers is compiled.
 
 2. **Extract and Verify Working Tool Commands**
-   Verify that discovered test, lint, format, typecheck, or build commands exit with code 0 before updating `.factory/tool-guidance.json`. Run each candidate command in the local terminal to confirm successful completion.
+   Verify that discovered test, lint, format, typecheck, or build commands exit with code 0 before updating `.animus/tool-guidance.json`. Run each candidate command in the local terminal to confirm successful completion.
    *Completion Criterion*: Each tool guidance command is executed in the local environment and exits with code 0 before recording.
 
 3. **Formulate and Gate Candidate Mutations by the Context-Pressure Hierarchy (`/retro`)**
-   Keep Builder context pressure low by routing each finding to the most deterministic layer: mechanical mistakes become `guard` rules (`.factory/codebase-rules.json`), shared abstractions become `pattern` entries, judgment calls belong in `CODING_STANDARDS.md` (read by Reviewer), and only file-scoped runtime traps become `lesson` entries (`.factory/lessons.jsonl`). Follow `docs/spec-learning-reliability-hardening.md`: resolve candidate-bound artifact evidence, validate each mutation, and evaluate grounding and quality through `evaluateLearningWithHarness` (both approvals, confidence >= 0.70, `hallucinationRisk: "grounded_in_logs"`).
+   Keep Builder context pressure low by routing each finding to the most deterministic layer: mechanical mistakes become `guard` rules (`.animus/codebase-rules.json`), shared abstractions become `pattern` entries, judgment calls belong in `CODING_STANDARDS.md` (read by Reviewer), and only file-scoped runtime traps become `lesson` entries (`.animus/lessons.jsonl`). Follow `docs/spec-learning-reliability-hardening.md`: resolve candidate-bound artifact evidence, validate each mutation, and evaluate grounding and quality through `evaluateLearningWithHarness` (both approvals, confidence >= 0.70, `hallucinationRisk: "grounded_in_logs"`).
    *Completion Criterion*: Each proposed mutation is routed to the lowest-context-pressure layer with resolved evidence and a schema-valid harness verdict; held lessons remain inactive.
 
 4. **Propose Reusable Repository Skills**

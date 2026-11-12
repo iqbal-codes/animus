@@ -20,7 +20,7 @@ async function createRepoFixture(): Promise<string> {
     JSON.stringify({
       static: "echo static-ok",
       unit: "echo unit-ok",
-      protected_paths: "harness/**,.factory/holdout/**",
+      protected_paths: "harness/**,.animus/holdout/**",
     }),
   );
 

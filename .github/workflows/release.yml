@@ -58,8 +58,8 @@ jobs:
           echo "version=${CLEAN_VER}" >> "$GITHUB_OUTPUT"
           echo "tag=v${CLEAN_VER}" >> "$GITHUB_OUTPUT"
 
-      - name: Build standalone CLI binary
-        run: bun run build:cli
+      - name: Build per-target CLI binaries
+        run: bun run build:cli:release
         env:
           RELEASE_VERSION: ${{ steps.resolve-version.outputs.version }}
 
@@ -79,7 +79,7 @@ jobs:
           bun -e "
             import { verifyCliBinarySmoke } from './scripts/release/build-cli.ts';
             await verifyCliBinarySmoke({
-              binaryPath: './dist/bin/animus',
+              binaryPath: './dist/release/linux-x64/animus',
               expectedVersion: '${{ steps.resolve-version.outputs.version }}',
             });
             console.log('CLI binary smoke verification passed');

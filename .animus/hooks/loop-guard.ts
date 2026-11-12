@@ -9,7 +9,7 @@
  * 5. Verified CLI guidance hints on bash tool failures (.factory/tool-guidance.json)
  */
 import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 
 const READ_ONLY_TRIAGE_TOOLS = new Set([
   "read",
@@ -68,34 +68,66 @@ export interface CodebaseRulesConfig {
 }
 
 const DEFAULT_PROTECTED_PATTERNS = [
+  /^\.animus\/holdout(\/|$)/,
+  /^\.animus\/hooks(\/|$)/,
   /^\.factory\/holdout(\/|$)/,
   /^\.factory\/hooks(\/|$)/,
-  /^\.claude\/settings\.json$/,
+  /^\.claude\/settings(?:\.local)?\.json$/,
+  /^\.ignore$/,
   /^harness(\/|$)/,
-  /^MISSION\.md$/,
-  /^FACTORY\.md$/,
-  /^FACTORY_RULES\.md$/,
 ];
 
 const SOURCE_FILE_REGEX =
   /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|swift|dart|rb|php|cs|c|cpp|h|sql|prisma|graphql|proto|sh)$/i;
 
-export function isProtectedPath(relPath: string): boolean {
-  const normalized = relPath.replace(/\\/g, "/").replace(/^\.\//, "");
-  return DEFAULT_PROTECTED_PATTERNS.some((rx) => rx.test(normalized));
-}
-
 function globMatchesPath(globPattern: string, targetPath: string): boolean {
   const normPath = targetPath.replace(/\\/g, "/").replace(/^\.\//, "");
   try {
-    if (new Bun.Glob(globPattern).match(normPath)) return true;
+    if (typeof (globalThis as any).Bun?.Glob === "function") {
+      if (new (globalThis as any).Bun.Glob(globPattern).match(normPath)) return true;
+    }
+  } catch {}
+  try {
+    const rxStr =
+      "^" +
+      globPattern
+        .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+        .replace(/\*\*/g, ".*")
+        .replace(/(?<!\.)\*/g, "[^/]*") +
+      "$";
+    if (new RegExp(rxStr, "i").test(normPath)) return true;
   } catch {}
   const cleanToken = globPattern.replace(/\*+/g, "").toLowerCase();
   return cleanToken.length >= 3 && normPath.toLowerCase().includes(cleanToken);
 }
 
+export function isProtectedPath(targetPath: string, cwd: string = process.cwd()): boolean {
+  if (!targetPath || typeof targetPath !== "string") return false;
+  const rawClean = targetPath.trim().replace(/^["']|["']$/g, "");
+  const norm = isAbsolute(rawClean) ? relative(cwd, rawClean) : rawClean;
+  const normalized = norm.replace(/\\/g, "/").replace(/^\.\//, "");
+  if (DEFAULT_PROTECTED_PATTERNS.some((rx) => rx.test(normalized))) return true;
+
+  const configPath = join(cwd, "harness/harness.config.json");
+  if (existsSync(configPath)) {
+    try {
+      const cfg = JSON.parse(readFileSync(configPath, "utf-8"));
+      const rawPaths = cfg?.protected_paths;
+      if (typeof rawPaths === "string" && rawPaths.trim()) {
+        const globs = rawPaths.split(",").map((s: string) => s.trim()).filter(Boolean);
+        for (const g of globs) {
+          if (globMatchesPath(g, normalized)) return true;
+        }
+      }
+    } catch {}
+  }
+  return false;
+}
+
 export function loadCodebaseRules(cwd: string): CodebaseRulesConfig {
-  const p = join(cwd, ".factory/codebase-rules.json");
+  const primaryPath = join(cwd, ".animus/codebase-rules.json");
+  const fallbackPath = join(cwd, ".factory/codebase-rules.json");
+  const p = existsSync(primaryPath) ? primaryPath : fallbackPath;
   if (!existsSync(p)) return { rules: [] };
   try {
     return JSON.parse(readFileSync(p, "utf-8")) as CodebaseRulesConfig;
@@ -168,7 +200,9 @@ export function evaluateCodebaseRulesOnEdit(
 }
 
 function loadMatchingLessonsForFile(cwd: string, relPath: string): string[] {
-  const p = join(cwd, ".factory/lessons.jsonl");
+  const primaryPath = join(cwd, ".animus/lessons.jsonl");
+  const fallbackPath = join(cwd, ".factory/lessons.jsonl");
+  const p = existsSync(primaryPath) ? primaryPath : fallbackPath;
   if (!existsSync(p)) return [];
   const matches: string[] = [];
   try {
@@ -187,7 +221,9 @@ function loadMatchingLessonsForFile(cwd: string, relPath: string): string[] {
 }
 
 function loadToolGuidance(cwd: string): Record<string, string> {
-  const p = join(cwd, ".factory/tool-guidance.json");
+  const primaryPath = join(cwd, ".animus/tool-guidance.json");
+  const fallbackPath = join(cwd, ".factory/tool-guidance.json");
+  const p = existsSync(primaryPath) ? primaryPath : fallbackPath;
   if (!existsSync(p)) return {};
   try {
     return JSON.parse(readFileSync(p, "utf-8"));
@@ -235,16 +271,18 @@ export default function registerLoopGuard(api: any) {
           "HARD DEADLINE: stop tools and report interrupted; the host preserves this attempt.",
       };
     }
+    const normTool = toolName.toLowerCase().trim();
     if (Number.isFinite(softDeadline) && softDeadline > 0 && now >= softDeadline) {
       const checkpoint = process.env.FACTORY_LOOP_CHECKPOINT_PATH;
+      const targetPathForSoft = typeof args.path === "string" ? args.path : typeof args.Path === "string" ? args.Path : "";
       const checkpointWrite =
-        (toolName === "write" || toolName === "edit") &&
+        (normTool === "write" || normTool === "edit") &&
         checkpoint &&
-        typeof args.path === "string" &&
-        resolve(args.path) === resolve(checkpoint);
+        targetPathForSoft &&
+        resolve(targetPathForSoft) === resolve(checkpoint);
       // Deliberately allow only simple read-only git commands, not arbitrary shell syntax.
       const gitInspection =
-        toolName === "bash" &&
+        normTool === "bash" &&
         typeof args.command === "string" &&
         /^git (?:status(?: --short)?|diff(?: --stat| --name-only)?|rev-parse HEAD)$/.test(
           args.command.trim(),
@@ -256,12 +294,12 @@ export default function registerLoopGuard(api: any) {
         };
       }
     }
-    if (toolName === "bash") {
+    if (normTool === "bash") {
       if (typeof args.command === "string") {
         const cmd = args.command;
         if (
-          /\bgit\b.*(?:\s+commit|\s+push|\s+merge)\b.*(?:\s+--no-verify|\s+-n\b)/i.test(cmd) ||
-          /\bgit\b.*(?:\s+--no-verify|\s+-n\b).*(?:\s+commit|\s+push|\s+merge)\b/i.test(cmd) ||
+          /(?:^|[;&|\n]\s*)\bgit\s+(?:[^;&|\n]*?\s+)?(?:commit|push|merge)\s+[^;&|\n]*?(?:--no-verify|-n\b)/i.test(cmd) ||
+          /(?:^|[;&|\n]\s*)\bgit\s+[^;&|\n]*?(?:--no-verify|-n\b)[^;&|\n]*?\s+(?:commit|push|merge)\b/i.test(cmd) ||
           /\bgit\b.*-c\s+core\.hooksPath=(?:\/dev\/null|""|'')/i.test(cmd)
         ) {
           return {
@@ -269,6 +307,30 @@ export default function registerLoopGuard(api: any) {
             reason:
               "HARNESS GUARD: Bypassing git hooks with --no-verify, -n, or overriding core.hooksPath is strictly prohibited. All commits must pass deterministic pre-commit CI gates.",
           };
+        }
+
+        const hasMutation =
+          /(?:>|>>|\btee\b|\b(?:sed|perl)\s+-[a-zA-Z]*i|\b(?:rm|mv|cp|chmod|truncate|ln|install)\b|\bgit\s+(?:checkout|restore|rm|mv|reset|stash)\b)/i.test(
+            cmd,
+          );
+        if (hasMutation) {
+          const protectedTokens = [
+            ".animus/holdout",
+            ".animus/hooks",
+            ".factory/holdout",
+            ".factory/hooks",
+            ".claude/settings",
+            "harness/",
+            ".ignore",
+          ];
+          for (const tok of protectedTokens) {
+            if (cmd.includes(tok)) {
+              return {
+                block: true,
+                reason: `HARNESS GUARD: Modifying protected path '${tok}' via shell command is forbidden.`,
+              };
+            }
+          }
         }
       }
 
@@ -282,27 +344,57 @@ export default function registerLoopGuard(api: any) {
           : requested;
     }
 
-    if ((toolName === "write" || toolName === "edit") && typeof args.path === "string") {
-      if (isProtectedPath(args.path)) {
+    const isWriteTool =
+      normTool === "write" ||
+      normTool === "edit" ||
+      normTool === "write_file" ||
+      normTool === "edit_file" ||
+      normTool === "multiedit" ||
+      normTool === "strreplace" ||
+      normTool === "str_replace_editor";
+
+    const targetPath =
+      typeof args.path === "string"
+        ? args.path
+        : typeof args.Path === "string"
+          ? args.Path
+          : typeof args.file_path === "string"
+            ? args.file_path
+            : typeof args.filePath === "string"
+              ? args.filePath
+              : typeof args.target_file === "string"
+                ? args.target_file
+                : typeof args.file === "string"
+                  ? args.file
+                  : null;
+
+    if (isWriteTool && targetPath) {
+      if (isProtectedPath(targetPath, process.cwd())) {
         return {
           block: true,
-          reason: `HARNESS GUARD: Modifying protected path '${args.path}' inside a delivery lap is forbidden.`,
+          reason: `HARNESS GUARD: Modifying protected path '${targetPath}' inside a delivery lap is forbidden.`,
         };
       }
 
       const candidateText =
         typeof args.content === "string"
           ? args.content
-          : Array.isArray(args.edits)
-            ? args.edits.map((e: any) => e?.newText ?? "").join("\n")
-            : "";
+          : typeof args.Content === "string"
+            ? args.Content
+            : typeof args.new_string === "string"
+              ? args.new_string
+              : typeof args.Replacement === "string"
+                ? args.Replacement
+                : Array.isArray(args.edits)
+                  ? args.edits.map((e: any) => e?.newText ?? "").join("\n")
+                  : "";
 
       if (candidateText) {
-        const evalRes = evaluateCodebaseRulesOnEdit(process.cwd(), args.path, candidateText);
+        const evalRes = evaluateCodebaseRulesOnEdit(process.cwd(), targetPath, candidateText);
         if (evalRes.blocked) {
           return {
             block: true,
-            reason: `CODEBASE STANDARD VIOLATION in '${args.path}':\n${evalRes.reasons.map((r) => `  - ${r}`).join("\n")}`,
+            reason: `CODEBASE STANDARD VIOLATION in '${targetPath}':\n${evalRes.reasons.map((r) => `  - ${r}`).join("\n")}`,
           };
         }
       }

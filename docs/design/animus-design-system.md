@@ -340,7 +340,7 @@ Authored implementation notes from `Animus / Settings / Design handoff` (`F99iQR
 
 `Gw9fV` — **Project configuration:** "Project-owned: model tiers, role routing, verification commands and protected paths, memory and lessons, release policy. Earlier per-project provider and schedule storage mappings are superseded by the platform-only ownership decision and require implementation contract migration."
 
-`RyAd5` — **Memory:** "Lessons: .factory/lessons.jsonl. Rules: .factory/codebase-rules.json. Safe mode: .factory/NO_HARNESS_MEMORY. Keep vetoed lessons visible with an explicit status."
+`RyAd5` — **Memory:** "Lessons: .animus/lessons.jsonl. Rules: .animus/codebase-rules.json. Safe mode: .animus/NO_HARNESS_MEMORY. Keep vetoed lessons visible with an explicit status."
 
 `yXcuw` — **Device / platform configuration:** "Platform-owned: default and installed providers, offline evaluation, shared capacity and per-issue limits, polling, work window, launch controls, GitHub connection, security, backup, reconciliation and diagnostics. No project picker or project-level override."
 

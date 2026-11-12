@@ -11,6 +11,15 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import {
+  RELEASE_TARGETS,
+  bunCompileTarget,
+  isHostCompileTarget,
+  isHostReleaseTarget,
+  releaseBinaryDir,
+  releaseTargetKey,
+  type ReleaseTarget,
+} from "./targets";
 
 export interface BuildCliOptions {
   repoRoot?: string;
@@ -204,6 +213,9 @@ export async function buildStandaloneCli(opts: BuildCliOptions = {}): Promise<{
   aliasOutfile: string;
   version: string;
   gitCommit: string;
+  target: string | null;
+  /** True only when the produced binary was executed; foreign targets cannot run here. */
+  smokeVerified: boolean;
 }> {
   const repoRoot = resolve(opts.repoRoot ?? process.cwd());
   const version = opts.version ?? process.env.RELEASE_VERSION ?? "0.2.0";
@@ -269,7 +281,10 @@ export async function buildStandaloneCli(opts: BuildCliOptions = {}): Promise<{
       spawnSync("codesign", ["-s", "-", aliasOutfile]);
     }
 
-    if (opts.smokeVerify) {
+    // A cross-compiled binary cannot execute on this machine, so a foreign
+    // target is verified by header inspection at packaging time instead.
+    const smokeVerified = opts.smokeVerify === true && isHostCompileTarget(opts.target);
+    if (smokeVerified) {
       await verifyCliBinarySmoke({
         binaryPath: outfile,
         expectedVersion: version,
@@ -277,10 +292,67 @@ export async function buildStandaloneCli(opts: BuildCliOptions = {}): Promise<{
       });
     }
 
-    return { outfile, aliasOutfile, version, gitCommit };
+    return {
+      outfile,
+      aliasOutfile,
+      version,
+      gitCommit,
+      target: opts.target ?? null,
+      smokeVerified,
+    };
   } finally {
     writeFileSync(bundledBuildPath, originalContent, "utf-8");
   }
+}
+
+export interface ReleaseBinaryBuild {
+  target: ReleaseTarget;
+  outfile: string;
+  version: string;
+  gitCommit: string;
+  smokeVerified: boolean;
+}
+
+/**
+ * Compiles one CLI binary per release target into `dist/release/<platform>-<arch>/`.
+ * Each tarball must contain the binary built for its own platform and arch;
+ * packaging refuses anything else.
+ */
+export async function buildReleaseBinaries(
+  opts: {
+    repoRoot?: string;
+    version?: string;
+    gitCommit?: string;
+    outDir?: string;
+  } = {},
+): Promise<ReleaseBinaryBuild[]> {
+  const repoRoot = resolve(opts.repoRoot ?? process.cwd());
+  const outDir = opts.outDir ? resolve(opts.outDir) : null;
+  const builds: ReleaseBinaryBuild[] = [];
+
+  for (const target of RELEASE_TARGETS) {
+    const outfile = outDir
+      ? join(outDir, releaseTargetKey(target), "animus")
+      : join(releaseBinaryDir(repoRoot, target), "animus");
+    const result = await buildStandaloneCli({
+      repoRoot,
+      outfile,
+      target: bunCompileTarget(target),
+      version: opts.version,
+      gitCommit: opts.gitCommit,
+      // Only the host target can be executed here; packaging verifies the rest.
+      smokeVerify: isHostReleaseTarget(target),
+    });
+    builds.push({
+      target,
+      outfile: result.outfile,
+      version: result.version,
+      gitCommit: result.gitCommit,
+      smokeVerified: result.smokeVerified,
+    });
+  }
+
+  return builds;
 }
 
 export async function buildBundledCliScript(opts: BuildCliOptions = {}): Promise<{
@@ -373,6 +445,21 @@ if (isMain) {
     const args = process.argv.slice(2);
     const isBundleOnly = args.includes("--bundle-only") || args.includes("--bundle");
     const isStandaloneOnly = args.includes("--standalone-only") || args.includes("--standalone");
+    const isReleaseTargets = args.includes("--release-targets");
+
+    if (isReleaseTargets) {
+      const builds = await buildReleaseBinaries();
+      for (const build of builds) {
+        const target = `${build.target.platform}-${build.target.arch}`;
+        const verification = build.smokeVerified
+          ? "smoke verified"
+          : "smoke skipped (foreign target)";
+        console.log(
+          `Built ${target} CLI binary v${build.version} (${build.gitCommit}) -> ${build.outfile} (${verification})`,
+        );
+      }
+      process.exit(0);
+    }
 
     if (!isStandaloneOnly) {
       const bundleResult = await buildBundledCliScript({ smokeVerify: true });

@@ -67,7 +67,7 @@ describe("scripts/loop/worktree", () => {
 
     test("throws when STOP or PAUSE brake file exists", async () => {
       const repo = await initGitRepo();
-      const brakeDir = join(repo, ".factory");
+      const brakeDir = join(repo, ".animus");
       await mkdir(brakeDir, { recursive: true });
       await writeFile(join(brakeDir, "STOP"), "emergency stop");
 
@@ -253,9 +253,9 @@ describe("scripts/loop/worktree", () => {
       expect(res.isReused).toBe(false);
       expect(existsSync(wtPath)).toBe(true);
 
-      // Verify sparse checkout pattern includes !/.factory/holdout/
+      // Verify sparse checkout pattern includes !/.animus/holdout/
       const sparsePatterns = await git(wtPath, "sparse-checkout", "list");
-      expect(sparsePatterns).toContain("!/.factory/holdout/");
+      expect(sparsePatterns).toContain("!/.animus/holdout/");
 
       // Verify core.hooksPath was configured
       const hooksPath = await git(wtPath, "config", "core.hooksPath");
@@ -411,9 +411,9 @@ describe("scripts/loop/worktree", () => {
       });
 
       // Configure a blocking codebase rule in the worktree
-      await mkdir(join(wtPath, ".factory"), { recursive: true });
+      await mkdir(join(wtPath, ".animus"), { recursive: true });
       await writeFile(
-        join(wtPath, ".factory", "codebase-rules.json"),
+        join(wtPath, ".animus", "codebase-rules.json"),
         JSON.stringify({
           schema_version: 1,
           rules: [
@@ -428,7 +428,7 @@ describe("scripts/loop/worktree", () => {
           ],
         }),
       );
-      await git(wtPath, "add", ".factory/codebase-rules.json");
+      await git(wtPath, "add", ".animus/codebase-rules.json");
       await git(wtPath, "commit", "-m", "chore: configure codebase rules");
 
       await writeFile(join(wtPath, "logic.ts"), "eval('bad code');\n");
@@ -511,7 +511,7 @@ describe("scripts/loop/worktree", () => {
 
     test("allocateWorktree enforces sparse holdout fence, hooks binding, and PID-verified locking", async () => {
       const repo = await initGitRepo();
-      const holdoutDir = join(repo, ".factory", "holdout");
+      const holdoutDir = join(repo, ".animus", "holdout");
       await mkdir(holdoutDir, { recursive: true });
       await writeFile(join(holdoutDir, "secret.json"), JSON.stringify({ key: "val" }));
       const githooksDir = join(repo, ".githooks");
@@ -532,9 +532,9 @@ describe("scripts/loop/worktree", () => {
       });
 
       expect(alloc.worktreeDir).toBe(wtDir);
-      expect(existsSync(join(wtDir, ".factory", "holdout", "secret.json"))).toBe(false);
+      expect(existsSync(join(wtDir, ".animus", "holdout", "secret.json"))).toBe(false);
       const sparseList = await git(wtDir, "sparse-checkout", "list");
-      expect(sparseList).toContain("!/.factory/holdout/");
+      expect(sparseList).toContain("!/.animus/holdout/");
 
       const configuredHooks = await git(wtDir, "config", "core.hooksPath");
       expect(configuredHooks).toBe(githooksDir);

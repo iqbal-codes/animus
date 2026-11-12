@@ -17,9 +17,6 @@ const ROOT_DOCS = new Set([
   "CHANGELOG.md",
   "CODING_STANDARDS.md",
   "CONTRIBUTING.md",
-  "FACTORY.md",
-  "FACTORY_RULES.md",
-  "MISSION.md",
   "PRD.md",
   "README.md",
   "SECURITY.md",
@@ -34,11 +31,23 @@ const OPTIONAL_PATHS = new Set([
   "docs/architecture.md",
   "docs/adr",
   "docs/adr/",
+  ".animus/NO_HARNESS_MEMORY",
+  ".animus/logs/",
+  ".animus/backup/",
+  ".animus/state/",
+  ".animus/consumer.json",
+  ".animus/schedule.json",
+  ".animus/STOP",
+  ".animus/PAUSE",
+  ".animus/issues/",
+  ".animus/specs/",
+  ".animus/issues/001-export-csv.md",
   ".factory/NO_HARNESS_MEMORY",
   ".factory/logs/",
   ".factory/backup/",
   ".factory/state/",
   ".factory/consumer.json",
+  ".factory/schedule.json",
   ".factory/STOP",
   ".factory/PAUSE",
   "harness/.results/",
@@ -111,7 +120,9 @@ function isFileToken(token) {
   if (pathPart.startsWith("src/") || pathPart.includes("/src/")) return false;
   if (ROOT_DOCS.has(pathPart)) return true;
   if (
-    !/^(?:apps|packages|scripts|tests|docs|factory|harness|\.agents|\.factory)\//.test(pathPart)
+    !/^(?:apps|packages|scripts|tests|docs|factory|harness|\.agents|\.animus|\.factory)\//.test(
+      pathPart,
+    )
   ) {
     return false;
   }

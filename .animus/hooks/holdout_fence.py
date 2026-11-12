@@ -1,10 +1,10 @@
-"""The holdout fence: only the holdout subagents may see .factory/holdout/, and nothing may change the fence.
+"""The holdout fence: only the holdout subagents may see .animus/holdout/ (or legacy .factory/holdout/), and nothing may change the fence.
 
 Claude Code runs this before every tool call (`pre`) and tags each call a subagent makes with its
 `agent_type`. Calls from `holdout-writer` and `holdout-verifier` pass. Every other call (builders,
 reviewers, the manager itself, a human session) is refused, by exit 2, when it would show a scenario:
 
-- it names the folder or a HOLDOUT.md, or globs into `.factory`;
+- it names the folder or a HOLDOUT.md, or globs into `.animus` or `.factory`;
 - it is a recursive search whose scope covers the folder. The Grep and Glob tools skip the folder
   through `.ignore`; shell `grep -r`, `git grep` and `rg --no-ignore` do not;
 - it is a `git diff`, `git log -p` or `git show` whose output would include a file in the folder.
@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 
 HOLDOUT_AGENTS = {"holdout-writer", "holdout-verifier"}
-FOLDER = ".factory/holdout"
+FOLDER = ".animus/holdout" if os.path.exists(".animus/holdout") else ".factory/holdout"
 # Tools that read, search or change files, or hand work to another agent. Output-only tools
 # (StructuredOutput, TodoWrite, ...) are never refused for mentioning the folder.
 ACCESS_TOOLS = {"Bash", "PowerShell", "Read", "Grep", "Glob", "Edit", "Write", "MultiEdit",
@@ -36,8 +36,8 @@ ACCESS_TOOLS = {"Bash", "PowerShell", "Read", "Grep", "Glob", "Edit", "Write", "
 WRITE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 SHELL_TOOLS = {"Bash", "PowerShell"}
 
-NAMED = re.compile(r"\.factory/+(?:holdout(?![\w-])|[*?\[])|(?<![\w-])holdout\.md\b", re.I)
-FENCE = re.compile(r"\.factory/+hooks(?![\w-])|\.claude/+settings(?:\.local)?\.json|(?<![\w.])\.ignore\b", re.I)
+NAMED = re.compile(r"\.(?:animus|factory)/+(?:holdout(?![\w-])|[*?\[])|(?<![\w-])holdout\.md\b", re.I)
+FENCE = re.compile(r"\.(?:animus|factory)/+hooks(?![\w-])|\.claude/+settings(?:\.local)?\.json|(?<![\w.])\.ignore\b", re.I)
 MUTATES = re.compile(
     r">|\btee\b|\b(?:sed|perl)\s+-\w*i|\b(?:rm|mv|cp|chmod|truncate|ln|install)\b|"
     r"\bgit\s+(?:checkout|restore|rm|mv|reset|stash)\b|Set-Content|Add-Content|Out-File|"
@@ -96,10 +96,10 @@ def tokens(segment: str, posix: bool = True) -> list[str]:
 
 
 def excluded(words: list[str]) -> bool:
-    """The search excludes .factory (or the holdout folder) itself."""
+    """The search excludes .animus, .factory (or the holdout folder) itself."""
     text = " ".join(words).replace("\\", "/")
-    return bool(re.search(r"(--exclude-dir[= ]\S*(\.factory|holdout|\.\*))|(:\(exclude\)|:!|:\^)\S*\.factory"
-                          r"|(-g|--glob)[= ]['\"]?!\S*\.factory", text, re.I))
+    return bool(re.search(r"(--exclude-dir[= ]\S*(\.animus|\.factory|holdout|\.\*))|(:\(exclude\)|:!|:\^)\S*\.(?:animus|factory)"
+                          r"|(-g|--glob)[= ]['\"]?!\S*\.(?:animus|factory)", text, re.I))
 
 
 def grep_paths(args: list[str]) -> tuple[bool, list[str]]:

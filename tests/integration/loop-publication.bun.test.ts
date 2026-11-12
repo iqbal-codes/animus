@@ -1329,7 +1329,7 @@ describe("PR and Issue Publication Pipeline with Injected GhRunner", () => {
         JSON.stringify({
           static: "echo static-ok",
           unit: "echo unit-ok",
-          protected_paths: ".factory/holdout/**,harness/**",
+          protected_paths: ".animus/holdout/**,harness/**",
         }),
       );
 

@@ -31,25 +31,76 @@ type TerminalInput = Readable & {
   setRawMode?(value: boolean): void;
 };
 
+interface Style {
+  bold(text: string): string;
+  dim(text: string): string;
+  cyan(text: string): string;
+  green(text: string): string;
+  red(text: string): string;
+}
+
+function createStyle(enabled: boolean): Style {
+  const wrap =
+    (open: number, close: number) =>
+    (text: string): string =>
+      enabled ? `\u001b[${open}m${text}\u001b[${close}m` : text;
+  return {
+    bold: wrap(1, 22),
+    dim: wrap(2, 22),
+    cyan: wrap(36, 39),
+    green: wrap(32, 39),
+    red: wrap(31, 39),
+  };
+}
+
+const ANSI_PATTERN = /\u001b\[[0-9;?]*[A-Za-z]/g;
+
+/** Visible width of a rendered line, ignoring escape sequences. */
+function displayWidth(text: string): number {
+  return Array.from(text.replace(ANSI_PATTERN, "")).length;
+}
+
+/**
+ * Rows a rendered view occupies on screen. The terminal reflows anything wider
+ * than its column count, so cursor-up arithmetic must count wrapped rows, not
+ * newline characters; counting newlines leaves stale copies of long prompts.
+ */
+export function visualRows(view: string, columns: number): number {
+  return view
+    .split("\n")
+    .reduce((rows, line) => rows + Math.max(1, Math.ceil(displayWidth(line) / columns)), 0);
+}
+
 export class TerminalWizardPrompts implements WizardPrompts {
   private cancel?: () => void;
+  private readonly style: Style;
+
   constructor(
     private input: TerminalInput = process.stdin,
     private output: Writable = process.stdout,
   ) {
     emitKeypressEvents(input);
+    const isTTYOut = "isTTY" in output && output.isTTY === true;
+    this.style = createStyle(isTTYOut && !process.env.NO_COLOR);
   }
 
   note(message: string): void {
     this.output.write(`${message}\n`);
   }
+
   close(): void {
     this.cancel?.();
+  }
+
+  private columns(): number {
+    const width = "columns" in this.output ? this.output.columns : undefined;
+    return typeof width === "number" && width > 0 ? Math.max(20, width) : 80;
   }
 
   private question<T>(
     render: () => string,
     keypress: (text: string, key: Key, done: (value: T) => void) => void,
+    summarize?: (value: T) => string,
   ): Promise<T> {
     if (!this.input.isTTY || !this.input.setRawMode)
       return Promise.reject(
@@ -58,12 +109,15 @@ export class TerminalWizardPrompts implements WizardPrompts {
     return new Promise<T>((resolve, reject) => {
       const wasRaw = this.input.isRaw ?? false;
       const wasFlowing = this.input.readableFlowing === true;
-      let lines = 0;
+      let rows = 0;
       let settled = false;
+      const erase = () => {
+        if (rows) this.output.write(`\u001b[${rows}A\r\u001b[0J`);
+      };
       const draw = () => {
-        if (lines) this.output.write(`\u001b[${lines}A\r\u001b[0J`);
+        erase();
         const view = render();
-        lines = view.split("\n").length;
+        rows = visualRows(view, this.columns());
         this.output.write(`${view}\n`);
       };
       const cleanup = () => {
@@ -75,6 +129,11 @@ export class TerminalWizardPrompts implements WizardPrompts {
         process.removeListener("SIGINT", abort);
         process.removeListener("SIGTERM", abort);
         this.cancel = undefined;
+        try {
+          this.output.write("\u001b[?25h");
+        } catch {
+          // A closed output cannot restore the cursor; the terminal handles it.
+        }
         try {
           this.input.setRawMode!(wasRaw);
         } finally {
@@ -89,8 +148,15 @@ export class TerminalWizardPrompts implements WizardPrompts {
         } catch (cleanupError) {
           error ??= cleanupError as Error;
         }
-        if (error) reject(error);
-        else resolve(value as T);
+        if (error) {
+          reject(error);
+          return;
+        }
+        if (summarize && value !== undefined) {
+          erase();
+          this.output.write(`${summarize(value)}\n`);
+        }
+        resolve(value as T);
       };
       const fail = (error: Error) => finish(error);
       const abort = () => finish(new OnboardingCancelled());
@@ -115,6 +181,7 @@ export class TerminalWizardPrompts implements WizardPrompts {
       try {
         this.input.setRawMode!(true);
         this.input.resume();
+        this.output.write("\u001b[?25l");
         draw();
       } catch (error) {
         finish(error as Error);
@@ -127,8 +194,18 @@ export class TerminalWizardPrompts implements WizardPrompts {
     let error = "";
     const checked = new Set(selected);
     return this.question(
-      () =>
-        `${message} (Up/Down, Space toggle, Enter continue, Esc cancel)\n${choices.map((c, i) => `${i === index ? ">" : " "} [${checked.has(c.value) ? "x" : " "}] ${c.label}`).join("\n")}${error ? `\n${error}` : ""}`,
+      () => {
+        const header = `${this.style.cyan("?")} ${this.style.bold(message)}`;
+        const hint = this.style.dim("↑/↓ move · space toggle · enter continue · esc cancel");
+        const list = choices
+          .map((choice, position) => {
+            const pointer = position === index ? this.style.cyan("❯") : " ";
+            const box = checked.has(choice.value) ? this.style.green("[x]") : "[ ]";
+            return `${pointer} ${box} ${choice.label}`;
+          })
+          .join("\n");
+        return `${header}\n  ${hint}\n${list}${error ? `\n  ${this.style.red(error)}` : ""}`;
+      },
       (_text, key, done) => {
         if (key.name === "up") index = (index + choices.length - 1) % choices.length;
         if (key.name === "down") index = (index + 1) % choices.length;
@@ -138,11 +215,17 @@ export class TerminalWizardPrompts implements WizardPrompts {
           else checked.add(value);
         }
         if (key.name === "return") {
-          const values = choices.filter((c) => checked.has(c.value)).map((c) => c.value);
+          const values = choices.filter((choice) => checked.has(choice.value)).map((c) => c.value);
           if (values.length) done(values);
           else error = "Select at least one harness.";
         }
       },
+      (values) =>
+        `${this.style.green("✔")} ${message} ${this.style.dim(
+          values
+            .map((value) => choices.find((choice) => choice.value === value)?.label ?? value)
+            .join(", "),
+        )}`,
     );
   }
 
@@ -154,17 +237,32 @@ export class TerminalWizardPrompts implements WizardPrompts {
   ): Promise<string> {
     let index = Math.max(
       0,
-      choices.findIndex((c) => c.value === initial),
+      choices.findIndex((choice) => choice.value === initial),
     );
     let query = "";
     const filtered = () =>
-      choices.filter((c) => c.label.toLowerCase().includes(query.toLowerCase()));
+      choices.filter((choice) => choice.label.toLowerCase().includes(query.toLowerCase()));
     return this.question(
       () => {
         const list = filtered();
         const start = Math.max(0, index - 4);
         const visible = list.slice(start, start + 8);
-        return `${message} (Up/Down, Enter/Space select, Esc cancel)${searchable ? `\nSearch: ${query}` : ""}\n${list.length ? visible.map((c, i) => `${i + start === index ? ">" : " "} ${c.label}`).join("\n") : "No matches. Backspace to change search."}${list.length > visible.length ? `\n${index + 1}/${list.length} matches` : ""}`;
+        const header = `${this.style.cyan("?")} ${this.style.bold(message)}`;
+        const hint = this.style.dim("↑/↓ move · enter select · esc cancel");
+        const search = searchable ? `\n  ${this.style.dim("search:")} ${query}` : "";
+        const rows = list.length
+          ? visible
+              .map(
+                (choice, position) =>
+                  `${position + start === index ? this.style.cyan("❯") : " "} ${choice.label}`,
+              )
+              .join("\n")
+          : "  no matches — backspace to edit";
+        const counter =
+          list.length > visible.length
+            ? `\n  ${this.style.dim(`${index + 1}/${list.length}`)}`
+            : "";
+        return `${header}${search}\n  ${hint}\n${rows}${counter}`;
       },
       (text, key, done) => {
         const list = filtered();
@@ -188,13 +286,18 @@ export class TerminalWizardPrompts implements WizardPrompts {
           index = 0;
         }
       },
+      (value) =>
+        `${this.style.green("✔")} ${message} ${this.style.dim(
+          choices.find((choice) => choice.value === value)?.label ?? value,
+        )}`,
     );
   }
 
   text(message: string, initial: string): Promise<string> {
     let value = "";
     return this.question(
-      () => `${message} [${initial}] (Enter accepts default, Esc cancels)\n> ${value}`,
+      () =>
+        `${this.style.cyan("?")} ${this.style.bold(message)} ${this.style.dim(`[${initial}]`)}\n  ${this.style.dim("enter accepts default · esc cancels")}\n${this.style.cyan("❯")} ${value}`,
       (text, key, done) => {
         if (key.name === "return") done(value.trim() || initial);
         else if (key.name === "backspace") value = value.slice(0, -1);
@@ -208,6 +311,7 @@ export class TerminalWizardPrompts implements WizardPrompts {
         )
           value += text;
       },
+      (answer) => `${this.style.green("✔")} ${message} ${this.style.dim(answer)}`,
     );
   }
 }

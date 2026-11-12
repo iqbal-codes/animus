@@ -1,17 +1,17 @@
 {
   "repository": "https://github.com/iqbal-codes/animus",
-  "integration_revision_required": "5c4f5e484262185926b37b070457fabb9bfedae0",
-  "description": "Pinned workflow-only SDLC source: an unattended loop (pick, build or ship, black-box app check with fenced holdouts, review, merge gate) and a manager above it. Factory remains a thin consumer; workflow gates own decisions and scheduling is Animus's.",
-  "source_directory": ".animus/workflows/sdlc",
+  "integration_revision_required": "92a693d1302022014d97df6753f11416ebe70917",
+  "description": "Native in-process SDLC engine: an unattended loop (pick, build or ship, black-box app check with fenced holdouts, review, merge gate) and a manager above it.",
+  "source_directory": "scripts/loop",
   "default_inputs": {
     "animus-loop": {
-      "holdout": ".factory/holdout/HOLDOUT.md"
+      "holdout": ".animus/holdout/HOLDOUT.md"
     },
     "animus-manager": {
-      "holdout": ".factory/holdout/HOLDOUT.md"
+      "holdout": ".animus/holdout/HOLDOUT.md"
     },
     "animus-holdouts": {
-      "holdout": ".factory/holdout/HOLDOUT.md"
+      "holdout": ".animus/holdout/HOLDOUT.md"
     }
   },
   "entries": {

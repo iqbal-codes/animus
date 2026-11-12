@@ -51,9 +51,16 @@ function writeMemory(worktree: string, path: string, content: string): void {
   readMemory(worktree, path); mkdirSync(dirname(join(worktree, path)), { recursive: true }); writeFileSync(join(worktree, path), content);
 }
 
+function resolveMemoryPath(worktree: string, animusRel: string, factoryRel: string): string {
+  if (existsSync(join(worktree, animusRel)) || !existsSync(join(worktree, factoryRel))) {
+    return animusRel;
+  }
+  return factoryRel;
+}
+
 function applyMutation(worktree: string, mutation: LearningMutation): string[] {
   if (mutation.category === "lesson") {
-    const path = ".factory/lessons.jsonl";
+    const path = resolveMemoryPath(worktree, ".animus/lessons.jsonl", ".factory/lessons.jsonl");
     const entries = readMemory(worktree, path).split("\n").filter(Boolean).map(line => memoryLessonSchema.parse(JSON.parse(line)));
     const topic = mutation.value.topic.toLowerCase();
     if (entries.some(e => typeof e.topic === "string" && e.topic.toLowerCase() === topic && e.vetoed === true)) throw new Error("operator_veto_topic");
@@ -78,11 +85,11 @@ function applyMutation(worktree: string, mutation: LearningMutation): string[] {
     writeMemory(worktree, path, entries.map(e => JSON.stringify(e)).join("\n") + "\n"); return [path];
   }
   if (mutation.category === "tool") {
-    const path = ".factory/tool-guidance.json"; const current = z.record(z.string(), z.string()).parse(JSON.parse(readMemory(worktree, path) || "{}"));
+    const path = resolveMemoryPath(worktree, ".animus/tool-guidance.json", ".factory/tool-guidance.json"); const current = z.record(z.string(), z.string()).parse(JSON.parse(readMemory(worktree, path) || "{}"));
     current[mutation.key] = mutation.value.command; writeMemory(worktree, path, JSON.stringify(current, null, 2) + "\n"); return [path];
   }
   if (mutation.category === "pattern" || mutation.category === "guard") {
-    const path = ".factory/codebase-rules.json"; const current = rulesMemorySchema.parse(JSON.parse(readMemory(worktree, path) || '{"schema_version":1,"rules":[],"pattern_registry":{}}'));
+    const path = resolveMemoryPath(worktree, ".animus/codebase-rules.json", ".factory/codebase-rules.json"); const current = rulesMemorySchema.parse(JSON.parse(readMemory(worktree, path) || '{"schema_version":1,"rules":[],"pattern_registry":{}}'));
     if (mutation.category === "pattern") { current.pattern_registry ??= {}; current.pattern_registry[mutation.key] = mutation.value; }
     else { current.rules ??= []; current.rules = current.rules.filter((r: { id: string }) => r.id !== mutation.value.id); const { fixtures: _, ...rule } = mutation.value; current.rules.push(rule); }
     writeMemory(worktree, path, JSON.stringify(current, null, 2) + "\n"); return [path];
@@ -158,7 +165,7 @@ export async function deliverLearningProposal(options: LearningDeliveryRequest):
       commandRecords: (options.commandRecords ?? []).filter(record => selected.some(m => m.category === "tool" && m.value.executionId === record.executionId)),
     };
     const receiptContent = JSON.stringify(receipt, null, 2) + "\n";
-    const receiptPath = `.factory/learning-history/${digest(receiptContent)}.json`;
+    const receiptPath = `.animus/learning-history/${digest(receiptContent)}.json`;
     // Preserve a versioned evidence/verdict receipt with the reviewed mutation.
     // A replay that changes no memory is held below rather than creating audit-only churn.
     const changedMemory = (await run(worktree, "git", "status", "--porcelain", "--", ...paths)).length > 0;

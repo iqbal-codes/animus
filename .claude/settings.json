@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.factory/hooks/holdout_fence.py\" pre"
+            "command": "python \"$CLAUDE_PROJECT_DIR/.animus/hooks/holdout_fence.py\" pre"
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.factory/hooks/holdout_fence.py\" post"
+            "command": "python \"$CLAUDE_PROJECT_DIR/.animus/hooks/holdout_fence.py\" post"
           }
         ]
       }

@@ -10,7 +10,9 @@ export function ProjectChecksSection({
   const [staticCmd, setStaticCmd] = useState("bun run check");
   const [unitCmd, setUnitCmd] = useState("bun test");
   const [countPattern, setCountPattern] = useState("Tests\\s+(\\d+)\\s+passed");
-  const [protectedPaths, setProtectedPaths] = useState("MISSION.md,FACTORY.md,harness/**");
+  const [protectedPaths, setProtectedPaths] = useState(
+    "harness/**,.animus/holdout/**,.animus/hooks/**",
+  );
 
   useEffect(() => {
     const url = currentProjectId
@@ -188,7 +190,7 @@ export function ProjectChecksSection({
               </span>
             </div>
             <Badge variant="success" className="font-medium">
-              19 / 19 INSTALLED
+              24 / 24 INSTALLED
             </Badge>
           </div>
 
@@ -197,7 +199,7 @@ export function ProjectChecksSection({
             <div className="flex min-w-0 flex-1 flex-col gap-1">
               <span className="text-sm font-medium leading-[1.4] text-foreground">Guard hooks</span>
               <span className="text-[13px] leading-[1.45] text-text-secondary">
-                Loop guard and holdout fence installed in .factory/hooks/
+                Loop guard and holdout fence installed in .animus/hooks/
               </span>
             </div>
             <Badge variant="success" className="font-medium">
@@ -212,7 +214,7 @@ export function ProjectChecksSection({
                 Acceptance holdouts
               </span>
               <span className="text-[13px] leading-[1.45] text-text-secondary">
-                Isolated from builder and general agents in .factory/holdout/
+                Isolated from builder and general agents in .animus/holdout/
               </span>
             </div>
             <Badge variant="outline" className="font-medium text-text-secondary">

@@ -17,6 +17,9 @@ export interface ParsedCliArgs {
     "factory-url"?: string;
     "factory-token"?: string;
     "local-only"?: boolean;
+    reconfigure?: boolean;
+    "accept-unverified-auth"?: boolean;
+    foreground?: boolean;
     "state-dir"?: string;
     "web-dir"?: string;
     issue?: string;
@@ -104,6 +107,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       "factory-url": { type: "string" },
       "factory-token": { type: "string" },
       "local-only": { type: "boolean", default: false },
+      reconfigure: { type: "boolean", default: false },
+      "accept-unverified-auth": { type: "boolean", default: false },
+      foreground: { type: "boolean", short: "f", default: false },
       "state-dir": { type: "string" },
       "web-dir": { type: "string" },
       issue: { type: "string", short: "i" },

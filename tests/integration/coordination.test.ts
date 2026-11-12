@@ -279,9 +279,9 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
       expect(existsSync(join(worktreeDir, ".worktree.lock"))).toBe(false);
     });
 
-    test("enforces sparse-checkout holdout fencing (!/.factory/holdout/) and .githooks binding in allocated worktree", () => {
-      // Create .factory/holdout/scenario.json and .githooks in repoPath
-      const holdoutDir = join(repoPath, ".factory", "holdout");
+    test("enforces sparse-checkout holdout fencing (!/.animus/holdout/) and .githooks binding in allocated worktree", () => {
+      // Create .animus/holdout/scenario.json and .githooks in repoPath
+      const holdoutDir = join(repoPath, ".animus", "holdout");
       mkdirSync(holdoutDir, { recursive: true });
       writeFileSync(join(holdoutDir, "secret-scenario.json"), JSON.stringify({ secret: "hidden" }));
       const githooksDir = join(repoPath, ".githooks");
@@ -308,15 +308,15 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
         issueNumber: 43,
       });
 
-      // Verify sparse checkout pattern includes !/.factory/holdout/
+      // Verify sparse checkout pattern includes !/.animus/holdout/
       const sparsePatterns = execFileSync("git", ["sparse-checkout", "list"], {
         cwd: worktreeDir,
         encoding: "utf-8",
       });
-      expect(sparsePatterns).toContain("!/.factory/holdout/");
+      expect(sparsePatterns).toContain("!/.animus/holdout/");
 
       // Verify holdout files are NOT checked out on disk in the worktree
-      expect(existsSync(join(worktreeDir, ".factory", "holdout", "secret-scenario.json"))).toBe(
+      expect(existsSync(join(worktreeDir, ".animus", "holdout", "secret-scenario.json"))).toBe(
         false,
       );
 

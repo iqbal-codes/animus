@@ -127,6 +127,7 @@ test("lightweight delivery opens draft review on isolated commit without changin
   expect(result.prUrl).toContain("/pull/1");
   expect(f.git("rev-parse", "HEAD")).toBe(f.candidate);
   expect(f.git("status", "--porcelain")).toBe("");
+  expect(existsSync(join(f.root, ".animus/lessons.jsonl"))).toBe(false);
   expect(existsSync(join(f.root, ".factory/lessons.jsonl"))).toBe(false);
   expect(result.deliveryHead).not.toBe(f.candidate);
 });
@@ -142,9 +143,10 @@ test("structural learning remains isolated and review-required", async () => {
   expect(result.status).toBe("proposed");
   expect(result.reviewRequired).toBe(true);
   expect(result.kind).toBe("structural");
-  expect(readFileSync(join(result.worktree!, ".factory/codebase-rules.json"), "utf8")).toContain(
+  expect(readFileSync(join(result.worktree!, ".animus/codebase-rules.json"), "utf8")).toContain(
     "scripts/port.ts",
   );
+  expect(existsSync(join(f.root, ".animus/codebase-rules.json"))).toBe(false);
   expect(existsSync(join(f.root, ".factory/codebase-rules.json"))).toBe(false);
 });
 
@@ -204,7 +206,7 @@ test("recurrence deduplicates replay, revisions preserve audit, and topic veto b
     });
   const first = await deliver(f.candidate);
   expect(first.status).toBe("proposed");
-  const historyDir = join(first.worktree!, ".factory/learning-history");
+  const historyDir = join(first.worktree!, ".animus/learning-history");
   const receipt = JSON.parse(readFileSync(join(historyDir, readdirSync(historyDir)[0]!), "utf8"));
   expect(receipt.sourceCandidate).toBe(f.candidate);
   expect(receipt.accepted[0].evidence[0].sha256).toMatch(/^[a-f0-9]{64}$/);
@@ -216,7 +218,7 @@ test("recurrence deduplicates replay, revisions preserve audit, and topic veto b
   writeFileSync(f.proposalPath, JSON.stringify(raw));
   const revised = await deliver(first.deliveryHead!);
   expect(revised.status).toBe("proposed");
-  const entries = readFileSync(join(revised.worktree!, ".factory/lessons.jsonl"), "utf8")
+  const entries = readFileSync(join(revised.worktree!, ".animus/lessons.jsonl"), "utf8")
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line));
@@ -225,7 +227,7 @@ test("recurrence deduplicates replay, revisions preserve audit, and topic veto b
   expect(entries[1].occurrence_count).toBe(1);
   entries[0].vetoed = true;
   writeFileSync(
-    join(revised.worktree!, ".factory/lessons.jsonl"),
+    join(revised.worktree!, ".animus/lessons.jsonl"),
     entries.map((e) => JSON.stringify(e)).join("\n") + "\n",
   );
   execFileSync("git", ["add", "."], { cwd: revised.worktree });
@@ -266,7 +268,7 @@ test("distinct recorded runs increase recurrence but preserve their exact eviden
   });
   expect(result.status).toBe("proposed");
   const entry = JSON.parse(
-    readFileSync(join(result.worktree!, ".factory/lessons.jsonl"), "utf8").trim(),
+    readFileSync(join(result.worktree!, ".animus/lessons.jsonl"), "utf8").trim(),
   );
   expect(entry.occurrence_count).toBe(2);
   expect(entry.provenance.map((p: { runId: string }) => p.runId)).toEqual(["run1", "run2"]);
@@ -292,8 +294,8 @@ test("mixed learning requires explicitly separate delivery categories", async ()
   const structural = await deliverLearningProposal({ ...options, category: "structural" });
   expect(lightweight.status).toBe("proposed");
   expect(structural.status).toBe("proposed");
-  expect(existsSync(join(lightweight.worktree!, ".factory/codebase-rules.json"))).toBe(false);
-  expect(existsSync(join(structural.worktree!, ".factory/lessons.jsonl"))).toBe(false);
+  expect(existsSync(join(lightweight.worktree!, ".animus/codebase-rules.json"))).toBe(false);
+  expect(existsSync(join(structural.worktree!, ".animus/lessons.jsonl"))).toBe(false);
 });
 
 test("default harness evaluator in delivery executes via agentTransport and delivers proposal", async () => {
