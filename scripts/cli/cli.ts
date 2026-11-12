@@ -101,6 +101,18 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   }
   const agentsMdAction = values["agents-md"] as "keep" | "overwrite" | undefined;
 
+  if (
+    values.skills !== undefined &&
+    values.skills !== "external" &&
+    values.skills !== "repo"
+  ) {
+    const msg = "--skills must be 'external' or 'repo'";
+    if (values.json) console.log(JSON.stringify({ ok: false, error: msg }));
+    else console.error(`Error: ${msg}`);
+    return 1;
+  }
+  const skillsMode = values.skills as "external" | "repo" | undefined;
+
   if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65535)) {
     const msg = `--port must be an integer between 0 and 65535, got: ${values.port}`;
     if (values.json) console.log(JSON.stringify({ ok: false, error: msg }));
@@ -130,6 +142,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         workWindow: values["work-window"],
         timezone: values.timezone,
         agentsMdAction,
+        skillsMode,
         json: values.json,
       });
 

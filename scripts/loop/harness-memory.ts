@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, readdirSync, readlinkSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
+import { resolveAnimusSkillsHome } from "@animus/contracts/paths";
 import type { LocalIssue, LoopRole } from "./types";
 
 const NON_BUILDER_SKILLS = new Set([
@@ -131,10 +132,34 @@ export function resolveAllowedSkills(root: string, role: LoopRole, acceptedRef?:
       break;
   }
 
-  return Array.from(candidateNames)
-    .map((name) => join(repoSkillsDir, name))
-    .filter((p) => baselineText(root, ref, `.agents/skills/${p.slice(repoSkillsDir.length + 1)}/SKILL.md`) !== undefined
-      && baselineDirectoryMatches(root, ref, `.agents/skills/${p.slice(repoSkillsDir.length + 1)}`));
+  const machineSkillsDir = resolveAnimusSkillsHome();
+  const resolvedPaths: string[] = [];
+
+  for (const name of candidateNames) {
+    const repoRelSkillMd = `.agents/skills/${name}/SKILL.md`;
+    const repoSkillDir = join(repoSkillsDir, name);
+    const repoSkillMdPath = join(repoSkillDir, "SKILL.md");
+
+    const inGitBaseline = baselineText(root, ref, repoRelSkillMd) !== undefined;
+    const onDiskInRepo = existsSync(repoSkillMdPath) || existsSync(repoSkillDir);
+
+    if (inGitBaseline || onDiskInRepo) {
+      // Repository-tracked or dirty local skill: must strictly match baseline text & directory.
+      // If tampered/unaccepted, fails closed (never falls back to machine).
+      if (inGitBaseline && baselineDirectoryMatches(root, ref, `.agents/skills/${name}`)) {
+        resolvedPaths.push(repoSkillDir);
+      }
+      continue;
+    }
+
+    // Skill is not present in repository: fall back to machine canonical skills store.
+    const machineSkillDir = join(machineSkillsDir, name);
+    if (existsSync(join(machineSkillDir, "SKILL.md"))) {
+      resolvedPaths.push(machineSkillDir);
+    }
+  }
+
+  return resolvedPaths;
 }
 
 function regularRepositoryFile(root: string, file: string): boolean {

@@ -62,6 +62,7 @@ export interface ParsedCliArgs {
     "work-window"?: string;
     timezone?: string;
     "agents-md"?: string;
+    skills?: string;
     glob?: string;
     forbid?: string;
     require?: string;
@@ -152,6 +153,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       "work-window": { type: "string" },
       timezone: { type: "string" },
       "agents-md": { type: "string" },
+      skills: { type: "string" },
       glob: { type: "string" },
       forbid: { type: "string" },
       require: { type: "string" },

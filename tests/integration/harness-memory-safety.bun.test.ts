@@ -225,3 +225,38 @@ test("non-Git and invalid baselines fail closed; local safe mode disables accept
   expect(resolveAllowedSkills(plain, "builder")).toEqual([]);
   expect(resolveLoopExtensions(plain)).toEqual([]);
 });
+
+test("skills resolve from machine ~/.animus/skills fallback when repository has no .agents/skills", () => {
+  const root = repository();
+  // Clean repo with no .agents/skills directory
+  put(root, "AGENTS.md", "Clean repo");
+  const accepted = commit(root);
+
+  // Setup mock machine skills dir
+  const machineSkillsDir = mkdtempSync(join(tmpdir(), "animus-machine-skills-"));
+  roots.push(machineSkillsDir);
+  const oldSkillsHome = process.env.ANIMUS_SKILLS_HOME;
+  process.env.ANIMUS_SKILLS_HOME = machineSkillsDir;
+
+  try {
+    mkdirSync(join(machineSkillsDir, "tdd"), { recursive: true });
+    writeFileSync(join(machineSkillsDir, "tdd/SKILL.md"), "Machine Canonical TDD");
+    mkdirSync(join(machineSkillsDir, "animus-triage"), { recursive: true });
+    writeFileSync(join(machineSkillsDir, "animus-triage/SKILL.md"), "Machine Canonical Triage");
+
+    const builderSkills = resolveAllowedSkills(root, "builder", accepted);
+    expect(builderSkills).toContain(join(machineSkillsDir, "tdd"));
+
+    const triageSkills = resolveAllowedSkills(root, "triage", accepted);
+    expect(triageSkills).toContain(join(machineSkillsDir, "animus-triage"));
+
+    // If local repo has an untracked/tampered skill, it must fail closed and NOT fallback to machine
+    put(root, ".agents/skills/tdd/SKILL.md", "UNACCEPTED LOCAL TDD");
+    const builderAfterTamper = resolveAllowedSkills(root, "builder", accepted);
+    expect(builderAfterTamper).not.toContain(join(machineSkillsDir, "tdd"));
+    expect(builderAfterTamper).not.toContain(join(root, ".agents/skills/tdd"));
+  } finally {
+    if (oldSkillsHome !== undefined) process.env.ANIMUS_SKILLS_HOME = oldSkillsHome;
+    else delete process.env.ANIMUS_SKILLS_HOME;
+  }
+});

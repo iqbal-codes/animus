@@ -319,6 +319,7 @@ export interface SetupCommandOptions extends FactoryConnectionOptions {
   workWindow?: string;
   timezone?: string;
   agentsMdAction?: "keep" | "overwrite";
+  skillsMode?: "external" | "repo";
   json?: boolean;
 }
 
@@ -341,6 +342,13 @@ export async function applyRepositorySetup(
     opts.agentsMdAction !== "overwrite"
   ) {
     throw new Error("--agents-md must be 'keep' or 'overwrite'.");
+  }
+  if (
+    opts.skillsMode !== undefined &&
+    opts.skillsMode !== "external" &&
+    opts.skillsMode !== "repo"
+  ) {
+    throw new Error("--skills must be 'external' or 'repo'.");
   }
   for (const [name, value] of Object.entries({
     maxLaps: opts.maxLaps,
@@ -625,6 +633,7 @@ Target: ${repoRoot}`);
       unitTest,
     },
     agentsMdAction,
+    skillsMode: opts.skillsMode,
   });
 
   // Persist 1: .animus/config.yaml
@@ -874,9 +883,13 @@ export async function runConfigCliCommand(opts: {
           console.log(`    - ${issue}`);
         }
         console.log(`  CLAUDE.md Symlink:  ${report.claudeMdSymlink ? "present" : "missing"}`);
-        console.log(
-          `  Installed Skills:   ${report.skillsInstalled.length}/${CANONICAL_SKILL_NAMES.length} (${report.skillsInstalled.join(", ") || "none"})`,
-        );
+        const skillsInfo =
+          report.skillsInstalled.length > 0
+            ? `${report.skillsInstalled.length}/${CANONICAL_SKILL_NAMES.length} (${report.skillsInstalled.join(", ")})`
+            : report.machineSkillsAvailable && report.machineSkillsAvailable.length > 0
+              ? `external (~/.animus/skills) [${report.machineSkillsAvailable.length}/${CANONICAL_SKILL_NAMES.length} available]`
+              : `0/${CANONICAL_SKILL_NAMES.length} (none)`;
+        console.log(`  Installed Skills:   ${skillsInfo}`);
         console.log(
           `  Hooks Installed:    loop-guard=${report.hooksInstalled.loopGuard}, holdout-fence=${report.hooksInstalled.holdoutFence}`,
         );
@@ -924,9 +937,13 @@ export async function runConfigCliCommand(opts: {
       console.log(
         `  AGENTS.md:         ${harnessAudit.agentsMd.status.toUpperCase()} (lines: ${harnessAudit.agentsMd.lineCount})`,
       );
-      console.log(
-        `  Skills Installed:  ${harnessAudit.skillsInstalled.length}/${CANONICAL_SKILL_NAMES.length}`,
-      );
+      const skillsCount =
+        harnessAudit.skillsInstalled.length > 0
+          ? `${harnessAudit.skillsInstalled.length}/${CANONICAL_SKILL_NAMES.length}`
+          : harnessAudit.machineSkillsAvailable && harnessAudit.machineSkillsAvailable.length > 0
+            ? `external (~/.animus/skills) [${harnessAudit.machineSkillsAvailable.length}/${CANONICAL_SKILL_NAMES.length}]`
+            : `0/${CANONICAL_SKILL_NAMES.length}`;
+      console.log(`  Skills Installed:  ${skillsCount}`);
 
       console.log("\nModel Tiers (.animus/config.yaml):");
       console.log(`  Default Assistant: ${animusConfig.assistant ?? "pi"}`);

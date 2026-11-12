@@ -14,6 +14,7 @@ import {
 import { resolveAnimusHome } from "@animus/contracts/paths";
 import { PROVIDER_DESCRIPTORS, isSupportedProvider } from "../../loop/providers";
 import { detectAvailableHarnesses, type DetectedHarnessProvider } from "./harness-detection";
+import { syncMachineCanonicalSkills } from "./harness-scaffold";
 import { TerminalWizardPrompts, type WizardPrompts } from "./onboarding-prompts";
 import { resolveRuntimeRoot } from "../runtime-root";
 import { parseWorkWindow } from "../work-window";
@@ -232,6 +233,24 @@ export async function collectOnboardChecks(
     detail:
       runtimeRoot ?? "no checkout with apps/backend/src/main.ts and apps/engine-host/src/main.ts",
     fix: "Set ANIMUS_SOURCE_ROOT to an animus checkout, or run: git clone https://github.com/iqbal-codes/animus ~/.animus/source && cd ~/.animus/source && bun install --frozen-lockfile",
+  });
+
+  let skillsOk = true;
+  let skillsDetail = "";
+  try {
+    const res = syncMachineCanonicalSkills(opts.home, runtimeRoot ?? undefined);
+    skillsDetail = `${res.installed.length} canonical playbooks synced to ${res.dir}`;
+  } catch (error) {
+    skillsOk = false;
+    skillsDetail = error instanceof Error ? error.message : String(error);
+  }
+  checks.push({
+    id: "canonical-skills",
+    label: "Canonical agent skills",
+    ok: skillsOk,
+    blocking: false,
+    detail: skillsDetail,
+    fix: "Ensure ANIMUS_HOME is writable and source repository or canonical catalog is readable",
   });
 
   const detected = (probes.detectHarnesses ?? detectAvailableHarnesses)();
@@ -502,6 +521,9 @@ export async function onboardMachine(
   };
 
   writeMachineConfig(config, opts.home);
+  try {
+    syncMachineCanonicalSkills(opts.home, config.system.runtimeRoot);
+  } catch {}
   return { ok: true, checks, configPath: machineConfigPath(opts.home), config };
 }
 

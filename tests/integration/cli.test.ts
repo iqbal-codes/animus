@@ -150,6 +150,8 @@ describe("Animus Unified CLI & Repository Setup Onboarding", () => {
     const setupCode = await runCli([
       "setup",
       "--local-only",
+      "--skills",
+      "repo",
       "--cwd",
       tempDir,
       "--yes",
@@ -329,6 +331,42 @@ describe("Animus Unified CLI & Repository Setup Onboarding", () => {
     expect(readFileSync(backupPath, "utf-8")).toBe(existingAgents);
     const newAgents = readFileSync(join(tempDir, "AGENTS.md"), "utf-8");
     expect(newAgents).toContain(".agents/skills/");
+  }, 30_000);
+
+  test("animus setup with default --skills external leaves repository clean without .agents/skills", async () => {
+    const cleanRepo = join(
+      tmpdir(),
+      `factory-clean-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    );
+    mkdirSync(cleanRepo, { recursive: true, mode: 0o700 });
+    execFileSync("git", ["init", "-b", "main"], { cwd: cleanRepo });
+    execFileSync("git", ["remote", "add", "origin", "https://github.com/example/clean-app.git"], {
+      cwd: cleanRepo,
+    });
+    writeFileSync(join(cleanRepo, "package.json"), JSON.stringify({ name: "clean-app" }));
+
+    const setupCode = await runCli([
+      "setup",
+      "--cwd",
+      cleanRepo,
+      "--yes",
+      "--local-only",
+      "--json",
+    ]);
+    expect(setupCode).toBe(0);
+
+    // .agents/skills should NOT exist in external mode
+    expect(existsSync(join(cleanRepo, ".agents/skills"))).toBe(false);
+    expect(existsSync(join(cleanRepo, ".claude/skills"))).toBe(false);
+
+    // Core governance files still scaffolded
+    expect(existsSync(join(cleanRepo, "AGENTS.md"))).toBe(true);
+    expect(existsSync(join(cleanRepo, ".animus/config.yaml"))).toBe(true);
+    expect(existsSync(join(cleanRepo, ".animus/codebase-rules.json"))).toBe(true);
+
+    // Audit passes cleanly in external mode
+    const auditCode = await runCli(["config", "audit", "--cwd", cleanRepo, "--json"]);
+    expect(auditCode).toBe(0);
   }, 30_000);
 
   test("animus setup fails closed before writing files when .git or GitHub origin remote is missing", async () => {
