@@ -207,7 +207,9 @@ test("recurrence deduplicates replay, revisions preserve audit, and topic veto b
   const first = await deliver(f.candidate);
   expect(first.status).toBe("proposed");
   const historyDir = join(first.worktree!, ".animus/learning-history");
-  const receipt = JSON.parse(readFileSync(join(historyDir, readdirSync(historyDir)[0]!), "utf8"));
+  const receiptFile = readdirSync(historyDir).find((name) => name.endsWith(".json"));
+  expect(receiptFile).toBeDefined();
+  const receipt = JSON.parse(readFileSync(join(historyDir, receiptFile!), "utf8"));
   expect(receipt.sourceCandidate).toBe(f.candidate);
   expect(receipt.accepted[0].evidence[0].sha256).toMatch(/^[a-f0-9]{64}$/);
   const repeated = await deliver(first.deliveryHead!);
@@ -376,4 +378,72 @@ test("default harness evaluator in delivery fails closed when agentTransport ret
 
   expect(result.status).toBe("held");
   expect(result.reasons).toContain("delivery_evaluation_rejected");
+});
+
+test("delivery records the mutation in the harness ledger and its generated changelog", async () => {
+  const f = await fixture("pattern", "Use scripts/port.ts for port selection.");
+  const result = await deliverLearningProposal({
+    ...f,
+    verifiedCandidate: f.candidate,
+    baseBranch: "main",
+    publish: false,
+  });
+  expect(result.status).toBe("proposed");
+  const ledger = readFileSync(
+    join(result.worktree!, ".animus/learning-history/ledger.jsonl"),
+    "utf8",
+  )
+    .split("\n")
+    .filter(Boolean);
+  expect(ledger).toHaveLength(1);
+  expect(JSON.parse(ledger[0]!)).toMatchObject({
+    issueNumber: 1,
+    sourceCandidate: f.candidate,
+    mutations: [{ category: "pattern", key: "port" }],
+  });
+  const changelog = readFileSync(
+    join(result.worktree!, ".animus/learning-history/HARNESS-CHANGELOG.md"),
+    "utf8",
+  );
+  expect(changelog).toContain("`pattern:port`");
+  expect(changelog).toContain("#1");
+});
+
+test("the harness ledger appends to the accepted baseline instead of replacing it", async () => {
+  const f = await fixture("pattern", "Use scripts/port.ts for port selection.");
+  const earlier = {
+    at: "2026-01-01T00:00:00Z",
+    issueNumber: 7,
+    branch: "learning/7-earlier",
+    sourceCandidate: f.candidate,
+    receipt: "a".repeat(64),
+    mutations: [{ category: "lesson", key: "earlier-lesson" }],
+  };
+  mkdirSync(join(f.root, ".animus/learning-history"), { recursive: true });
+  writeFileSync(
+    join(f.root, ".animus/learning-history/ledger.jsonl"),
+    `${JSON.stringify(earlier)}\n`,
+  );
+  f.git("add", ".");
+  f.git("commit", "-m", "earlier learning");
+  const result = await deliverLearningProposal({
+    ...f,
+    verifiedCandidate: f.candidate,
+    baseBranch: "main",
+    publish: false,
+  });
+  expect(result.status).toBe("proposed");
+  const ledger = readFileSync(
+    join(result.worktree!, ".animus/learning-history/ledger.jsonl"),
+    "utf8",
+  )
+    .split("\n")
+    .filter(Boolean);
+  expect(ledger).toHaveLength(2);
+  const changelog = readFileSync(
+    join(result.worktree!, ".animus/learning-history/HARNESS-CHANGELOG.md"),
+    "utf8",
+  );
+  expect(changelog).toContain("`lesson:earlier-lesson`");
+  expect(changelog).toContain("`pattern:port`");
 });

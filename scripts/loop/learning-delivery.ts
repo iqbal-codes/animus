@@ -102,6 +102,66 @@ function applyMutation(worktree: string, mutation: LearningMutation): string[] {
   writeMemory(worktree, "AGENTS.md", updated); return [path, "AGENTS.md"];
 }
 
+export const LEARNING_LEDGER_PATH = ".animus/learning-history/ledger.jsonl";
+export const HARNESS_CHANGELOG_PATH = ".animus/learning-history/HARNESS-CHANGELOG.md";
+
+const ledgerEntrySchema = z.strictObject({
+  at: z.string().min(1),
+  issueNumber: z.number().int(),
+  branch: z.string().min(1),
+  sourceCandidate: z.string().regex(/^[a-f0-9]{40,64}$/),
+  receipt: z.string().regex(/^[a-f0-9]{64}$/),
+  mutations: z.array(z.strictObject({ category: z.string().min(1), key: z.string().min(1) })).min(1),
+});
+export type LedgerEntry = z.infer<typeof ledgerEntrySchema>;
+
+/** The one readable answer to "what changed in the harness", newest first. */
+export function renderHarnessChangelog(entries: LedgerEntry[]): string {
+  const lines = [
+    "# Harness changelog",
+    "",
+    "Generated from `.animus/learning-history/ledger.jsonl`; do not edit by hand.",
+    "",
+  ];
+  if (!entries.length) {
+    lines.push("_No learning deliveries recorded yet._", "");
+    return lines.join("\n");
+  }
+  const byDate = new Map<string, LedgerEntry[]>();
+  for (const entry of entries) {
+    const date = entry.at.slice(0, 10);
+    const bucket = byDate.get(date);
+    if (bucket) bucket.push(entry);
+    else byDate.set(date, [entry]);
+  }
+  for (const date of [...byDate.keys()].sort().reverse()) {
+    lines.push(`## ${date}`, "");
+    for (const entry of [...byDate.get(date)!].reverse()) {
+      const summary = entry.mutations.map(m => `\`${m.category}:${m.key}\``).join(", ");
+      lines.push(`- #${entry.issueNumber} — ${summary} — \`${entry.branch}\``);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+/** Append one delivery to the ledger and regenerate the changelog from every readable line. */
+function appendLedgerEntry(worktree: string, entry: LedgerEntry): void {
+  const appended = JSON.stringify(ledgerEntrySchema.parse(entry));
+  const kept = readMemory(worktree, LEARNING_LEDGER_PATH)
+    .split("\n")
+    .filter(Boolean);
+  writeMemory(worktree, LEARNING_LEDGER_PATH, [...kept, appended].join("\n") + "\n");
+  const readable = [...kept, appended].flatMap(line => {
+    try {
+      return [ledgerEntrySchema.parse(JSON.parse(line))];
+    } catch {
+      return [];
+    }
+  });
+  writeMemory(worktree, HARNESS_CHANGELOG_PATH, renderHarnessChangelog(readable));
+}
+
 /** Creates a reviewed delivery candidate, never merges or activates memory. */
 export async function deliverLearningProposal(options: LearningDeliveryRequest): Promise<LearningDeliveryOutcome> {
   const result: LearningDeliveryOutcome = { status: "held", reviewRequired: true, reasons: [] };
@@ -169,7 +229,19 @@ export async function deliverLearningProposal(options: LearningDeliveryRequest):
     // Preserve a versioned evidence/verdict receipt with the reviewed mutation.
     // A replay that changes no memory is held below rather than creating audit-only churn.
     const changedMemory = (await run(worktree, "git", "status", "--porcelain", "--", ...paths)).length > 0;
-    if (changedMemory) { writeMemory(worktree, receiptPath, receiptContent); paths.push(receiptPath); }
+    if (changedMemory) {
+      writeMemory(worktree, receiptPath, receiptContent);
+      paths.push(receiptPath);
+      appendLedgerEntry(worktree, {
+        at: new Date().toISOString(),
+        issueNumber: options.dossier.issueNumber,
+        branch,
+        sourceCandidate: options.verifiedCandidate,
+        receipt: digest(receiptContent),
+        mutations: selected.map(m => ({ category: m.category, key: m.key })),
+      });
+      paths.push(LEARNING_LEDGER_PATH, HARNESS_CHANGELOG_PATH);
+    }
     await run(worktree, "git", "add", "--", ...paths);
     const staged = (await run(worktree, "git", "diff", "--cached", "--name-only")).split("\n").filter(Boolean);
     if (!staged.length) { result.reasons.push("no_new_learning"); return result; }

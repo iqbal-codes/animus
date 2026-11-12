@@ -31,6 +31,11 @@ Factory supplies `holdout=.animus/holdout/HOLDOUT.md` to `animus-loop`, `animus-
 read only by the `holdout-verifier` and `holdout-writer` agents; `.animus/hooks/holdout_fence.py`
 refuses every other agent.
 
+The protected baseline (`.animus/holdout/**`, `.animus/hooks/**`, `.agents/skills/**`, `AGENTS.md`,
+`.claude/settings.json`, `harness/**`) is applied in code for every project, so a learning proposal
+that rewrites a skill or `AGENTS.md` always waits for a human merge. A project's `protected_paths`
+may add to that baseline and never remove it.
+
 ## Runtime and review evidence
 
 Runtime and holdout evidence must exercise the delivered candidate and match its
