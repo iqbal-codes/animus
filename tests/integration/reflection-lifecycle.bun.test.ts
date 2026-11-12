@@ -218,10 +218,10 @@ for (const failDelivery of [false, true]) {
     if (!failDelivery) {
       expect(delivery.kind).toBe("lightweight");
       expect(delivery.deliveryHead).not.toBe(result.candidate!);
-      expect(await Bun.file(join(delivery.worktree, ".factory/tool-guidance.json")).json()).toEqual(
-        { verify: "true" },
-      );
-      expect(await Bun.file(join(result.worktree, ".factory/tool-guidance.json")).exists()).toBe(
+      expect(await Bun.file(join(delivery.worktree, ".animus/tool-guidance.json")).json()).toEqual({
+        verify: "true",
+      });
+      expect(await Bun.file(join(result.worktree, ".animus/tool-guidance.json")).exists()).toBe(
         false,
       );
     }

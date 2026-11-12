@@ -99,7 +99,7 @@ test("3. Merge Queue: enforces review approval and protected paths", () => {
       number: 11,
       url: "https://github.com/repo/pull/11",
       headSha: "def",
-      changedFiles: ["MISSION.md"], // Protected path!
+      changedFiles: ["harness/harness.config.json"], // Protected path!
       reviewApproved: true,
     },
     {
@@ -114,7 +114,7 @@ test("3. Merge Queue: enforces review approval and protected paths", () => {
   const plan = assessMergeBatchDeterministic("owner/repo", "main", "sha-base", candidates);
   expect(plan.eligible).toBe(false);
   expect(plan.pull_requests).toHaveLength(1); // Only PR #10 is eligible
-  expect(plan.reasons.some((r: string) => r.includes("MISSION.md"))).toBe(true);
+  expect(plan.reasons.some((r: string) => r.includes("harness/harness.config.json"))).toBe(true);
   expect(plan.reasons.some((r: string) => r.includes("independent review"))).toBe(true);
 });
 

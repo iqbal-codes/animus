@@ -453,7 +453,10 @@ test("backend forwards diagnostics, catalog, and lap history from authenticated 
   expect(["healthy", "unavailable"]).toContain(diagnostics.status);
   expect(typeof diagnostics.revision_required).toBe("string");
   expect(typeof diagnostics.digest).toBe("string");
-  expect(diagnostics.source_directory).toBe(".animus/workflows/sdlc");
+  const pack = (await Bun.file(join(root, ".animus/pack.json")).json()) as {
+    source_directory: string;
+  };
+  expect(diagnostics.source_directory).toBe(pack.source_directory);
 
   const catalog = await client.catalog();
   expect(Array.isArray(catalog.workflows)).toBe(true);
