@@ -87,6 +87,8 @@ export function assessMergeBatchDeterministic(
     "harness",
     ".animus/holdout",
     ".animus/hooks",
+    ".agents/skills",
+    "AGENTS.md",
     ".factory/holdout",
     ".factory/hooks",
   ];
@@ -209,6 +211,8 @@ const DEFAULT_PROTECTED_PATHS = [
   "harness",
   ".animus/holdout",
   ".animus/hooks",
+  ".agents/skills",
+  "AGENTS.md",
   ".factory/holdout",
   ".factory/hooks",
 ];

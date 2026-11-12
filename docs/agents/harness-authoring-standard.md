@@ -13,7 +13,7 @@ Authoritative schema and formatting constraints for agent-authored repository me
 - **Structure Over Prose (5-Level Hierarchy)**: Encode durable fixes at the highest applicable structural level rather than defaulting to prose lessons:
   1. **Structure (`pattern_registry`)**: Consolidate to one canonical module/component owner and delete superseded patterns.
   2. **Types & Signatures**: Make illegal states unrepresentable with discriminated unions, boundary `unknown` parsing, and exhaustive `never` checks.
-  3. **Automated Guard Rule (`rules` in `codebase-rules.json`)**: Block or warn on repeatable syntax/API pitfalls via regex/glob guards with a `replacement_hint`.
+  3. **Automated Guard Rule (`rules` in `codebase-rules.json`)**: Block or warn on repeatable syntax/API pitfalls via regex/glob guards with a `replacement_hint`. A guard is admitted only when it replays against the issue's own lap commits: it must block a file a failing lap committed and spare a file the delivered lap committed.
   4. **Verified Tool Recipe (`tool-guidance.json`)**: Record zero-exit CLI verification commands.
   5. **Reviewer Coding Standards (`CODING_STANDARDS.md`)**: Place architectural judgment calls, module-depth expectations, and code-smell rules in `CODING_STANDARDS.md` for the Reviewer, keeping the Builder's context window free of instruction bloat.
   6. **File-Scoped Prose Lesson (`lessons.jsonl`)**: Reserve strictly for file-scoped runtime bug traps that levels 1–4 cannot enforce mechanically.

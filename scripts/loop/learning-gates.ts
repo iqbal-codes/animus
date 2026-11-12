@@ -2,9 +2,10 @@ import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { parseDocument } from "yaml";
-import type { IssueDossier } from "./dossier";
+import type { IssueDossier, LapAttemptRecord } from "./dossier";
 import {
   learningVerdictSchema,
+  type GuardDraft,
   type LearningEvidence,
   type ResolvedLearningEvidence,
   type LearningMutation,
@@ -33,6 +34,19 @@ export function resolveLearningEvidence(ref: LearningEvidence, dossier: IssueDos
   return { ...ref, content: ref.quote, sha256: createHash("sha256").update(content).digest("hex") };
 }
 
+/** One rule's block decision on one file's content, shared by fixture admission and replay. */
+export function compileGuardMatcher(guard: {
+  forbid_regex?: string;
+  require_regex?: string;
+}): (content: string) => boolean {
+  const forbid = guard.forbid_regex ? new RegExp(guard.forbid_regex, "m") : undefined;
+  const require = guard.require_regex ? new RegExp(guard.require_regex, "m") : undefined;
+  return (content) => {
+    if (forbid && forbid.test(content)) return true;
+    return Boolean(require && !require.test(content));
+  };
+}
+
 export function validateLearningMutation(mutation: LearningMutation, records: LearningCommandRecord[], dossier: IssueDossier, roots: Record<string, string>): void {
   if (mutation.category === "tool") {
     const record = records.find(r => r.executionId === mutation.value.executionId);
@@ -45,10 +59,8 @@ export function validateLearningMutation(mutation: LearningMutation, records: Le
   }
   if (mutation.category === "guard") {
     const guard = mutation.value;
-    const forbid = guard.forbid_regex ? new RegExp(guard.forbid_regex, "m") : undefined;
-    const require = guard.require_regex ? new RegExp(guard.require_regex, "m") : undefined;
-    const valid = (s: string) => !(forbid?.test(s) ?? false) && (require?.test(s) ?? true);
-    if (!guard.fixtures.valid.every(valid) || guard.fixtures.invalid.some(valid)) throw new Error("guard_fixtures_failed");
+    const blocks = compileGuardMatcher(guard);
+    if (!guard.fixtures.valid.every(s => !blocks(s)) || guard.fixtures.invalid.some(s => !blocks(s))) throw new Error("guard_fixtures_failed");
   }
   if (mutation.category === "skill") {
     const skill = mutation.value;
@@ -61,6 +73,83 @@ export function validateLearningMutation(mutation: LearningMutation, records: Le
     const blocks = steps?.split(/^\d+\.\s/m).slice(1) ?? [];
     if (skill.skill_markdown.split("\n").length > 150 || !skill.skill_markdown.includes("## When to Use") || !blocks.length || blocks.some(step => !step.includes("*Completion Criterion*")) || !skill.agents_md_pointer.includes(`.agents/skills/${skill.skill_name}/SKILL.md`) || skill.agents_md_pointer.includes("\n")) throw new Error("invalid_skill_structure");
   }
+}
+
+export interface GuardReplay {
+  frictionSamples: number;
+  acceptedSamples: number;
+  blockedFriction: number;
+  sparedAccepted: number;
+}
+
+const IS_FRICTION: Record<LapAttemptRecord["status"], boolean> = {
+  waiting_approval: false,
+  merged: false,
+  sent_back: true,
+  failed: true,
+  needs_owner: false,
+};
+const IS_DELIVERED: Record<LapAttemptRecord["status"], boolean> = {
+  waiting_approval: true,
+  merged: true,
+  sent_back: false,
+  failed: false,
+  needs_owner: false,
+};
+
+function pathMatchesGlob(pattern: string, path: string): boolean {
+  try {
+    return new Bun.Glob(pattern).match(path);
+  } catch {
+    return false;
+  }
+}
+
+/** Read one file as a lap committed it, or null when this checkout cannot reach that blob. */
+async function committedContent(root: string, head: string, path: string): Promise<string | null> {
+  const result = await processRun(["git", "show", `${head}:${path}`], root, 20_000);
+  return result.exitCode === 0 ? result.stdout : null;
+}
+
+/**
+ * Replay a proposed guard against the dossier's own history, with no model call.
+ *
+ * A guard earns its place by separating what failed from what shipped: it must block a file a
+ * failing lap committed, and must spare at least one file the delivered lap committed. When the
+ * history cannot be read the mutation is held, because an unreplayable rule is an unproven one.
+ */
+export async function replayGuardAgainstDossier(
+  guard: GuardDraft,
+  options: { root: string; dossier: IssueDossier },
+): Promise<GuardReplay> {
+  const blocks = compileGuardMatcher(guard);
+  const attempts = options.dossier.attempts ?? [];
+  const delivered = [...attempts].reverse().find(a => IS_DELIVERED[a.status]);
+  const replay: GuardReplay = { frictionSamples: 0, acceptedSamples: 0, blockedFriction: 0, sparedAccepted: 0 };
+
+  for (const attempt of attempts) {
+    const friction = IS_FRICTION[attempt.status];
+    if (!friction && attempt !== delivered) continue;
+    const head = attempt.candidateHead?.trim();
+    if (!head) continue;
+    for (const path of attempt.changedFiles ?? []) {
+      if (!pathMatchesGlob(guard.file_glob, path)) continue;
+      const content = await committedContent(options.root, head, path);
+      if (content === null) continue;
+      if (friction) {
+        replay.frictionSamples += 1;
+        if (blocks(content)) replay.blockedFriction += 1;
+      } else {
+        replay.acceptedSamples += 1;
+        if (!blocks(content)) replay.sparedAccepted += 1;
+      }
+    }
+  }
+
+  if (replay.frictionSamples === 0) throw new Error("guard_replay_no_history");
+  if (replay.blockedFriction === 0) throw new Error("guard_replay_no_positive");
+  if (replay.acceptedSamples > 0 && replay.sparedAccepted === 0) throw new Error("guard_replay_indistinguishable");
+  return replay;
 }
 
 export interface EvaluateLearningWithHarnessOptions {

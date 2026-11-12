@@ -118,6 +118,31 @@ test("3. Merge Queue: enforces review approval and protected paths", () => {
   expect(plan.reasons.some((r: string) => r.includes("independent review"))).toBe(true);
 });
 
+test("merge queue leaves agent-surface changes to a human merge", () => {
+  const plan = assessMergeBatchDeterministic("owner/repo", "main", "sha-base", [
+    {
+      number: 21,
+      url: "https://github.com/repo/pull/21",
+      headSha: "aaa",
+      changedFiles: [".agents/skills/animus-review/SKILL.md"],
+      reviewApproved: true,
+    },
+    {
+      number: 22,
+      url: "https://github.com/repo/pull/22",
+      headSha: "bbb",
+      changedFiles: ["AGENTS.md"],
+      reviewApproved: true,
+    },
+  ]);
+  expect(plan.eligible).toBe(false);
+  expect(plan.pull_requests).toHaveLength(0);
+  expect(
+    plan.reasons.some((r: string) => r.includes(".agents/skills/animus-review/SKILL.md")),
+  ).toBe(true);
+  expect(plan.reasons.some((r: string) => r.includes("AGENTS.md"))).toBe(true);
+});
+
 test("4. Deploy: candidate HTTP probe verifies health and candidate match", async () => {
   // Offline mock server test
   const server = Bun.serve({

@@ -11,7 +11,7 @@ import { resolveRoleConfig } from "./config";
 import { buildProviderArgv } from "./providers";
 import type { AgentTransport, LocalLoopStatus, LoopEvidence } from "./types";
 import { learningProposalSchema, learningVerdictSchema, type LearningEvaluator, type LearningCommandRecord, type LearningProposalArtifact } from "./learning-schema";
-import { evaluateLearningWithHarness, resolveLearningEvidence, validateLearningMutation } from "./learning-gates";
+import { evaluateLearningWithHarness, replayGuardAgainstDossier, resolveLearningEvidence, validateLearningMutation } from "./learning-gates";
 import { git } from "./worktree";
 import { deliverLearningProposal, type LearningDeliveryTransport } from "./learning-delivery";
 import { interruptionReport, RoleInterrupted } from "./deadlines";
@@ -203,6 +203,7 @@ export async function runPostIssueReflection(options: RunPostIssueReflectionOpti
         if (proposal.attribution === "confounded") throw new Error("confounded_attribution");
         const evidence = mutation.evidence.map(ref => resolveLearningEvidence(ref, dossier, options.evidenceRoots ?? {}));
         validateLearningMutation(mutation, options.commandRecords ?? [], dossier, options.evidenceRoots ?? {});
+        if (mutation.category === "guard") await replayGuardAgainstDossier(mutation.value, { root: options.root, dossier });
         const verdict = learningVerdictSchema.parse(await evaluator(mutation, evidence));
         if (!verdict.grounding.approved || verdict.grounding.confidence < .7 || !verdict.quality.approved || verdict.quality.confidence < .7 || verdict.hallucinationRisk !== "grounded_in_logs") throw new Error("evaluation_rejected");
         artifact.accepted.push({ mutation, evidence, verdict });

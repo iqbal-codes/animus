@@ -110,6 +110,9 @@ export const DEFAULT_PROVIDER_MODELS: Record<
   },
 };
 
+/** Agent-facing harness surfaces: the loop may rewrite them, a human must merge them. */
+const AGENT_SURFACE_PROTECTED = ".agents/skills/**,AGENTS.md";
+
 export function detectRepoCheckCommands(repoRoot: string): DetectedRepoCommands {
   const existingHarnessPath = join(repoRoot, "harness/harness.config.json");
   if (existsSync(existingHarnessPath)) {
@@ -124,7 +127,8 @@ export function detectRepoCheckCommands(repoRoot: string): DetectedRepoCommands 
           unitTest: existing.unit,
           unitCountPattern: existing.unit_count_pattern ?? "Tests\\s+(\\d+)\\s+passed",
           protectedPaths:
-            existing.protected_paths ?? "harness/**,.animus/**,.claude/settings.json,.ignore",
+            existing.protected_paths ??
+            `harness/**,.animus/**,.claude/settings.json,.ignore,${AGENT_SURFACE_PROTECTED}`,
         };
       }
     } catch {}
@@ -167,7 +171,7 @@ export function detectRepoCheckCommands(repoRoot: string): DetectedRepoCommands 
         staticCheck,
         unitTest,
         unitCountPattern: "Tests\\s+(\\d+)\\s+passed|(\\d+)\\s+pass",
-        protectedPaths: "harness/**,.animus/**,.claude/settings.json,.ignore",
+        protectedPaths: `harness/**,.animus/**,.claude/settings.json,.ignore,${AGENT_SURFACE_PROTECTED}`,
       };
     } catch {}
   }
@@ -178,7 +182,7 @@ export function detectRepoCheckCommands(repoRoot: string): DetectedRepoCommands 
       staticCheck: "cargo check",
       unitTest: "cargo test",
       unitCountPattern: "(\\d+)\\s+passed",
-      protectedPaths: "harness/**,.animus/**",
+      protectedPaths: `harness/**,.animus/**,${AGENT_SURFACE_PROTECTED}`,
     };
   }
 
@@ -188,7 +192,7 @@ export function detectRepoCheckCommands(repoRoot: string): DetectedRepoCommands 
       staticCheck: "go vet ./...",
       unitTest: "go test ./...",
       unitCountPattern: "ok\\s+",
-      protectedPaths: "harness/**,.animus/**",
+      protectedPaths: `harness/**,.animus/**,${AGENT_SURFACE_PROTECTED}`,
     };
   }
 
@@ -198,7 +202,7 @@ export function detectRepoCheckCommands(repoRoot: string): DetectedRepoCommands 
       staticCheck: "flutter analyze",
       unitTest: "flutter test",
       unitCountPattern: "All tests passed|\\+(\\d+)",
-      protectedPaths: "harness/**,.animus/**",
+      protectedPaths: `harness/**,.animus/**,${AGENT_SURFACE_PROTECTED}`,
     };
   }
 
@@ -214,7 +218,7 @@ export function detectRepoCheckCommands(repoRoot: string): DetectedRepoCommands 
       staticCheck: isGradle ? "./gradlew check -x test" : "mvn test-compile",
       unitTest: isGradle ? "./gradlew test" : "mvn test",
       unitCountPattern: "BUILD SUCCESSFUL|Tests run:\\s*(\\d+)",
-      protectedPaths: "harness/**,.animus/**",
+      protectedPaths: `harness/**,.animus/**,${AGENT_SURFACE_PROTECTED}`,
     };
   }
 
@@ -227,7 +231,7 @@ export function detectRepoCheckCommands(repoRoot: string): DetectedRepoCommands 
       staticCheck: "python3 -m compileall .",
       unitTest: "pytest",
       unitCountPattern: "(\\d+)\\s+passed",
-      protectedPaths: "harness/**,.animus/**",
+      protectedPaths: `harness/**,.animus/**,${AGENT_SURFACE_PROTECTED}`,
     };
   }
 
@@ -236,7 +240,7 @@ export function detectRepoCheckCommands(repoRoot: string): DetectedRepoCommands 
     staticCheck: "true",
     unitTest: "true",
     unitCountPattern: "",
-    protectedPaths: "harness/**,.animus/**",
+    protectedPaths: `harness/**,.animus/**,${AGENT_SURFACE_PROTECTED}`,
   };
 }
 
