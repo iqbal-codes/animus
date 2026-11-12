@@ -383,11 +383,12 @@ describe("project work identity and immutable revisions", () => {
       { version: 16, name: "delivery_role_claims" },
       { version: 17, name: "delivery_role_claim_reconcile_audit" },
       { version: 18, name: "consolidate_delivery_state_and_merge_audit" },
+      { version: 19, name: "child_merge_without_pull_request" },
     ]);
     db.close();
     db = initializeDatabase(dbPath);
     expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({
-      count: 17,
+      count: 18,
     });
   });
 
