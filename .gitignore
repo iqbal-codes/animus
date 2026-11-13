@@ -39,3 +39,5 @@ artifacts/
 test-results/
 playwright-report/
 .claude/worktrees/
+.commandcode/
+.trail/statusline.cjs
