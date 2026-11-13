@@ -850,6 +850,76 @@ export class DispatchService {
     return rows.map((row) => this.mapRun(row));
   }
 
+  /**
+   * Returns all distinct active run targets across every project, including
+   * terminal builder runs that still own an active delivery-role claim.
+   */
+  listActiveRunTargets(): Array<{ projectId: string; runId: string }> {
+    const activeRuns = this.db
+      .prepare(`SELECT id, project_id FROM dispatch_runs WHERE ${activeStateCondition()}`)
+      .all() as Array<{ id: string; project_id: string }>;
+    const activeRoles = this.db
+      .prepare(
+        `SELECT DISTINCT run_id AS id, project_id FROM delivery_role_claims WHERE state IN ('running', 'interrupted')`,
+      )
+      .all() as Array<{ id: string; project_id: string }>;
+    const seen = new Set<string>();
+    const targets: Array<{ projectId: string; runId: string }> = [];
+    for (const row of [...activeRuns, ...activeRoles]) {
+      const key = `${row.project_id}:${row.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      targets.push({ projectId: row.project_id, runId: row.id });
+    }
+    return targets;
+  }
+
+  /**
+   * Terminates every active builder and delivery-role process across all projects.
+   */
+  stopAllActiveRuns(options?: {
+    actor?: string;
+    reason?: string;
+    signal?: "SIGTERM" | "SIGKILL";
+  }): {
+    stoppedRuns: number;
+    runIds: string[];
+    failedRuns: Array<{ runId: string; error: string }>;
+  } {
+    const targets = this.listActiveRunTargets();
+    const runIds: string[] = [];
+    const failedRuns: Array<{ runId: string; error: string }> = [];
+    const actor = options?.actor ?? "operator";
+    const reason = options?.reason ?? "operator_emergency_stop";
+    const signal = options?.signal ?? "SIGTERM";
+
+    for (const target of targets) {
+      try {
+        this.applyControl(target.projectId, target.runId, {
+          action: "stop",
+          actor,
+          reason,
+          signal,
+        });
+        runIds.push(target.runId);
+      } catch (error) {
+        if (error instanceof DispatchError && error.code === "run_not_active") {
+          continue;
+        }
+        failedRuns.push({
+          runId: target.runId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return {
+      stoppedRuns: runIds.length,
+      runIds,
+      failedRuns,
+    };
+  }
+
   getRun(projectId: string, runId: string): PlanDispatchRun {
     const row = this.db
       .prepare("SELECT * FROM dispatch_runs WHERE project_id = ? AND id = ?")

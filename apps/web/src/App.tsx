@@ -8,7 +8,13 @@ import { JobsScreen } from "@/features/jobs/jobs-screen";
 import { InboxScreen } from "@/features/inbox/inbox-screen";
 import { SettingsModal } from "@/features/settings/settings-modal";
 import type { Scope, SectionId } from "@/features/settings/settings-types";
-import { emptyBoard, mapOperatorBoard, selectInbox } from "@/features/jobs/jobs-model";
+import {
+  ALL_PROJECTS_ID,
+  emptyBoard,
+  mapOperatorBoard,
+  mergeOperatorBoards,
+  selectInbox,
+} from "@/features/jobs/jobs-model";
 import { useOperatorBoard } from "@/features/jobs/use-board";
 import type { BackendState } from "@/features/jobs/factory-status";
 import { loadPreferences, savePreferences, type Preferences } from "@/lib/preferences";
@@ -53,8 +59,12 @@ export function App() {
       : "connecting";
 
   const board =
-    boardState.phase === "ready" && boardState.board
-      ? mapOperatorBoard(boardState.board)
+    boardState.phase === "ready"
+      ? projectId === ALL_PROJECTS_ID
+        ? mergeOperatorBoards(boardState.boards)
+        : boardState.board
+          ? mapOperatorBoard(boardState.board)
+          : emptyBoard()
       : emptyBoard();
   const boardLoading = boardState.phase === "loading";
   const boardError = boardState.phase === "error" ? boardState.message : null;
@@ -87,8 +97,12 @@ export function App() {
                 board={board}
                 backendState={backendState}
                 includeFailed={preferences.notifyFailedJobs}
+                projectId={projectId}
+                projects={projects}
+                onSelectProject={(id) => void selectProject(id)}
                 loading={boardLoading}
                 error={boardError}
+                onRefresh={() => void reload()}
                 onOpenJobs={() => setTab("jobs")}
               />
             )}

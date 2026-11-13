@@ -41,9 +41,12 @@ export type SpecProgress = {
   finalState: string | null;
 };
 
+export const ALL_PROJECTS_ID = "all";
+
 export type TaskCardJob = {
   id: string;
   ref: string;
+  projectId?: string;
   repository?: string;
   stage: StageChip;
   pullRequest?: { label: string; ink: Ink };
@@ -244,7 +247,11 @@ function attentionOf(card: OperatorBoardCard, since: string): TaskCardJob["atten
   return undefined;
 }
 
-export function mapBoardCard(card: OperatorBoardCard, now = Date.now()): TaskCardJob {
+export function mapBoardCard(
+  card: OperatorBoardCard,
+  now = Date.now(),
+  context?: { projectId?: string; repository?: string },
+): TaskCardJob {
   const since = formatRelative(card.updatedAt, now);
   const specProgress = card.specProgress
     ? {
@@ -257,6 +264,8 @@ export function mapBoardCard(card: OperatorBoardCard, now = Date.now()): TaskCar
   return {
     id: card.id,
     ref: card.ref,
+    ...(context?.projectId ? { projectId: context.projectId } : {}),
+    ...(context?.repository ? { repository: context.repository } : {}),
     stage: {
       label: card.stageLabel,
       surface: LANE_SURFACE[card.lane] ?? "surface",
@@ -295,36 +304,34 @@ export function formatCost(micros: number): string {
   return `$${(micros / 1_000_000).toFixed(2)}`;
 }
 
-/**
- * Project the canonical backend board into the existing Kanban model. Columns,
- * ordering and card styling are preserved; only real facts fill the cells.
- */
-export function mapOperatorBoard(board: OperatorBoard, now = Date.now()): JobsBoardModel {
-  const needsOwner = board.lanes.find((lane) => lane.id === "needs-owner")?.count ?? 0;
-  const approval = board.lanes.find((lane) => lane.id === "approval")?.count ?? 0;
-  const totalJobs = board.lanes.reduce((sum, lane) => sum + lane.count, 0);
-  const availableSlots = Math.max(0, board.counts.capacity - board.counts.workers);
-  const usage = board.usage;
+function buildBoardKpis(params: {
+  counts: OperatorBoard["counts"];
+  usage: OperatorBoard["usage"];
+  needsOwner: number;
+  approval: number;
+}): KpiModel[] {
+  const { counts, usage, needsOwner, approval } = params;
+  const availableSlots = Math.max(0, counts.capacity - counts.workers);
   const tokens =
     usage.available && usage.tokensIn !== null && usage.tokensOut !== null
       ? usage.tokensIn + usage.tokensOut
       : null;
 
-  const kpis: KpiModel[] = [
+  return [
     {
       label: "Executable tickets",
-      value: String(board.counts.tickets),
-      description: `${board.counts.specs} specs · ${board.counts.unplanned} unplanned`,
+      value: String(counts.tickets),
+      description: `${counts.specs} specs · ${counts.unplanned} unplanned`,
       icon: "layers",
     },
     {
       label: "Active workers",
-      value: `${board.counts.workers} / ${board.counts.capacity}`,
+      value: `${counts.workers} / ${counts.capacity}`,
       description:
-        board.counts.workers > board.counts.capacity
+        counts.workers > counts.capacity
           ? "Above configured capacity"
           : `${availableSlots} slots available`,
-      ink: board.counts.workers > 0 ? "success" : "secondary",
+      ink: counts.workers > 0 ? "success" : "secondary",
       icon: "cpu",
     },
     {
@@ -350,6 +357,23 @@ export function mapOperatorBoard(board: OperatorBoard, now = Date.now()): JobsBo
       icon: "wallet",
     },
   ];
+}
+
+/**
+ * Project the canonical backend board into the existing Kanban model. Columns,
+ * ordering and card styling are preserved; only real facts fill the cells.
+ */
+export function mapOperatorBoard(board: OperatorBoard, now = Date.now()): JobsBoardModel {
+  const needsOwner = board.lanes.find((lane) => lane.id === "needs-owner")?.count ?? 0;
+  const approval = board.lanes.find((lane) => lane.id === "approval")?.count ?? 0;
+  const totalJobs = board.lanes.reduce((sum, lane) => sum + lane.count, 0);
+
+  const kpis = buildBoardKpis({
+    counts: board.counts,
+    usage: board.usage,
+    needsOwner,
+    approval,
+  });
 
   const lanes: KanbanLaneModel[] = BOARD_LANE_TEMPLATE.map((template) => {
     const projected = board.lanes.find((lane) => lane.id === template.id);
@@ -359,7 +383,9 @@ export function mapOperatorBoard(board: OperatorBoard, now = Date.now()): JobsBo
       icon: template.icon,
       iconInk: template.iconInk,
       count: projected?.count ?? 0,
-      cards: (projected?.cards ?? []).map((card) => mapBoardCard(card, now)),
+      cards: (projected?.cards ?? []).map((card) =>
+        mapBoardCard(card, now, { projectId: board.projectId }),
+      ),
     };
   });
 
@@ -368,6 +394,102 @@ export function mapOperatorBoard(board: OperatorBoard, now = Date.now()): JobsBo
     totalJobs,
     freshness: `Updated ${formatRelative(board.generatedAt, now)}`,
     kpis,
+    lanes,
+  };
+}
+
+/**
+ * Aggregate multiple project boards into one combined Kanban/Inbox projection,
+ * tagging every card with its source projectId and repository pill.
+ */
+export function mergeOperatorBoards(boards: OperatorBoard[], now = Date.now()): JobsBoardModel {
+  if (boards.length === 0) return emptyBoard("All repositories");
+  if (boards.length === 1) return mapOperatorBoard(boards[0]!, now);
+
+  const counts: OperatorBoard["counts"] = {
+    tickets: 0,
+    specs: 0,
+    unplanned: 0,
+    workers: 0,
+    capacity: 0,
+  };
+  let anyUsage = false;
+  let tokensIn = 0;
+  let tokensOut = 0;
+  let cacheReadTokens = 0;
+  let anyCacheRead = false;
+  let costMicros = 0;
+  let anyCost = false;
+  let latestGeneratedAt = 0;
+
+  for (const board of boards) {
+    counts.tickets += board.counts.tickets;
+    counts.specs += board.counts.specs;
+    counts.unplanned += board.counts.unplanned;
+    counts.workers += board.counts.workers;
+    counts.capacity += board.counts.capacity;
+    if (board.generatedAt > latestGeneratedAt) latestGeneratedAt = board.generatedAt;
+    if (board.usage.available) {
+      anyUsage = true;
+      tokensIn += board.usage.tokensIn ?? 0;
+      tokensOut += board.usage.tokensOut ?? 0;
+      if (board.usage.cacheReadTokens !== null) {
+        anyCacheRead = true;
+        cacheReadTokens += board.usage.cacheReadTokens;
+      }
+      if (board.usage.costMicros !== null) {
+        anyCost = true;
+        costMicros += board.usage.costMicros;
+      }
+    }
+  }
+
+  const lanes: KanbanLaneModel[] = BOARD_LANE_TEMPLATE.map((template) => {
+    let count = 0;
+    const cards: TaskCardJob[] = [];
+    for (const board of boards) {
+      const projected = board.lanes.find((lane) => lane.id === template.id);
+      if (!projected) continue;
+      count += projected.count;
+      for (const card of projected.cards) {
+        cards.push(
+          mapBoardCard(card, now, {
+            projectId: board.projectId,
+            repository: board.repository,
+          }),
+        );
+      }
+    }
+    return {
+      id: template.id,
+      title: template.title,
+      icon: template.icon,
+      iconInk: template.iconInk,
+      count,
+      cards,
+    };
+  });
+
+  const needsOwner = lanes.find((lane) => lane.id === "needs-owner")?.count ?? 0;
+  const approval = lanes.find((lane) => lane.id === "approval")?.count ?? 0;
+  const totalJobs = lanes.reduce((sum, lane) => sum + lane.count, 0);
+
+  const usage: OperatorBoard["usage"] = {
+    available: anyUsage,
+    tokensIn: anyUsage ? tokensIn : null,
+    tokensOut: anyUsage ? tokensOut : null,
+    cacheReadTokens: anyCacheRead ? cacheReadTokens : null,
+    costMicros: anyCost ? costMicros : null,
+    detail: anyUsage
+      ? "Aggregated across repositories"
+      : (boards[0]?.usage.detail ?? "No usage records available"),
+  };
+
+  return {
+    repository: "All repositories",
+    totalJobs,
+    freshness: `Updated ${formatRelative(latestGeneratedAt, now)}`,
+    kpis: buildBoardKpis({ counts, usage, needsOwner, approval }),
     lanes,
   };
 }

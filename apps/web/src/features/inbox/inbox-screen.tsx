@@ -13,6 +13,8 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "cn";
+import type { Project } from "@animus/contracts/operator";
+import { client } from "@/lib/factory-client";
 import { JobsHeader } from "@/features/jobs/jobs-header";
 import { HEALTH, type BackendState } from "@/features/jobs/factory-status";
 import {
@@ -63,16 +65,26 @@ export function InboxScreen({
   board,
   backendState,
   includeFailed,
+  projectId = null,
+  projects,
+  onSelectProject,
   onOpenJobs,
   loading = false,
   error = null,
+  onRefresh,
+  factory = client,
 }: {
   board: JobsBoardModel;
   backendState: BackendState;
   includeFailed: boolean;
+  projectId?: string | null;
+  projects?: Project[];
+  onSelectProject?: (projectId: string) => void;
   onOpenJobs: () => void;
   loading?: boolean;
   error?: string | null;
+  onRefresh?: () => void;
+  factory?: typeof client;
 }) {
   const items = useMemo(() => selectInbox(board, { includeFailed }), [board, includeFailed]);
   const [filter, setFilter] = useState<"all" | InboxKind>("all");
@@ -131,7 +143,16 @@ export function InboxScreen({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <JobsHeader board={board} title="Inbox" showViewMode={false} showNotifications={false} />
+      <JobsHeader
+        board={board}
+        title="Inbox"
+        projects={projects}
+        currentProjectId={projectId}
+        onSelectProject={onSelectProject}
+        onProjectAdded={() => onRefresh?.()}
+        onRefresh={onRefresh}
+        factory={factory}
+      />
 
       <div className="flex min-h-0 flex-1 flex-col gap-[22px] px-7 pt-7 pb-5">
         {loading && (
@@ -349,6 +370,11 @@ function AttentionRow({
           <span className="shrink-0 font-mono text-[11px] leading-[1.4] text-text-secondary">
             {item.job.ref}
           </span>
+          {item.job.repository && (
+            <span className="shrink-0 rounded-full border border-[var(--border-subtle)] px-2 py-0.5 text-[10px] leading-none text-text-secondary">
+              {item.job.repository}
+            </span>
+          )}
           <span className="truncate text-[13px] leading-[1.4] font-medium text-foreground">
             {item.job.title}
           </span>

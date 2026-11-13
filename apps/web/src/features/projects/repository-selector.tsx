@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, FolderGit2, Plus, Search } from "lucide-react";
+import { Check, ChevronDown, FolderGit2, Layers, Plus, Search } from "lucide-react";
 import type { Project } from "@animus/contracts/operator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { ALL_PROJECTS_ID } from "@/features/jobs/jobs-model";
 import { AddRepositoryModal } from "./add-repository-modal";
 
 /** GitHub mark for repository selector trigger */
@@ -17,6 +18,7 @@ export interface RepositorySelectorProps {
   currentRepository: string;
   currentProjectId?: string | null;
   projects: Project[];
+  allowAll?: boolean;
   onSelectProject: (projectId: string) => void;
   onProjectAdded?: (project: Project) => void;
 }
@@ -25,6 +27,7 @@ export function RepositorySelector({
   currentRepository,
   currentProjectId,
   projects,
+  allowAll = true,
   onSelectProject,
   onProjectAdded,
 }: RepositorySelectorProps) {
@@ -33,14 +36,18 @@ export function RepositorySelector({
   const [search, setSearch] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
 
+  const isAllSelected = currentProjectId === ALL_PROJECTS_ID;
+
   const activeProject = useMemo(
     () =>
-      projects.find(
-        (p) =>
-          p.id === currentProjectId ||
-          p.repo_name.toLowerCase() === currentRepository.toLowerCase(),
-      ) ?? null,
-    [projects, currentProjectId, currentRepository],
+      isAllSelected
+        ? null
+        : (projects.find(
+            (p) =>
+              p.id === currentProjectId ||
+              p.repo_name.toLowerCase() === currentRepository.toLowerCase(),
+          ) ?? null),
+    [projects, currentProjectId, currentRepository, isAllSelected],
   );
 
   const filteredProjects = useMemo(() => {
@@ -73,8 +80,14 @@ export function RepositorySelector({
     onSelectProject(project.id);
   };
 
-  const triggerLabel = activeProject?.repo_name || currentRepository || "Select repository";
+  const triggerLabel = isAllSelected
+    ? "All repositories"
+    : activeProject?.repo_name || currentRepository || "Select repository";
   const isLocalOnlyActive = activeProject ? activeProject.repo_id === 0 : false;
+  const showAllOption =
+    allowAll &&
+    projects.length > 0 &&
+    (!search.trim() || "all repositories".includes(search.trim().toLowerCase()));
 
   return (
     <>
@@ -83,7 +96,9 @@ export function RepositorySelector({
           aria-label={triggerLabel}
           className="flex items-center gap-2 rounded-full border border-[var(--border)] px-3 py-[9px] transition-colors outline-none hover:border-[var(--elevation-edge)] hover:bg-[var(--white-04)]"
         >
-          {isLocalOnlyActive ? (
+          {isAllSelected ? (
+            <Layers className="size-4 shrink-0 text-foreground" aria-hidden="true" />
+          ) : isLocalOnlyActive ? (
             <FolderGit2 className="size-4 shrink-0 text-foreground" aria-hidden="true" />
           ) : (
             <GithubMark className="size-4 shrink-0 text-foreground" />
@@ -141,7 +156,33 @@ export function RepositorySelector({
 
           {/* Repository List */}
           <div className="max-h-[260px] overflow-y-auto px-1.5 py-1">
-            {filteredProjects.length === 0 ? (
+            {showAllOption && (
+              <button
+                type="button"
+                onClick={() => handleSelect(ALL_PROJECTS_ID)}
+                className={`mb-1 flex w-full items-center justify-between gap-2.5 rounded-[var(--radius-news)] px-2.5 py-2 text-left text-xs transition-colors ${
+                  isAllSelected
+                    ? "bg-[var(--elevation-3-surface)] font-medium text-foreground"
+                    : "text-foreground/90 hover:bg-[var(--white-04)] hover:text-foreground"
+                }`}
+              >
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <Layers className="size-4 shrink-0 text-[var(--text-secondary)]" />
+                  <div className="min-w-0">
+                    <div className="truncate">All repositories</div>
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="font-mono text-[10px] text-[var(--text-muted)]">
+                    {projects.length}
+                  </span>
+                  {isAllSelected && (
+                    <Check className="size-3.5 shrink-0 text-foreground" aria-hidden="true" />
+                  )}
+                </div>
+              </button>
+            )}
+            {filteredProjects.length === 0 && !showAllOption ? (
               <div className="px-3 py-6 text-center text-xs text-[var(--text-secondary)]">
                 {projects.length === 0 ? (
                   <span>No repositories enrolled yet.</span>
@@ -161,8 +202,9 @@ export function RepositorySelector({
             ) : (
               filteredProjects.map((p) => {
                 const isActive =
-                  p.id === currentProjectId ||
-                  p.repo_name.toLowerCase() === currentRepository.toLowerCase();
+                  !isAllSelected &&
+                  (p.id === currentProjectId ||
+                    p.repo_name.toLowerCase() === currentRepository.toLowerCase());
                 return (
                   <button
                     key={p.id}
