@@ -61,6 +61,8 @@ import {
   projectBrakeStateSchema,
   brakeSubmissionSchema,
   projectBrakeSubmissionSchema,
+  factoryEngineStateSchema,
+  factoryEngineSubmissionSchema,
   backupSubmissionSchema,
   backupResultSchema,
   backupCreateSubmissionSchema,
@@ -224,6 +226,9 @@ import {
   type ProjectBrakeState,
   type BrakeSubmission,
   type ProjectBrakeSubmission,
+  type FactoryEngineMode,
+  type FactoryEngineState,
+  type FactoryEngineSubmission,
   type BackupSubmission,
   type BackupResult,
   type BackupCreateSubmission,
@@ -296,6 +301,8 @@ export {
   projectBrakeStateSchema,
   brakeSubmissionSchema,
   projectBrakeSubmissionSchema,
+  factoryEngineStateSchema,
+  factoryEngineSubmissionSchema,
   backupSubmissionSchema,
   backupResultSchema,
   backupCreateSubmissionSchema,
@@ -367,6 +374,9 @@ export {
   type ProjectBrakeState,
   type BrakeSubmission,
   type ProjectBrakeSubmission,
+  type FactoryEngineMode,
+  type FactoryEngineState,
+  type FactoryEngineSubmission,
   type BackupSubmission,
   type BackupResult,
   type BackupCreateSubmission,
@@ -736,6 +746,14 @@ export function createFactoryClient(options: {
       const parsed = brakeSubmissionSchema.safeParse(submission);
       if (!parsed.success) throw new FactoryClientError("invalid_payload");
       return postJson("/api/v1/brakes", parsed.data, globalBrakeStateSchema);
+    },
+    async engineState(): Promise<FactoryEngineState> {
+      return getJson("/api/v1/engine", factoryEngineStateSchema);
+    },
+    async setEngineState(submission: FactoryEngineSubmission): Promise<FactoryEngineState> {
+      const parsed = factoryEngineSubmissionSchema.safeParse(submission);
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      return postJson("/api/v1/engine", parsed.data, factoryEngineStateSchema);
     },
     async backupLedger(destinationPath: string): Promise<BackupResult> {
       const parsed = backupSubmissionSchema.safeParse({ destinationPath });

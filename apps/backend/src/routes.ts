@@ -13,6 +13,8 @@ import {
   projectBrakeStateSchema,
   brakeSubmissionSchema,
   projectBrakeSubmissionSchema,
+  factoryEngineStateSchema,
+  factoryEngineSubmissionSchema,
   commandSubmissionSchema,
   commandListSchema,
   commandRecordSchema,
@@ -21,11 +23,13 @@ import {
   backupResultSchema,
 } from "@animus/contracts/operator";
 import { CommandError, type CommandService } from "./command";
+import type { DispatchService } from "./dispatch";
 import type { ProjectRegistryService } from "./registry";
 
 export interface RouteContext {
   commandService: CommandService;
   registryService: ProjectRegistryService;
+  dispatchService?: DispatchService;
   forwardToHost: (internalPath: string, schema?: any, init?: RequestInit) => Promise<Response>;
   broadcastWsEvent: (event: {
     id?: string;
@@ -364,6 +368,121 @@ export async function handleBrakesRoute(
       return Response.json(globalBrakeStateSchema.parse(state));
     }
     return Response.json({ error: "invalid_payload" }, { status: 400 });
+  }
+
+  return Response.json(
+    { error: "method_not_allowed" },
+    { status: 405, headers: { Allow: "GET, POST" } },
+  );
+}
+
+function projectEngineMode(state: {
+  global_launch_brake: boolean;
+  schedule_pause: boolean;
+}): "running" | "paused" | "stopped" {
+  if (state.global_launch_brake) return "stopped";
+  if (state.schedule_pause) return "paused";
+  return "running";
+}
+
+export async function handleEngineRoute(request: Request, ctx: RouteContext): Promise<Response> {
+  const { commandService: cmdService, dispatchService, broadcastWsEvent } = ctx;
+
+  if (request.method === "GET") {
+    const brakeState = cmdService.brakes.getGlobalBrakeState();
+    const activeRuns = dispatchService ? dispatchService.listActiveRunTargets().length : 0;
+    return Response.json(
+      factoryEngineStateSchema.parse({
+        mode: projectEngineMode(brakeState),
+        global_launch_brake: brakeState.global_launch_brake,
+        schedule_pause: brakeState.schedule_pause,
+        active_runs: activeRuns,
+        updated_at: brakeState.updated_at,
+      }),
+    );
+  }
+
+  if (request.method === "POST") {
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return Response.json({ error: "invalid_payload" }, { status: 400 });
+    }
+    const parsed = factoryEngineSubmissionSchema.safeParse(body);
+    if (!parsed.success) {
+      return Response.json({ error: "invalid_payload" }, { status: 400 });
+    }
+
+    const actor = parsed.data.actor ?? "operator";
+    const mode = parsed.data.mode;
+    let stoppedRuns: number | undefined;
+    let failedRuns: number | undefined;
+
+    if (mode === "running") {
+      cmdService.brakes.setGlobalLaunchBrake(
+        false,
+        actor,
+        parsed.data.reason ?? "Operator set engine state to running",
+      );
+      cmdService.brakes.setGlobalSchedulePause(
+        false,
+        actor,
+        parsed.data.reason ?? "Operator set engine state to running",
+      );
+    } else if (mode === "paused") {
+      cmdService.brakes.setGlobalLaunchBrake(
+        false,
+        actor,
+        parsed.data.reason ?? "Operator paused scheduled work",
+      );
+      cmdService.brakes.setGlobalSchedulePause(
+        true,
+        actor,
+        parsed.data.reason ?? "Operator paused scheduled work",
+      );
+    } else {
+      cmdService.brakes.setGlobalLaunchBrake(
+        true,
+        actor,
+        parsed.data.reason ?? "Operator emergency stop",
+      );
+      if (dispatchService) {
+        const result = dispatchService.stopAllActiveRuns({
+          actor,
+          reason: parsed.data.reason ?? "operator_emergency_stop",
+          signal: "SIGTERM",
+        });
+        stoppedRuns = result.stoppedRuns;
+        failedRuns = result.failedRuns.length;
+      } else {
+        stoppedRuns = 0;
+        failedRuns = 0;
+      }
+    }
+
+    const brakeState = cmdService.brakes.getGlobalBrakeState();
+    const activeRuns = dispatchService ? dispatchService.listActiveRunTargets().length : 0;
+
+    broadcastWsEvent({
+      type: "invalidation",
+      payload: {
+        reason: "engine_state_changed",
+        mode: projectEngineMode(brakeState),
+      },
+    });
+
+    return Response.json(
+      factoryEngineStateSchema.parse({
+        mode: projectEngineMode(brakeState),
+        global_launch_brake: brakeState.global_launch_brake,
+        schedule_pause: brakeState.schedule_pause,
+        active_runs: activeRuns,
+        ...(stoppedRuns !== undefined ? { stopped_runs: stoppedRuns } : {}),
+        ...(failedRuns !== undefined ? { failed_runs: failedRuns } : {}),
+        updated_at: brakeState.updated_at,
+      }),
+    );
   }
 
   return Response.json(

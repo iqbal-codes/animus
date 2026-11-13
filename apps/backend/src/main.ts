@@ -88,6 +88,7 @@ import {
   handleControlsRoute,
   handlePromotionRoute,
   handleBrakesRoute,
+  handleEngineRoute,
   handleCommandsRoute,
   type RouteContext,
 } from "./routes";
@@ -465,6 +466,7 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
   const routeContext: RouteContext = {
     commandService,
     registryService,
+    dispatchService,
     forwardToHost,
     broadcastWsEvent,
   };
@@ -637,6 +639,10 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
 
     if (path === "/api/v1/brakes") {
       return handleBrakesRoute(request, routeContext);
+    }
+
+    if (path === "/api/v1/engine") {
+      return handleEngineRoute(request, routeContext);
     }
 
     if (path === "/api/v1/commands" || path.startsWith("/api/v1/commands/")) {

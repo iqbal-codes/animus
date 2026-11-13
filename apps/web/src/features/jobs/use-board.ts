@@ -2,11 +2,12 @@ import { useCallback, useEffect, useState } from "react";
 import type { OperatorBoard, Project } from "@animus/contracts/operator";
 import { client } from "@/lib/factory-client";
 import { selectActiveProjects } from "@/features/drafts/drafts-model";
+import { ALL_PROJECTS_ID } from "./jobs-model";
 
 type BoardLoadState =
   | { phase: "loading" }
   | { phase: "error"; message: string }
-  | { phase: "ready"; board: OperatorBoard | null };
+  | { phase: "ready"; board: OperatorBoard | null; boards: OperatorBoard[] };
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -14,8 +15,8 @@ function messageOf(error: unknown): string {
 
 /**
  * Reads the board projection from the same backend command/query API the CLI
- * uses. There is no local fixture store: empty, loading and error states are
- * real, and the selected project stays stable across refreshes.
+ * uses. Supports both single-repository selection and aggregated "All
+ * repositories" view across active projects.
  */
 export function useOperatorBoard(factory: typeof client = client) {
   const [state, setState] = useState<BoardLoadState>({ phase: "loading" });
@@ -30,6 +31,21 @@ export function useOperatorBoard(factory: typeof client = client) {
         setProjects(nextProjects);
         const active = selectActiveProjects(nextProjects);
         const chosenId = targetProjectId !== undefined ? targetProjectId : projectId;
+
+        if (chosenId === ALL_PROJECTS_ID) {
+          setProjectId(ALL_PROJECTS_ID);
+          const targets = active.length > 0 ? active : nextProjects;
+          if (targets.length === 0) {
+            setState({ phase: "ready", board: null, boards: [] });
+            return;
+          }
+          const boards = await Promise.all(
+            targets.map((project) => factory.forProject(project.id).board()),
+          );
+          setState({ phase: "ready", board: null, boards });
+          return;
+        }
+
         const nextProjectId =
           (chosenId && nextProjects.some((project) => project.id === chosenId) ? chosenId : null) ??
           active[0]?.id ??
@@ -37,11 +53,11 @@ export function useOperatorBoard(factory: typeof client = client) {
           null;
         setProjectId(nextProjectId);
         if (!nextProjectId) {
-          setState({ phase: "ready", board: null });
+          setState({ phase: "ready", board: null, boards: [] });
           return;
         }
         const board = await factory.forProject(nextProjectId).board();
-        setState({ phase: "ready", board });
+        setState({ phase: "ready", board, boards: [board] });
       } catch (error) {
         setState({ phase: "error", message: messageOf(error) });
       }

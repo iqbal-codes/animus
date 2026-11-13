@@ -31,7 +31,7 @@ import { WorkPersistenceError, WorkService } from "../work";
 import { evaluateBacklogAdmission, type RawIssue } from "./admission";
 import { parseDependencies, isActiveClaim, computeDiff, computeLabelEffects } from "./parser";
 import { verifyTargetBinding, TargetBindingError } from "./binding";
-import { scanLocalAnimusIssues } from "./local-issues";
+import { scanLocalAnimusIssues, createLocalAnimusIssue } from "./local-issues";
 
 interface ProjectRow {
   id: string;
@@ -248,12 +248,21 @@ export class IntakeService {
     submission: IntakePublishSubmission,
   ): Promise<IntakePublishResult> {
     const project = this.resolveProject(projectId);
-    const forge = this.getIssueForge();
-    const createdIssue = await forge.createIssue(project.repo_name, {
-      title: submission.title,
-      body: submission.body,
-      labels: submission.labels,
-    });
+    const createdIssue =
+      project.repo_id === 0
+        ? createLocalAnimusIssue(project.checkout_path, {
+            title: submission.title,
+            body: submission.body,
+            labels: submission.labels,
+            existingNumbers: this.work
+              ? this.work.listWork(projectId).map((item) => item.issue_number)
+              : [],
+          })
+        : await this.getIssueForge().createIssue(project.repo_name, {
+            title: submission.title,
+            body: submission.body,
+            labels: submission.labels,
+          });
 
     // Invalidate project backlog cache
     this.cache.delete(`proj:${projectId}`);
