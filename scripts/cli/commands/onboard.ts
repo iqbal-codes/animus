@@ -4,6 +4,7 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import {
   MACHINE_CONFIG_SCHEMA_VERSION,
+  defaultMachineTiers,
   machineConfigPath,
   providerItemSchema,
   readMachineConfig,
@@ -502,6 +503,7 @@ export async function onboardMachine(
       })(),
     },
     providers: detected.map((entry) => toProviderItem(entry, previousProviders.get(entry.id))),
+    tiers: existing?.tiers ?? defaultMachineTiers(defaultProvider),
     automation,
     github: {
       ...(existing?.github ?? {

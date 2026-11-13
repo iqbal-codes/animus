@@ -404,27 +404,29 @@ export async function applyRepositorySetup(
             ...Object.values(existingAnimus.tiers ?? {})
               .map((binding) => binding.provider)
               .filter(isSupportedProvider),
+            ...Object.values(machine.tiers ?? {})
+              .map((binding) => binding.provider)
+              .filter(isSupportedProvider),
           ]),
         ];
   let selectedProvider = selectedProviders.includes(defaultProvider)
     ? defaultProvider
     : selectedProviders[0]!;
-  let smallBinding: TierBinding = existingAnimus.tiers?.small ?? {
-    provider: defaultProvider,
-    model: providerDefaults.small,
-    effort: "medium",
-  };
-  let mediumBinding: TierBinding = existingAnimus.tiers?.medium ?? {
-    provider: defaultProvider,
-    model: providerDefaults.medium,
-    effort: "high",
-  };
-  let largeBinding: TierBinding = existingAnimus.tiers?.large ?? {
-    provider: defaultProvider,
-    model: providerDefaults.large,
-    effort: "high",
-  };
-
+  const machineTiers = machine.tiers ?? {};
+  const toTierBinding = (
+    raw: { provider?: string; model?: string; effort?: string } | undefined,
+    fallbackEffort: EffortRung,
+  ): TierBinding => ({
+    provider: raw?.provider && isSupportedProvider(raw.provider) ? raw.provider : defaultProvider,
+    model: raw?.model || providerDefaults.medium,
+    effort: raw?.effort && isEffortRung(raw.effort) ? raw.effort : fallbackEffort,
+  });
+  let smallBinding: TierBinding =
+    existingAnimus.tiers?.small ?? toTierBinding(machineTiers.small, "medium");
+  let mediumBinding: TierBinding =
+    existingAnimus.tiers?.medium ?? toTierBinding(machineTiers.medium, "high");
+  let largeBinding: TierBinding =
+    existingAnimus.tiers?.large ?? toTierBinding(machineTiers.large, "high");
   let maxLaps = opts.maxLaps ?? existingSchedule.max_laps ?? machine.automation.maxLaps;
   let parallel = opts.parallel ?? existingSchedule.parallel ?? machine.automation.parallelJobs;
   let intervalSeconds =
@@ -486,11 +488,13 @@ export async function applyRepositorySetup(
 
   const normalizeBinding = (binding: TierBinding, tier: ModelTier): TierBinding => {
     if (selectedProviders.includes(binding.provider as SupportedProvider)) return binding;
+    const fallbackModel =
+      tier === "small" || tier === "medium" || tier === "large"
+        ? DEFAULT_PROVIDER_MODELS[selectedProvider][tier as "small" | "medium" | "large"]
+        : DEFAULT_PROVIDER_MODELS[selectedProvider].medium;
     return {
       provider: selectedProvider,
-      model:
-        existingAnimus.assistants?.[selectedProvider]?.model ??
-        DEFAULT_PROVIDER_MODELS[selectedProvider][tier],
+      model: existingAnimus.assistants?.[selectedProvider]?.model ?? fallbackModel,
       effort: tier === "small" ? "medium" : "high",
     };
   };
@@ -650,13 +654,28 @@ Target: ${repoRoot}`);
   });
 
   // Persist 1: .animus/config.yaml
+  const extraRepoTiers: Record<string, TierBinding> = {};
+  for (const [k, v] of Object.entries({ ...machineTiers, ...existingAnimus.tiers })) {
+    if (k === "small" || k === "medium" || k === "large") continue;
+    if (!v?.provider || !v?.model) continue;
+    if (selectedProviders.includes(v.provider as SupportedProvider)) {
+      extraRepoTiers[k] = {
+        provider: v.provider,
+        model: v.model,
+        ...(v.effort && isEffortRung(v.effort) ? { effort: v.effort } : {}),
+      };
+    }
+  }
   const animusConfig: AnimusConfig = {
     assistant: selectedProvider,
     assistants: Object.fromEntries(
       selectedProviders.map((provider) => {
-        const binding = [mediumBinding, smallBinding, largeBinding].find(
-          (b) => b.provider === provider,
-        );
+        const binding = [
+          mediumBinding,
+          smallBinding,
+          largeBinding,
+          ...Object.values(extraRepoTiers),
+        ].find((b) => b.provider === provider);
         return [
           provider,
           {
@@ -669,19 +688,10 @@ Target: ${repoRoot}`);
       }),
     ),
     tiers: {
+      ...extraRepoTiers,
       small: smallBinding,
       medium: mediumBinding,
       large: largeBinding,
-    },
-    aliases: {
-      ...Object.fromEntries(
-        Object.entries(existingAnimus.aliases ?? {}).filter(([, binding]) =>
-          selectedProviders.includes(binding.provider as SupportedProvider),
-        ),
-      ),
-      "@reasoning": {
-        ...largeBinding,
-      },
     },
     worktree: {
       baseBranch,
@@ -701,12 +711,13 @@ Target: ${repoRoot}`);
       timezone: workWindowTz,
     },
   };
+  const restExisting = { ...(existingAnimus as RepoConfigFile) };
+  delete restExisting.aliases;
   const configPath = writeRepoConfig(repoRoot, {
-    ...(existingAnimus as RepoConfigFile),
+    ...restExisting,
     assistant: selectedProvider,
     assistants: animusConfig.assistants,
     tiers: animusConfig.tiers as RepoConfigFile["tiers"],
-    aliases: animusConfig.aliases as RepoConfigFile["aliases"],
     worktree: { ...(existingAnimus.worktree ?? {}), baseBranch },
     schedule: scheduleConfig,
   });
@@ -960,20 +971,13 @@ export async function runConfigCliCommand(opts: {
 
       console.log("\nModel Tiers (.animus/config.yaml):");
       console.log(`  Default Assistant: ${animusConfig.assistant ?? "pi"}`);
-      for (const t of ["small", "medium", "large"] as const) {
+      const tierKeys = Object.keys(animusConfig.tiers ?? {});
+      for (const t of tierKeys.length > 0 ? tierKeys : ["small", "medium", "large"]) {
         const b = animusConfig.tiers?.[t];
         console.log(
           `  ${t.padEnd(8)} -> ${b ? `${b.provider}/${b.model} (effort: ${b.effort ?? "default"})` : "not set"}`,
         );
       }
-      if (animusConfig.aliases && Object.keys(animusConfig.aliases).length > 0) {
-        for (const [alias, b] of Object.entries(animusConfig.aliases)) {
-          console.log(
-            `  ${alias.padEnd(8)} -> ${b.provider}/${b.model} (effort: ${b.effort ?? "default"})`,
-          );
-        }
-      }
-
       console.log("\nLoop & Laps (.animus/config.yaml → schedule):");
       console.log(`  Workflow:          ${scheduleConfig.workflow}`);
       console.log(`  Max Laps / Issue:  ${scheduleConfig.max_laps}`);
@@ -1008,18 +1012,13 @@ export async function runConfigCliCommand(opts: {
     }
 
     if (sub === "tier") {
-      const tierArg = opts.positionals[2] as ModelTier | undefined;
+      const tierArg = opts.positionals[2]?.trim();
       const providerArg = opts.positionals[3];
       const modelArg = opts.positionals[4];
 
-      if (
-        !tierArg ||
-        !["small", "medium", "large"].includes(tierArg) ||
-        !providerArg ||
-        !modelArg
-      ) {
+      if (!tierArg || !/^[a-z][a-z0-9_-]{0,31}$/.test(tierArg) || !providerArg || !modelArg) {
         throw new Error(
-          "Usage: animus config tier <small|medium|large> <provider> <model> [--effort <minimal|low|medium|high|xhigh|max|ultra>]",
+          "Usage: animus config tier <tier-name> <provider> <model> [--effort <minimal|low|medium|high|xhigh|max|ultra>]",
         );
       }
       if (!isSupportedProvider(providerArg)) {
@@ -1052,16 +1051,6 @@ export async function runConfigCliCommand(opts: {
           },
         },
       };
-      if (tierArg === "large") {
-        updated.aliases = {
-          ...cfg.aliases,
-          "@reasoning": {
-            provider: providerArg,
-            model: modelArg,
-            ...(effortVal ? { effort: effortVal } : {}),
-          },
-        };
-      }
       const path = writeAnimusConfig(repoRoot, updated);
       if (opts.json) {
         console.log(

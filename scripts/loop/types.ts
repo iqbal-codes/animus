@@ -25,18 +25,16 @@ export interface LocalIssue {
   };
 }
 
-export type LoopRole =
-  | "builder"
-  | "qa"
-  | "reviewer"
-  | "reflector"
-  | "planner"
-  | "investigator"
-  | "manager"
-  | "auditor"
-  | "simplifier"
-  | "triage";
+export const PIPELINE_ROLES = [
+  "triage",
+  "planner",
+  "builder",
+  "qa",
+  "reviewer",
+  "reflector",
+] as const;
 
+export type LoopRole = (typeof PIPELINE_ROLES)[number];
 export interface ProcessResult {
   exitCode: number;
   stdout: string;
@@ -197,8 +195,8 @@ export interface AutoMergeExecutionResult {
   error?: string;
 }
 
-export type ModelTier = "small" | "medium" | "large";
-
+export type BuiltinModelTier = "small" | "medium" | "large";
+export type ModelTier = BuiltinModelTier | (string & {});
 export interface BacklogTicket {
   key: string;
   title: string;

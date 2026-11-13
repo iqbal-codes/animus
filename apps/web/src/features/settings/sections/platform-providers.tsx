@@ -2,6 +2,13 @@ import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { ChevronDown, Cpu } from "lucide-react";
+import {
+  BUILTIN_TIER_KEYS,
+  defaultTiers,
+  ModelTiersCard,
+  type TiersMap,
+  useHarnessCatalogs,
+} from "./tier-editor";
 
 interface ProviderItem {
   id: string;
@@ -88,42 +95,76 @@ export function PlatformProvidersSection() {
   const [primary, setPrimary] = useState("pi");
   const [offlineEval, setOfflineEval] = useState(false);
   const [providers, setProviders] = useState(INITIAL_PROVIDERS);
+  const [tiers, setTiers] = useState<TiersMap>(() => defaultTiers("pi", "default"));
+
+  const { catalogByProvider, loadingProviders } = useHarnessCatalogs([
+    primary,
+    ...Object.values(tiers).map((t) => t.provider),
+  ]);
 
   useEffect(() => {
     fetch("/api/v1/settings/platform")
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (!data) return;
-        if (data.system?.defaultProvider) {
-          setPrimary(data.system.defaultProvider);
-        }
+        const prov = data.system?.defaultProvider || "pi";
+        setPrimary(prov);
         if (Array.isArray(data.providers) && data.providers.length > 0) {
           setProviders(data.providers);
+        }
+        if (data.tiers && typeof data.tiers === "object") {
+          const loaded: TiersMap = {};
+          for (const [k, raw] of Object.entries(
+            data.tiers as Record<string, { provider?: string; model?: string; effort?: string }>,
+          )) {
+            if (!raw) continue;
+            loaded[k] = {
+              provider: raw.provider || prov,
+              model: raw.model || "default",
+              effort: raw.effort || (k === "small" ? "medium" : "high"),
+            };
+          }
+          for (const builtin of BUILTIN_TIER_KEYS) {
+            if (!loaded[builtin]) {
+              loaded[builtin] = defaultTiers(prov, "default")[builtin]!;
+            }
+          }
+          setTiers(loaded);
+        } else {
+          setTiers(defaultTiers(prov, "default"));
         }
       })
       .catch(() => {});
   }, []);
 
-  const savePlatformProviders = (nextPrimary: string, nextProviders: ProviderItem[]) => {
+  const savePlatform = (updates: {
+    primary?: string;
+    providers?: ProviderItem[];
+    tiers?: TiersMap;
+  }) => {
+    const nextPrimary = updates.primary ?? primary;
+    const nextProviders = updates.providers ?? providers;
+    const nextTiers = updates.tiers ?? tiers;
     fetch("/api/v1/settings/platform", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         system: { defaultProvider: nextPrimary },
         providers: nextProviders,
+        tiers: nextTiers,
       }),
     }).catch(() => {});
   };
 
   const handlePrimaryChange = (val: string) => {
     setPrimary(val);
-    savePlatformProviders(val, providers);
+    savePlatform({ primary: val });
   };
 
   const toggleProvider = (id: string) => {
     const next = providers.map((p) => (p.id === id ? { ...p, enabled: !p.enabled } : p));
     setProviders(next);
-    savePlatformProviders(primary, next);
+    savePlatform({ providers: next });
   };
 
   const installedCount = providers.filter((p) => p.status === "INSTALLED").length;
@@ -184,6 +225,26 @@ export function PlatformProvidersSection() {
           </div>
         </div>
       </section>
+
+      {/* User-Level Default Model Tiers (~/.animus/config.yaml) */}
+      <ModelTiersCard
+        title="Default model tiers"
+        subtitle="User-level defaults (~/.animus/config.yaml) inherited by new and unconfigured projects"
+        tiers={tiers}
+        defaultNewProvider={primary}
+        catalogByProvider={catalogByProvider}
+        loadingProviders={loadingProviders}
+        onChangeTiers={(nextTiers) => {
+          setTiers(nextTiers);
+          savePlatform({ tiers: nextTiers });
+        }}
+        onDraftTierModel={(tierKey, val) => {
+          setTiers((prev) => ({
+            ...prev,
+            [tierKey]: { ...prev[tierKey]!, model: val },
+          }));
+        }}
+      />
 
       {/* Available Providers Section */}
       <section className="flex flex-col gap-4">

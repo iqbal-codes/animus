@@ -84,13 +84,23 @@ describe("Settings Service & Backend Routes", () => {
     expect(onDisk.automation.parallelJobs).toBe(4);
   });
 
-  test("Project settings update writes to .animus/config.yaml, .animus/tool-guidance.json, and rules", async () => {
+  test("Project settings update writes tiers, role->tier routing, checks, and rules cleanly", async () => {
     const updated = service.updateProjectSettings({
       models: {
-        defaultModel: "claude-3-5-sonnet",
-        plannerModel: "claude-3-7-sonnet",
-        builderModel: "claude-3-5-sonnet",
-        reviewerModel: "claude-3-7-sonnet",
+        tiers: {
+          small: { provider: "pi", model: "default", effort: "medium" },
+          medium: { provider: "claude", model: "claude-3-5-sonnet", effort: "high" },
+          large: { provider: "claude", model: "claude-3-7-sonnet", effort: "max" },
+          xhigh: { provider: "codex", model: "gpt-5.3-codex", effort: "xhigh" },
+        },
+        roles: {
+          triage: "medium",
+          planner: "xhigh",
+          builder: "medium",
+          qa: "small",
+          reviewer: "xhigh",
+          reflector: "large",
+        },
         worktreeStrategy: "isolated",
         concurrencyLimit: 3,
       },
@@ -104,7 +114,9 @@ describe("Settings Service & Backend Routes", () => {
       rules: [{ id: "rule-1", name: "Strict typing", description: "No any", enabled: true }],
     });
 
-    expect(updated.models.defaultModel).toBe("claude-3-5-sonnet");
+    expect(updated.models.tiers?.medium?.model).toBe("claude-3-5-sonnet");
+    expect(updated.models.tiers?.xhigh?.model).toBe("gpt-5.3-codex");
+    expect(updated.models.roles?.planner).toBe("xhigh");
     expect(updated.models.concurrencyLimit).toBe(3);
 
     expect(existsSync(join(testRepoDir, ".animus/config.yaml"))).toBe(true);
@@ -113,11 +125,11 @@ describe("Settings Service & Backend Routes", () => {
 
     const yamlContent = readFileSync(join(testRepoDir, ".animus/config.yaml"), "utf-8");
     expect(yamlContent).toContain("claude-3-5-sonnet");
+    expect(yamlContent).toContain("xhigh:");
+    expect(yamlContent).toContain("planner: xhigh");
     expect(yamlContent).toContain("concurrencyLimit: 3");
-    // Derived UI projections are computed on read and never persisted.
+    expect(yamlContent).not.toContain("@reasoning");
     expect(yamlContent).not.toContain("defaultModel:");
-    expect(yamlContent).not.toContain("plannerModel:");
-    expect(yamlContent).not.toContain("reviewerModel:");
   });
 
   test("handleSettingsRoute handles HTTP GET and PUT for personal and platform", async () => {
@@ -227,17 +239,56 @@ describe("Settings Service & Backend Routes", () => {
     expect(body.models).toContain("claude-3-7-sonnet");
     expect(body.supportedEfforts).toContain("max");
   }, 20_000);
-  test("Project settings support distinct harnesses/models/efforts per tier, baseBranch, and sync harness/harness.config.json", async () => {
+  test("Project settings support distinct harnesses/models/efforts per tier, baseBranch, user-level tier inheritance, and harness config sync", async () => {
+    service.updatePlatformSettings({
+      system: { defaultProvider: "omp" },
+      tiers: {
+        small: { provider: "omp", model: "9router/ag/gemini-3.8-flash", effort: "low" },
+        medium: { provider: "claude", model: "claude-sonnet-4-6", effort: "high" },
+        large: { provider: "codex", model: "gpt-5.3-codex", effort: "xhigh" },
+      },
+    });
+
+    const inherited = service.getProjectSettings();
+    expect(inherited.models.tiers?.small).toEqual({
+      provider: "omp",
+      model: "9router/ag/gemini-3.8-flash",
+      effort: "low",
+    });
+    expect(inherited.models.tiers?.medium).toEqual({
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      effort: "high",
+    });
+    expect(inherited.models.tiers?.large).toEqual({
+      provider: "codex",
+      model: "gpt-5.3-codex",
+      effort: "xhigh",
+    });
+    expect(inherited.models.roles).toEqual({
+      triage: "medium",
+      planner: "large",
+      builder: "medium",
+      qa: "small",
+      reviewer: "large",
+      reflector: "large",
+    });
+
     const updated = service.updateProjectSettings({
       models: {
-        assistant: "omp",
-        defaultModel: "9router/ag/gemini-3.8-flash",
-        effort: "high",
         baseBranch: "develop",
         tiers: {
           small: { provider: "omp", model: "9router/ag/gemini-3.8-flash", effort: "low" },
           medium: { provider: "claude", model: "claude-sonnet-4-6", effort: "high" },
           large: { provider: "codex", model: "gpt-5.3-codex", effort: "xhigh" },
+        },
+        roles: {
+          triage: "small",
+          planner: "large",
+          builder: "medium",
+          qa: "small",
+          reviewer: "large",
+          reflector: "large",
         },
       },
       checks: {
@@ -249,27 +300,14 @@ describe("Settings Service & Backend Routes", () => {
     });
 
     expect(updated.models.baseBranch).toBe("develop");
-    expect(updated.models.tiers?.small).toEqual({
-      provider: "omp",
-      model: "9router/ag/gemini-3.8-flash",
-      effort: "low",
-    });
-    expect(updated.models.tiers?.medium).toEqual({
-      provider: "claude",
-      model: "claude-sonnet-4-6",
-      effort: "high",
-    });
-    expect(updated.models.tiers?.large).toEqual({
-      provider: "codex",
-      model: "gpt-5.3-codex",
-      effort: "xhigh",
-    });
+    expect(updated.models.roles?.triage).toBe("small");
 
     const yamlContent = readFileSync(join(testRepoDir, ".animus/config.yaml"), "utf-8");
     expect(yamlContent).toContain("baseBranch: develop");
     expect(yamlContent).toContain("provider: omp");
     expect(yamlContent).toContain("provider: claude");
     expect(yamlContent).toContain("provider: codex");
+    expect(yamlContent).toContain("triage: small");
 
     const harnessConfig = JSON.parse(
       readFileSync(join(testRepoDir, "harness/harness.config.json"), "utf-8"),

@@ -32,6 +32,31 @@ export const providerItemSchema = z.object({
   baseUrl: z.string().optional(),
 });
 
+export const tierBindingSchema = z.object({
+  provider: z.string().min(1),
+  model: z.string().min(1),
+  effort: z.string().optional(),
+});
+
+export type TierBindingConfig = z.infer<typeof tierBindingSchema>;
+
+export const TIER_NAME_REGEX = /^[a-z][a-z0-9_-]{0,31}$/;
+
+export const DEFAULT_TIER_KEYS = ["small", "medium", "large"] as const;
+
+export const modelTiersRecordSchema = z.record(
+  z.string().regex(TIER_NAME_REGEX, "Tier key must be lowercase alphanumeric/hyphen/underscore"),
+  tierBindingSchema,
+);
+
+export function defaultMachineTiers(defaultProvider = "pi"): Record<string, TierBindingConfig> {
+  return {
+    small: { provider: defaultProvider, model: "default", effort: "medium" },
+    medium: { provider: defaultProvider, model: "default", effort: "high" },
+    large: { provider: defaultProvider, model: "default", effort: "high" },
+  };
+}
+
 export type ProviderItem = z.infer<typeof providerItemSchema>;
 
 export const platformSettingsSchema = z.object({
@@ -56,6 +81,7 @@ export const platformSettingsSchema = z.object({
       defaultProvider: "pi",
     }),
   providers: z.array(providerItemSchema).default([]),
+  tiers: modelTiersRecordSchema.optional(),
   automation: z
     .object({
       parallelJobs: z.number().default(2),
@@ -111,6 +137,7 @@ export type PlatformSettings = z.infer<typeof platformSettingsSchema>;
 export type PlatformSettingsUpdate = {
   system?: Partial<PlatformSettings["system"]>;
   providers?: PlatformSettings["providers"];
+  tiers?: Record<string, TierBindingConfig>;
   automation?: Partial<PlatformSettings["automation"]>;
   github?: Partial<PlatformSettings["github"]>;
 };

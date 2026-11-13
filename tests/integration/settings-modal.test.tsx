@@ -122,12 +122,13 @@ describe("SettingsModal Component (R5yIDY / vybWU / KanXI)", () => {
 
     // Verify Providers Content
     expect(screen.getByText("Platform defaults")).toBeDefined();
-    expect(screen.getByText("Pi Coding Agent")).toBeDefined();
-    expect(screen.getByText("Claude Code")).toBeDefined();
-    expect(screen.getByText("Oh-My-Pi (OMP)")).toBeDefined();
-    expect(screen.getByText("Command Code")).toBeDefined();
-    expect(screen.getByText("OpenAI Codex CLI")).toBeDefined();
-    expect(screen.getByText("OpenCode")).toBeDefined();
+    expect(screen.getByText("Default model tiers")).toBeDefined();
+    expect(screen.getAllByText("Pi Coding Agent").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Claude Code").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Oh-My-Pi (OMP)").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Command Code").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("OpenAI Codex CLI").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("OpenCode").length).toBeGreaterThan(0);
   });
   test("navigates to Project scope and shows project selector and project sections", () => {
     const handleSave = vi.fn();
@@ -182,7 +183,7 @@ describe("SettingsModal Component (R5yIDY / vybWU / KanXI)", () => {
     expect(screen.getByText("VETOED")).toBeDefined();
   });
 
-  test("allows configuring different harnesses and models per tier in Project / Models", async () => {
+  test("allows configuring custom tiers and role->tier routing in Project / Models without top-level default model/effort", async () => {
     const fetchCalls: Array<{ url: string; method: string; body?: unknown }> = [];
     const origFetch = globalThis.fetch;
     const mockFetch: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -194,15 +195,20 @@ describe("SettingsModal Component (R5yIDY / vybWU / KanXI)", () => {
       if (url.startsWith("/api/v1/settings/project")) {
         return Response.json({
           models: {
-            assistant: "omp",
-            defaultModel: "default",
-            effort: "high",
             baseBranch: "main",
             concurrencyLimit: 2,
             tiers: {
               small: { provider: "omp", model: "default", effort: "medium" },
               medium: { provider: "omp", model: "default", effort: "high" },
               large: { provider: "omp", model: "default", effort: "high" },
+            },
+            roles: {
+              triage: "medium",
+              planner: "large",
+              builder: "medium",
+              qa: "small",
+              reviewer: "large",
+              reflector: "large",
             },
           },
           checks: {},
@@ -238,20 +244,36 @@ describe("SettingsModal Component (R5yIDY / vybWU / KanXI)", () => {
       fireEvent.click(screen.getByRole("button", { name: /Project/i }));
       fireEvent.click(screen.getByRole("button", { name: /Models/i }));
 
+      expect(screen.queryByText("Default execution harness")).toBeNull();
+      expect(screen.queryByText("Default model")).toBeNull();
+      expect(screen.queryByText("Default reasoning effort")).toBeNull();
+
       const smallHarness = await screen.findByLabelText("Small tier harness");
       fireEvent.change(smallHarness, { target: { value: "claude" } });
 
       const largeHarness = screen.getByLabelText("Large tier harness");
       fireEvent.change(largeHarness, { target: { value: "codex" } });
 
+      fireEvent.click(screen.getByRole("button", { name: /Add tier/i }));
+      fireEvent.change(screen.getByLabelText("New tier name"), { target: { value: "xhigh" } });
+      fireEvent.click(screen.getByRole("button", { name: /Create tier/i }));
+
+      const reviewerRoleSelect = screen.getByLabelText("reviewer role tier");
+      fireEvent.change(reviewerRoleSelect, { target: { value: "xhigh" } });
+
       const putCalls = fetchCalls.filter(
         (c) => c.url.startsWith("/api/v1/settings/project") && c.method === "PUT",
       );
       const lastPut = putCalls[putCalls.length - 1]?.body as {
-        models?: { tiers?: Record<string, { provider: string; model: string }> };
+        models?: {
+          tiers?: Record<string, { provider: string; model: string }>;
+          roles?: Record<string, string>;
+        };
       };
       expect(lastPut?.models?.tiers?.small?.provider).toBe("claude");
       expect(lastPut?.models?.tiers?.large?.provider).toBe("codex");
+      expect(lastPut?.models?.tiers?.xhigh).toBeDefined();
+      expect(lastPut?.models?.roles?.reviewer).toBe("xhigh");
     } finally {
       globalThis.fetch = origFetch;
     }

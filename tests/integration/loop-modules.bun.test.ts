@@ -57,17 +57,19 @@ afterEach(async () => {
 
 test("1. Model Tiering: resolves roles to tiers and config models", async () => {
   const root = join(import.meta.dir, "../..");
+  expect(resolveModelTier("triage")).toBe("medium");
+  expect(resolveModelTier("planner")).toBe("large");
   expect(resolveModelTier("builder")).toBe("medium");
-  expect(resolveModelTier("reviewer")).toBe("large");
   expect(resolveModelTier("qa")).toBe("small");
-  expect(resolveModelTier("manager")).toBe("large");
+  expect(resolveModelTier("reviewer")).toBe("large");
+  expect(resolveModelTier("reflector")).toBe("large");
 
   const cfg = readAnimusConfig(root);
   expect(cfg.assistant).toBe("pi");
   expect(cfg.tiers?.large?.model).toBeDefined();
 
   const reviewerModel = resolveModelForRole(root, "reviewer");
-  expect(reviewerModel).toBe(cfg.aliases?.["@reasoning"]?.model ?? cfg.tiers?.large?.model);
+  expect(reviewerModel).toBe(cfg.tiers?.large?.model);
 });
 
 test("2. Prompts: loads decoupled markdown files from scripts/prompts and interpolates", () => {

@@ -320,20 +320,43 @@ describe("onboarding wizard setup", () => {
     });
   });
 
-  test("deselected aliases cannot route a role outside the selected subset, default effort stays unset", async () => {
-    const root = repo();
-    writeAnimusConfig(root, {
-      assistant: "claude",
-      assistants: { claude: { model: "old" } },
-      aliases: { "@old": { provider: "claude", model: "old" } },
-    });
-    const prompts = new Answers(["codex"], ["large", "codex", "default", "continue"]);
-    const result = await applyRepositorySetup(
-      { repoRoot: root },
-      { ...offline, prompts, catalog: async () => ({ models: [] }) },
+  test("new repository setup inherits user-level tiers and custom tiers from ~/.animus/config.yaml", async () => {
+    writeMachineConfig(
+      platformSettingsSchema.parse({
+        schemaVersion: 1,
+        system: { onboardedAt: "2026-01-01T00:00:00.000Z", defaultProvider: "omp" },
+        providers: [],
+        tiers: {
+          small: { provider: "omp", model: "gemini-flash", effort: "low" },
+          medium: { provider: "claude", model: "claude-sonnet-4-6", effort: "high" },
+          large: { provider: "codex", model: "gpt-5.3-codex", effort: "xhigh" },
+          max: { provider: "codex", model: "gpt-5.3-codex", effort: "max" },
+        },
+      }),
+      machineHome.home,
     );
-    expect(result.animusConfig.aliases?.["@old"]).toBeUndefined();
-    expect(result.animusConfig.aliases?.["@reasoning"]?.effort).toBeUndefined();
+    const root = repo();
+    const result = await applyRepositorySetup({ repoRoot: root, nonInteractive: true }, offline);
+    expect(result.animusConfig.tiers?.small).toEqual({
+      provider: "omp",
+      model: "gemini-flash",
+      effort: "low",
+    });
+    expect(result.animusConfig.tiers?.medium).toEqual({
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      effort: "high",
+    });
+    expect(result.animusConfig.tiers?.large).toEqual({
+      provider: "codex",
+      model: "gpt-5.3-codex",
+      effort: "xhigh",
+    });
+    expect(result.animusConfig.tiers?.max).toEqual({
+      provider: "codex",
+      model: "gpt-5.3-codex",
+      effort: "max",
+    });
   });
 
   test("persists exactly checked harnesses and moves every tier off deselected harnesses", async () => {

@@ -24,21 +24,21 @@ mkdirSync(join(testRepoDir, ".factory"), { recursive: true });
 writeFileSync(
   join(testRepoDir, ".animus/config.yaml"),
   stringifyYaml({
-    assistant: "pi",
-    assistants: { pi: { model: "default" } },
     tiers: {
       small: { provider: "pi", model: "default", effort: "medium" },
       medium: { provider: "pi", model: "default", effort: "high" },
       large: { provider: "pi", model: "default", effort: "high" },
     },
-    aliases: {
-      "@reasoning": { provider: "pi", model: "default", effort: "high" },
+    roles: {
+      triage: "medium",
+      planner: "large",
+      builder: "medium",
+      qa: "small",
+      reviewer: "large",
+      reflector: "large",
     },
     worktree: { baseBranch: "main" },
-    models: {
-      defaultModel: "claude-3-7-sonnet",
-      concurrencyLimit: 2,
-    },
+    concurrencyLimit: 2,
   }),
   "utf-8",
 );
@@ -369,18 +369,16 @@ async function run() {
     await page.waitForSelector('text=Model tiers', { timeout: 5000 });
     await page.waitForSelector('text=Role routing', { timeout: 5000 });
 
-    // Select Harness: claude
-    const harnessSelect = page.locator('#settings-harness-provider');
-    await harnessSelect.selectOption('claude');
+    // Configure Medium tier harness -> claude, model -> claude-3-5-sonnet, effort -> high
+    const mediumHarness = page.getByLabel('Medium tier harness');
+    await mediumHarness.selectOption('claude');
     await page.waitForTimeout(600);
 
-    // Dynamic models loaded for Claude! Select claude-3-5-sonnet
-    const modelSelect = page.locator('#settings-default-model');
-    await modelSelect.selectOption('claude-3-5-sonnet');
+    const mediumModel = page.getByLabel('Medium tier model');
+    await mediumModel.selectOption('claude-3-5-sonnet');
 
-    // Select Reasoning Effort: high
-    const effortSelect = page.locator('#settings-reasoning-effort');
-    await effortSelect.selectOption('high');
+    const mediumEffort = page.getByLabel('Medium tier effort');
+    await mediumEffort.selectOption('high');
 
     // Select Concurrency Limit: 4
     const concurrencySelect = page.locator('#settings-concurrency-limit');
@@ -388,16 +386,16 @@ async function run() {
     await page.waitForTimeout(600);
 
     await page.screenshot({ path: path.join(EVIDENCE_DIR, '06-project-models.png') });
-    results.push({ name: "Project Models, Dynamic Harness & Efforts", status: "PASS", evidence: "06-project-models.png" });
+    results.push({ name: "Project Models, Dynamic Tiers & Role Routing", status: "PASS", evidence: "06-project-models.png" });
 
     const animusYamlPath = path.join(testRepoDir, '.animus/config.yaml');
     assert(fs.existsSync(animusYamlPath), ".animus/config.yaml must exist on disk");
     const yamlContent = fs.readFileSync(animusYamlPath, 'utf-8');
-    assert(yamlContent.includes('assistant: claude'), ".animus/config.yaml must contain assistant: claude");
+    assert(yamlContent.includes('provider: claude'), ".animus/config.yaml must contain provider: claude");
     assert(yamlContent.includes('claude-3-5-sonnet'), ".animus/config.yaml must contain claude-3-5-sonnet");
     assert(yamlContent.includes('concurrencyLimit: 4'), ".animus/config.yaml must contain concurrencyLimit: 4");
     assert(yamlContent.includes('effort: high'), ".animus/config.yaml must contain effort: high");
-    console.log("  ✓ .animus/config.yaml verified on disk with dynamic harness & reasoning effort");
+    console.log("  ✓ .animus/config.yaml verified on disk with tier & role routing");
 
     // =========================================================================
     // Scenario 8: Project / Checks (Verification Commands & tool-guidance.json)

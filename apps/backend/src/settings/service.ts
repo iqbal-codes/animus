@@ -2,10 +2,12 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
+  defaultMachineTiers,
   type PlatformSettings,
   platformSettingsSchema,
   type PlatformSettingsUpdate,
   readMachineConfig,
+  type TierBindingConfig,
   writeMachineConfig,
 } from "@animus/contracts/machine-config";
 import {
@@ -19,6 +21,7 @@ import {
   type ProjectSettings,
   projectSettingsSchema,
   type ProjectSettingsUpdate,
+  type RoleRoutingMap,
 } from "./types";
 /**
  * A partial settings update must never erase a stored value by passing the key
@@ -150,21 +153,38 @@ export class SettingsService {
    * writes the fleet it actually detected on this machine.
    */
   getPlatformSettings(): PlatformSettings {
-    return readMachineConfig(this.userAnimusDir) ?? platformSettingsSchema.parse({});
+    const stored = readMachineConfig(this.userAnimusDir) ?? platformSettingsSchema.parse({});
+    const fallbackProvider = stored.system.defaultProvider || "pi";
+    const baseTiers = defaultMachineTiers(fallbackProvider);
+    const tiers: Record<string, TierBindingConfig> = {
+      ...baseTiers,
+      ...stored.tiers,
+    };
+    return {
+      ...stored,
+      tiers,
+    };
   }
 
   updatePlatformSettings(updates: PlatformSettingsUpdate): PlatformSettings {
     const current = this.getPlatformSettings();
+    const nextSystem = { ...current.system, ...omitUndefined(updates.system) };
+    const fallbackProvider = nextSystem.defaultProvider || "pi";
+    const nextTiers =
+      updates.tiers !== undefined
+        ? updates.tiers
+        : (current.tiers ?? defaultMachineTiers(fallbackProvider));
     const merged = {
       schemaVersion: current.schemaVersion,
-      system: { ...current.system, ...omitUndefined(updates.system) },
+      system: nextSystem,
       providers: updates.providers ?? current.providers,
+      tiers: nextTiers,
       automation: { ...current.automation, ...omitUndefined(updates.automation) },
       github: { ...current.github, ...omitUndefined(updates.github) },
     };
     const validated = platformSettingsSchema.parse(merged);
     writeMachineConfig(validated, this.userAnimusDir);
-    return validated;
+    return this.getPlatformSettings();
   }
 
   // ==========================================
@@ -257,8 +277,8 @@ export class SettingsService {
     // 1. Models, releases, and loop policy: <repo>/.animus/config.yaml
     //    A pre-existing schedule.json is folded in and removed by this read.
     const repoConfig = readRepoConfig(repoRoot);
-    const modelsData = projectModelsFromConfig(repoConfig);
-
+    const userConfig = this.getPlatformSettings();
+    const modelsData = projectModelsFromConfig(repoConfig, userConfig);
     // 2. Checks: harness/harness.config.json (authoritative loop checks) + .animus/tool-guidance.json
     const harnessConfigPath = join(repoRoot, "harness/harness.config.json");
     let harnessData: {
@@ -366,110 +386,72 @@ export class SettingsService {
       rules: updates.rules ?? current.rules,
       releases: nextReleases,
     });
-    // The UI's model fields are a projection over `assistant`, `assistants`,
-    // `tiers`, `aliases`, and `worktree`. Map them back onto those keys and
-    // never persist the derived duplicates (plannerModel, reviewerModel, ...).
-    const assistant = validated.models.assistant || currentConfig.assistant || "pi";
-    const existingTiers = (currentConfig.tiers ?? {}) as Record<string, Record<string, unknown>>;
-    const tiers: Record<string, Record<string, unknown>> = { ...existingTiers };
-    const defaultTierEfforts: Record<string, string> = {
-      small: "medium",
-      medium: validated.models.effort,
-      large:
-        validated.models.effort === "max" || validated.models.effort === "xhigh"
-          ? validated.models.effort
-          : "high",
-    };
-    const explicitTiers = updates.models?.tiers;
-    const assistantChanged =
-      updates.models?.assistant !== undefined &&
-      updates.models.assistant !== current.models.assistant;
-    const defaultModelChanged =
-      updates.models?.defaultModel !== undefined &&
-      updates.models.defaultModel !== current.models.defaultModel;
-    const effortChanged =
-      updates.models?.effort !== undefined && updates.models.effort !== current.models.effort;
+    const userConfig = this.getPlatformSettings();
+    const defaultAssistant = currentConfig.assistant || userConfig.system.defaultProvider || "pi";
+    const userTiers = userConfig.tiers ?? defaultMachineTiers(defaultAssistant);
+    const existingTiers = (currentConfig.tiers ?? {}) as Record<
+      string,
+      { provider?: string; model?: string; effort?: string }
+    >;
 
-    const assistantsMap: Record<string, Record<string, unknown>> = {
-      ...currentConfig.assistants,
-      [assistant]: { model: validated.models.defaultModel },
-    };
-
-    for (const tier of ["small", "medium", "large"] as const) {
-      const explicit = explicitTiers?.[tier];
-      const existing = existingTiers[tier];
-      if (explicit) {
-        const nextProvider = explicit.provider || assistant;
-        const nextModel = explicit.model || "default";
-        tiers[tier] = {
-          provider: nextProvider,
-          model: nextModel,
-          ...(explicit.effort ? { effort: explicit.effort } : {}),
-        };
-        if (!assistantsMap[nextProvider]) {
-          assistantsMap[nextProvider] = { model: nextModel };
-        }
-      } else if (existing) {
-        tiers[tier] = {
-          ...existing,
-          ...(assistantChanged && !explicitTiers ? { provider: assistant } : {}),
-          ...(tier === "medium" && defaultModelChanged
-            ? { model: validated.models.defaultModel }
-            : {}),
-          ...(tier === "medium" && effortChanged ? { effort: validated.models.effort } : {}),
-        };
-      } else {
-        tiers[tier] = {
-          provider: assistant,
-          model: validated.models.defaultModel,
-          effort: defaultTierEfforts[tier],
+    const nextTiers: Record<string, { provider: string; model: string; effort?: string }> = {};
+    if (updates.models?.tiers) {
+      for (const [tierKey, binding] of Object.entries(updates.models.tiers)) {
+        if (!binding) continue;
+        nextTiers[tierKey] = {
+          provider: binding.provider || defaultAssistant,
+          model: binding.model || "default",
+          ...(binding.effort ? { effort: binding.effort } : {}),
         };
       }
-    }
-
-    const aliases = { ...currentConfig.aliases } as Record<string, Record<string, unknown>>;
-    const explicitReasoning = updates.models?.reasoningAlias;
-    if (explicitReasoning) {
-      const reasoningProvider =
-        explicitReasoning.provider || (tiers.large?.provider as string) || assistant;
-      const reasoningModel =
-        explicitReasoning.model || (tiers.large?.model as string) || validated.models.defaultModel;
-      aliases["@reasoning"] = {
-        provider: reasoningProvider,
-        model: reasoningModel,
-        ...(explicitReasoning.effort ? { effort: explicitReasoning.effort } : {}),
-      };
-      if (!assistantsMap[reasoningProvider]) {
-        assistantsMap[reasoningProvider] = { model: reasoningModel };
-      }
-    } else if (explicitTiers?.large) {
-      const largeTier = tiers.large!;
-      aliases["@reasoning"] = {
-        provider: largeTier.provider,
-        model: largeTier.model,
-        ...(largeTier.effort ? { effort: largeTier.effort } : {}),
-      };
     } else {
-      aliases["@reasoning"] = {
-        provider: (tiers.large?.provider as string) || assistant,
-        model:
-          (typeof aliases["@reasoning"]?.model === "string" &&
-            !defaultModelChanged &&
-            aliases["@reasoning"].model) ||
-          (tiers.large?.model as string) ||
-          validated.models.defaultModel,
-        effort:
-          (typeof tiers.large?.effort === "string" && tiers.large.effort) ||
-          (validated.models.effort === "max" ? "max" : "high"),
-      };
+      const sourceTiers = Object.keys(existingTiers).length > 0 ? existingTiers : userTiers;
+      for (const [tierKey, binding] of Object.entries(sourceTiers)) {
+        if (!binding) continue;
+        nextTiers[tierKey] = {
+          provider: binding.provider || defaultAssistant,
+          model: binding.model || "default",
+          ...(binding.effort ? { effort: binding.effort } : {}),
+        };
+      }
+    }
+    for (const builtin of ["small", "medium", "large"] as const) {
+      if (!nextTiers[builtin]) {
+        const fallback = existingTiers[builtin] ?? userTiers[builtin];
+        nextTiers[builtin] = {
+          provider: fallback?.provider || defaultAssistant,
+          model: fallback?.model || "default",
+          effort: fallback?.effort || (builtin === "small" ? "medium" : "high"),
+        };
+      }
     }
 
+    const assistantsMap: Record<string, Record<string, unknown>> = {};
+    for (const binding of Object.values(nextTiers)) {
+      if (!assistantsMap[binding.provider]) {
+        assistantsMap[binding.provider] = { model: binding.model };
+      }
+    }
+    const primaryProvider = nextTiers.medium?.provider || defaultAssistant;
+
+    const existingRoles = (currentConfig.roles ?? {}) as Record<string, unknown>;
+    const nextRoles: Record<string, string> = {};
+    for (const role of ["triage", "planner", "builder", "qa", "reviewer", "reflector"] as const) {
+      const explicitRoleTier = updates.models?.roles?.[role];
+      const existingRoleTier =
+        typeof existingRoles[role] === "string" ? (existingRoles[role] as string) : undefined;
+      const resolvedTier = explicitRoleTier ?? existingRoleTier ?? DEFAULT_ROLE_TIERS_MAP[role];
+      nextRoles[role] = nextTiers[resolvedTier] ? resolvedTier : DEFAULT_ROLE_TIERS_MAP[role];
+    }
+
+    const restConfig = { ...currentConfig } as RepoConfigFile;
+    delete restConfig.aliases;
     const nextConfig: RepoConfigFile = {
-      ...currentConfig,
-      assistant,
+      ...restConfig,
+      assistant: primaryProvider,
       assistants: assistantsMap,
-      tiers,
-      aliases,
+      tiers: nextTiers,
+      roles: nextRoles,
       concurrencyLimit: validated.models.concurrencyLimit,
       worktree: {
         ...currentConfig.worktree,
@@ -479,7 +461,6 @@ export class SettingsService {
       releases: validated.releases,
     };
     writeRepoConfig(repoRoot, nextConfig);
-
     // Write side files: tool guidance, harness/harness.config.json, and codebase rules.
     const toolGuidancePath = join(repoRoot, ".animus/tool-guidance.json");
     const guidanceContent = {
@@ -523,54 +504,68 @@ export class SettingsService {
 }
 
 /**
- * Projects the stored repository configuration onto the settings-API view.
- * The derived fields exist only in the response; they are never written back.
+ * Default tier assignment for the 6 canonical Animus pipeline roles.
  */
-function projectModelsFromConfig(config: RepoConfigFile): Record<string, unknown> {
-  const assistant =
-    typeof config.assistant === "string" && config.assistant ? config.assistant : "pi";
-  const assistants = (config.assistants ?? {}) as Record<string, { model?: string }>;
-  const tiers = (config.tiers ?? {}) as Record<
+const DEFAULT_ROLE_TIERS_MAP: Record<keyof RoleRoutingMap, "small" | "medium" | "large"> = {
+  triage: "medium",
+  planner: "large",
+  builder: "medium",
+  qa: "small",
+  reviewer: "large",
+  reflector: "large",
+};
+
+/**
+ * Projects stored repository configuration (falling back to user-level machine
+ * tiers) onto the settings-API view.
+ */
+function projectModelsFromConfig(
+  config: RepoConfigFile,
+  userConfig: PlatformSettings,
+): Record<string, unknown> {
+  const fallbackProvider =
+    (typeof config.assistant === "string" && config.assistant) ||
+    userConfig.system.defaultProvider ||
+    "pi";
+  const userTiers = userConfig.tiers ?? defaultMachineTiers(fallbackProvider);
+  const rawTiers = (config.tiers ?? {}) as Record<
     string,
     { provider?: string; model?: string; effort?: string }
   >;
-  const aliases = (config.aliases ?? {}) as Record<
-    string,
-    { provider?: string; model?: string; effort?: string }
-  >;
+  const rawRoles = (config.roles ?? {}) as Record<string, unknown>;
   const worktree = (config.worktree ?? {}) as Record<string, unknown>;
 
-  const defaultModel = assistants[assistant]?.model || tiers.medium?.model || "default";
-  const defaultEffort = tiers.medium?.effort || aliases["@reasoning"]?.effort || "high";
-  const resolveTier = (tierKey: "small" | "medium" | "large", fallbackEffort: string) => ({
-    provider: tiers[tierKey]?.provider || assistant,
-    model: tiers[tierKey]?.model || defaultModel,
-    effort: tiers[tierKey]?.effort || fallbackEffort,
-  });
-  const projectedTiers = {
-    small: resolveTier("small", "medium"),
-    medium: resolveTier("medium", defaultEffort),
-    large: resolveTier(
-      "large",
-      defaultEffort === "max" || defaultEffort === "xhigh" ? defaultEffort : "high",
-    ),
-  };
-  const reasoningAlias = {
-    provider: aliases["@reasoning"]?.provider || projectedTiers.large.provider,
-    model: aliases["@reasoning"]?.model || projectedTiers.large.model,
-    effort: aliases["@reasoning"]?.effort || projectedTiers.large.effort,
-  };
+  const projectedTiers: Record<string, { provider: string; model: string; effort: string }> = {};
+  for (const tierKey of ["small", "medium", "large"] as const) {
+    const repoTier = rawTiers[tierKey];
+    const userTier = userTiers[tierKey];
+    projectedTiers[tierKey] = {
+      provider: repoTier?.provider || userTier?.provider || fallbackProvider,
+      model: repoTier?.model || userTier?.model || "default",
+      effort: repoTier?.effort || userTier?.effort || (tierKey === "small" ? "medium" : "high"),
+    };
+  }
+  for (const [tierKey, binding] of Object.entries({ ...userTiers, ...rawTiers })) {
+    if (projectedTiers[tierKey]) continue;
+    if (!binding || typeof binding !== "object") continue;
+    projectedTiers[tierKey] = {
+      provider: binding.provider || fallbackProvider,
+      model: binding.model || "default",
+      effort: binding.effort || "high",
+    };
+  }
+  const projectedRoles: Record<string, string> = {};
+  for (const role of ["triage", "planner", "builder", "qa", "reviewer", "reflector"] as const) {
+    const stored = rawRoles[role];
+    const candidate = typeof stored === "string" ? stored.trim() : undefined;
+    projectedRoles[role] =
+      candidate && projectedTiers[candidate] ? candidate : DEFAULT_ROLE_TIERS_MAP[role];
+  }
 
   return {
-    assistant,
-    defaultModel,
-    effort: defaultEffort,
     concurrencyLimit: typeof config.concurrencyLimit === "number" ? config.concurrencyLimit : 2,
-    plannerModel: projectedTiers.large.model,
-    builderModel: projectedTiers.medium.model,
-    reviewerModel: reasoningAlias.model,
     tiers: projectedTiers,
-    reasoningAlias,
+    roles: projectedRoles,
     worktreeStrategy: typeof worktree.strategy === "string" ? worktree.strategy : "isolated",
     baseBranch:
       typeof worktree.baseBranch === "string" && worktree.baseBranch ? worktree.baseBranch : "main",

@@ -20,8 +20,7 @@ export interface RepoConfigFile {
   assistant?: string;
   assistants?: Record<string, Record<string, unknown>>;
   tiers?: Record<string, Record<string, unknown>>;
-  aliases?: Record<string, Record<string, unknown>>;
-  roles?: Record<string, unknown>;
+  roles?: Record<string, string>;
   worktree?: Record<string, unknown>;
   loop?: Record<string, unknown>;
   concurrencyLimit?: number;
@@ -29,7 +28,6 @@ export interface RepoConfigFile {
   schedule?: ScheduleLayer;
   [key: string]: unknown;
 }
-
 export function repoConfigPath(root: string): string {
   return join(root, ".animus", "config.yaml");
 }

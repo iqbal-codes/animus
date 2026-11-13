@@ -222,8 +222,6 @@ describe("Animus Unified CLI & Repository Setup Onboarding", () => {
     expect(updatedAnimus.tiers?.large?.provider).toBe("codex");
     expect(updatedAnimus.tiers?.large?.model).toBe("gpt-5.3-codex");
     expect(updatedAnimus.tiers?.large?.effort).toBe("xhigh");
-    expect(updatedAnimus.aliases?.["@reasoning"]?.model).toBe("gpt-5.3-codex");
-
     // 3. Reconfigure laps & capacity via 'config laps'
     const lapsCode = await runCli([
       "config",

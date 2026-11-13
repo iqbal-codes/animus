@@ -1,6 +1,6 @@
-import type { LocalLoopOptions, LoopRole, RoleBudget } from "./types";
+import { PIPELINE_ROLES, type LocalLoopOptions, type LoopRole, type RoleBudget } from "./types";
 
-const roles: LoopRole[] = ["builder", "qa", "reviewer", "reflector", "planner", "investigator", "manager", "auditor", "simplifier", "triage"];
+const roles: readonly LoopRole[] = PIPELINE_ROLES;
 const MAX_TIMER_MS = 2_147_483_647;
 
 export function validateTimeout(ms: number) {
@@ -20,39 +20,56 @@ export function resolveRoleBudgets(
     throw new Error("maxContinuations must be an integer from 0 to 2");
   }
   for (const [role, budget] of Object.entries(options.roleBudgets ?? {})) {
-    if (!roles.includes(role as LoopRole) || !budget) throw new Error(`Invalid role budget: ${role}`);
+    if (!roles.includes(role as LoopRole) || !budget)
+      throw new Error(`Invalid role budget: ${role}`);
     validateTimeout(budget.softMs);
     validateTimeout(budget.hardMs);
-    if (budget.softMs >= budget.hardMs) throw new Error(`Soft deadline must precede hard deadline: ${role}`);
+    if (budget.softMs >= budget.hardMs)
+      throw new Error(`Soft deadline must precede hard deadline: ${role}`);
   }
-  return Object.fromEntries(roles.map((role) => {
-    const prefix = `FACTORY_LOOP_${role.toUpperCase()}`;
-    const defaults = role === "builder"
-      ? { softMs: 20 * 60_000, hardMs: 25 * 60_000 }
-      : role === "triage"
-        ? { softMs: 120_000, hardMs: 180_000 }
-        : { softMs: 15 * 60_000, hardMs: 20 * 60_000 };
-    if (options.timeoutMs !== undefined) {
-      return [role, { softMs: Math.floor(options.timeoutMs * 0.8), hardMs: options.timeoutMs }];
-    }
-    const configured = options.roleBudgets?.[role] ?? {
-      softMs: env[`${prefix}_SOFT_MS`] === undefined ? defaults.softMs : Number(env[`${prefix}_SOFT_MS`]),
-      hardMs: env[`${prefix}_HARD_MS`] === undefined ? defaults.hardMs : Number(env[`${prefix}_HARD_MS`]),
-    };
-    validateTimeout(configured.softMs);
-    validateTimeout(configured.hardMs);
-    if (configured.softMs >= configured.hardMs) throw new Error(`Soft deadline must precede hard deadline: ${role}`);
-    return [role, configured];
-  })) as Record<LoopRole, RoleBudget>;
+  return Object.fromEntries(
+    roles.map((role) => {
+      const prefix = `FACTORY_LOOP_${role.toUpperCase()}`;
+      const defaults =
+        role === "builder"
+          ? { softMs: 20 * 60_000, hardMs: 25 * 60_000 }
+          : role === "triage"
+            ? { softMs: 120_000, hardMs: 180_000 }
+            : { softMs: 15 * 60_000, hardMs: 20 * 60_000 };
+      if (options.timeoutMs !== undefined) {
+        return [role, { softMs: Math.floor(options.timeoutMs * 0.8), hardMs: options.timeoutMs }];
+      }
+      const configured = options.roleBudgets?.[role] ?? {
+        softMs:
+          env[`${prefix}_SOFT_MS`] === undefined
+            ? defaults.softMs
+            : Number(env[`${prefix}_SOFT_MS`]),
+        hardMs:
+          env[`${prefix}_HARD_MS`] === undefined
+            ? defaults.hardMs
+            : Number(env[`${prefix}_HARD_MS`]),
+      };
+      validateTimeout(configured.softMs);
+      validateTimeout(configured.hardMs);
+      if (configured.softMs >= configured.hardMs)
+        throw new Error(`Soft deadline must precede hard deadline: ${role}`);
+      return [role, configured];
+    }),
+  ) as Record<LoopRole, RoleBudget>;
 }
 
 export class RoleInterrupted extends Error {}
 
 // Read interruption reports before normal verdict normalization, which rejects incomplete work.
 export function interruptionReport(stdout: string): boolean {
-  const interrupted = (value: any) => value?.verdict === "interrupted" || value?.status === "interrupted";
+  const interrupted = (value: any) =>
+    value?.verdict === "interrupted" || value?.status === "interrupted";
   const parse = (text: string): boolean => {
-    try { return interrupted(JSON.parse(text)); } catch { return false; }
+    try {
+      return interrupted(JSON.parse(text));
+    } catch {
+      return false;
+    }
   };
   if (parse(stdout)) return true;
   for (const block of stdout.matchAll(/```(?:json)?\s*\n([\s\S]*?)\n```/g)) {
@@ -64,16 +81,25 @@ export function interruptionReport(stdout: string): boolean {
       const event = JSON.parse(line);
       const frame = event.type === "event" && event.event ? event.event : event;
       if (frame.type === "message_end" && Array.isArray(frame.content)) {
-        const text = frame.content.filter((c: any) => c.type === "text").map((c: any) => c.text ?? "").join("");
+        const text = frame.content
+          .filter((c: any) => c.type === "text")
+          .map((c: any) => c.text ?? "")
+          .join("");
         if (text) finalText = text;
       }
       if (event.type === "message_end" && event.message?.role === "assistant") {
-        finalText = (Array.isArray(event.message.content) ? event.message.content : []).filter((c: any) => c.type === "text").map((c: any) => c.text ?? "").join("");
+        finalText = (Array.isArray(event.message.content) ? event.message.content : [])
+          .filter((c: any) => c.type === "text")
+          .map((c: any) => c.text ?? "")
+          .join("");
       }
-      if (event.type === "result" && typeof event.finalText === "string" && event.finalText) finalText = event.finalText;
+      if (event.type === "result" && typeof event.finalText === "string" && event.finalText)
+        finalText = event.finalText;
       if (typeof event.result === "string") finalText = event.result;
       if (typeof event.content === "string") finalText = event.content;
-    } catch { /* Non-JSON provider output is handled above. */ }
+    } catch {
+      /* Non-JSON provider output is handled above. */
+    }
   }
   return finalText ? interruptionReport(finalText) : false;
 }

@@ -50,20 +50,20 @@ describe("Triage Role Configuration & Tier Resolution", () => {
     expect(resolveModelTier("triage")).toBe("medium");
   });
 
-  test("resolveModelTier respects role tier overrides from config", () => {
-    const configWithRoleObject: AnimusConfig = {
+  test("resolveModelTier respects role tier overrides from config including custom tiers", () => {
+    const configWithBuiltinTier: AnimusConfig = {
       roles: {
-        triage: { tier: "large" },
+        triage: "large",
       },
     };
-    expect(resolveModelTier("triage", configWithRoleObject)).toBe("large");
+    expect(resolveModelTier("triage", configWithBuiltinTier)).toBe("large");
 
-    const configWithRoleString: AnimusConfig = {
+    const configWithCustomTier: AnimusConfig = {
       roles: {
-        triage: "large" as any,
+        triage: "xhigh",
       },
     };
-    expect(resolveModelTier("triage", configWithRoleString)).toBe("large");
+    expect(resolveModelTier("triage", configWithCustomTier)).toBe("xhigh");
   });
 
   test("resolveModelForRole, resolveProviderForRole, resolveEffortForRole map triage to medium tier defaults", () => {
@@ -82,26 +82,28 @@ describe("Triage Role Configuration & Tier Resolution", () => {
     expect(resolveEffortForRole(root, "triage")).toBe("high");
   });
 
-  test("resolveModelForRole and provider respect specific role overrides in config", () => {
+  test("resolveRoleConfig resolves custom tier assigned to a role", () => {
     const root = makeRepo({
       tiers: {
         medium: {
           provider: "pi",
           model: "default-medium",
+          effort: "medium",
+        },
+        max: {
+          provider: "codex",
+          model: "gpt-5.3-codex",
+          effort: "max",
         },
       },
       roles: {
-        triage: {
-          provider: "anthropic",
-          model: "claude-3-5-haiku",
-          effort: "medium",
-        },
+        triage: "max",
       },
     });
 
-    expect(resolveModelForRole(root, "triage")).toBe("claude-3-5-haiku");
-    expect(resolveProviderForRole(root, "triage")).toBe("anthropic");
-    expect(resolveEffortForRole(root, "triage")).toBe("medium");
+    expect(resolveModelForRole(root, "triage")).toBe("gpt-5.3-codex");
+    expect(resolveProviderForRole(root, "triage")).toBe("codex");
+    expect(resolveEffortForRole(root, "triage")).toBe("max");
   });
 
   test("FACTORY_LOOP_* environment overrides take precedence over config for triage", () => {
@@ -113,10 +115,7 @@ describe("Triage Role Configuration & Tier Resolution", () => {
         },
       },
       roles: {
-        triage: {
-          provider: "anthropic",
-          model: "haiku",
-        },
+        triage: "medium",
       },
     });
 
@@ -139,9 +138,7 @@ describe("Triage Role Configuration & Tier Resolution", () => {
         },
       },
       roles: {
-        triage: {
-          effort: "medium",
-        },
+        triage: "medium",
       },
     });
 
@@ -149,14 +146,10 @@ describe("Triage Role Configuration & Tier Resolution", () => {
     process.env.FACTORY_LOOP_TRIAGE_EFFORT = "low";
     process.env.FACTORY_LOOP_QA_EFFORT = "minimal";
 
-    // Triage gets role-specific override "low" despite global FACTORY_LOOP_EFFORT="high"
     expect(resolveEffortForRole(root, "triage")).toBe("low");
-    // QA gets role-specific override "minimal"
     expect(resolveEffortForRole(root, "qa")).toBe("minimal");
-    // Builder has no role-specific override, so it gets global FACTORY_LOOP_EFFORT="high"
     expect(resolveEffortForRole(root, "builder")).toBe("high");
 
-    // Explicit env parameter precedence: role override wins over global effort
     const explicitEnv = {
       FACTORY_LOOP_EFFORT: "max",
       FACTORY_LOOP_TRIAGE_EFFORT: "low",
@@ -165,19 +158,16 @@ describe("Triage Role Configuration & Tier Resolution", () => {
     expect(resolveRoleConfig(root, "triage", explicitEnv).effort).toBe("low");
   });
 
-  test("writeAnimusConfig and readAnimusConfig round-trip roles configuration cleanly", () => {
+  test("writeAnimusConfig and readAnimusConfig round-trip role tier assignments cleanly", () => {
     const config: AnimusConfig = {
       assistant: "pi",
       tiers: {
         medium: { provider: "pi", model: "standard" },
+        xhigh: { provider: "codex", model: "gpt-5.3-codex", effort: "xhigh" },
       },
       roles: {
-        triage: {
-          tier: "medium",
-          provider: "claude",
-          model: "claude-3-5-haiku",
-          effort: "low",
-        },
+        triage: "xhigh",
+        planner: "large",
       },
     };
 
@@ -185,13 +175,8 @@ describe("Triage Role Configuration & Tier Resolution", () => {
     writeAnimusConfig(root, config);
 
     const parsed = readAnimusConfig(root);
-    const triage = parsed.roles?.triage as
-      | { tier?: string; provider?: string; model?: string; effort?: string }
-      | undefined;
-    expect(triage?.tier).toBe("medium");
-    expect(triage?.provider).toBe("claude");
-    expect(triage?.model).toBe("claude-3-5-haiku");
-    expect(triage?.effort).toBe("low");
+    expect(parsed.roles?.triage).toBe("xhigh");
+    expect(parsed.roles?.planner).toBe("large");
   });
 });
 

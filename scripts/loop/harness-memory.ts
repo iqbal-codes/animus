@@ -42,17 +42,29 @@ export interface LessonEntry {
 function gitRead(root: string, ...args: string[]): string | undefined {
   try {
     return execFileSync("git", ["-C", root, ...args], {
-      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 16 * 1024 * 1024,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 16 * 1024 * 1024,
     });
-  } catch { return undefined; }
+  } catch {
+    return undefined;
+  }
 }
 
 /** Pin this once per lap; a delivery worktree's HEAD is not accepted memory. */
 export function resolveAcceptedMemoryRef(root: string, acceptedRef?: string): string | undefined {
   if (acceptedRef !== undefined) {
-    return gitRead(root, "rev-parse", "--verify", "--end-of-options", `${acceptedRef}^{commit}`)?.trim();
+    return gitRead(
+      root,
+      "rev-parse",
+      "--verify",
+      "--end-of-options",
+      `${acceptedRef}^{commit}`,
+    )?.trim();
   }
-  const primary = gitRead(root, "worktree", "list", "--porcelain", "-z")?.split("\0")[0]?.replace(/^worktree /, "");
+  const primary = gitRead(root, "worktree", "list", "--porcelain", "-z")
+    ?.split("\0")[0]
+    ?.replace(/^worktree /, "");
   return primary ? gitRead(primary, "rev-parse", "--verify", "HEAD^{commit}")?.trim() : undefined;
 }
 
@@ -105,11 +117,13 @@ export function resolveAllowedSkills(root: string, role: LoopRole, acceptedRef?:
       candidateNames.add("ui-quality");
       break;
     case "planner":
+      candidateNames.add("animus-triage");
       candidateNames.add("blueprint");
-      break;
-    case "investigator":
-      candidateNames.add("diagnosing-bugs");
-      candidateNames.add("unstick");
+      candidateNames.add("animus-brainstorm");
+      candidateNames.add("animus-grill");
+      candidateNames.add("animus-architecture");
+      candidateNames.add("animus-spec");
+      candidateNames.add("animus-tickets");
       break;
     case "reviewer":
       // Unattended loop reviewer is governed directly by loop-review.md with unified Standards & Spec axes
@@ -193,15 +207,23 @@ function baselineTrackedFilesMatch(root: string, ref: string): boolean {
   const entries = gitRead(root, "ls-tree", "-r", "-z", ref);
   if (entries === undefined) return false;
   try {
-    return entries.split("\0").filter(Boolean).every(entry => {
-      const [meta, file] = entry.split("\t");
-      if (!file || !meta) return false;
-      const [mode, , blob] = meta.split(" ");
-      if (mode === "120000" && blob) return baselineSymlinkMatches(root, file, blob);
-      return !!mode?.startsWith("100") && regularRepositoryFile(root, file)
-        && gitRead(root, "hash-object", "--no-filters", "--", join(root, file))?.trim() === blob;
-    });
-  } catch { return false; }
+    return entries
+      .split("\0")
+      .filter(Boolean)
+      .every((entry) => {
+        const [meta, file] = entry.split("\t");
+        if (!file || !meta) return false;
+        const [mode, , blob] = meta.split(" ");
+        if (mode === "120000" && blob) return baselineSymlinkMatches(root, file, blob);
+        return (
+          !!mode?.startsWith("100") &&
+          regularRepositoryFile(root, file) &&
+          gitRead(root, "hash-object", "--no-filters", "--", join(root, file))?.trim() === blob
+        );
+      });
+  } catch {
+    return false;
+  }
 }
 
 function baselineDirectoryMatches(root: string, ref: string, path: string): boolean {
@@ -217,7 +239,13 @@ function baselineDirectoryMatches(root: string, ref: string, path: string): bool
         if (!baselineSymlinkMatches(root, file, blob)) return false;
       } else if (mode?.startsWith("100")) {
         if (!regularRepositoryFile(root, file)) return false;
-        const currentBlob = gitRead(root, "hash-object", "--no-filters", "--", join(root, file))?.trim();
+        const currentBlob = gitRead(
+          root,
+          "hash-object",
+          "--no-filters",
+          "--",
+          join(root, file),
+        )?.trim();
         if (currentBlob !== blob) return false;
       } else {
         return false;
@@ -230,12 +258,15 @@ function baselineDirectoryMatches(root: string, ref: string, path: string): bool
         const file = `${directory}/${entry.name}`;
         if (entry.isDirectory()) {
           if (!visit(file)) return false;
-        } else if ((!entry.isFile() && !entry.isSymbolicLink()) || !expected.delete(file)) return false;
+        } else if ((!entry.isFile() && !entry.isSymbolicLink()) || !expected.delete(file))
+          return false;
       }
       return true;
     };
     return visit(path) && expected.size === 0;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 export function resolveLoopExtensions(root: string, acceptedRef?: string): string[] {
@@ -243,11 +274,12 @@ export function resolveLoopExtensions(root: string, acceptedRef?: string): strin
   const ref = resolveAcceptedMemoryRef(root, acceptedRef);
   if (!ref) return [];
 
-  const hookRel = baselineText(root, ref, ".animus/hooks/loop-guard.ts") !== undefined
-    ? ".animus/hooks/loop-guard.ts"
-    : baselineText(root, ref, ".factory/hooks/loop-guard.ts") !== undefined
-      ? ".factory/hooks/loop-guard.ts"
-      : undefined;
+  const hookRel =
+    baselineText(root, ref, ".animus/hooks/loop-guard.ts") !== undefined
+      ? ".animus/hooks/loop-guard.ts"
+      : baselineText(root, ref, ".factory/hooks/loop-guard.ts") !== undefined
+        ? ".factory/hooks/loop-guard.ts"
+        : undefined;
   if (!hookRel) return [];
 
   const hookDirRel = hookRel.startsWith(".animus/") ? ".animus/hooks" : ".factory/hooks";
@@ -255,10 +287,13 @@ export function resolveLoopExtensions(root: string, acceptedRef?: string): strin
   // Hooks can import repository code: refuse a mismatching checkout rather than copy executable files.
   // Check untracked and modified files, but do not consider standard ignored files (e.g. node_modules, build caches).
   const status = gitRead(root, "status", "--porcelain", "--untracked-files=all") ?? "";
-  if (!baselineTrackedFilesMatch(root, ref)
-    || gitRead(root, "diff", "--no-ext-diff", "--no-textconv", ref, "--") !== ""
-    || status !== ""
-    || !baselineDirectoryMatches(root, ref, hookDirRel)) return [];
+  if (
+    !baselineTrackedFilesMatch(root, ref) ||
+    gitRead(root, "diff", "--no-ext-diff", "--no-textconv", ref, "--") !== "" ||
+    status !== "" ||
+    !baselineDirectoryMatches(root, ref, hookDirRel)
+  )
+    return [];
   return [join(root, hookRel)];
 }
 
@@ -266,7 +301,9 @@ export function loadActiveLessons(root: string, acceptedRef?: string): LessonEnt
   if (isHarnessSafeMode(root)) return [];
   const ref = resolveAcceptedMemoryRef(root, acceptedRef);
   if (!ref) return [];
-  const raw = baselineText(root, ref, ".animus/lessons.jsonl") ?? baselineText(root, ref, ".factory/lessons.jsonl");
+  const raw =
+    baselineText(root, ref, ".animus/lessons.jsonl") ??
+    baselineText(root, ref, ".factory/lessons.jsonl");
   if (raw === undefined) return [];
 
   const lessons: LessonEntry[] = [];
@@ -281,17 +318,23 @@ export function loadActiveLessons(root: string, acceptedRef?: string): LessonEnt
         if (typeof parsed.topic === "string") vetoedTopics.add(parsed.topic.trim().toLowerCase());
         if (typeof parsed.id === "string") vetoedIds.add(parsed.id);
       }
-      if (parsed?.vetoed === false && !parsed.superseded_by
-        && typeof parsed.id === "string" && typeof parsed.topic === "string"
-        && typeof parsed.evidence === "string" && typeof parsed.rule === "string"
-        && Array.isArray(parsed.trigger_patterns)
-        && parsed.trigger_patterns.every(pattern => typeof pattern === "string")) {
+      if (
+        parsed?.vetoed === false &&
+        !parsed.superseded_by &&
+        typeof parsed.id === "string" &&
+        typeof parsed.topic === "string" &&
+        typeof parsed.evidence === "string" &&
+        typeof parsed.rule === "string" &&
+        Array.isArray(parsed.trigger_patterns) &&
+        parsed.trigger_patterns.every((pattern) => typeof pattern === "string")
+      ) {
         lessons.push({ ...parsed, occurrence_count: parsed.occurrence_count ?? 1 });
       }
     } catch {}
   }
-  return lessons.filter(lesson => !vetoedIds.has(lesson.id)
-    && !vetoedTopics.has(lesson.topic.trim().toLowerCase()));
+  return lessons.filter(
+    (lesson) => !vetoedIds.has(lesson.id) && !vetoedTopics.has(lesson.topic.trim().toLowerCase()),
+  );
 }
 
 function patternMatchesTarget(pattern: string, target: string): boolean {

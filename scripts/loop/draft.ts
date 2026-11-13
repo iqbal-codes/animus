@@ -224,14 +224,13 @@ function renderDraftPrompt(input: PlanDraftInput, artifactsDir: string): string 
 }
 
 function ensureSkillAvailable(root: string, acceptedRef?: string): void {
-  const skills = resolveAllowedSkills(root, "triage", acceptedRef);
+  const skills = resolveAllowedSkills(root, "planner", acceptedRef);
   if (!skills.some((skill) => basename(skill) === REQUIRED_TRIAGE_SKILL)) {
     throw new Error(
       "Draft planning requires the accepted triage playbook (animus-triage), but it is unavailable.",
     );
   }
 }
-
 function assertProviderGuard(provider: string, extensions: string[]): void {
   if (provider === "pi" || provider === "omp") {
     if (extensions.length === 0) {
@@ -281,7 +280,7 @@ export async function planDraft(
   const env: Record<string, string> = {
     ...process.env,
     ...(options.env ?? {}),
-    FACTORY_LOOP_ROLE: "triage",
+    FACTORY_LOOP_ROLE: "planner",
   } as Record<string, string>;
 
   if (env.PI_OFFLINE === "1") {
@@ -289,13 +288,12 @@ export async function planDraft(
   }
 
   ensureSkillAvailable(input.root, options.acceptedRef);
-  const roleConfig = resolveRoleConfig(input.root, "triage", env);
+  const roleConfig = resolveRoleConfig(input.root, "planner", env);
   const provider = roleConfig.provider;
   const model = roleConfig.model;
   const effort = roleConfig.effort;
   const extensions = resolveLoopExtensions(input.root, options.acceptedRef);
   assertProviderGuard(provider, extensions);
-
   const artifactsDir = join(input.stateRoot, "draft-artifacts", input.workId);
   mkdirSync(artifactsDir, { recursive: true });
 
@@ -314,7 +312,7 @@ export async function planDraft(
     "",
     options.acceptedRef,
   );
-  const skills = resolveAllowedSkills(input.root, "triage", options.acceptedRef);
+  const skills = resolveAllowedSkills(input.root, "planner", options.acceptedRef);
   const argv = buildProviderArgv(provider, {
     model,
     effort,
@@ -337,7 +335,7 @@ export async function planDraft(
     },
     env,
   );
-  const timeoutMs = budgets.triage.hardMs;
+  const timeoutMs = budgets.planner.hardMs;
   const beforeSnapshot = getWorkspaceSnapshot(input.root);
   const transport: AgentTransport =
     options.transport ??
@@ -346,14 +344,13 @@ export async function planDraft(
   const response = await transport({
     argv,
     cwd: input.root,
-    role: "triage",
+    role: "planner",
     provider,
     model,
     effort,
     timeoutMs,
     env,
   });
-
   const afterSnapshot = getWorkspaceSnapshot(input.root);
   if (beforeSnapshot !== afterSnapshot) {
     throw new Error(

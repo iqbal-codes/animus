@@ -28,37 +28,44 @@ export const modelTierBindingSchema = z.object({
 
 export type ModelTierBinding = z.infer<typeof modelTierBindingSchema>;
 
-export const modelTiersMapSchema = z.object({
-  small: modelTierBindingSchema.optional(),
-  medium: modelTierBindingSchema.optional(),
-  large: modelTierBindingSchema.optional(),
-});
+export const modelTiersMapSchema = z.record(
+  z
+    .string()
+    .regex(/^[a-z][a-z0-9_-]{0,31}$/, "Tier name must be lowercase alphanumeric/hyphen/underscore"),
+  modelTierBindingSchema,
+);
 
 export type ModelTiersMap = z.infer<typeof modelTiersMapSchema>;
+
+export const pipelineRoleSchema = z.enum([
+  "triage",
+  "planner",
+  "builder",
+  "qa",
+  "reviewer",
+  "reflector",
+]);
+
+export type PipelineRole = z.infer<typeof pipelineRoleSchema>;
+
+export const roleRoutingMapSchema = z.record(
+  pipelineRoleSchema,
+  z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/),
+);
+
+export type RoleRoutingMap = z.infer<typeof roleRoutingMapSchema>;
 
 export const projectSettingsSchema = z.object({
   models: z
     .object({
-      assistant: z.string().default("pi"),
-      defaultModel: z.string().default("default"),
-      effort: z.string().default("high"),
-      plannerModel: z.string().default("default"),
-      builderModel: z.string().default("default"),
-      reviewerModel: z.string().default("default"),
       tiers: modelTiersMapSchema.optional(),
-      reasoningAlias: modelTierBindingSchema.optional(),
+      roles: roleRoutingMapSchema.optional(),
       worktreeStrategy: z.string().default("isolated"),
       baseBranch: z.string().default("main"),
       concurrencyLimit: z.number().default(2),
     })
     .passthrough()
     .default({
-      assistant: "pi",
-      defaultModel: "default",
-      effort: "high",
-      plannerModel: "default",
-      builderModel: "default",
-      reviewerModel: "default",
       worktreeStrategy: "isolated",
       baseBranch: "main",
       concurrencyLimit: 2,
