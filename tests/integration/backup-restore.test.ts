@@ -389,8 +389,7 @@ describe("workspace backup and isolated restore", () => {
     }>(response);
     expect(created.manifestHash).toMatch(/^[a-f0-9]{64}$/);
     expect(created.artifactCount).toBe(1);
-    expect(created.schemaVersion).toBe(19);
-
+    expect(created.schemaVersion).toBe(20);
     const manifest = JSON.parse(readFileSync(join(bundle, BACKUP_MANIFEST_FILE), "utf8"));
     expect(manifest.kind).toBe("animus-workspace-backup");
     expect(manifest.credentials).toBeUndefined();
@@ -1655,7 +1654,7 @@ describe("workspace backup and isolated restore", () => {
           version: number;
         }>
       ).map((row) => row.version);
-      expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19]);
+      expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20]);
       expect(
         restoredDb
           .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='delivery_merges'")

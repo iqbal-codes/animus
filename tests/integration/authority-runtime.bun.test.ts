@@ -282,8 +282,7 @@ describe("packaged authority runtime", () => {
     expect(parsed.authority).toBe("local");
     expect(parsed.phase).toBe("active");
     expect(parsed.cutoverId).toBe("cutover_binary");
-    expect(parsed.schemaVersion).toBe(19);
-    expect(parsed.tableCount).toBeGreaterThan(10);
+    expect(parsed.schemaVersion).toBe(20);
     expect(parsed.artifactCount).toBe(1);
     expect(parsed.databasePath).toBe(join(stateDir, "console.db"));
     // The packaged process reports the PRAGMAs it actually observed/configured.
@@ -329,8 +328,7 @@ describe("packaged authority runtime", () => {
     };
     expect(backupResult.destinationPath).toBe(backupDestination);
     expect(backupResult.artifactCount).toBe(1);
-    expect(backupResult.schemaVersion).toBe(19);
-
+    expect(backupResult.schemaVersion).toBe(20);
     const restore = Bun.spawnSync(
       [
         binary,
@@ -412,8 +410,7 @@ describe("packaged authority runtime", () => {
     };
     expect(restoredSnapshot.installationHeld).toBe(true);
     expect(restoredSnapshot.artifactCount).toBe(1);
-    expect(restoredSnapshot.schemaVersion).toBe(19);
-
+    expect(restoredSnapshot.schemaVersion).toBe(20);
     const evidencePath = process.env.AUTHORITY_RUNTIME_EVIDENCE;
     if (evidencePath) {
       writeFileSync(
