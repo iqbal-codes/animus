@@ -34,7 +34,7 @@ export async function handleSettingsRoute(
     }
     const url = new URL(request.url);
     const provider = url.searchParams.get("provider") || "pi";
-    const modelsInfo = service.getHarnessModels(provider);
+    const modelsInfo = await service.getHarnessModels(provider);
     return Response.json(modelsInfo);
   }
 

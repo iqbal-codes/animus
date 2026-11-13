@@ -721,4 +721,107 @@ describe("In-Process Backend Application Kernel & Monitor Runtime (Ticket #147)"
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("HTTP endpoints support fs browse, inspect-local, inspect-remote, local_init, and clone cancellation", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "backend-add-repo-http-")));
+    const localRepo = join(root, "sample-repo");
+    mkdirSync(localRepo, { recursive: true });
+    execFileSync("git", ["init", "-q", "-b", "main", localRepo]);
+    try {
+      const forge = new SyntheticForgeAdapter({ "acme/console": 777 });
+      const cloneGate = Promise.withResolvers<void>();
+      const origClone = forge.cloneRepository.bind(forge);
+      forge.cloneRepository = async (repo, targetPath, opts) => {
+        opts?.signal?.addEventListener("abort", () =>
+          cloneGate.reject(new Error("Clone cancelled")),
+        );
+        await cloneGate.promise;
+        return origClone(repo, targetPath, opts);
+      };
+      const app = await createBackendApp({
+        stateDir: join(root, "state"),
+        startMonitor: false,
+        forge,
+      });
+
+      const browseRes = await app.fetch(
+        new Request(`http://127.0.0.1/api/v1/fs/browse?path=${encodeURIComponent(root)}`),
+      );
+      expect(browseRes.status).toBe(200);
+      const browseJson = (await browseRes.json()) as {
+        entries: Array<{ name: string; isGitRepo: boolean }>;
+      };
+      expect(browseJson.entries.some((e) => e.name === "sample-repo" && e.isGitRepo)).toBe(true);
+
+      const inspectLocalRes = await app.fetch(
+        new Request("http://127.0.0.1/api/v1/projects/inspect-local", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: localRepo }),
+        }),
+      );
+      expect(inspectLocalRes.status).toBe(200);
+      expect(await inspectLocalRes.json()).toMatchObject({
+        isGitRepo: true,
+        branch: "main",
+        errorCode: null,
+      });
+
+      const localInitRes = await app.fetch(
+        new Request("http://127.0.0.1/api/v1/projects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            method: "local_init",
+            name: "created-local",
+            default_branch: "main",
+          }),
+        }),
+      );
+      expect(localInitRes.status).toBe(201);
+      const created = (await localInitRes.json()) as {
+        repo_id: number;
+        checkout_path: string;
+      };
+      expect(created.repo_id).toBe(0);
+      expect(created.checkout_path).toBe(join(root, "projects", "created-local"));
+
+      const inspectRemoteRes = await app.fetch(
+        new Request("http://127.0.0.1/api/v1/projects/inspect-remote", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: "https://github.com/acme/console.git" }),
+        }),
+      );
+      expect(inspectRemoteRes.status).toBe(200);
+      expect(await inspectRemoteRes.json()).toMatchObject({
+        valid: true,
+        repoName: "acme/console",
+        destinationPath: join(root, "projects", "console"),
+      });
+
+      const cloneStartRes = await app.fetch(
+        new Request("http://127.0.0.1/api/v1/projects/clone", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: "https://github.com/acme/console.git" }),
+        }),
+      );
+      expect(cloneStartRes.status).toBe(202);
+      const startedJob = (await cloneStartRes.json()) as { jobId: string };
+
+      const cancelRes = await app.fetch(
+        new Request(`http://127.0.0.1/api/v1/projects/clone/${startedJob.jobId}/cancel`, {
+          method: "POST",
+        }),
+      );
+      expect(cancelRes.status).toBe(200);
+      expect((await cancelRes.json()) as { status: string }).toMatchObject({ status: "cancelled" });
+      cloneGate.resolve();
+
+      await app.stop();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

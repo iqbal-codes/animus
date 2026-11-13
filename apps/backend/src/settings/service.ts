@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -21,7 +20,6 @@ import {
   projectSettingsSchema,
   type ProjectSettingsUpdate,
 } from "./types";
-
 /**
  * A partial settings update must never erase a stored value by passing the key
  * as `undefined`. The onboarding marker and runtime root are owned by
@@ -48,12 +46,12 @@ const FALLBACK_HARNESS_MODELS: Record<string, string[]> = {
   ],
   claude: [
     "default",
-    "claude-3-7-sonnet",
-    "claude-3-5-sonnet",
-    "claude-3-5-haiku",
     "claude-sonnet-4-6",
     "claude-opus-4-6",
     "claude-haiku-4-5",
+    "claude-3-7-sonnet",
+    "claude-3-5-sonnet",
+    "claude-3-5-haiku",
   ],
   omp: [
     "default",
@@ -85,10 +83,13 @@ const HARNESS_EFFORTS: Record<string, string[]> = {
   codex: ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
   opencode: ["low", "medium", "high"],
 };
-
 export class SettingsService {
   private userAnimusDir: string;
   private defaultRepoRoot: string;
+  private catalogCache = new Map<
+    string,
+    { expiresAt: number; value: Awaited<ReturnType<SettingsService["getHarnessModels"]>> }
+  >();
 
   constructor(
     options: {
@@ -169,44 +170,72 @@ export class SettingsService {
   // ==========================================
   // Harness Models Discovery & Efforts
   // ==========================================
-  getHarnessModels(providerId = "pi"): {
+  async getHarnessModels(providerId = "pi"): Promise<{
     provider: string;
     models: string[];
     supportedEfforts: string[];
     defaultEffort: string;
-  } {
+    source?: string;
+    catalogLive?: boolean;
+    unavailableReason?: string;
+  }> {
     const provider = providerId.toLowerCase();
+    const cached = this.catalogCache.get(provider);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.value;
+    }
     const supportedEfforts = HARNESS_EFFORTS[provider] || ["low", "medium", "high", "max"];
     const defaultEffort = supportedEfforts.includes("high")
       ? "high"
       : supportedEfforts[0] || "medium";
 
-    if (provider === "pi") {
+    if (
+      provider === "pi" ||
+      provider === "omp" ||
+      provider === "opencode" ||
+      provider === "commandcode"
+    ) {
       try {
-        const res = spawnSync("pi", ["--list-models"], {
-          timeout: 3000,
-          encoding: "utf-8",
-        });
-        if (res.status === 0 && res.stdout) {
-          const lines = res.stdout.trim().split("\n");
-          const parsedModels = new Set<string>(["default"]);
-          for (let i = 1; i < lines.length; i++) {
-            const parts = lines[i].trim().split(/\s+/);
-            if (parts.length >= 2) {
-              const prov = parts[0];
-              const mod = parts[1];
-              parsedModels.add(prov ? `${prov}/${mod}` : mod);
-            }
-          }
-          if (parsedModels.size > 1) {
-            return {
-              provider,
-              models: Array.from(parsedModels),
-              supportedEfforts,
-              defaultEffort,
-            };
-          }
+        const factory = new URL("../../../../", import.meta.url);
+        const catalogMod = (await import(
+          new URL("scripts/cli/commands/onboarding-model-catalog.ts", factory).href
+        )) as {
+          createModelCatalogLoader: () => (p: string) => Promise<{
+            models: Array<{ id: string }>;
+            source?: string;
+            unavailableReason?: string;
+          }>;
+        };
+        const loader = catalogMod.createModelCatalogLoader();
+        const catalog = await Promise.race([
+          loader(provider),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 3500)),
+        ]);
+        if (catalog && catalog.models.length > 0) {
+          const merged = Array.from(
+            new Set<string>(["default", ...catalog.models.map((m) => m.id)]),
+          );
+          const result = {
+            provider,
+            models: merged,
+            supportedEfforts,
+            defaultEffort,
+            ...(catalog.source ? { source: catalog.source } : {}),
+            catalogLive: true,
+          };
+          this.catalogCache.set(provider, { expiresAt: Date.now() + 60_000, value: result });
+          return result;
         }
+        return {
+          provider,
+          models: FALLBACK_HARNESS_MODELS[provider] || ["default"],
+          supportedEfforts,
+          defaultEffort,
+          catalogLive: false,
+          unavailableReason:
+            catalog?.unavailableReason ??
+            "Catalog discovery timed out. Choose a preset or enter a model ID manually.",
+        };
       } catch {}
     }
 
@@ -216,9 +245,11 @@ export class SettingsService {
       models: fallback,
       supportedEfforts,
       defaultEffort,
+      catalogLive: false,
+      unavailableReason:
+        "No live model catalog CLI available for this harness. Choose a preset or enter a model ID manually.",
     };
   }
-
   // ==========================================
   // Project Settings (<repoRoot>)
   // ==========================================
@@ -228,41 +259,71 @@ export class SettingsService {
     const repoConfig = readRepoConfig(repoRoot);
     const modelsData = projectModelsFromConfig(repoConfig);
 
-    // 2. Checks: .animus/tool-guidance.json (with fallback to .factory/tool-guidance.json)
+    // 2. Checks: harness/harness.config.json (authoritative loop checks) + .animus/tool-guidance.json
+    const harnessConfigPath = join(repoRoot, "harness/harness.config.json");
+    let harnessData: {
+      static?: string;
+      unit?: string;
+      unit_count_pattern?: string;
+      protected_paths?: string;
+    } = {};
+    if (existsSync(harnessConfigPath)) {
+      try {
+        harnessData = JSON.parse(readFileSync(harnessConfigPath, "utf-8")) ?? {};
+      } catch {}
+    }
+
     const animusToolGuidance = join(repoRoot, ".animus/tool-guidance.json");
     const factoryToolGuidance = join(repoRoot, ".factory/tool-guidance.json");
     const toolGuidancePath = existsSync(animusToolGuidance)
       ? animusToolGuidance
       : factoryToolGuidance;
-    let checksData: any = {};
+    let parsedGuidance: Record<string, unknown> = {};
+    const rawGuidance: Record<string, string> = {};
     if (existsSync(toolGuidancePath)) {
       try {
         const parsed = JSON.parse(readFileSync(toolGuidancePath, "utf-8"));
-        if (parsed && typeof parsed === "object") {
-          const rawGuidance: Record<string, string> = {};
-          for (const [k, v] of Object.entries(parsed)) {
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          parsedGuidance = parsed as Record<string, unknown>;
+          for (const [k, v] of Object.entries(parsedGuidance)) {
             if (typeof v === "string" && k !== "protectedPaths") {
               rawGuidance[k] = v;
             }
           }
-          checksData = {
-            staticCmd: parsed.staticCmd || parsed.check || "bun run check",
-            unitCmd: parsed.unitCmd || parsed.test || "bun test",
-            countPattern: parsed.countPattern || "Tests\\s+(\\d+)\\s+passed",
-            protectedPaths: Array.isArray(parsed.protectedPaths)
-              ? parsed.protectedPaths
-              : typeof parsed.protectedPaths === "string"
-                ? parsed.protectedPaths
-                    .split(",")
-                    .map((s: string) => s.trim())
-                    .filter(Boolean)
-                : ["harness/**", ".animus/holdout/**", ".animus/hooks/**"],
-            toolGuidance: rawGuidance,
-          };
         }
       } catch {}
     }
 
+    const checksData: Record<string, unknown> = {
+      staticCmd:
+        (typeof harnessData.static === "string" && harnessData.static) ||
+        (typeof parsedGuidance.staticCmd === "string" && parsedGuidance.staticCmd) ||
+        (typeof parsedGuidance.check === "string" && parsedGuidance.check) ||
+        "bun run check",
+      unitCmd:
+        (typeof harnessData.unit === "string" && harnessData.unit) ||
+        (typeof parsedGuidance.unitCmd === "string" && parsedGuidance.unitCmd) ||
+        (typeof parsedGuidance.test === "string" && parsedGuidance.test) ||
+        "bun test",
+      countPattern:
+        (typeof harnessData.unit_count_pattern === "string" && harnessData.unit_count_pattern) ||
+        (typeof parsedGuidance.countPattern === "string" && parsedGuidance.countPattern) ||
+        "Tests\\s+(\\d+)\\s+passed",
+      protectedPaths: Array.isArray(parsedGuidance.protectedPaths)
+        ? parsedGuidance.protectedPaths
+        : typeof harnessData.protected_paths === "string"
+          ? harnessData.protected_paths
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : typeof parsedGuidance.protectedPaths === "string"
+            ? parsedGuidance.protectedPaths
+                .split(",")
+                .map((s) => s.trim())
+                .filter(Boolean)
+            : ["harness/**", ".animus/holdout/**", ".animus/hooks/**"],
+      toolGuidance: rawGuidance,
+    };
     // 3. Rules: .animus/codebase-rules.json (with fallback to .factory/codebase-rules.json)
     const animusRules = join(repoRoot, ".animus/codebase-rules.json");
     const factoryRules = join(repoRoot, ".factory/codebase-rules.json");
@@ -305,12 +366,12 @@ export class SettingsService {
       rules: updates.rules ?? current.rules,
       releases: nextReleases,
     });
-
     // The UI's model fields are a projection over `assistant`, `assistants`,
     // `tiers`, `aliases`, and `worktree`. Map them back onto those keys and
     // never persist the derived duplicates (plannerModel, reviewerModel, ...).
     const assistant = validated.models.assistant || currentConfig.assistant || "pi";
-    const tiers = { ...currentConfig.tiers } as Record<string, Record<string, unknown>>;
+    const existingTiers = (currentConfig.tiers ?? {}) as Record<string, Record<string, unknown>>;
+    const tiers: Record<string, Record<string, unknown>> = { ...existingTiers };
     const defaultTierEfforts: Record<string, string> = {
       small: "medium",
       medium: validated.models.effort,
@@ -319,43 +380,107 @@ export class SettingsService {
           ? validated.models.effort
           : "high",
     };
-    for (const tier of ["small", "medium", "large"]) {
-      const existing = tiers[tier];
-      tiers[tier] = existing
-        ? { ...existing, provider: assistant }
-        : {
-            provider: assistant,
-            model: validated.models.defaultModel,
-            effort: defaultTierEfforts[tier],
-          };
+    const explicitTiers = updates.models?.tiers;
+    const assistantChanged =
+      updates.models?.assistant !== undefined &&
+      updates.models.assistant !== current.models.assistant;
+    const defaultModelChanged =
+      updates.models?.defaultModel !== undefined &&
+      updates.models.defaultModel !== current.models.defaultModel;
+    const effortChanged =
+      updates.models?.effort !== undefined && updates.models.effort !== current.models.effort;
+
+    const assistantsMap: Record<string, Record<string, unknown>> = {
+      ...currentConfig.assistants,
+      [assistant]: { model: validated.models.defaultModel },
+    };
+
+    for (const tier of ["small", "medium", "large"] as const) {
+      const explicit = explicitTiers?.[tier];
+      const existing = existingTiers[tier];
+      if (explicit) {
+        const nextProvider = explicit.provider || assistant;
+        const nextModel = explicit.model || "default";
+        tiers[tier] = {
+          provider: nextProvider,
+          model: nextModel,
+          ...(explicit.effort ? { effort: explicit.effort } : {}),
+        };
+        if (!assistantsMap[nextProvider]) {
+          assistantsMap[nextProvider] = { model: nextModel };
+        }
+      } else if (existing) {
+        tiers[tier] = {
+          ...existing,
+          ...(assistantChanged && !explicitTiers ? { provider: assistant } : {}),
+          ...(tier === "medium" && defaultModelChanged
+            ? { model: validated.models.defaultModel }
+            : {}),
+          ...(tier === "medium" && effortChanged ? { effort: validated.models.effort } : {}),
+        };
+      } else {
+        tiers[tier] = {
+          provider: assistant,
+          model: validated.models.defaultModel,
+          effort: defaultTierEfforts[tier],
+        };
+      }
     }
-    if (tiers.medium) tiers.medium.effort = validated.models.effort;
 
     const aliases = { ...currentConfig.aliases } as Record<string, Record<string, unknown>>;
-    aliases["@reasoning"] = {
-      provider: assistant,
-      model:
-        (typeof aliases["@reasoning"]?.model === "string" && aliases["@reasoning"].model) ||
-        validated.models.defaultModel,
-      effort: validated.models.effort === "max" ? "max" : "high",
-    };
+    const explicitReasoning = updates.models?.reasoningAlias;
+    if (explicitReasoning) {
+      const reasoningProvider =
+        explicitReasoning.provider || (tiers.large?.provider as string) || assistant;
+      const reasoningModel =
+        explicitReasoning.model || (tiers.large?.model as string) || validated.models.defaultModel;
+      aliases["@reasoning"] = {
+        provider: reasoningProvider,
+        model: reasoningModel,
+        ...(explicitReasoning.effort ? { effort: explicitReasoning.effort } : {}),
+      };
+      if (!assistantsMap[reasoningProvider]) {
+        assistantsMap[reasoningProvider] = { model: reasoningModel };
+      }
+    } else if (explicitTiers?.large) {
+      const largeTier = tiers.large!;
+      aliases["@reasoning"] = {
+        provider: largeTier.provider,
+        model: largeTier.model,
+        ...(largeTier.effort ? { effort: largeTier.effort } : {}),
+      };
+    } else {
+      aliases["@reasoning"] = {
+        provider: (tiers.large?.provider as string) || assistant,
+        model:
+          (typeof aliases["@reasoning"]?.model === "string" &&
+            !defaultModelChanged &&
+            aliases["@reasoning"].model) ||
+          (tiers.large?.model as string) ||
+          validated.models.defaultModel,
+        effort:
+          (typeof tiers.large?.effort === "string" && tiers.large.effort) ||
+          (validated.models.effort === "max" ? "max" : "high"),
+      };
+    }
 
     const nextConfig: RepoConfigFile = {
       ...currentConfig,
       assistant,
-      assistants: {
-        ...currentConfig.assistants,
-        [assistant]: { model: validated.models.defaultModel },
-      },
+      assistants: assistantsMap,
       tiers,
       aliases,
       concurrencyLimit: validated.models.concurrencyLimit,
-      worktree: { ...currentConfig.worktree, strategy: validated.models.worktreeStrategy },
+      worktree: {
+        ...currentConfig.worktree,
+        strategy: validated.models.worktreeStrategy,
+        baseBranch: validated.models.baseBranch,
+      },
       releases: validated.releases,
     };
     writeRepoConfig(repoRoot, nextConfig);
 
-    // Write side files: tool guidance and codebase rules.
+    // Write side files: tool guidance, harness/harness.config.json, and codebase rules.
     const toolGuidancePath = join(repoRoot, ".animus/tool-guidance.json");
     const guidanceContent = {
       ...validated.checks.toolGuidance,
@@ -366,10 +491,34 @@ export class SettingsService {
     };
     this.atomicWrite(toolGuidancePath, JSON.stringify(guidanceContent, null, 2));
 
+    const harnessConfigPath = join(repoRoot, "harness/harness.config.json");
+    let existingHarnessConfig: Record<string, unknown> = {};
+    if (existsSync(harnessConfigPath)) {
+      try {
+        existingHarnessConfig = JSON.parse(readFileSync(harnessConfigPath, "utf-8")) ?? {};
+      } catch {}
+    }
+    const nextHarnessConfig = {
+      ...existingHarnessConfig,
+      static: validated.checks.staticCmd,
+      unit: validated.checks.unitCmd,
+      unit_count_pattern: validated.checks.countPattern,
+      required_checks:
+        typeof existingHarnessConfig.required_checks === "string"
+          ? existingHarnessConfig.required_checks
+          : "none",
+      protected_paths: validated.checks.protectedPaths.join(","),
+      description:
+        typeof existingHarnessConfig.description === "string"
+          ? existingHarnessConfig.description
+          : "Ordinary project checks configured via Animus Settings.",
+    };
+    this.atomicWrite(harnessConfigPath, JSON.stringify(nextHarnessConfig, null, 2) + "\n");
+
     const rulesPath = join(repoRoot, ".animus/codebase-rules.json");
     this.atomicWrite(rulesPath, JSON.stringify(validated.rules, null, 2));
 
-    return validated;
+    return this.getProjectSettings(repoRoot);
   }
 }
 
@@ -381,19 +530,49 @@ function projectModelsFromConfig(config: RepoConfigFile): Record<string, unknown
   const assistant =
     typeof config.assistant === "string" && config.assistant ? config.assistant : "pi";
   const assistants = (config.assistants ?? {}) as Record<string, { model?: string }>;
-  const tiers = (config.tiers ?? {}) as Record<string, { model?: string; effort?: string }>;
-  const aliases = (config.aliases ?? {}) as Record<string, { model?: string; effort?: string }>;
+  const tiers = (config.tiers ?? {}) as Record<
+    string,
+    { provider?: string; model?: string; effort?: string }
+  >;
+  const aliases = (config.aliases ?? {}) as Record<
+    string,
+    { provider?: string; model?: string; effort?: string }
+  >;
   const worktree = (config.worktree ?? {}) as Record<string, unknown>;
 
   const defaultModel = assistants[assistant]?.model || tiers.medium?.model || "default";
+  const defaultEffort = tiers.medium?.effort || aliases["@reasoning"]?.effort || "high";
+  const resolveTier = (tierKey: "small" | "medium" | "large", fallbackEffort: string) => ({
+    provider: tiers[tierKey]?.provider || assistant,
+    model: tiers[tierKey]?.model || defaultModel,
+    effort: tiers[tierKey]?.effort || fallbackEffort,
+  });
+  const projectedTiers = {
+    small: resolveTier("small", "medium"),
+    medium: resolveTier("medium", defaultEffort),
+    large: resolveTier(
+      "large",
+      defaultEffort === "max" || defaultEffort === "xhigh" ? defaultEffort : "high",
+    ),
+  };
+  const reasoningAlias = {
+    provider: aliases["@reasoning"]?.provider || projectedTiers.large.provider,
+    model: aliases["@reasoning"]?.model || projectedTiers.large.model,
+    effort: aliases["@reasoning"]?.effort || projectedTiers.large.effort,
+  };
+
   return {
     assistant,
     defaultModel,
-    effort: tiers.medium?.effort || aliases["@reasoning"]?.effort || "high",
+    effort: defaultEffort,
     concurrencyLimit: typeof config.concurrencyLimit === "number" ? config.concurrencyLimit : 2,
-    plannerModel: tiers.large?.model || defaultModel,
-    builderModel: tiers.medium?.model || defaultModel,
-    reviewerModel: aliases["@reasoning"]?.model || defaultModel,
+    plannerModel: projectedTiers.large.model,
+    builderModel: projectedTiers.medium.model,
+    reviewerModel: reasoningAlias.model,
+    tiers: projectedTiers,
+    reasoningAlias,
     worktreeStrategy: typeof worktree.strategy === "string" ? worktree.strategy : "isolated",
+    baseBranch:
+      typeof worktree.baseBranch === "string" && worktree.baseBranch ? worktree.baseBranch : "main",
   };
 }

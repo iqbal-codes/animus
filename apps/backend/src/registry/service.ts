@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, realpathSync, statSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import {
   type Project,
   type ProjectRegistration,
@@ -9,8 +9,12 @@ import {
   type DeregisterResult,
   type OperatorErrorCode,
 } from "@animus/contracts/operator";
-import { type ForgeAdapter, SystemForgeAdapter, resolveGitConfigPath } from "./forge";
-
+import {
+  type ForgeAdapter,
+  SystemForgeAdapter,
+  parseGitRemoteUrl,
+  resolveGitConfigPath,
+} from "./forge";
 export class ProjectRegistryError extends Error {
   constructor(
     public readonly code: OperatorErrorCode,
@@ -138,12 +142,34 @@ export class ProjectRegistryService {
     return this.mapRow(this.verifyCheckoutIntegrity(row));
   }
 
+  getProjectByCheckoutPath(checkoutPath: string): Project | null {
+    const target = resolve(checkoutPath);
+    let canonicalTarget = target;
+    try {
+      canonicalTarget = realpathSync(target);
+    } catch {}
+    const rows = this.db
+      .prepare("SELECT * FROM projects WHERE status != 'tombstone'")
+      .all() as unknown as ProjectRow[];
+    for (const row of rows) {
+      const resolvedRow = resolve(row.checkout_path);
+      let canonicalRow = resolvedRow;
+      try {
+        canonicalRow = realpathSync(resolvedRow);
+      } catch {}
+      if (resolvedRow === target || canonicalRow === canonicalTarget) {
+        return this.mapRow(this.verifyCheckoutIntegrity(row));
+      }
+    }
+    return null;
+  }
+
   async registerProject(registration: ProjectRegistration): Promise<Project> {
     const now = new Date().toISOString();
     const id = `proj_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
 
     if (registration.method === "local_checkout") {
-      const checkoutPath = registration.checkout_path;
+      const checkoutPath = resolve(registration.checkout_path);
       if (!existsSync(checkoutPath) || !statSync(checkoutPath).isDirectory()) {
         throw new ProjectRegistryError(
           "project_checkout_invalid",
@@ -157,22 +183,35 @@ export class ProjectRegistryService {
         );
       }
 
-      let repoInfo;
-      try {
-        repoInfo = await this.forge.detectLocalCheckout(checkoutPath);
-      } catch (err: any) {
+      const existingByPath = this.getProjectByCheckoutPath(checkoutPath);
+      if (existingByPath) {
         throw new ProjectRegistryError(
-          "project_checkout_invalid",
-          `Failed to detect GitHub repository: ${err?.message || String(err)}`,
+          "project_already_exists",
+          `An active project already exists at ${checkoutPath}`,
         );
       }
 
-      const existing = this.getProjectByRepoId(repoInfo.id);
-      if (existing) {
-        throw new ProjectRegistryError(
-          "project_already_exists",
-          `An active project already exists for repository ${repoInfo.repoName} (ID: ${repoInfo.id})`,
-        );
+      const remoteUrl = parseGitRemoteUrl(checkoutPath);
+      let repoInfo: { id: number; repoName: string };
+      if (remoteUrl) {
+        try {
+          repoInfo = await this.forge.detectLocalCheckout(checkoutPath);
+        } catch (err: unknown) {
+          throw new ProjectRegistryError(
+            "project_checkout_invalid",
+            `Failed to detect GitHub repository: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        const existing = this.getProjectByRepoId(repoInfo.id);
+        if (existing) {
+          throw new ProjectRegistryError(
+            "project_already_exists",
+            `An active project already exists for repository ${repoInfo.repoName} (ID: ${repoInfo.id})`,
+          );
+        }
+      } else {
+        const folderName = basename(checkoutPath) || registration.name;
+        repoInfo = { id: 0, repoName: folderName };
       }
 
       this.db
@@ -185,6 +224,13 @@ export class ProjectRegistryService {
       return this.getProject(id);
     }
 
+    if (registration.method === "local_init") {
+      throw new ProjectRegistryError(
+        "invalid_payload",
+        "Use backend onboarding for managed local repository initialization",
+      );
+    }
+
     if (registration.method === "github_clone") {
       if (!registration.target_path)
         throw new ProjectRegistryError(
@@ -194,10 +240,10 @@ export class ProjectRegistryService {
       let repoInfo;
       try {
         repoInfo = await this.forge.getRepository(registration.repo);
-      } catch (err: any) {
+      } catch (err: unknown) {
         throw new ProjectRegistryError(
           "project_checkout_invalid",
-          `Failed to find repository on forge: ${err?.message || String(err)}`,
+          `Failed to find repository on forge: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
 
@@ -248,10 +294,10 @@ export class ProjectRegistryService {
           registration.repo,
           registration.private ?? true,
         );
-      } catch (err: any) {
+      } catch (err: unknown) {
         throw new ProjectRegistryError(
           "project_checkout_invalid",
-          `Failed to create repository on GitHub: ${err?.message || String(err)}`,
+          `Failed to create repository on GitHub: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
 
@@ -313,21 +359,25 @@ export class ProjectRegistryService {
       );
     }
 
-    let repoInfo;
-    try {
-      repoInfo = await this.forge.detectLocalCheckout(newPath);
-    } catch (err: any) {
-      throw new ProjectRegistryError(
-        "project_checkout_invalid",
-        `Failed to verify new checkout repository: ${err?.message || String(err)}`,
-      );
-    }
+    let repoInfo: { id: number; repoName: string };
+    if (project.repo_id === 0) {
+      repoInfo = { id: 0, repoName: project.repo_name };
+    } else {
+      try {
+        repoInfo = await this.forge.detectLocalCheckout(newPath);
+      } catch (err: unknown) {
+        throw new ProjectRegistryError(
+          "project_checkout_invalid",
+          `Failed to verify new checkout repository: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
 
-    if (repoInfo.id !== project.repo_id) {
-      throw new ProjectRegistryError(
-        "retarget_rejected",
-        `New checkout points to repository ID ${repoInfo.id} (${repoInfo.repoName}), which does not match active project repository ID ${project.repo_id} (${project.repo_name}).`,
-      );
+      if (repoInfo.id !== project.repo_id) {
+        throw new ProjectRegistryError(
+          "retarget_rejected",
+          `New checkout points to repository ID ${repoInfo.id} (${repoInfo.repoName}), which does not match active project repository ID ${project.repo_id} (${project.repo_name}).`,
+        );
+      }
     }
 
     const now = new Date().toISOString();
@@ -336,7 +386,6 @@ export class ProjectRegistryService {
         "UPDATE projects SET checkout_path = ?, status = 'active', status_reason = NULL, updated_at = ? WHERE id = ?",
       )
       .run(newPath, now, id);
-
     return this.getProject(id);
   }
 

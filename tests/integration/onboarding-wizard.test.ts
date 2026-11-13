@@ -357,4 +357,27 @@ describe("onboarding wizard setup", () => {
     expect(prompts.closed).toBe(true);
     expect(prompts.initiallyChecked).toEqual(["claude", "codex"]);
   });
+
+  test("non-interactive setup honors machine defaultProvider and allows remote-less git repos when allowLocalWithoutRemote is set", async () => {
+    writeMachineConfig(
+      platformSettingsSchema.parse({
+        schemaVersion: 1,
+        system: { onboardedAt: "2026-01-01T00:00:00.000Z", defaultProvider: "omp" },
+        providers: [],
+      }),
+      machineHome.home,
+    );
+    const localRepo = mkdtempSync(join(tmpdir(), "onboarding-wizard-localonly-"));
+    roots.push(localRepo);
+    execFileSync("git", ["init", "-q", "-b", "main", localRepo]);
+
+    const result = await applyRepositorySetup(
+      { repoRoot: localRepo, nonInteractive: true, allowLocalWithoutRemote: true },
+      offline,
+    );
+    expect(result.animusConfig.assistant).toBe("omp");
+    expect(result.animusConfig.tiers?.medium?.provider).toBe("omp");
+    expect(existsSync(join(localRepo, ".animus/config.yaml"))).toBe(true);
+    expect(existsSync(join(localRepo, "harness/harness.config.json"))).toBe(true);
+  });
 });

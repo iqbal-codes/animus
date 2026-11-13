@@ -40,10 +40,18 @@ export function legacyRepoSchedulePaths(root: string): string[] {
 }
 
 export function projectConfigPath(projectSlug: string, home: string): string {
+  return join(home, "state", "projects", projectSlug, "config.yaml");
+}
+
+export function legacyProjectConfigPath(projectSlug: string, home: string): string {
   return join(home, "projects", projectSlug, "config.yaml");
 }
 
 export function legacyProjectSchedulePath(projectSlug: string, home: string): string {
+  return join(home, "state", "projects", projectSlug, "schedule.json");
+}
+
+export function legacyHomeProjectSchedulePath(projectSlug: string, home: string): string {
   return join(home, "projects", projectSlug, "schedule.json");
 }
 
@@ -142,7 +150,7 @@ export function readRepoSchedule(root: string): ScheduleLayer | null {
   return normalizeScheduleBlock(config.schedule, repoConfigPath(root));
 }
 
-/** The schedule block of the per-project user layer (`~/.animus/projects/<slug>/config.yaml`). */
+/** The schedule block of the per-project user layer (`~/.animus/state/projects/<slug>/config.yaml`). */
 export function readProjectSchedule(projectSlug: string, home: string): ScheduleLayer | null {
   const path = projectConfigPath(projectSlug, home);
   const config = readYamlObject(path);
@@ -150,11 +158,27 @@ export function readProjectSchedule(projectSlug: string, home: string): Schedule
     return normalizeScheduleBlock(config.schedule, path);
   }
 
-  const legacy = legacyProjectSchedulePath(projectSlug, home);
+  const legacyConfig = readYamlObject(legacyProjectConfigPath(projectSlug, home));
+  if (legacyConfig && legacyConfig.schedule !== undefined) {
+    return normalizeScheduleBlock(
+      legacyConfig.schedule,
+      legacyProjectConfigPath(projectSlug, home),
+    );
+  }
+
+  const legacy =
+    (existsSync(legacyProjectSchedulePath(projectSlug, home))
+      ? legacyProjectSchedulePath(projectSlug, home)
+      : null) ??
+    (existsSync(legacyHomeProjectSchedulePath(projectSlug, home))
+      ? legacyHomeProjectSchedulePath(projectSlug, home)
+      : null);
+  if (!legacy) return null;
+
   const legacySchedule = readLegacySchedule(legacy);
   if (!legacySchedule) return null;
 
-  const guard = join(home, "projects", projectSlug, ".config-migration.lock");
+  const guard = join(home, "state", "projects", projectSlug, ".config-migration.lock");
   withMigrationGuard(guard, () => {
     mergeYamlFile(path, { schedule: legacySchedule.block });
     removeFileIfExists(legacy);

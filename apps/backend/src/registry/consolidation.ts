@@ -341,4 +341,46 @@ export const CONSOLIDATION_MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 20,
+    name: "local_only_repositories_and_projects_indexes",
+    up(db) {
+      db.exec("PRAGMA defer_foreign_keys = ON;");
+      db.exec("DROP INDEX IF EXISTS idx_projects_active_repo_id;");
+      db.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_active_repo_id
+        ON projects(repo_id)
+        WHERE status != 'tombstone' AND repo_id > 0;
+      `);
+      db.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_active_checkout_path
+        ON projects(checkout_path)
+        WHERE status != 'tombstone';
+      `);
+      db.exec(`
+        CREATE TABLE work_items_v20 (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id),
+          repo_id INTEGER NOT NULL CHECK(repo_id >= 0),
+          repo_name TEXT NOT NULL,
+          issue_number INTEGER NOT NULL CHECK(issue_number > 0),
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          UNIQUE(id, project_id),
+          UNIQUE(project_id, issue_number)
+        );
+      `);
+      db.exec("INSERT INTO work_items_v20 SELECT * FROM work_items;");
+      db.exec("DROP TABLE work_items;");
+      db.exec("ALTER TABLE work_items_v20 RENAME TO work_items;");
+      db.exec(`
+        CREATE INDEX idx_work_items_project ON work_items(project_id, issue_number);
+      `);
+      db.exec(`
+        CREATE UNIQUE INDEX uq_work_items_remote_repo_issue
+        ON work_items(repo_id, issue_number)
+        WHERE repo_id > 0;
+      `);
+    },
+  },
 ];

@@ -112,11 +112,12 @@ export class IntakeService {
       return { ...cached.result, cached: true };
     }
 
-    const forge = this.getIssueForge();
-    const rawIssues = (await forge.listIssues(project.repo_name)).filter(
-      (issue) => issue.state.toUpperCase() === "OPEN",
-    );
-
+    const rawIssues =
+      project.repo_id > 0
+        ? (await this.getIssueForge().listIssues(project.repo_name)).filter(
+            (issue) => issue.state.toUpperCase() === "OPEN",
+          )
+        : [];
     // Support local development: scan .animus/issues/*.md and .animus/specs/*.md
     const localIssues = scanLocalAnimusIssues(project.checkout_path);
     if (localIssues.length > 0) {
@@ -159,7 +160,10 @@ export class IntakeService {
 
   async getProjectIssue(projectId: string, issueNumber: number): Promise<EvaluatedIssue> {
     const project = this.resolveProject(projectId);
-    let raw = await this.getIssueForge().getIssue(project.repo_name, issueNumber);
+    let raw =
+      project.repo_id > 0
+        ? await this.getIssueForge().getIssue(project.repo_name, issueNumber)
+        : null;
     if (!raw) {
       const localIssues = scanLocalAnimusIssues(project.checkout_path);
       raw = localIssues.find((issue) => issue.number === issueNumber) ?? null;

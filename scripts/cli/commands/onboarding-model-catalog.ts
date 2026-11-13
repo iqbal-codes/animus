@@ -62,6 +62,65 @@ export function createModelCatalogLoader(
         };
       }
     }
+    if (provider === "omp") {
+      try {
+        const output = await command("omp", ["models", "--json"]);
+        const parsed = JSON.parse(output) as {
+          models?: Array<{
+            provider?: string;
+            id?: string;
+            selector?: string;
+            name?: string;
+            contextWindow?: number;
+            maxTokens?: number;
+            reasoning?: boolean;
+            input?: string[];
+          }>;
+        };
+        const rawList = Array.isArray(parsed?.models) ? parsed.models : [];
+        const models: CatalogModel[] = [];
+        const seen = new Set<string>();
+        for (const item of rawList) {
+          const id =
+            (typeof item.selector === "string" && item.selector.trim()) ||
+            (typeof item.provider === "string" && item.provider && typeof item.id === "string"
+              ? `${item.provider}/${item.id}`
+              : typeof item.id === "string"
+                ? item.id.trim()
+                : "");
+          if (!id || seen.has(id)) continue;
+          seen.add(id);
+          const caps: string[] = [];
+          if (typeof item.contextWindow === "number") caps.push(`Context: ${item.contextWindow}`);
+          if (typeof item.maxTokens === "number") caps.push(`max output: ${item.maxTokens}`);
+          if (typeof item.reasoning === "boolean")
+            caps.push(`thinking: ${item.reasoning ? "yes" : "no"}`);
+          if (Array.isArray(item.input) && item.input.length > 0)
+            caps.push(`input: ${item.input.join(",")}`);
+          models.push({
+            id,
+            ...(typeof item.name === "string" && item.name !== id ? { name: item.name } : {}),
+            ...(typeof item.reasoning === "boolean" ? { reasoning: item.reasoning } : {}),
+            ...(caps.length ? { capabilities: `${caps.join("; ")} (reported by OMP)` } : {}),
+          });
+        }
+        return {
+          models,
+          source: "omp models --json",
+          ...(!models.length
+            ? {
+                unavailableReason:
+                  "OMP returned no recognized model catalog. Enter a model ID manually.",
+              }
+            : {}),
+        };
+      } catch (error) {
+        return {
+          models: [],
+          unavailableReason: `Model catalog unavailable: ${error instanceof Error ? error.message : String(error)}. Enter a model ID manually.`,
+        };
+      }
+    }
     if (provider !== "pi" && provider !== "opencode")
       return {
         models: [],

@@ -17,7 +17,7 @@ function isPullRequestNotFound(error: unknown): boolean {
     text,
   );
 }
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
@@ -141,9 +141,12 @@ export interface ForgeAdapter {
   createLabel?(repo: string, label: ForgeLabel): Promise<void>;
   getRepository(repo: string): Promise<ForgeRepoInfo>;
   createRepository(repo: string, isPrivate?: boolean): Promise<ForgeRepoInfo>;
-  cloneRepository(repo: string, targetPath: string): Promise<void>;
+  cloneRepository(
+    repo: string,
+    targetPath: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<void>;
   detectLocalCheckout(checkoutPath: string): Promise<ForgeRepoInfo>;
-  /** Defaults to OPEN discovery; ALL includes closed issues for coordination/history. */
   listIssues?(repo: string, state?: "OPEN" | "ALL"): Promise<ForgeIssue[]>;
   /** Targeted states keyed by each unique requested positive issue number; null means unavailable.
    * Implementations must reject transport/partial-response errors, not convert them to null.
@@ -259,7 +262,22 @@ export function resolveGitConfigPath(checkoutPath: string): string | null {
   return null;
 }
 
-export function parseGitRemote(checkoutPath: string): string | null {
+export function normalizeGitHubRepoSpecifier(input: string): string | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  const clean = trimmed
+    .replace(/^git@github\.com:/i, "")
+    .replace(/^ssh:\/\/git@github\.com\//i, "")
+    .replace(/^https?:\/\/(?:[^@/\s]+@)?github\.com\//i, "")
+    .replace(/\.git$/i, "")
+    .replace(/\/+$/, "");
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(clean)) {
+    return null;
+  }
+  return clean;
+}
+
+export function parseGitRemoteUrl(checkoutPath: string): string | null {
   const configPath = resolveGitConfigPath(checkoutPath);
   if (!configPath) {
     return null;
@@ -267,16 +285,19 @@ export function parseGitRemote(checkoutPath: string): string | null {
   try {
     const config = readFileSync(configPath, "utf-8");
     const origin = config.match(/^\s*\[remote\s+"origin"\]\s*\r?\n([^[]*)/m)?.[1];
-    const match = origin?.match(
-      /^\s*url\s*=\s*(?:git@github\.com:|https:\/\/github\.com\/)([^\s]+?)(?:\.git)?\s*$/m,
-    );
-    if (match && match[1]) {
-      return match[1].replace(/\.git$/, "");
-    }
+    const match = origin?.match(/^\s*url\s*=\s*([^\r\n]+?)\s*$/m);
+    return match?.[1]?.trim() || null;
   } catch {
     return null;
   }
-  return null;
+}
+
+export function parseGitRemote(checkoutPath: string): string | null {
+  const rawUrl = parseGitRemoteUrl(checkoutPath);
+  if (!rawUrl) {
+    return null;
+  }
+  return normalizeGitHubRepoSpecifier(rawUrl);
 }
 
 type GraphRecord = Record<string, unknown>;
@@ -506,9 +527,8 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
   }
 
   async getRepository(repo: string): Promise<ForgeRepoInfo> {
-    const cleanRepo = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
-    if (!/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(cleanRepo))
-      throw new Error("Invalid GitHub repository name");
+    const cleanRepo = normalizeGitHubRepoSpecifier(repo);
+    if (!cleanRepo) throw new Error("Invalid GitHub repository name");
     const { stdout } = await execFileAsync(
       "gh",
       ["api", `repos/${cleanRepo}`, "--jq", "{id: .id, nameWithOwner: .full_name}"],
@@ -533,14 +553,26 @@ export class SystemForgeAdapter implements IssueForgeAdapter {
     }
   }
 
-  async cloneRepository(repo: string, targetPath: string): Promise<void> {
+  async cloneRepository(
+    repo: string,
+    targetPath: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<void> {
+    const cleanRepo = normalizeGitHubRepoSpecifier(repo) ?? repo;
     try {
-      await execFileAsync("gh", ["repo", "clone", repo, targetPath], {
+      await execFileAsync("gh", ["repo", "clone", cleanRepo, targetPath], {
         encoding: "utf-8",
         timeout: 120_000,
+        signal: options?.signal,
       });
-    } catch (error: any) {
-      throw new Error(`Failed to clone repository ${repo}: ${error?.message || String(error)}`);
+    } catch (error: unknown) {
+      const errName =
+        error && typeof error === "object" && "name" in error ? error.name : undefined;
+      const errMsg = error instanceof Error ? error.message : String(error);
+      if (options?.signal?.aborted || errName === "AbortError") {
+        throw new Error(`Clone cancelled for ${cleanRepo}`);
+      }
+      throw new Error(`Failed to clone repository ${cleanRepo}: ${errMsg}`);
     }
   }
 
@@ -1536,15 +1568,25 @@ export class SyntheticForgeAdapter implements IssueForgeAdapter {
     return info;
   }
 
-  async cloneRepository(repo: string, targetPath: string): Promise<void> {
+  async cloneRepository(
+    repo: string,
+    targetPath: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<void> {
+    if (options?.signal?.aborted) {
+      throw new Error("Synthetic forge repository clone cancelled");
+    }
     if (this.failNextClone) {
       this.failNextClone = false;
       throw new Error("Synthetic forge repository clone failed");
     }
     const found = await this.getRepository(repo);
-    // Create minimal git structure at targetPath
-    const { mkdirSync, writeFileSync } = await import("node:fs");
-    mkdirSync(join(targetPath, ".git"), { recursive: true });
+    if (options?.signal?.aborted) {
+      throw new Error("Synthetic forge repository clone cancelled");
+    }
+    mkdirSync(join(targetPath, ".git", "objects"), { recursive: true });
+    mkdirSync(join(targetPath, ".git", "refs"), { recursive: true });
+    writeFileSync(join(targetPath, ".git", "HEAD"), "ref: refs/heads/main\n");
     writeFileSync(
       join(targetPath, ".git", "config"),
       `[remote "origin"]\n  url = https://github.com/${found.repoName}.git\n`,

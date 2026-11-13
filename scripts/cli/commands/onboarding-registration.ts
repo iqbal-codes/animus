@@ -89,6 +89,23 @@ export function githubRepo(value: string, allowBare = false): string {
   }
   throw new Error("Repository must identify a GitHub owner/repository.");
 }
+export function verifyGitWorkTreePreflight(repoRoot: string): {
+  checkoutPath: string;
+} {
+  const target = resolve(repoRoot);
+  try {
+    const isWorkTree = execFileSync("git", ["-C", target, "rev-parse", "--is-inside-work-tree"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (isWorkTree.trim() !== "true") {
+      throw new Error();
+    }
+  } catch {
+    throw new Error("Repository setup requires a valid Git repository or worktree.");
+  }
+  return { checkoutPath: realpathSync(target) };
+}
 
 export function verifyGitHubRepositoryPreflight(repoRoot: string): {
   checkoutPath: string;

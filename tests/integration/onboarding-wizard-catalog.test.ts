@@ -63,7 +63,37 @@ describe("onboarding model catalog", () => {
     ]);
   });
 
-  test.each(["claude", "codex", "omp"] as const)(
+  test("OMP uses its documented models --json command and preserves selectors and capabilities", async () => {
+    const catalog = createModelCatalogLoader(async (binary, args) => {
+      expect(binary).toBe("omp");
+      expect(args).toEqual(["models", "--json"]);
+      return JSON.stringify({
+        models: [
+          {
+            provider: "9router",
+            id: "ag/gemini-3.8-flash",
+            selector: "9router/ag/gemini-3.8-flash",
+            contextWindow: 1000000,
+            maxTokens: 128000,
+            reasoning: true,
+            input: ["text", "image"],
+          },
+        ],
+      });
+    });
+    const result = await catalog("omp");
+    expect(result.source).toBe("omp models --json");
+    expect(result.models).toEqual([
+      {
+        id: "9router/ag/gemini-3.8-flash",
+        reasoning: true,
+        capabilities:
+          "Context: 1000000; max output: 128000; thinking: yes; input: text,image (reported by OMP)",
+      },
+    ]);
+  });
+
+  test.each(["claude", "codex"] as const)(
     "unsupported catalog for %s never launches a provider command",
     async (provider) => {
       const catalog = createModelCatalogLoader(async () => {

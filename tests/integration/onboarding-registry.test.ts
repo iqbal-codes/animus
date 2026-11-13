@@ -1,5 +1,14 @@
+import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,7 +17,7 @@ import {
   SyntheticForgeAdapter,
 } from "../../apps/backend/src/registry";
 import { ProjectOnboardingService } from "../../apps/backend/src/registry/onboarding";
-
+import { installOnboardedAnimusHome } from "./machine-home-fixture";
 describe("backend registration preparation", () => {
   let root: string;
   let db: ReturnType<typeof initializeDatabase>;
@@ -44,7 +53,7 @@ describe("backend registration preparation", () => {
       name: "Repo",
       repo: "Owner/Repo",
     });
-    expect(project.checkout_path).toBe(join(root, "state", "projects", "Owner", "Repo"));
+    expect(project.checkout_path).toBe(join(root, "projects", "Repo"));
     expect(registry.getProject(project.id).status).toBe("active");
     expect(
       await onboarding.register({ method: "github_clone", name: "Repo", repo: "Owner/Repo" }),
@@ -130,15 +139,15 @@ describe("backend registration preparation", () => {
   });
 
   test("managed paths reject symbolic-link escapes and alternate checkout enrollment", async () => {
-    mkdirSync(join(root, "state", "projects"), { recursive: true });
+    mkdirSync(join(root, "projects"), { recursive: true });
     const outside = join(root, "outside");
     mkdirSync(outside);
-    symlinkSync(outside, join(root, "state", "projects", "Owner"));
+    symlinkSync(outside, join(root, "projects", "Repo"));
     await expect(
       onboarding.register({ method: "github_clone", name: "Repo", repo: "Owner/Repo" }),
     ).rejects.toMatchObject({ code: "project_checkout_invalid" });
     expect(registry.listProjects()).toEqual([]);
-    rmSync(join(root, "state", "projects", "Owner"));
+    rmSync(join(root, "projects", "Repo"));
     const project = await onboarding.register({
       method: "github_clone",
       name: "Repo",
@@ -181,5 +190,116 @@ describe("backend registration preparation", () => {
     // Tombstone project returns null
     await registry.deregisterProject(project.id);
     expect(registry.getProjectByRepoName("Owner/Repo")).toBeNull();
+  });
+
+  test("initializes local-only repository in managed projects dir and allows multiple local-only projects", async () => {
+    const projA = await onboarding.register({
+      method: "local_init",
+      name: "alpha-local",
+      default_branch: "main",
+    });
+    expect(projA.repo_id).toBe(0);
+    expect(projA.repo_name).toBe("alpha-local");
+    expect(projA.checkout_path).toBe(join(root, "projects", "alpha-local"));
+    expect(projA.status).toBe("active");
+
+    const projB = await onboarding.register({
+      method: "local_init",
+      name: "beta-local",
+    });
+    expect(projB.repo_id).toBe(0);
+    expect(projB.checkout_path).toBe(join(root, "projects", "beta-local"));
+    expect(registry.listProjects().map((p) => p.id)).toEqual([projA.id, projB.id]);
+  });
+
+  test("supports fs browse, local inspection, remote link inspection, and abortable clone job cancellation", async () => {
+    const outsideRepo = join(root, "outside-repo");
+    mkdirSync(join(outsideRepo, ".git"), { recursive: true });
+    writeFileSync(join(outsideRepo, ".git", "HEAD"), "ref: refs/heads/develop\n");
+    writeFileSync(
+      join(outsideRepo, ".git", "config"),
+      '[remote "origin"]\n  url = git@github.com:Owner/Repo.git\n',
+    );
+
+    const browse = onboarding.browseDirectories(root);
+    expect(browse.entries.some((e) => e.name === "outside-repo" && e.isGitRepo)).toBe(true);
+
+    const localInfo = await onboarding.inspectLocal(outsideRepo);
+    expect(localInfo.isGitRepo).toBe(true);
+    expect(localInfo.branch).toBe("develop");
+    expect(localInfo.repoName).toBe("Owner/Repo");
+    expect(localInfo.errorCode).toBeNull();
+
+    const invalidInfo = await onboarding.inspectLocal(join(root, "does-not-exist"));
+    expect(invalidInfo.exists).toBe(false);
+    expect(invalidInfo.errorCode).toBe("not_found");
+
+    const remoteBad = await onboarding.inspectRemote("not-a-valid-url");
+    expect(remoteBad.valid).toBe(false);
+    expect(remoteBad.errorCode).toBe("invalid_url");
+
+    const remoteOk = await onboarding.inspectRemote("https://github.com/Owner/Repo.git");
+    expect(remoteOk.valid).toBe(true);
+    expect(remoteOk.repoName).toBe("Owner/Repo");
+    expect(remoteOk.destinationPath).toBe(join(root, "projects", "Repo"));
+
+    const gate = Promise.withResolvers<void>();
+    const origClone = forge.cloneRepository.bind(forge);
+    forge.cloneRepository = async (repo, targetPath, opts) => {
+      opts?.signal?.addEventListener("abort", () => gate.reject(new Error("Clone cancelled")));
+      await gate.promise;
+      return origClone(repo, targetPath, opts);
+    };
+
+    const job = await onboarding.startCloneJob("git@github.com:Owner/Repo.git");
+    expect(["preparing", "cloning"]).toContain(job.status);
+    const cancelled = onboarding.cancelCloneJob(job.jobId);
+    expect(cancelled.status).toBe("cancelled");
+    gate.resolve();
+    expect(registry.listProjects()).toEqual([]);
+  });
+
+  test("automatically runs deterministic animus setup on local_init, local_checkout, and github_clone when machine is onboarded", async () => {
+    const machineHome = installOnboardedAnimusHome();
+    try {
+      const localInitProj = await onboarding.register({
+        method: "local_init",
+        name: "auto-setup-local",
+        default_branch: "develop",
+      });
+      expect(existsSync(join(localInitProj.checkout_path, ".animus/config.yaml"))).toBe(true);
+      expect(existsSync(join(localInitProj.checkout_path, "harness/harness.config.json"))).toBe(
+        true,
+      );
+      expect(existsSync(join(localInitProj.checkout_path, "AGENTS.md"))).toBe(true);
+      expect(existsSync(join(localInitProj.checkout_path, ".animus/hooks/loop-guard.ts"))).toBe(
+        true,
+      );
+      expect(
+        readFileSync(join(localInitProj.checkout_path, ".animus/config.yaml"), "utf-8"),
+      ).toContain("baseBranch: develop");
+
+      const clonedProj = await onboarding.register({
+        method: "github_clone",
+        name: "Repo",
+        repo: "Owner/Repo",
+      });
+      expect(existsSync(join(clonedProj.checkout_path, ".animus/config.yaml"))).toBe(true);
+      expect(existsSync(join(clonedProj.checkout_path, "harness/harness.config.json"))).toBe(true);
+      expect(existsSync(join(clonedProj.checkout_path, "AGENTS.md"))).toBe(true);
+
+      const localCheckoutDir = join(root, "existing-local-repo");
+      execFileSync("git", ["init", "-q", "-b", "main", localCheckoutDir]);
+      const localProj = await onboarding.register({
+        method: "local_checkout",
+        name: "existing-local-repo",
+        checkout_path: localCheckoutDir,
+      });
+      expect(existsSync(join(localProj.checkout_path, ".animus/config.yaml"))).toBe(true);
+      expect(existsSync(join(localProj.checkout_path, "harness/harness.config.json"))).toBe(true);
+      expect(existsSync(join(localProj.checkout_path, "AGENTS.md"))).toBe(true);
+    } finally {
+      machineHome.restore();
+    }
   });
 });

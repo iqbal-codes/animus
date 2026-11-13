@@ -114,22 +114,48 @@ describe("AddRepositoryModal Component (Frame Xlk78)", () => {
     render(<AddRepositoryModal open={true} onOpenChange={vi.fn()} onSuccess={vi.fn()} />);
 
     expect(screen.getByText("Add repository")).toBeDefined();
-    expect(screen.getByText("Choose how to add a repository to Animus.")).toBeDefined();
+    expect(screen.getByText("Choose how you want to bring a codebase into Animus.")).toBeDefined();
 
     expect(screen.getByText("Select local folder")).toBeDefined();
-    expect(screen.getByText("Select Remote repository")).toBeDefined();
+    expect(screen.getByText("Clone repository")).toBeDefined();
     expect(screen.getByText("Create new repo")).toBeDefined();
   });
 
-  test("transitions to local folder form and registers repository", async () => {
+  test("browses local folders, previews git metadata, registers, and opens repository", async () => {
     const handleSuccess = vi.fn();
     const handleOpenChange = vi.fn();
+
+    vi.spyOn(client, "browseDirectories").mockResolvedValueOnce({
+      currentPath: "/Users/test",
+      parentPath: "/Users",
+      homePath: "/Users/test",
+      projectsPath: "/Users/test/.animus/projects",
+      entries: [{ name: "my-local-app", path: "/Users/test/my-local-app", isGitRepo: true }],
+      error: null,
+    });
+
+    vi.spyOn(client, "inspectLocalProject").mockResolvedValueOnce({
+      path: "/Users/test/my-local-app",
+      exists: true,
+      isDirectory: true,
+      readable: true,
+      isGitRepo: true,
+      isWorktree: false,
+      name: "my-local-app",
+      branch: "main",
+      remoteUrl: "https://github.com/efishery/my-local-app.git",
+      repoName: "efishery/my-local-app",
+      alreadyEnrolled: false,
+      existingProject: null,
+      errorCode: null,
+      errorMessage: null,
+    });
 
     const registerSpy = vi.spyOn(client, "registerProject").mockResolvedValueOnce({
       id: "proj-new",
       name: "my-local-app",
       repo_id: 999,
-      repo_name: "local/my-local-app",
+      repo_name: "efishery/my-local-app",
       checkout_path: "/Users/test/my-local-app",
       status: "active",
       status_reason: null,
@@ -142,15 +168,19 @@ describe("AddRepositoryModal Component (Frame Xlk78)", () => {
     );
 
     fireEvent.click(screen.getByText("Select local folder"));
+    fireEvent.click(screen.getByRole("button", { name: /browse folders/i }));
 
-    expect(
-      screen.getByText(/provide the filesystem path to an existing git repository/i),
-    ).toBeDefined();
-    const pathInput = screen.getByPlaceholderText(/\/users\/username\/workspace\/repo/i);
-    fireEvent.change(pathInput, { target: { value: "/Users/test/my-local-app" } });
+    await waitFor(() => {
+      expect(screen.getByText("my-local-app")).toBeDefined();
+    });
 
-    const submitBtn = screen.getByRole("button", { name: /add repository/i });
-    fireEvent.click(submitBtn);
+    fireEvent.click(screen.getByText("my-local-app"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("local-repo-preview")).toBeDefined();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /add repository/i }));
 
     await waitFor(() => {
       expect(registerSpy).toHaveBeenCalledWith({
@@ -158,20 +188,113 @@ describe("AddRepositoryModal Component (Frame Xlk78)", () => {
         name: "my-local-app",
         checkout_path: "/Users/test/my-local-app",
       });
-      expect(handleSuccess).toHaveBeenCalled();
-      expect(handleOpenChange).toHaveBeenCalledWith(false);
+      expect(screen.getByTestId("repository-added-step")).toBeDefined();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /open repository/i }));
+    expect(handleSuccess).toHaveBeenCalled();
+    expect(handleOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  test("validates clone link, shows cloning state, and cancels in-flight clone", async () => {
+    vi.spyOn(client, "inspectRemoteRepository").mockResolvedValueOnce({
+      inputUrl: "https://github.com/acme/console",
+      valid: true,
+      normalizedUrl: "https://github.com/acme/console",
+      repoName: "acme/console",
+      suggestedName: "console",
+      defaultBranch: "main",
+      destinationPath: "/Users/test/.animus/projects/console",
+      destinationExists: false,
+      alreadyEnrolled: false,
+      existingProject: null,
+      errorCode: null,
+      errorMessage: null,
+    });
+
+    vi.spyOn(client, "startProjectClone").mockResolvedValueOnce({
+      jobId: "clone_123",
+      status: "cloning",
+      phaseLabel: "Cloning repository…",
+      destinationPath: "/Users/test/.animus/projects/console",
+      repoName: "acme/console",
+      project: null,
+      errorCode: null,
+      errorMessage: null,
+    });
+
+    const cancelSpy = vi.spyOn(client, "cancelProjectClone").mockResolvedValueOnce({
+      jobId: "clone_123",
+      status: "cancelled",
+      phaseLabel: "Clone cancelled",
+      destinationPath: "/Users/test/.animus/projects/console",
+      repoName: "acme/console",
+      project: null,
+      errorCode: "clone_cancelled",
+      errorMessage: "Clone was cancelled.",
+    });
+
+    render(<AddRepositoryModal open={true} onOpenChange={vi.fn()} onSuccess={vi.fn()} />);
+
+    fireEvent.click(screen.getByText("Clone repository"));
+    const input = screen.getByPlaceholderText("https://github.com/owner/repo");
+    fireEvent.change(input, { target: { value: "https://github.com/acme/console" } });
+    fireEvent.click(screen.getByRole("button", { name: /^validate$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("remote-repo-preview")).toBeDefined();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /clone repository/i }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("clone-progress-card")).toBeDefined();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /cancel clone/i }));
+
+    await waitFor(() => {
+      expect(cancelSpy).toHaveBeenCalledWith("clone_123");
+      expect(screen.getByText("Clone cancelled")).toBeDefined();
     });
   });
 
-  test("transitions to remote clone form and allows navigation back to chooser", () => {
+  test("creates local-only repository automatically in ~/.animus/projects", async () => {
+    vi.spyOn(client, "browseDirectories").mockResolvedValueOnce({
+      currentPath: "/Users/test",
+      parentPath: "/Users",
+      homePath: "/Users/test",
+      projectsPath: "/Users/test/.animus/projects",
+      entries: [],
+      error: null,
+    });
+
+    const registerSpy = vi.spyOn(client, "registerProject").mockResolvedValueOnce({
+      id: "proj-local-init",
+      name: "my-agent-system",
+      repo_id: 0,
+      repo_name: "my-agent-system",
+      checkout_path: "/Users/test/.animus/projects/my-agent-system",
+      status: "active",
+      status_reason: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
     render(<AddRepositoryModal open={true} onOpenChange={vi.fn()} onSuccess={vi.fn()} />);
 
-    fireEvent.click(screen.getByText("Select Remote repository"));
-    expect(
-      screen.getByText(/clone a repository from github and enroll it in animus/i),
-    ).toBeDefined();
+    fireEvent.click(screen.getByText("Create new repo"));
+    const nameInput = screen.getByPlaceholderText("my-agent-system");
+    fireEvent.change(nameInput, { target: { value: "my-agent-system" } });
+    fireEvent.click(screen.getByRole("button", { name: /create repository/i }));
 
-    fireEvent.click(screen.getByRole("button", { name: /back/i }));
-    expect(screen.getByText("Choose how to add a repository to Animus.")).toBeDefined();
+    await waitFor(() => {
+      expect(registerSpy).toHaveBeenCalledWith({
+        method: "local_init",
+        name: "my-agent-system",
+        default_branch: "main",
+      });
+      expect(screen.getByTestId("repository-added-step")).toBeDefined();
+    });
   });
 });

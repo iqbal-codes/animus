@@ -50,6 +50,17 @@ const INITIAL_PROVIDERS: ProviderItem[] = [
     enabled: false,
   },
   {
+    id: "commandcode",
+    name: "Command Code",
+    binary: "commandcode",
+    path: "/opt/homebrew/bin/commandcode",
+    version: "CLI",
+    efforts: "low · medium · high · xhigh · max",
+    capabilities: "Resume · Fork",
+    status: "INSTALLED",
+    enabled: true,
+  },
+  {
     id: "codex",
     name: "OpenAI Codex CLI",
     binary: "codex",
@@ -148,6 +159,9 @@ export function PlatformProvidersSection() {
                 <option value="pi">Pi (pi)</option>
                 <option value="claude">Claude Code (claude)</option>
                 <option value="omp">Oh-My-Pi (omp)</option>
+                <option value="commandcode">Command Code (commandcode)</option>
+                <option value="codex">OpenAI Codex CLI (codex)</option>
+                <option value="opencode">OpenCode (opencode)</option>
               </select>
               <ChevronDown
                 aria-hidden="true"

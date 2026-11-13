@@ -59,18 +59,19 @@ describe("Canonical ProjectWorkspace Resolution & Unified Preflight (Issue #142)
       expect(ws.triageStateRoot).not.toContain(repoDir);
     });
 
-    test("resolves external state ~/.animus/projects/<projectSlug> when ANIMUS_HOME is set", () => {
+    test("resolves external state ~/.animus/state/projects/<projectSlug> when ANIMUS_HOME is set", () => {
       const animusHome = join(tempDir, "custom-animus");
       process.env.ANIMUS_HOME = animusHome;
       const slug = getProjectSlug(repoDir);
 
       const ws = resolveProjectWorkspace(repoDir);
-      expect(ws.stateRoot).toBe(join(animusHome, "projects", slug));
+      expect(ws.stateRoot).toBe(join(animusHome, "state", "projects", slug));
       expect(ws.runsDir).toBe(join(ws.stateRoot, "runs"));
       expect(ws.worktreesDir).toBe(join(ws.stateRoot, "worktrees"));
       expect(ws.locksDir).toBe(join(ws.stateRoot, "locks"));
       expect(ws.dossiersDir).toBe(join(ws.stateRoot, "dossiers"));
       expect(ws.isExternalState).toBe(true);
+      expect(ws.fallbackRunsDirs).toContain(join(animusHome, "projects", slug, "runs"));
       expect(ws.fallbackRunsDirs).toContain(join(animusHome, "runs", slug));
     });
 
@@ -128,7 +129,7 @@ describe("Canonical ProjectWorkspace Resolution & Unified Preflight (Issue #142)
       );
 
       // Create a new run under <stateRoot>/runs/run-canonical-2
-      const canonicalRunsDir = join(animusHome, "projects", slug, "runs");
+      const canonicalRunsDir = join(animusHome, "state", "projects", slug, "runs");
       const canonicalRunPath = join(canonicalRunsDir, "run-canonical-2");
       mkdirSync(canonicalRunPath, { recursive: true });
       writeFileSync(
@@ -331,7 +332,7 @@ describe("Canonical ProjectWorkspace Resolution & Unified Preflight (Issue #142)
         JSON.stringify({ parallel: 4 }), // overrides repo parallel
       );
 
-      const projectConfigDir = join(animusHome, "projects", slug);
+      const projectConfigDir = join(animusHome, "state", "projects", slug);
       mkdirSync(projectConfigDir, { recursive: true });
       writeFileSync(
         join(projectConfigDir, "schedule.json"),

@@ -20,6 +20,22 @@ export const personalPreferencesSchema = z.object({
 
 export type PersonalPreferences = z.infer<typeof personalPreferencesSchema>;
 
+export const modelTierBindingSchema = z.object({
+  provider: z.string().min(1),
+  model: z.string().min(1),
+  effort: z.string().optional(),
+});
+
+export type ModelTierBinding = z.infer<typeof modelTierBindingSchema>;
+
+export const modelTiersMapSchema = z.object({
+  small: modelTierBindingSchema.optional(),
+  medium: modelTierBindingSchema.optional(),
+  large: modelTierBindingSchema.optional(),
+});
+
+export type ModelTiersMap = z.infer<typeof modelTiersMapSchema>;
+
 export const projectSettingsSchema = z.object({
   models: z
     .object({
@@ -29,7 +45,10 @@ export const projectSettingsSchema = z.object({
       plannerModel: z.string().default("default"),
       builderModel: z.string().default("default"),
       reviewerModel: z.string().default("default"),
+      tiers: modelTiersMapSchema.optional(),
+      reasoningAlias: modelTierBindingSchema.optional(),
       worktreeStrategy: z.string().default("isolated"),
+      baseBranch: z.string().default("main"),
       concurrencyLimit: z.number().default(2),
     })
     .passthrough()
@@ -41,6 +60,7 @@ export const projectSettingsSchema = z.object({
       builderModel: "default",
       reviewerModel: "default",
       worktreeStrategy: "isolated",
+      baseBranch: "main",
       concurrencyLimit: 2,
     }),
   checks: z

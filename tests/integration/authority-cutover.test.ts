@@ -277,7 +277,7 @@ describe("authority cutover (#165)", () => {
 
     expect(first.stateDigest).toBe(second.stateDigest);
     expect(first.identityDigest).toBe(second.identityDigest);
-    expect(first.schemaVersion).toBe(19);
+    expect(first.schemaVersion).toBe(20);
     // The artifact digest is the closure of REGISTERED artifacts (the exact set the
     // backup bundle copies). An unregistered file under the artifact root is not a
     // finalized closure member; it is surfaced as a truthful held fact with its

@@ -201,24 +201,22 @@ describe("Settings Service & Backend Routes", () => {
     expect(statSync(configPath).mode & 0o777).toBe(0o600);
   });
 
-  test("Harness models dynamic discovery returns real models and supported efforts", async () => {
-    // 1. Service direct call
-    const piModels = service.getHarnessModels("pi");
+  test("Harness models dynamic discovery returns models and efforts across all supported harnesses", async () => {
+    const piModels = await service.getHarnessModels("pi");
     expect(piModels.provider).toBe("pi");
     expect(Array.isArray(piModels.models)).toBe(true);
     expect(piModels.models.length).toBeGreaterThan(0);
     expect(piModels.models).toContain("default");
-    expect(Array.isArray(piModels.supportedEfforts)).toBe(true);
     expect(piModels.supportedEfforts).toContain("medium");
     expect(piModels.supportedEfforts).toContain("high");
 
-    const claudeModels = service.getHarnessModels("claude");
-    expect(claudeModels.provider).toBe("claude");
-    expect(claudeModels.models).toContain("default");
-    expect(claudeModels.models).toContain("claude-3-5-sonnet");
-    expect(claudeModels.supportedEfforts).toContain("high");
+    for (const provider of ["claude", "omp", "commandcode", "codex", "opencode"] as const) {
+      const info = await service.getHarnessModels(provider);
+      expect(info.provider).toBe(provider);
+      expect(info.models).toContain("default");
+      expect(info.supportedEfforts.length).toBeGreaterThan(0);
+    }
 
-    // 2. HTTP route via handleSettingsRoute
     const req = new Request("http://localhost:3000/api/v1/settings/harness-models?provider=claude");
     const res = await handleSettingsRoute(req, "/api/v1/settings/harness-models?provider=claude", {
       settingsService: service,
@@ -228,5 +226,56 @@ describe("Settings Service & Backend Routes", () => {
     expect(body.provider).toBe("claude");
     expect(body.models).toContain("claude-3-7-sonnet");
     expect(body.supportedEfforts).toContain("max");
+  }, 20_000);
+  test("Project settings support distinct harnesses/models/efforts per tier, baseBranch, and sync harness/harness.config.json", async () => {
+    const updated = service.updateProjectSettings({
+      models: {
+        assistant: "omp",
+        defaultModel: "9router/ag/gemini-3.8-flash",
+        effort: "high",
+        baseBranch: "develop",
+        tiers: {
+          small: { provider: "omp", model: "9router/ag/gemini-3.8-flash", effort: "low" },
+          medium: { provider: "claude", model: "claude-sonnet-4-6", effort: "high" },
+          large: { provider: "codex", model: "gpt-5.3-codex", effort: "xhigh" },
+        },
+      },
+      checks: {
+        staticCmd: "bun run check",
+        unitCmd: "bun test",
+        countPattern: "(\\d+)\\s+pass",
+        protectedPaths: ["harness/**", ".animus/**"],
+      },
+    });
+
+    expect(updated.models.baseBranch).toBe("develop");
+    expect(updated.models.tiers?.small).toEqual({
+      provider: "omp",
+      model: "9router/ag/gemini-3.8-flash",
+      effort: "low",
+    });
+    expect(updated.models.tiers?.medium).toEqual({
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      effort: "high",
+    });
+    expect(updated.models.tiers?.large).toEqual({
+      provider: "codex",
+      model: "gpt-5.3-codex",
+      effort: "xhigh",
+    });
+
+    const yamlContent = readFileSync(join(testRepoDir, ".animus/config.yaml"), "utf-8");
+    expect(yamlContent).toContain("baseBranch: develop");
+    expect(yamlContent).toContain("provider: omp");
+    expect(yamlContent).toContain("provider: claude");
+    expect(yamlContent).toContain("provider: codex");
+
+    const harnessConfig = JSON.parse(
+      readFileSync(join(testRepoDir, "harness/harness.config.json"), "utf-8"),
+    );
+    expect(harnessConfig.static).toBe("bun run check");
+    expect(harnessConfig.unit).toBe("bun test");
+    expect(harnessConfig.unit_count_pattern).toBe("(\\d+)\\s+pass");
   });
 });

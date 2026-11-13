@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import {
   completeRepositoryOnboarding,
   verifyGitHubRepositoryPreflight,
+  verifyGitWorkTreePreflight,
   type FactoryConnectionOptions,
 } from "./onboarding-registration";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -324,6 +325,7 @@ export interface SetupCommandOptions extends FactoryConnectionOptions {
   timezone?: string;
   agentsMdAction?: "keep" | "overwrite";
   skillsMode?: "external" | "repo";
+  allowLocalWithoutRemote?: boolean;
   json?: boolean;
 }
 
@@ -366,23 +368,30 @@ export async function applyRepositorySetup(
   const machine = requireMachineConfig();
 
   const repoRoot = resolve(opts.repoRoot);
-  verifyGitHubRepositoryPreflight(repoRoot);
+  if (opts.allowLocalWithoutRemote) {
+    verifyGitWorkTreePreflight(repoRoot);
+  } else {
+    verifyGitHubRepositoryPreflight(repoRoot);
+  }
   const detectedHarnesses = (interaction.detectHarnesses ?? detectAvailableHarnesses)();
   const detectedCommands = detectRepoCheckCommands(repoRoot);
   const existingAnimus = readAnimusConfig(repoRoot);
   const existingSchedule = loadScheduleConfig(repoRoot);
   const harnessAudit: HarnessAuditReport = auditRepositoryHarness(repoRoot);
 
+  const machineDefaultProvider =
+    machine.system.defaultProvider && isSupportedProvider(machine.system.defaultProvider)
+      ? machine.system.defaultProvider
+      : null;
   const firstInstalled = detectedHarnesses.find((h) => h.installed)?.id ?? "pi";
   const defaultProvider: SupportedProvider =
     opts.provider && isSupportedProvider(opts.provider)
       ? opts.provider
       : existingAnimus.assistant && isSupportedProvider(existingAnimus.assistant)
         ? existingAnimus.assistant
-        : firstInstalled;
+        : (machineDefaultProvider ?? firstInstalled);
 
   const providerDefaults = DEFAULT_PROVIDER_MODELS[defaultProvider];
-
   let selectedProviders: SupportedProvider[] = opts.provider
     ? [defaultProvider]
     : Object.keys(existingAnimus.assistants ?? {}).filter(isSupportedProvider);

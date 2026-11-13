@@ -139,12 +139,19 @@ export class WorkService {
     }
 
     try {
-      const existing = this.db
-        .prepare("SELECT id, project_id FROM work_items WHERE repo_id = ? AND issue_number = ?")
-        .get(scope.repo_id, prepared.provenance.issue_number) as
-        | { id: string; project_id: string }
-        | undefined;
-
+      const existing = (
+        scope.repo_id > 0
+          ? this.db
+              .prepare(
+                "SELECT id, project_id FROM work_items WHERE repo_id = ? AND issue_number = ?",
+              )
+              .get(scope.repo_id, prepared.provenance.issue_number)
+          : this.db
+              .prepare(
+                "SELECT id, project_id FROM work_items WHERE project_id = ? AND issue_number = ?",
+              )
+              .get(scope.id, prepared.provenance.issue_number)
+      ) as { id: string; project_id: string } | undefined;
       if (existing) {
         if (existing.project_id !== scope.id) {
           throw new WorkPersistenceError(
@@ -250,7 +257,7 @@ export class WorkService {
     if (
       typeof scope.id !== "string" ||
       !Number.isSafeInteger(scope.repo_id) ||
-      scope.repo_id <= 0 ||
+      scope.repo_id < 0 ||
       typeof scope.repo_name !== "string"
     ) {
       throw new WorkPersistenceError("work_project_mismatch", "Invalid project scope");
@@ -296,7 +303,10 @@ export class WorkService {
       repo_id: scope.repo_id,
       repo_name: scope.repo_name,
       issue_number: issue.number,
-      source_url: `https://github.com/${scope.repo_name}/issues/${issue.number}`,
+      source_url:
+        scope.repo_id > 0
+          ? `https://github.com/${scope.repo_name}/issues/${issue.number}`
+          : `local://${scope.id}/issues/${issue.number}`,
       captured_at: Date.now(),
     };
     const contentHash = createHash("sha256")
