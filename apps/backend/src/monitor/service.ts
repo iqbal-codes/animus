@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { BrakeService } from "../command/brakes";
 import { ProjectRegistryService } from "../registry/service";
 import { ProjectOnboardingService, verifyRepositoryIdentity } from "../registry/onboarding";
+import { resolveGitConfigPath } from "../registry/forge";
 import type { Project, ProjectMonitorStatus, MonitoringStatus } from "@animus/contracts/operator";
 import {
   resolveProjectWorkspace,
@@ -305,6 +306,12 @@ export class RegisteredProjectMonitor {
   }
 
   private async verifyCheckout(project: Project): Promise<void> {
+    if (project.repo_id === 0) {
+      if (!resolveGitConfigPath(project.checkout_path)) {
+        throw new Error("checkout_identity_mismatch");
+      }
+      return;
+    }
     const identity = await this.registry.getForge().detectLocalCheckout(project.checkout_path);
     verifyRepositoryIdentity(identity);
     if (
@@ -615,7 +622,9 @@ export class RegisteredProjectMonitor {
         return;
       }
       this.assertDispatch(project);
-      await new ProjectOnboardingService(this.registry).prepareLabels(project.repo_name);
+      if (project.repo_id > 0) {
+        await new ProjectOnboardingService(this.registry).prepareLabels(project.repo_name);
+      }
       const result = await runtime.schedule({
         root: project.checkout_path,
         sharedRoot: primary,

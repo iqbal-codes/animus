@@ -102,10 +102,15 @@ export function initializeDatabase(dbPath?: string): DatabaseSync {
     );
   `);
 
-  // Partial unique index: only one active or held project per unique repo_id
+  // Partial unique index: only one active or held project per unique GitHub repo_id (repo_id = 0 reserved for local-only repositories)
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_active_repo_id
     ON projects(repo_id)
+    WHERE status != 'tombstone' AND repo_id > 0;
+  `);
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_active_checkout_path
+    ON projects(checkout_path)
     WHERE status != 'tombstone';
   `);
 

@@ -140,6 +140,13 @@ export const operatorErrorSchema = z.object({
     "stage_writer_restricted",
     "builder_claim_mismatch",
     "run_not_found",
+    "repository_not_found",
+    "folder_not_git_repo",
+    "folder_access_denied",
+    "destination_already_exists",
+    "clone_cancelled",
+    "clone_failed",
+    "clone_job_not_found",
   ]),
 });
 export type OperatorErrorCode = z.infer<typeof operatorErrorSchema>["error"];
@@ -179,7 +186,7 @@ export const workSourceSnapshotSchema = z.object({
 export type WorkSourceSnapshot = z.infer<typeof workSourceSnapshotSchema>;
 
 export const workProvenanceSchema = z.object({
-  repo_id: z.number().int().positive(),
+  repo_id: z.number().int().nonnegative(),
   repo_name: z.string().min(1),
   issue_number: z.number().int().positive(),
   source_url: z.string().min(1),
@@ -202,7 +209,7 @@ export type WorkRevision = z.infer<typeof workRevisionSchema>;
 export const workRecordSchema = z.object({
   id: z.string().min(1),
   project_id: z.string().min(1),
-  repo_id: z.number().int().positive(),
+  repo_id: z.number().int().nonnegative(),
   repo_name: z.string().min(1),
   issue_number: z.number().int().positive(),
   created_at: z.number().int().nonnegative(),
@@ -1227,7 +1234,7 @@ export type ProjectStatus = z.infer<typeof projectStatusSchema>;
 export const projectSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
-  repo_id: z.number().int().positive(),
+  repo_id: z.number().int().nonnegative(),
   repo_name: z.string().min(1),
   checkout_path: z.string().min(1),
   status: projectStatusSchema,
@@ -1310,12 +1317,109 @@ export const projectRegistrationGithubCreateSchema = z.object({
 });
 export type ProjectRegistrationGithubCreate = z.infer<typeof projectRegistrationGithubCreateSchema>;
 
+export const projectRegistrationLocalInitSchema = z.object({
+  method: z.literal("local_init"),
+  name: z.string().min(1),
+  default_branch: z.string().min(1).optional(),
+});
+export type ProjectRegistrationLocalInit = z.infer<typeof projectRegistrationLocalInitSchema>;
+
 export const projectRegistrationSchema = z.discriminatedUnion("method", [
   projectRegistrationLocalCheckoutSchema,
   projectRegistrationGithubCloneSchema,
   projectRegistrationGithubCreateSchema,
+  projectRegistrationLocalInitSchema,
 ]);
 export type ProjectRegistration = z.infer<typeof projectRegistrationSchema>;
+
+export const fsBrowseEntrySchema = z.object({
+  name: z.string().min(1),
+  path: z.string().min(1),
+  isGitRepo: z.boolean(),
+});
+export type FsBrowseEntry = z.infer<typeof fsBrowseEntrySchema>;
+
+export const fsBrowseResultSchema = z.object({
+  currentPath: z.string().min(1),
+  parentPath: z.string().nullable(),
+  homePath: z.string().min(1),
+  projectsPath: z.string().min(1),
+  entries: z.array(fsBrowseEntrySchema),
+  error: z.string().nullable().optional(),
+});
+export type FsBrowseResult = z.infer<typeof fsBrowseResultSchema>;
+
+export const projectInspectLocalSubmissionSchema = z
+  .object({
+    path: z.string().min(1),
+  })
+  .strict();
+export type ProjectInspectLocalSubmission = z.infer<typeof projectInspectLocalSubmissionSchema>;
+
+export const projectInspectLocalResultSchema = z.object({
+  path: z.string().min(1),
+  exists: z.boolean(),
+  isDirectory: z.boolean(),
+  readable: z.boolean(),
+  isGitRepo: z.boolean(),
+  isWorktree: z.boolean(),
+  name: z.string().nullable(),
+  branch: z.string().nullable(),
+  remoteUrl: z.string().nullable(),
+  repoName: z.string().nullable(),
+  alreadyEnrolled: z.boolean(),
+  existingProject: projectSchema.nullable(),
+  errorCode: z
+    .enum(["not_found", "not_directory", "access_denied", "not_git_repo", "already_enrolled"])
+    .nullable(),
+  errorMessage: z.string().nullable(),
+});
+export type ProjectInspectLocalResult = z.infer<typeof projectInspectLocalResultSchema>;
+
+export const projectInspectRemoteSubmissionSchema = z
+  .object({
+    url: z.string().min(1),
+  })
+  .strict();
+export type ProjectInspectRemoteSubmission = z.infer<typeof projectInspectRemoteSubmissionSchema>;
+
+export const projectInspectRemoteResultSchema = z.object({
+  inputUrl: z.string().min(1),
+  valid: z.boolean(),
+  normalizedUrl: z.string().nullable(),
+  repoName: z.string().nullable(),
+  suggestedName: z.string().nullable(),
+  defaultBranch: z.string().nullable(),
+  destinationPath: z.string().nullable(),
+  destinationExists: z.boolean(),
+  alreadyEnrolled: z.boolean(),
+  existingProject: projectSchema.nullable(),
+  errorCode: z
+    .enum(["invalid_url", "not_accessible", "already_enrolled", "destination_exists"])
+    .nullable(),
+  errorMessage: z.string().nullable(),
+});
+export type ProjectInspectRemoteResult = z.infer<typeof projectInspectRemoteResultSchema>;
+
+export const projectCloneJobStatusSchema = z.object({
+  jobId: z.string().min(1),
+  status: z.enum(["preparing", "cloning", "enrolling", "completed", "cancelled", "failed"]),
+  phaseLabel: z.string().min(1),
+  destinationPath: z.string().min(1),
+  repoName: z.string().nullable(),
+  project: projectSchema.nullable(),
+  errorCode: z.string().nullable(),
+  errorMessage: z.string().nullable(),
+});
+export type ProjectCloneJobStatus = z.infer<typeof projectCloneJobStatusSchema>;
+
+export const projectCloneStartSubmissionSchema = z
+  .object({
+    url: z.string().min(1),
+    name: z.string().min(1).optional(),
+  })
+  .strict();
+export type ProjectCloneStartSubmission = z.infer<typeof projectCloneStartSubmissionSchema>;
 
 export const projectRetargetSchema = z
   .object({

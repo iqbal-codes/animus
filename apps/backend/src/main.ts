@@ -17,6 +17,13 @@ import {
   projectRegistrationSchema,
   projectRetargetSchema,
   deregisterResultSchema,
+  fsBrowseResultSchema,
+  projectInspectLocalSubmissionSchema,
+  projectInspectLocalResultSchema,
+  projectInspectRemoteSubmissionSchema,
+  projectInspectRemoteResultSchema,
+  projectCloneStartSubmissionSchema,
+  projectCloneJobStatusSchema,
   type OperatorErrorCode,
 } from "@animus/contracts/operator";
 import { configuration, hostOrigin, type Configuration } from "./config";
@@ -181,7 +188,10 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     stateRoot: options?.stateDir ?? resolveStateDir(),
   });
   const planService = new PlanService(registryService.getDb(), registryService.getForge());
-  const onboardingService = new ProjectOnboardingService(registryService);
+  const onboardingService = new ProjectOnboardingService(
+    registryService,
+    options?.stateDir ?? resolveStateDir(),
+  );
   const harnessService = new HarnessService();
   const settingsService = new SettingsService();
 
@@ -485,7 +495,8 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
       return Response.json({ error: "csrf_rejected" }, { status: 403 });
     }
 
-    const path = new URL(request.url).pathname;
+    const requestUrl = new URL(request.url);
+    const path = requestUrl.pathname;
 
     if (path !== "/health" && path !== "/build-id" && path !== "/api/v1/webhooks/github") {
       try {
@@ -735,6 +746,139 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
       );
     }
 
+    if (path === "/api/v1/fs/browse") {
+      if (request.method !== "GET") {
+        return Response.json(
+          { error: "method_not_allowed" },
+          { status: 405, headers: { Allow: "GET" } },
+        );
+      }
+      const dirParam = requestUrl.searchParams.get("path") ?? undefined;
+      return Response.json(
+        fsBrowseResultSchema.parse(onboardingService.browseDirectories(dirParam)),
+      );
+    }
+
+    if (path === "/api/v1/projects/inspect-local") {
+      if (request.method !== "POST") {
+        return Response.json(
+          { error: "method_not_allowed" },
+          { status: 405, headers: { Allow: "POST" } },
+        );
+      }
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        return Response.json({ error: "invalid_payload" }, { status: 400 });
+      }
+      const parsed = projectInspectLocalSubmissionSchema.safeParse(body);
+      if (!parsed.success) {
+        return Response.json({ error: "invalid_payload" }, { status: 400 });
+      }
+      const result = await onboardingService.inspectLocal(parsed.data.path);
+      return Response.json(projectInspectLocalResultSchema.parse(result));
+    }
+
+    if (path === "/api/v1/projects/inspect-remote") {
+      if (request.method !== "POST") {
+        return Response.json(
+          { error: "method_not_allowed" },
+          { status: 405, headers: { Allow: "POST" } },
+        );
+      }
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        return Response.json({ error: "invalid_payload" }, { status: 400 });
+      }
+      const parsed = projectInspectRemoteSubmissionSchema.safeParse(body);
+      if (!parsed.success) {
+        return Response.json({ error: "invalid_payload" }, { status: 400 });
+      }
+      const result = await onboardingService.inspectRemote(parsed.data.url);
+      return Response.json(projectInspectRemoteResultSchema.parse(result));
+    }
+
+    if (path === "/api/v1/projects/clone") {
+      if (request.method !== "POST") {
+        return Response.json(
+          { error: "method_not_allowed" },
+          { status: 405, headers: { Allow: "POST" } },
+        );
+      }
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        return Response.json({ error: "invalid_payload" }, { status: 400 });
+      }
+      const parsed = projectCloneStartSubmissionSchema.safeParse(body);
+      if (!parsed.success) {
+        return Response.json({ error: "invalid_payload" }, { status: 400 });
+      }
+      try {
+        const job = await onboardingService.startCloneJob(parsed.data.url, parsed.data.name);
+        return Response.json(projectCloneJobStatusSchema.parse(job), { status: 202 });
+      } catch (err) {
+        if (err instanceof ProjectRegistryError) {
+          return Response.json({ error: err.code, message: err.message }, { status: 400 });
+        }
+        return Response.json(
+          {
+            error: "clone_failed",
+            message: err instanceof Error ? err.message : String(err),
+          },
+          { status: 400 },
+        );
+      }
+    }
+
+    if (path.startsWith("/api/v1/projects/clone/")) {
+      const cloneSub = path.slice("/api/v1/projects/clone/".length);
+      const cloneParts = cloneSub.split("/");
+      const jobId = decodeURIComponent(cloneParts[0] ?? "");
+      if (!jobId) {
+        return Response.json({ error: "clone_job_not_found" }, { status: 404 });
+      }
+      if (cloneParts.length === 1) {
+        if (request.method !== "GET") {
+          return Response.json(
+            { error: "method_not_allowed" },
+            { status: 405, headers: { Allow: "GET" } },
+          );
+        }
+        try {
+          return Response.json(
+            projectCloneJobStatusSchema.parse(onboardingService.getCloneJob(jobId)),
+          );
+        } catch (err) {
+          if (err instanceof ProjectRegistryError && err.code === "clone_job_not_found") {
+            return Response.json({ error: err.code, message: err.message }, { status: 404 });
+          }
+          return Response.json({ error: "clone_job_not_found" }, { status: 404 });
+        }
+      }
+      if (cloneParts.length === 2 && cloneParts[1] === "cancel") {
+        if (request.method !== "POST") {
+          return Response.json(
+            { error: "method_not_allowed" },
+            { status: 405, headers: { Allow: "POST" } },
+          );
+        }
+        try {
+          return Response.json(
+            projectCloneJobStatusSchema.parse(onboardingService.cancelCloneJob(jobId)),
+          );
+        } catch (err) {
+          if (err instanceof ProjectRegistryError && err.code === "clone_job_not_found") {
+            return Response.json({ error: err.code, message: err.message }, { status: 404 });
+          }
+          return Response.json({ error: "clone_job_not_found" }, { status: 404 });
+        }
+      }
+    }
     if (path.startsWith("/api/v1/projects/")) {
       const subPath = path.slice("/api/v1/projects/".length);
       const parts = subPath.split("/");

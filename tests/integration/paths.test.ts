@@ -278,11 +278,11 @@ describe("Local Application State Paths (~/.animus/)", () => {
 
     const ws = resolveProjectWorkspace(repoPath);
     const slug = getProjectSlug(repoPath);
-    expect(ws.stateRoot).toBe(join(userAnimus, "projects", slug));
-    expect(ws.runsDir).toBe(join(userAnimus, "projects", slug, "runs"));
-    expect(ws.worktreesDir).toBe(join(userAnimus, "projects", slug, "worktrees"));
+    expect(ws.stateRoot).toBe(join(userAnimus, "state", "projects", slug));
+    expect(ws.runsDir).toBe(join(userAnimus, "state", "projects", slug, "runs"));
+    expect(ws.worktreesDir).toBe(join(userAnimus, "state", "projects", slug, "worktrees"));
+    expect(ws.fallbackRunsDirs).toContain(join(userAnimus, "projects", slug, "runs"));
     expect(ws.fallbackRunsDirs).toContain(join(userAnimus, "runs", slug));
-
     // Operational preflight unified call
     const preflight = evaluateWorkspacePreflight(ws);
     expect(preflight.ok).toBe(true);

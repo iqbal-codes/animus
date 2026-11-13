@@ -28,6 +28,7 @@ const DELIVERY_CLAIM_V16 = "delivery_role_claims";
 const DELIVERY_CLAIM_AUDIT_V17 = "delivery_role_claim_reconcile_audit";
 const CONSOLIDATION_V18 = "consolidate_delivery_state_and_merge_audit";
 const CHILD_MERGE_NO_PR_V19 = "child_merge_without_pull_request";
+const LOCAL_ONLY_REPOS_V20 = "local_only_repositories_and_projects_indexes";
 
 const ALL_MIGRATIONS = [
   { version: 1, name: WORK_V1 },
@@ -48,6 +49,7 @@ const ALL_MIGRATIONS = [
   { version: 17, name: DELIVERY_CLAIM_AUDIT_V17 },
   { version: 18, name: CONSOLIDATION_V18 },
   { version: 19, name: CHILD_MERGE_NO_PR_V19 },
+  { version: 20, name: LOCAL_ONLY_REPOS_V20 },
 ];
 
 function tableExists(db: DatabaseSync, table: string): boolean {

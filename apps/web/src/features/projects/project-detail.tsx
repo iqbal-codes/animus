@@ -30,7 +30,9 @@ export function ProjectDetail({ project, onClose }: ProjectDetailProps) {
               </Badge>
             </div>
             <p className="font-mono text-xs text-[var(--muted-foreground)]">
-              {project.repo_name} (ID: {project.repo_id})
+              {project.repo_id === 0
+                ? `${project.repo_name} (Local only)`
+                : `${project.repo_name} (ID: ${project.repo_id})`}
             </p>
           </div>
         </div>

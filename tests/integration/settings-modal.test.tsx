@@ -125,9 +125,10 @@ describe("SettingsModal Component (R5yIDY / vybWU / KanXI)", () => {
     expect(screen.getByText("Pi Coding Agent")).toBeDefined();
     expect(screen.getByText("Claude Code")).toBeDefined();
     expect(screen.getByText("Oh-My-Pi (OMP)")).toBeDefined();
+    expect(screen.getByText("Command Code")).toBeDefined();
     expect(screen.getByText("OpenAI Codex CLI")).toBeDefined();
+    expect(screen.getByText("OpenCode")).toBeDefined();
   });
-
   test("navigates to Project scope and shows project selector and project sections", () => {
     const handleSave = vi.fn();
     const handleClose = vi.fn();
@@ -179,6 +180,81 @@ describe("SettingsModal Component (R5yIDY / vybWU / KanXI)", () => {
     expect(screen.getByText("Monitor lock recovery")).toBeDefined();
     expect(screen.getByText("SQLite busy timeout")).toBeDefined();
     expect(screen.getByText("VETOED")).toBeDefined();
+  });
+
+  test("allows configuring different harnesses and models per tier in Project / Models", async () => {
+    const fetchCalls: Array<{ url: string; method: string; body?: unknown }> = [];
+    const origFetch = globalThis.fetch;
+    const mockFetch: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const method = init?.method ?? "GET";
+      const parsedBody = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+      fetchCalls.push({ url, method, body: parsedBody });
+
+      if (url.startsWith("/api/v1/settings/project")) {
+        return Response.json({
+          models: {
+            assistant: "omp",
+            defaultModel: "default",
+            effort: "high",
+            baseBranch: "main",
+            concurrencyLimit: 2,
+            tiers: {
+              small: { provider: "omp", model: "default", effort: "medium" },
+              medium: { provider: "omp", model: "default", effort: "high" },
+              large: { provider: "omp", model: "default", effort: "high" },
+            },
+          },
+          checks: {},
+          rules: [],
+          releases: {},
+        });
+      }
+      if (url.startsWith("/api/v1/settings/harness-models")) {
+        const prov = new URL(url, "http://localhost").searchParams.get("provider") || "pi";
+        return Response.json({
+          provider: prov,
+          models: ["default", `${prov}/test-model`],
+          supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+          defaultEffort: "high",
+          catalogLive: true,
+          source: `${prov} live`,
+        });
+      }
+      return Response.json({});
+    }) as unknown as typeof fetch;
+    globalThis.fetch = mockFetch;
+    try {
+      render(
+        <SettingsModal
+          preferences={defaultPreferences}
+          projects={mockProjects}
+          currentProjectId="proj-1"
+          onSave={vi.fn()}
+          onClose={vi.fn()}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /Project/i }));
+      fireEvent.click(screen.getByRole("button", { name: /Models/i }));
+
+      const smallHarness = await screen.findByLabelText("Small tier harness");
+      fireEvent.change(smallHarness, { target: { value: "claude" } });
+
+      const largeHarness = screen.getByLabelText("Large tier harness");
+      fireEvent.change(largeHarness, { target: { value: "codex" } });
+
+      const putCalls = fetchCalls.filter(
+        (c) => c.url.startsWith("/api/v1/settings/project") && c.method === "PUT",
+      );
+      const lastPut = putCalls[putCalls.length - 1]?.body as {
+        models?: { tiers?: Record<string, { provider: string; model: string }> };
+      };
+      expect(lastPut?.models?.tiers?.small?.provider).toBe("claude");
+      expect(lastPut?.models?.tiers?.large?.provider).toBe("codex");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 
   test("saves preferences and closes modal when Save changes is clicked", () => {

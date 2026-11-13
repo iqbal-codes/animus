@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, FolderGit2, Plus, Search } from "lucide-react";
 import type { Project } from "@animus/contracts/operator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -31,6 +31,17 @@ export function RepositorySelector({
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  const activeProject = useMemo(
+    () =>
+      projects.find(
+        (p) =>
+          p.id === currentProjectId ||
+          p.repo_name.toLowerCase() === currentRepository.toLowerCase(),
+      ) ?? null,
+    [projects, currentProjectId, currentRepository],
+  );
 
   const filteredProjects = useMemo(() => {
     if (!search.trim()) return projects;
@@ -38,9 +49,19 @@ export function RepositorySelector({
     return projects.filter(
       (p) =>
         p.repo_name.toLowerCase().includes(lower) ||
-        (p.name && p.name.toLowerCase().includes(lower)),
+        p.name.toLowerCase().includes(lower) ||
+        p.checkout_path.toLowerCase().includes(lower),
     );
   }, [projects, search]);
+
+  useEffect(() => {
+    if (!popoverOpen) {
+      setSearch("");
+      return;
+    }
+    const timer = setTimeout(() => searchInputRef.current?.focus(), 0);
+    return () => clearTimeout(timer);
+  }, [popoverOpen]);
 
   const handleSelect = (projectId: string) => {
     onSelectProject(projectId);
@@ -52,17 +73,27 @@ export function RepositorySelector({
     onSelectProject(project.id);
   };
 
+  const triggerLabel = activeProject?.repo_name || currentRepository || "Select repository";
+  const isLocalOnlyActive = activeProject ? activeProject.repo_id === 0 : false;
+
   return (
     <>
       <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
-        <PopoverTrigger className="flex items-center gap-2 rounded-full border border-[var(--border)] px-3 py-[9px] hover:border-[rgba(255,255,255,0.2)] hover:bg-muted/40 transition-colors cursor-pointer outline-none">
-          <GithubMark className="size-4 shrink-0 text-foreground" />
-          <span className="text-xs leading-[1.4] text-foreground font-medium">
-            {currentRepository || "Select repository"}
+        <PopoverTrigger
+          aria-label={triggerLabel}
+          className="flex items-center gap-2 rounded-full border border-[var(--border)] px-3 py-[9px] transition-colors outline-none hover:border-[var(--elevation-edge)] hover:bg-[var(--white-04)]"
+        >
+          {isLocalOnlyActive ? (
+            <FolderGit2 className="size-4 shrink-0 text-foreground" aria-hidden="true" />
+          ) : (
+            <GithubMark className="size-4 shrink-0 text-foreground" />
+          )}
+          <span className="max-w-[220px] truncate text-xs leading-[1.4] font-medium text-foreground">
+            {triggerLabel}
           </span>
           <ChevronDown
             aria-hidden="true"
-            className={`size-3.5 shrink-0 text-text-secondary transition-transform ${
+            className={`size-3.5 shrink-0 text-[var(--text-secondary)] transition-transform ${
               popoverOpen ? "rotate-180" : ""
             }`}
           />
@@ -71,35 +102,61 @@ export function RepositorySelector({
         <PopoverContent
           align="start"
           sideOffset={8}
-          className="w-[360px] p-0 overflow-hidden rounded-xl bg-[#1A1A1A] border-[rgba(255,255,255,0.12)] text-foreground shadow-2xl"
+          className="w-[360px] max-w-[calc(100vw-2rem)] gap-0 overflow-hidden rounded-[var(--radius-code)] border border-[var(--border-subtle)] bg-[var(--surface)] p-0 text-foreground shadow-[var(--shadow-elevation-3)] ring-0"
         >
           {/* Search bar */}
-          <div className="flex items-center gap-2 px-3.5 py-3 border-b border-[rgba(255,255,255,0.08)]">
-            <Search className="size-3.5 shrink-0 text-[#777777]" />
+          <div
+            data-focus-ring="container"
+            className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-3.5 py-2.5"
+          >
+            <Search className="size-3.5 shrink-0 text-[var(--text-muted)]" aria-hidden="true" />
             <input
+              ref={searchInputRef}
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
+              aria-label="Search repositories"
               placeholder="Search repositories..."
-              className="flex-1 bg-transparent text-xs text-[#EDEDED] placeholder-[#777777] outline-none"
+              className="flex-1 bg-transparent text-xs leading-[1.45] text-foreground placeholder:text-[var(--text-muted)] outline-none"
             />
-            <kbd className="rounded border border-[rgba(255,255,255,0.08)] bg-[#242424] px-1.5 py-0.5 text-[10px] text-[#777777] font-mono">
-              ⌘ K
-            </kbd>
+            {search ? (
+              <button
+                type="button"
+                onClick={() => setSearch("")}
+                className="rounded px-1.5 py-0.5 text-[10px] font-medium text-[var(--text-secondary)] hover:bg-[var(--white-04)] hover:text-foreground"
+              >
+                Clear
+              </button>
+            ) : (
+              <kbd className="rounded border border-[var(--border-subtle)] bg-[var(--elevation-2-surface)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-muted)]">
+                ⌘ K
+              </kbd>
+            )}
           </div>
 
           {/* Section Label */}
-          <div className="px-3.5 pt-2.5 pb-1 text-[10.5px] font-medium uppercase tracking-wider text-[#777777]">
+          <div className="px-3.5 pt-2.5 pb-1 text-[11px] font-medium text-[var(--text-muted)]">
             Repositories
           </div>
 
           {/* Repository List */}
-          <div className="max-h-[240px] overflow-y-auto px-1.5 py-1">
+          <div className="max-h-[260px] overflow-y-auto px-1.5 py-1">
             {filteredProjects.length === 0 ? (
-              <div className="px-3 py-6 text-center text-xs text-[#888888]">
-                {projects.length === 0
-                  ? "No repositories enrolled yet."
-                  : "No repositories match your search."}
+              <div className="px-3 py-6 text-center text-xs text-[var(--text-secondary)]">
+                {projects.length === 0 ? (
+                  <span>No repositories enrolled yet.</span>
+                ) : (
+                  <div className="flex flex-col items-center gap-2">
+                    <span>No repositories match &ldquo;{search}&rdquo;.</span>
+                    <button
+                      type="button"
+                      onClick={() => setSearch("")}
+                      className="text-xs font-medium text-foreground underline underline-offset-2 hover:opacity-80"
+                    >
+                      Clear search
+                    </button>
+                  </div>
+                )}
               </div>
             ) : (
               filteredProjects.map((p) => {
@@ -111,17 +168,32 @@ export function RepositorySelector({
                     key={p.id}
                     type="button"
                     onClick={() => handleSelect(p.id)}
-                    className={`flex w-full items-center justify-between gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs transition-colors cursor-pointer ${
+                    className={`flex w-full items-center justify-between gap-2.5 rounded-[var(--radius-news)] px-2.5 py-2 text-left text-xs transition-colors ${
                       isActive
-                        ? "bg-[#262626] text-white font-medium"
-                        : "text-[#EDEDED] hover:bg-[#222222] hover:text-white"
+                        ? "bg-[var(--elevation-3-surface)] font-medium text-foreground"
+                        : "text-foreground/90 hover:bg-[var(--white-04)] hover:text-foreground"
                     }`}
                   >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <FolderGit2 className="size-4 shrink-0 text-[#888888]" />
-                      <span className="truncate">{p.repo_name}</span>
+                    <div className="flex min-w-0 items-center gap-2.5">
+                      {p.repo_id === 0 ? (
+                        <FolderGit2 className="size-4 shrink-0 text-[var(--text-secondary)]" />
+                      ) : (
+                        <GithubMark className="size-4 shrink-0 text-[var(--text-secondary)]" />
+                      )}
+                      <div className="min-w-0">
+                        <div className="truncate">{p.repo_name}</div>
+                      </div>
                     </div>
-                    {isActive && <Check className="size-3.5 shrink-0 text-[#FF6308] font-bold" />}
+                    <div className="flex shrink-0 items-center gap-2">
+                      {p.status === "held" && (
+                        <span className="rounded-full bg-[var(--warning-bg)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--warning)]">
+                          Held
+                        </span>
+                      )}
+                      {isActive && (
+                        <Check className="size-3.5 shrink-0 text-foreground" aria-hidden="true" />
+                      )}
+                    </div>
                   </button>
                 );
               })
@@ -129,16 +201,16 @@ export function RepositorySelector({
           </div>
 
           {/* Persistent Footer: + Add Repository */}
-          <div className="border-t border-[rgba(255,255,255,0.08)] bg-[#161616] p-2">
+          <div className="border-t border-[var(--border-subtle)] bg-[var(--overlay)] p-2">
             <button
               type="button"
               onClick={() => {
                 setPopoverOpen(false);
                 setModalOpen(true);
               }}
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-medium text-[#FF6308] hover:bg-[#202020] transition-colors cursor-pointer"
+              className="flex w-full items-center gap-2 rounded-[var(--radius-news)] px-2.5 py-2 text-xs font-medium text-foreground transition-colors hover:bg-[var(--white-04)]"
             >
-              <Plus className="size-4 shrink-0" />
+              <Plus className="size-4 shrink-0 text-[var(--text-secondary)]" />
               <span>Add Repository</span>
             </button>
           </div>

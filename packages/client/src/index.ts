@@ -43,6 +43,13 @@ import {
   projectRegistrationSchema,
   projectRetargetSchema,
   deregisterResultSchema,
+  fsBrowseResultSchema,
+  projectInspectLocalSubmissionSchema,
+  projectInspectLocalResultSchema,
+  projectInspectRemoteSubmissionSchema,
+  projectInspectRemoteResultSchema,
+  projectCloneStartSubmissionSchema,
+  projectCloneJobStatusSchema,
   commandStateSchema,
   commandProvenanceSchema,
   commandOutcomeSchema,
@@ -202,6 +209,10 @@ import {
   type ProjectRetarget,
   type DeregisterResult,
   type ProjectStatus,
+  type FsBrowseResult,
+  type ProjectInspectLocalResult,
+  type ProjectInspectRemoteResult,
+  type ProjectCloneJobStatus,
   type CommandState,
   type CommandProvenance,
   type CommandOutcome,
@@ -650,6 +661,49 @@ export function createFactoryClient(options: {
     },
     async deregisterProject(id: string): Promise<DeregisterResult> {
       return deleteJson(`/api/v1/projects/${encodeURIComponent(id)}`, deregisterResultSchema);
+    },
+    async browseDirectories(path?: string): Promise<FsBrowseResult> {
+      const qs = path && path.trim() !== "" ? `?path=${encodeURIComponent(path)}` : "";
+      return getJson(`/api/v1/fs/browse${qs}`, fsBrowseResultSchema);
+    },
+    async inspectLocalProject(path: string): Promise<ProjectInspectLocalResult> {
+      const parsed = projectInspectLocalSubmissionSchema.safeParse({ path });
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      return postJson(
+        "/api/v1/projects/inspect-local",
+        parsed.data,
+        projectInspectLocalResultSchema,
+      );
+    },
+    async inspectRemoteRepository(url: string): Promise<ProjectInspectRemoteResult> {
+      const parsed = projectInspectRemoteSubmissionSchema.safeParse({ url });
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      return postJson(
+        "/api/v1/projects/inspect-remote",
+        parsed.data,
+        projectInspectRemoteResultSchema,
+      );
+    },
+    async startProjectClone(url: string, name?: string): Promise<ProjectCloneJobStatus> {
+      const parsed = projectCloneStartSubmissionSchema.safeParse({
+        url,
+        ...(name && name.trim() !== "" ? { name } : {}),
+      });
+      if (!parsed.success) throw new FactoryClientError("invalid_payload");
+      return postJson("/api/v1/projects/clone", parsed.data, projectCloneJobStatusSchema);
+    },
+    async projectCloneStatus(jobId: string): Promise<ProjectCloneJobStatus> {
+      return getJson(
+        `/api/v1/projects/clone/${encodeURIComponent(jobId)}`,
+        projectCloneJobStatusSchema,
+      );
+    },
+    async cancelProjectClone(jobId: string): Promise<ProjectCloneJobStatus> {
+      return postJson(
+        `/api/v1/projects/clone/${encodeURIComponent(jobId)}/cancel`,
+        {},
+        projectCloneJobStatusSchema,
+      );
     },
     async commands(opts?: {
       projectId?: string;
