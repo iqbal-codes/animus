@@ -41,6 +41,7 @@ export function JobsHeader({
   onSelectProject,
   onProjectAdded,
   onRefresh,
+  onNewJob,
   factory = client,
 }: {
   board: JobsBoardModel;
@@ -50,6 +51,7 @@ export function JobsHeader({
   onSelectProject?: (projectId: string) => void;
   onProjectAdded?: (project: Project) => void;
   onRefresh?: () => void;
+  onNewJob?: () => void;
   factory?: typeof client;
 }) {
   const { state, isMobile } = useSidebar();
@@ -244,13 +246,19 @@ export function JobsHeader({
 
         <Button
           size="default"
-          disabled={selectableProjects.length === 0}
+          disabled={selectableProjects.length === 0 && !onNewJob}
           title={
-            selectableProjects.length === 0
+            selectableProjects.length === 0 && !onNewJob
               ? "Add a repository before creating a job"
               : "Create a new job in the backlog"
           }
-          onClick={() => setNewJobOpen(true)}
+          onClick={() => {
+            if (onNewJob) {
+              onNewJob();
+            } else {
+              setNewJobOpen(true);
+            }
+          }}
         >
           <Plus aria-hidden="true" className="size-4 shrink-0" />
           New job

@@ -139,10 +139,10 @@ describe("prepared spec and ticket plan admission", () => {
   });
 
   function writeSchedule(maxLaps: number): void {
-    mkdirSync(join(checkoutPath, ".factory"), { recursive: true });
+    mkdirSync(join(checkoutPath, ".animus"), { recursive: true });
     writeFileSync(
-      join(checkoutPath, ".factory", "schedule.json"),
-      JSON.stringify({ max_laps: maxLaps }),
+      join(checkoutPath, ".animus", "config.yaml"),
+      `schedule:\n  max_laps: ${maxLaps}\n`,
     );
   }
 

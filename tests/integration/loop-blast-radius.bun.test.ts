@@ -16,9 +16,9 @@ import {
 } from "../../scripts/loop/blast-radius";
 import * as loopExports from "../../scripts/loop/index";
 import {
-  computeExternalBlastRadius as localLoopComputeBlastRadius,
-  type ExternalBlastRadiusOptions as LocalLoopBlastRadiusOptions,
-} from "../../scripts/local-loop";
+  computeExternalBlastRadius as animusLoopComputeBlastRadius,
+  type ExternalBlastRadiusOptions as AnimusLoopBlastRadiusOptions,
+} from "../../scripts/animus-loop";
 
 const tempDirs: string[] = [];
 afterEach(async () => {
@@ -233,12 +233,12 @@ describe("scripts/loop/blast-radius", () => {
     expect((loopExports as any).KNOWN_EXTENSIONS).toBeArray();
   });
 
-  test("AC2: backward compatibility re-export in scripts/local-loop.ts", () => {
-    expect(localLoopComputeBlastRadius).toBeFunction();
-    expect(localLoopComputeBlastRadius).toBe(computeExternalBlastRadius);
+  test("AC2: animus-loop re-exports blast radius utilities", () => {
+    expect(animusLoopComputeBlastRadius).toBeFunction();
+    expect(animusLoopComputeBlastRadius).toBe(computeExternalBlastRadius);
 
     const directOpts: ExternalBlastRadiusOptions = { maxFiles: 10 };
-    const facadeOpts: LocalLoopBlastRadiusOptions = directOpts;
+    const facadeOpts: AnimusLoopBlastRadiusOptions = directOpts;
     expect(facadeOpts.maxFiles).toBe(10);
   });
 });

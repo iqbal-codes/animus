@@ -5,11 +5,9 @@ import {
   resolveAnimusStateDir,
   ensureSecureDirectory,
   enforceSecureFilePermissions,
-  migrateLegacyState,
 } from "@animus/contracts/paths";
 
 export function ensureSessionSecret(secretPath?: string): string {
-  migrateLegacyState();
   const resolvedPath = secretPath || join(resolveAnimusStateDir(), "session.secret");
   const dir = dirname(resolvedPath);
   ensureSecureDirectory(dir);

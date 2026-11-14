@@ -1,13 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from "vitest";
-import {
-  mkdtempSync,
-  rmSync,
-  mkdirSync,
-  writeFileSync,
-  statSync,
-  existsSync,
-  readFileSync,
-} from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, statSync, existsSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { platformSettingsSchema, writeMachineConfig } from "@animus/contracts/machine-config";
 import { join } from "node:path";
@@ -26,7 +18,6 @@ import {
   getProjectBrakeStatePath,
   ensureSecureDirectory,
   enforceSecureFilePermissions,
-  migrateLegacyState,
   resolveProjectWorkspace,
   evaluateWorkspacePreflight,
 } from "@animus/contracts/paths";
@@ -164,29 +155,6 @@ describe("Local Application State Paths (~/.animus/)", () => {
       const mode = statSync(sensitiveFile).mode & 0o777;
       expect(mode).toBe(0o600);
     }
-  });
-
-  test("migrates legacy ~/.factory/state files transparently to ~/.animus/state", () => {
-    const sourceDir = join(tempDir, "legacy-factory-state");
-    const targetDir = join(tempDir, "animus-state");
-
-    mkdirSync(sourceDir, { recursive: true });
-    writeFileSync(join(sourceDir, "console.db"), "MOCK_DB_BYTES");
-    writeFileSync(join(sourceDir, "session.secret"), "MOCK_SECRET_32_BYTES");
-
-    const result = migrateLegacyState(targetDir, sourceDir);
-
-    expect(result.errors).toEqual([]);
-    expect(result.migrated).toContain("console.db");
-    expect(result.migrated).toContain("session.secret");
-
-    expect(existsSync(join(targetDir, "console.db"))).toBe(true);
-    expect(existsSync(join(targetDir, "session.secret"))).toBe(true);
-    expect(readFileSync(join(targetDir, "console.db"), "utf-8")).toBe("MOCK_DB_BYTES");
-
-    // Second run should migrate nothing since destination already exists
-    const secondResult = migrateLegacyState(targetDir, sourceDir);
-    expect(secondResult.migrated).toEqual([]);
   });
 
   test("allows user-level ~/.animus/schedule.json to override repo schedule defaults", () => {

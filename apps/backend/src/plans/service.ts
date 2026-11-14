@@ -356,6 +356,15 @@ export class PlanService {
     return this.recordById(projectId, planId);
   }
 
+  getPlanByWork(projectId: string, workId: string): PlanRecord | null {
+    this.project(projectId);
+    const row = this.db
+      .prepare("SELECT plan_id FROM plan_members WHERE project_id = ? AND work_id = ? LIMIT 1")
+      .get(projectId, workId) as { plan_id: string } | undefined;
+    if (!row) return null;
+    return this.recordById(projectId, row.plan_id);
+  }
+
   approvePlan(
     projectId: string,
     planId: string,

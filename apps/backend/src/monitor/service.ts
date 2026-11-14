@@ -328,6 +328,12 @@ export class RegisteredProjectMonitor {
       return;
     }
 
+    const authority = this.options.authority?.() ?? "legacy";
+    if (authority !== "legacy") {
+      // Legacy triage mutating GitHub is fenced when authority is local or migrating.
+      return;
+    }
+
     const runtime = this.options.runtime;
     if (!runtime.triage) return;
 

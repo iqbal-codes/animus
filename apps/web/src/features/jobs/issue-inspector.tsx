@@ -180,7 +180,9 @@ export function IssueInspector({
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [clarificationAnswer, setClarificationAnswer] = useState("");
+  const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({});
+  const [showRevisionInput, setShowRevisionInput] = useState(false);
+  const [revisionInstructions, setRevisionInstructions] = useState("");
 
   const runAction = async (label: string, operation: () => Promise<void>) => {
     setBusy(label);
@@ -352,7 +354,7 @@ export function IssueInspector({
     }
   })();
 
-  const handleDecide = (decision: "approve" | "reject" | "revise") => {
+  const handleDecide = (decision: "approve" | "reject") => {
     if (!draft) return;
     void runAction(`decide-${decision}`, async () => {
       await factory.forProject(projectId).decideDraft(draft.id, {
@@ -361,32 +363,75 @@ export function IssueInspector({
         reason: `Operator ${decision} from issue detail`,
         revision_id: draft.latest_revision.id,
       });
-      setNotice(
-        `Draft ${decision === "approve" ? "approved" : decision === "reject" ? "rejected" : "returned for revision"}`,
-      );
+      setNotice(`Draft ${decision === "approve" ? "approved" : "rejected"}`);
     });
   };
 
-  const handlePublish = () => {
+  const handleRevise = () => {
     if (!draft) return;
-    void runAction("publish-draft", async () => {
-      await factory.forProject(projectId).publishDraft(draft.id);
-      setNotice("Draft published to the factory plan");
+    if (!revisionInstructions.trim()) {
+      setActionError("Please provide revision instructions.");
+      return;
+    }
+    void runAction("decide-revise", async () => {
+      await factory.forProject(projectId).decideDraft(draft.id, {
+        decision: "revise",
+        actor: "operator",
+        reason: "Operator requested revision",
+        revision_id: draft.latest_revision.id,
+        instructions: revisionInstructions.trim(),
+      });
+      setShowRevisionInput(false);
+      setRevisionInstructions("");
+      setNotice("Changes requested from planner");
+    });
+  };
+
+  const handleApproveAndAdmit = () => {
+    if (!draft) return;
+    void runAction("approve-and-admit", async () => {
+      try {
+        await factory.forProject(projectId).decideDraft(draft.id, {
+          decision: "approve",
+          actor: "operator",
+          reason: "Operator approved draft",
+          revision_id: draft.latest_revision.id,
+        });
+      } catch {}
+      await factory.forProject(projectId).admitDraft(draft.id);
+      setNotice("Draft approved and moved to Ready");
+    });
+  };
+
+  const handleStartTriage = () => {
+    void runAction("start-triage", async () => {
+      await factory.forProject(projectId).refineDraft({
+        work_id: detail.work.id,
+        answers: [],
+      });
+      setNotice("Triage refinement started");
     });
   };
 
   const handleClarify = () => {
-    if (!draft || !clarificationAnswer.trim()) return;
+    if (!draft) return;
+    const questions = draft.latest_revision.questions;
+    const answers = questions.map((q) => ({
+      question_id: q.id,
+      question: q.question,
+      answer: clarificationAnswers[q.id]?.trim() || "",
+    }));
+    const hasUnanswered = answers.some((a) => a.answer.length === 0);
+    if (hasUnanswered) {
+      setActionError("Please answer all clarification questions before continuing.");
+      return;
+    }
     void runAction("clarify", async () => {
-      const firstQuestion = draft.latest_revision.questions[0];
       await factory.forProject(projectId).refineDraft({
         work_id: detail.work.id,
-        instructions: clarificationAnswer,
-        answers: firstQuestion
-          ? [{ question_id: firstQuestion.id, answer: clarificationAnswer }]
-          : [],
+        answers,
       });
-      setClarificationAnswer("");
+      setClarificationAnswers({});
       setNotice("Clarification sent to the planner");
     });
   };
@@ -512,39 +557,47 @@ export function IssueInspector({
   const showRefinedTicketDisclosure =
     phase !== "triage" || Boolean(refinedPlanBody) || criteria.length > 0;
 
+  const hasAnswers =
+    questions.length > 0 && questions.every((q) => Boolean(clarificationAnswers[q.id]?.trim()));
+
   const triageActions = (
     <>
-      {questions.length > 0 ? (
+      {!draft ? (
+        <DetailPrimaryButton
+          label="Start Triage"
+          icon={CircleCheck}
+          onClick={handleStartTriage}
+          disabled={busy !== null}
+        />
+      ) : questions.length > 0 ? (
         <DetailPrimaryButton
           label="Provide context"
           icon={CircleCheck}
           onClick={handleClarify}
-          disabled={busy !== null || !clarificationAnswer.trim()}
+          disabled={busy !== null || !hasAnswers}
         />
       ) : (
-        <DetailPrimaryButton
-          label="Approve & queue"
-          icon={CircleCheck}
-          onClick={() => handleDecide("approve")}
-          disabled={busy !== null || !draft}
-        />
-      )}
-      <DetailSecondaryButton
-        label="Request changes"
-        onClick={() => handleDecide("revise")}
-        disabled={busy !== null || !draft}
-      />
-      <DetailSecondaryButton
-        label="Reject"
-        onClick={() => handleDecide("reject")}
-        disabled={busy !== null || !draft}
-      />
-      {draft && (
-        <DetailSecondaryButton
-          label="Publish plan"
-          onClick={handlePublish}
-          disabled={busy !== null}
-        />
+        <>
+          <DetailPrimaryButton
+            label="Approve & Move to Ready"
+            icon={CircleCheck}
+            onClick={handleApproveAndAdmit}
+            disabled={busy !== null}
+          />
+          <DetailSecondaryButton
+            label={showRevisionInput ? "Cancel revision" : "Request changes"}
+            onClick={() => {
+              setShowRevisionInput((p) => !p);
+              setActionError(null);
+            }}
+            disabled={busy !== null}
+          />
+          <DetailSecondaryButton
+            label="Reject"
+            onClick={() => handleDecide("reject")}
+            disabled={busy !== null}
+          />
+        </>
       )}
     </>
   );
@@ -811,145 +864,183 @@ export function IssueInspector({
           </div>
 
           {phase === "triage" && draft?.latest_revision.questions.length ? (
-            <div className="flex flex-col gap-2 rounded-[8px] border border-[var(--border-subtle)] bg-[var(--surface)]/45 p-3">
-              {draft.latest_revision.questions.map((question) => (
-                <div key={question.id} className="flex flex-col gap-1">
-                  <span className="text-xs leading-[1.5] text-foreground">{question.question}</span>
-                  <span className="text-[11px] leading-[1.5] text-[var(--text-muted)]">
-                    {question.reason}
+            <div className="mt-2 flex flex-col gap-3">
+              <span className="text-xs font-semibold text-foreground">
+                Clarification Questions ({draft.latest_revision.questions.length})
+              </span>
+              {draft.latest_revision.questions.map((question, idx) => (
+                <div
+                  key={question.id}
+                  className="flex flex-col gap-1.5 rounded-md border border-[var(--border-subtle)] bg-[var(--elevation-sunken)] p-2.5"
+                >
+                  <span className="text-xs font-medium leading-[1.5] text-foreground">
+                    {idx + 1}. {question.question}
                   </span>
+                  {question.reason && (
+                    <span className="text-[11px] leading-[1.4] text-[var(--text-muted)]">
+                      {question.reason}
+                    </span>
+                  )}
+                  <Textarea
+                    rows={2}
+                    value={clarificationAnswers[question.id] ?? ""}
+                    onChange={(event) =>
+                      setClarificationAnswers((prev) => ({
+                        ...prev,
+                        [question.id]: event.target.value,
+                      }))
+                    }
+                    placeholder="Provide context or answer for this question…"
+                    className="min-h-[56px] text-xs"
+                  />
                 </div>
               ))}
-              <Textarea
-                rows={2}
-                value={clarificationAnswer}
-                onChange={(event) => setClarificationAnswer(event.target.value)}
-                placeholder="Provide the missing context…"
-                className="min-h-[72px] text-xs"
-              />
             </div>
           ) : null}
 
-          {((phase === "triage" && Boolean(draft)) || phase !== "triage") && (
-            <div className="flex flex-wrap items-center gap-2">
-              {phase === "triage" && triageActions}
-
-              {(phase === "ready" || phase === "implementing" || phase === "verifying") && (
-                <>
-                  <DetailSecondaryButton
-                    label="Pause"
-                    onClick={() => handleControl("hold")}
-                    disabled={busy !== null || !runId}
-                  />
-                  <DetailSecondaryButton
-                    label="Extend a lap"
-                    onClick={handleGrant}
-                    disabled={busy !== null || !runId}
-                  />
-                  <DetailSecondaryButton
-                    label="Stop for good"
-                    onClick={() => handleControl("stop")}
-                    disabled={busy !== null || !runId}
-                  />
-                </>
-              )}
-
-              {phase === "parked" && (
-                <>
-                  <DetailPrimaryButton
-                    label="Resume"
-                    icon={CircleCheck}
-                    onClick={handleResumeOrRetry}
-                    disabled={busy !== null}
-                  />
-                  <DetailSecondaryButton
-                    label="Stop for good"
-                    onClick={() => handleControl("stop")}
-                    disabled={busy !== null || !runId}
-                  />
-                </>
-              )}
-
-              {phase === "retrying" && (
-                <>
-                  <DetailPrimaryButton
-                    label="Grant 2 more laps"
-                    icon={Clock}
-                    onClick={handleGrant}
-                    disabled={busy !== null || !runId}
-                  />
-                  <DetailSecondaryButton
-                    label="Stop for good"
-                    onClick={() => handleControl("stop")}
-                    disabled={busy !== null || !runId}
-                  />
-                </>
-              )}
-
-              {phase === "approval" && (
-                <>
-                  <DetailPrimaryButton
-                    label="Approve & merge"
-                    icon={CircleCheck}
-                    onClick={handleVerify}
-                    disabled={busy !== null}
-                  />
-                  <DetailSecondaryButton
-                    label="Request changes"
-                    onClick={handleResumeOrRetry}
-                    disabled={busy !== null}
-                  />
-                </>
-              )}
-
-              {phase === "blocked" && (
-                <>
-                  <DetailPrimaryButton
-                    label="Grant access"
-                    icon={CircleCheck}
-                    onClick={handleResumeOrRetry}
-                    disabled={busy !== null}
-                  />
-                  <DetailSecondaryButton
-                    label="Keep blocked"
-                    onClick={() => handleControl("hold")}
-                    disabled={busy !== null || !runId}
-                  />
-                </>
-              )}
-
-              {phase === "failed" && (
-                <>
-                  <DetailPrimaryButton
-                    label="Retry run"
-                    icon={CircleCheck}
-                    onClick={handleResumeOrRetry}
-                    disabled={busy !== null}
-                  />
-                  <DetailSecondaryButton
-                    label="Take over"
-                    onClick={() => handleControl("takeover")}
-                    disabled={busy !== null || !runId}
-                  />
-                  <DetailSecondaryButton
-                    label="Stop for good"
-                    onClick={() => handleControl("stop")}
-                    disabled={busy !== null || !runId}
-                  />
-                </>
-              )}
-
-              {phase === "merged" && (
+          {phase === "triage" && showRevisionInput && (
+            <div className="mt-2 flex flex-col gap-2 rounded-md border border-[var(--border)] bg-[var(--elevation-sunken)] p-3">
+              <span className="text-xs font-medium text-foreground">Revision Instructions</span>
+              <Textarea
+                rows={3}
+                value={revisionInstructions}
+                onChange={(event) => setRevisionInstructions(event.target.value)}
+                placeholder="Describe what needs to be changed in this draft plan…"
+                className="min-h-[72px] text-xs"
+              />
+              <div className="flex items-center gap-2">
+                <DetailPrimaryButton
+                  label="Submit changes"
+                  onClick={handleRevise}
+                  disabled={busy !== null || !revisionInstructions.trim()}
+                />
                 <DetailSecondaryButton
-                  label="Open full history"
-                  onClick={onRefresh}
+                  label="Cancel"
+                  onClick={() => setShowRevisionInput(false)}
                   disabled={busy !== null}
                 />
-              )}
-
-              {busy && <Spinner className="size-3.5 text-[var(--text-secondary)]" />}
+              </div>
             </div>
           )}
+
+          <div className="flex flex-wrap items-center gap-2">
+            {phase === "triage" && triageActions}
+
+            {(phase === "ready" || phase === "implementing" || phase === "verifying") && (
+              <>
+                <DetailSecondaryButton
+                  label="Pause"
+                  onClick={() => handleControl("hold")}
+                  disabled={busy !== null || !runId}
+                />
+                <DetailSecondaryButton
+                  label="Extend a lap"
+                  onClick={handleGrant}
+                  disabled={busy !== null || !runId}
+                />
+                <DetailSecondaryButton
+                  label="Stop for good"
+                  onClick={() => handleControl("stop")}
+                  disabled={busy !== null || !runId}
+                />
+              </>
+            )}
+
+            {phase === "parked" && (
+              <>
+                <DetailPrimaryButton
+                  label="Resume"
+                  icon={CircleCheck}
+                  onClick={handleResumeOrRetry}
+                  disabled={busy !== null}
+                />
+                <DetailSecondaryButton
+                  label="Stop for good"
+                  onClick={() => handleControl("stop")}
+                  disabled={busy !== null || !runId}
+                />
+              </>
+            )}
+
+            {phase === "retrying" && (
+              <>
+                <DetailPrimaryButton
+                  label="Grant 2 more laps"
+                  icon={Clock}
+                  onClick={handleGrant}
+                  disabled={busy !== null || !runId}
+                />
+                <DetailSecondaryButton
+                  label="Stop for good"
+                  onClick={() => handleControl("stop")}
+                  disabled={busy !== null || !runId}
+                />
+              </>
+            )}
+
+            {phase === "approval" && (
+              <>
+                <DetailPrimaryButton
+                  label="Approve & merge"
+                  icon={CircleCheck}
+                  onClick={handleVerify}
+                  disabled={busy !== null}
+                />
+                <DetailSecondaryButton
+                  label="Request changes"
+                  onClick={handleResumeOrRetry}
+                  disabled={busy !== null}
+                />
+              </>
+            )}
+
+            {phase === "blocked" && (
+              <>
+                <DetailPrimaryButton
+                  label="Grant access"
+                  icon={CircleCheck}
+                  onClick={handleResumeOrRetry}
+                  disabled={busy !== null}
+                />
+                <DetailSecondaryButton
+                  label="Keep blocked"
+                  onClick={() => handleControl("hold")}
+                  disabled={busy !== null || !runId}
+                />
+              </>
+            )}
+
+            {phase === "failed" && (
+              <>
+                <DetailPrimaryButton
+                  label="Retry run"
+                  icon={CircleCheck}
+                  onClick={handleResumeOrRetry}
+                  disabled={busy !== null}
+                />
+                <DetailSecondaryButton
+                  label="Take over"
+                  onClick={() => handleControl("takeover")}
+                  disabled={busy !== null || !runId}
+                />
+                <DetailSecondaryButton
+                  label="Stop for good"
+                  onClick={() => handleControl("stop")}
+                  disabled={busy !== null || !runId}
+                />
+              </>
+            )}
+
+            {phase === "merged" && (
+              <DetailSecondaryButton
+                label="Open full history"
+                onClick={onRefresh}
+                disabled={busy !== null}
+              />
+            )}
+
+            {busy && <Spinner className="size-3.5 text-[var(--text-secondary)]" />}
+          </div>
         </section>
 
         {showEvidenceSection && (

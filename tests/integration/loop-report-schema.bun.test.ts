@@ -20,7 +20,7 @@ import {
   reviewerReportSchema,
   type ReviewFinding,
 } from "../../scripts/loop/report-schema";
-import { extractRequiredAcIds } from "../../scripts/local-loop";
+import { extractRequiredAcIds } from "../../scripts/animus-loop";
 
 describe("Loop Report Schema & Strict Validation", () => {
   test("whitespace in a citation never bypasses file verification", async () => {

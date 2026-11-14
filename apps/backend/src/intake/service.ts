@@ -32,6 +32,10 @@ import { evaluateBacklogAdmission, type RawIssue } from "./admission";
 import { parseDependencies, isActiveClaim, computeDiff, computeLabelEffects } from "./parser";
 import { verifyTargetBinding, TargetBindingError } from "./binding";
 import { scanLocalAnimusIssues, createLocalAnimusIssue } from "./local-issues";
+import type { PlanService } from "../plans/service";
+import { validateCanonicalIssueBody } from "@animus/contracts/ticket";
+import { directJobCreateSubmissionSchema, type WorkRecord } from "@animus/contracts/operator";
+import { parsePartOf } from "./parser";
 
 interface ProjectRow {
   id: string;
@@ -56,6 +60,7 @@ export class IntakeService {
   private forge: ForgeAdapter;
   private db?: DatabaseSync;
   private work: WorkService | null = null;
+  private plans: PlanService | null = null;
 
   constructor(
     dbOrOptions?: DatabaseSync | IntakeServiceOptions,
@@ -83,6 +88,10 @@ export class IntakeService {
   setDb(db: DatabaseSync): void {
     this.db = db;
     this.work = new WorkService(db);
+  }
+
+  setPlans(plans: PlanService): void {
+    this.plans = plans;
   }
 
   private getIssueForge(): IssueForgeAdapter {
@@ -136,6 +145,7 @@ export class IntakeService {
       projectId,
     );
     this.attachWork(project, rawIssues, evaluated);
+    await this.fastTrackCanonicalPlans(project, evaluated);
 
     evaluated.sort((a, b) => a.number - b.number);
 
@@ -461,6 +471,88 @@ export class IntakeService {
     }
   }
 
+  private async fastTrackCanonicalPlans(
+    project: ProjectRow,
+    evaluated: EvaluatedIssue[],
+  ): Promise<void> {
+    if (!this.plans) return;
+    for (const item of evaluated) {
+      if (!item.work || item.state !== "OPEN") continue;
+      const body = item.body ?? "";
+      try {
+        const existingPlan = this.plans.getPlanByWork(project.id, item.work.id);
+        if (existingPlan) continue;
+
+        const isSpec =
+          item.labels.some((l) => l.toLowerCase() === "spec" || l.toLowerCase() === "type:spec") ||
+          /(^|\r?\n)##\s+Children\b/i.test(body);
+        const partOf = parsePartOf(body);
+
+        // Child tickets should be imported as part of their parent spec plan, not as standalone root
+        if (partOf !== null && !isSpec) continue;
+
+        if (isSpec) {
+          await this.plans.importPlan(project.id, {
+            work_id: item.work.id,
+            kind: "spec",
+          });
+          continue;
+        }
+
+        const canonical = validateCanonicalIssueBody(body);
+        const hasReadyLabel = item.labels.includes("ready-for-agent");
+        if (canonical.valid && hasReadyLabel) {
+          await this.plans.importPlan(project.id, {
+            work_id: item.work.id,
+            kind: "standalone",
+          });
+        }
+      } catch {
+        // If importPlan holds or fails validation, it remains in triage lane cleanly
+      }
+    }
+  }
+
+  async createDirectJob(
+    projectId: string,
+    submission: { title?: string; prompt: string },
+  ): Promise<{ work: WorkRecord; issue_number: number }> {
+    const project = this.resolveProject(projectId);
+    if (!this.work)
+      throw new ProjectRegistryError("intake_unavailable", "Work service unavailable");
+
+    let nextNum = 10001;
+    if (this.db) {
+      const row = this.db
+        .prepare("SELECT MAX(issue_number) AS max_num FROM work_items WHERE project_id = ?")
+        .get(project.id) as { max_num: number | null } | undefined;
+      if (row && typeof row.max_num === "number" && row.max_num >= 10001) {
+        nextNum = row.max_num + 1;
+      }
+    }
+
+    const firstLine = submission.prompt.trim().split("\n")[0]?.trim() || `Job #${nextNum}`;
+    const title =
+      submission.title?.trim() ||
+      (firstLine.length > 80 ? firstLine.slice(0, 80) + "..." : firstLine);
+
+    const workRecord = this.work.importIssue(
+      { id: project.id, repo_id: project.repo_id, repo_name: project.repo_name },
+      {
+        number: nextNum,
+        title,
+        body: submission.prompt,
+        state: "OPEN",
+        labels: ["ready-for-agent"],
+        comments: [],
+      },
+    );
+
+    this.cache.delete(`proj:${projectId}`);
+
+    return { work: workRecord, issue_number: nextNum };
+  }
+
   async evaluateBacklog(forceRefresh = false): Promise<IntakeResult> {
     const now = Date.now() / 1000;
     const cacheKey = `legacy:${this.defaultRepo}`;
@@ -578,6 +670,32 @@ export async function handleProjectIntakeRoute(
         if (!validated.success)
           return Response.json({ error: "invalid_operator_response" }, { status: 502 });
         return Response.json(validated.data);
+      } catch {
+        return Response.json({ error: "intake_unavailable" }, { status: 503 });
+      }
+    }
+
+    // POST /api/v1/projects/:projectId/intake/direct
+    if (parts[2] === "direct") {
+      if (request.method !== "POST") {
+        return Response.json(
+          { error: "method_not_allowed" },
+          { status: 405, headers: { Allow: "POST" } },
+        );
+      }
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        return Response.json({ error: "invalid_payload" }, { status: 400 });
+      }
+      const parsed = directJobCreateSubmissionSchema.safeParse(body);
+      if (!parsed.success) {
+        return Response.json({ error: "invalid_payload" }, { status: 400 });
+      }
+      try {
+        const result = await intakeService.createDirectJob(projectId, parsed.data);
+        return Response.json(result);
       } catch {
         return Response.json({ error: "intake_unavailable" }, { status: 503 });
       }

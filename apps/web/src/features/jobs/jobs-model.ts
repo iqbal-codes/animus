@@ -2,6 +2,7 @@ import type {
   OperatorBoard,
   OperatorBoardCard,
   OperatorWorkDetail,
+  Project,
 } from "@animus/contracts/operator";
 
 export type Ink =
@@ -765,4 +766,8 @@ export function mapHarnessMetrics(detail: OperatorWorkDetail): IssueHarnessMetri
     cacheReadTokens,
     costFormatted: cost,
   };
+}
+
+export function selectActiveProjects(projects: Project[]): Project[] {
+  return projects.filter((p) => p.status === "active");
 }

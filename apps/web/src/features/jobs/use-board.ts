@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { OperatorBoard, Project } from "@animus/contracts/operator";
 import { client } from "@/lib/factory-client";
-import { selectActiveProjects } from "@/features/drafts/drafts-model";
-import { ALL_PROJECTS_ID } from "./jobs-model";
+import { selectActiveProjects, ALL_PROJECTS_ID } from "./jobs-model";
 
 type BoardLoadState =
   | { phase: "loading" }

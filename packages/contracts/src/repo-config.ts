@@ -36,7 +36,7 @@ export function repoConfigPath(root: string): string {
 
 /** Legacy files that held the schedule before it moved into `config.yaml`. */
 export function legacyRepoSchedulePaths(root: string): string[] {
-  return [join(root, ".animus", "schedule.json"), join(root, ".factory", "schedule.json")];
+  return [join(root, ".animus", "schedule.json")];
 }
 
 export function projectConfigPath(projectSlug: string, home: string): string {

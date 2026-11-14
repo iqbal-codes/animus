@@ -46,7 +46,7 @@ import {
   countActiveLaps,
   type BacklogCandidate,
 } from "../../scripts/loop/index";
-import { findExistingWorktreeForBranch } from "../../scripts/local-loop";
+import { findExistingWorktreeForBranch } from "../../scripts/animus-loop";
 
 const tempDirs: string[] = [];
 afterEach(async () => {
@@ -235,8 +235,8 @@ test("10. Scheduler: evaluates brakes, work window, capacity slots, dependency a
   expect(admitted[0]!.number).toBe(5);
 
   // 3. Test Brakes
-  await mkdir(join(tmp, ".factory"), { recursive: true });
-  await Bun.write(join(tmp, ".factory", "PAUSE"), "drain");
+  await mkdir(join(tmp, ".animus"), { recursive: true });
+  await Bun.write(join(tmp, ".animus", "PAUSE"), "drain");
 
   let launched = false;
   const dummyLaunch = async (issue: BacklogCandidate) => {
@@ -254,7 +254,7 @@ test("10. Scheduler: evaluates brakes, work window, capacity slots, dependency a
   expect(launched).toBe(false);
 
   // Remove PAUSE brake
-  await rm(join(tmp, ".factory", "PAUSE"));
+  await rm(join(tmp, ".animus", "PAUSE"));
 
   // 4. Test Capacity full
   const runsDir = join(tmp, "runs");

@@ -1,10 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
-import {
-  resolveAnimusStateDir,
-  ensureSecureDirectory,
-  migrateLegacyState,
-} from "@animus/contracts/paths";
+import { resolveAnimusStateDir, ensureSecureDirectory } from "@animus/contracts/paths";
 import { applyCommandMigrations } from "../command/db";
 import { applyCoordinationMigrations } from "../coordination/db";
 import { applyEvidenceMigrations } from "../evidence/db";
@@ -65,7 +61,6 @@ export function resolveStateDir(): string {
   if (custom && custom.trim() !== "") {
     return resolveAnimusStateDir(custom);
   }
-  migrateLegacyState();
   return resolveAnimusStateDir();
 }
 

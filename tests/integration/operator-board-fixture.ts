@@ -180,8 +180,11 @@ export async function createFixture(): Promise<Fixture> {
   git(checkout, "commit", "-q", "-m", "base");
   git(checkout, "branch", "-M", "main");
   git(checkout, "push", "-q", "origin", "main");
-  mkdirSync(join(checkout, ".factory"), { recursive: true });
-  writeFileSync(join(checkout, ".factory", "schedule.json"), '{"max_laps":3,"parallel":3}\n');
+  mkdirSync(join(checkout, ".animus"), { recursive: true });
+  writeFileSync(
+    join(checkout, ".animus", "config.yaml"),
+    "schedule:\n  max_laps: 3\n  parallel: 3\n",
+  );
 
   function remoteHead(branch: string): string | null {
     try {

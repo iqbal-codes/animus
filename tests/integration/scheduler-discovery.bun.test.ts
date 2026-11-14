@@ -275,8 +275,8 @@ test("STOP/PAUSE brakes and work window enforce zero spawn for builder laps and 
     const backlog = async () => ({ issues: [candidate], closedNumbers: new Set<number>() });
 
     // 1. File STOP brake
-    await mkdir(join(tmp, ".factory"), { recursive: true });
-    await writeFile(join(tmp, ".factory", "STOP"), "emergency stop");
+    await mkdir(join(tmp, ".animus"), { recursive: true });
+    await writeFile(join(tmp, ".animus", "STOP"), "emergency stop");
 
     const stopRes = await runSchedulerTick({
       root: tmp,
@@ -291,10 +291,10 @@ test("STOP/PAUSE brakes and work window enforce zero spawn for builder laps and 
     expect(triageCalled).toBe(false);
     expect(builderCalled).toBe(false);
 
-    await rm(join(tmp, ".factory", "STOP"));
+    await rm(join(tmp, ".animus", "STOP"));
 
     // 2. File PAUSE brake
-    await writeFile(join(tmp, ".factory", "PAUSE"), "pause drain");
+    await writeFile(join(tmp, ".animus", "PAUSE"), "pause drain");
     const pauseRes = await runSchedulerTick({
       root: tmp,
       repo: "animus/test-repo",
@@ -308,7 +308,7 @@ test("STOP/PAUSE brakes and work window enforce zero spawn for builder laps and 
     expect(triageCalled).toBe(false);
     expect(builderCalled).toBe(false);
 
-    await rm(join(tmp, ".factory", "PAUSE"));
+    await rm(join(tmp, ".animus", "PAUSE"));
 
     // 3. BrakeService schedule pause
     const mockBrakeService = {
