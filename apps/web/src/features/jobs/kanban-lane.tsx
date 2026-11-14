@@ -2,7 +2,6 @@ import {
   CircleAlert,
   CircleDashed,
   Code,
-  Ellipsis,
   GitMerge,
   GitPullRequest,
   Inbox,
@@ -30,11 +29,13 @@ export function KanbanLane({
   lane,
   cards,
   density,
+  selectedWorkId,
   onOpenWork,
 }: {
   lane: KanbanLaneModel;
   cards: TaskCardJob[];
   density?: CardDensity;
+  selectedWorkId?: string | null;
   onOpenWork?: (workId: string) => void;
 }) {
   const Icon = LANE_ICONS[lane.icon];
@@ -45,15 +46,9 @@ export function KanbanLane({
         <div className="flex items-center gap-2">
           <Icon aria-hidden="true" className={cn("size-[15px] shrink-0", INK_TEXT[lane.iconInk])} />
           <h2 className="text-[13px] leading-[1.45] font-medium text-foreground">{lane.title}</h2>
-          <span className="text-[11px] leading-[1.45] text-text-muted">{lane.count}</span>
-          <span className="flex-1" />
-          <button
-            type="button"
-            aria-label={`${lane.title} lane actions`}
-            className="text-text-muted transition-colors hover:text-foreground"
-          >
-            <Ellipsis aria-hidden="true" className="size-4" />
-          </button>
+          <span className="rounded-full bg-[var(--elevation-2-surface)] px-1.5 py-0.5 font-mono text-[11px] leading-[14px] text-text-secondary tabular-nums">
+            {lane.count}
+          </span>
         </div>
       </header>
 
@@ -69,6 +64,7 @@ export function KanbanLane({
             key={job.id}
             job={job}
             density={density}
+            selected={Boolean(selectedWorkId && job.workId === selectedWorkId)}
             onOpen={job.workId && onOpenWork ? () => onOpenWork(job.workId!) : undefined}
           />
         ))

@@ -253,7 +253,7 @@ export function InboxScreen({
                   setSelectedId(null);
                 }
               }}
-              className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
+              className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overscroll-contain outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
             >
               {visible.length === 0 ? (
                 <div className="flex flex-col items-start gap-3 rounded-lg border border-[var(--border-subtle)] px-4 py-6">
@@ -410,7 +410,7 @@ function IssuePane({ item, onClose }: { item: InboxItem; onClose: () => void }) 
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pb-6">
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-6 pb-6">
         <section className="flex flex-col gap-3 border-b border-[var(--border-subtle)] py-[18px]">
           <h3 className="text-[13px] leading-[1.4] font-medium text-foreground">Original issue</h3>
           <p className="text-[13px] leading-[1.45] text-text-secondary">

@@ -270,9 +270,7 @@ export function mapBoardCard(card: OperatorBoardCard, now = Date.now()): TaskCar
       : undefined,
     lap: card.latestRun ? `Lap ${card.latestRun.lap}` : undefined,
     title: card.title,
-    summary: card.detail
-      ? { text: card.detail, ink: LANE_INK[card.lane] ?? "secondary" }
-      : undefined,
+    summary: card.detail ? { text: card.detail, ink: "secondary" } : undefined,
     timestamp: since,
     execution: EXECUTION[card.lane],
     attention: attentionOf(card, since),

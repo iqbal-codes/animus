@@ -154,7 +154,7 @@ export function FactoryRail({
   const tokenRows = stageTokenRows.length > 0 ? stageTokenRows : aggregateRows;
 
   return (
-    <div data-testid="factory-rail" className="flex min-h-full flex-col px-5 pb-4">
+    <div data-testid="factory-rail" className="flex min-h-full flex-col px-4 pb-4 sm:px-5">
       {/* SECTION 1 — Factory timeline */}
       <section
         aria-label="Factory Timeline"
@@ -166,7 +166,7 @@ export function FactoryRail({
           </h2>
           <span className="flex-1" />
           <span className={cn("font-mono text-[11px] leading-[1.5]", TONE_TEXT[statusTone])}>
-            {duration && statusTone === "accent" ? duration : statusLabel}
+            {duration && statusTone === "accent" ? duration : isLive ? "Running" : statusLabel}
           </span>
         </div>
 
@@ -229,9 +229,9 @@ export function FactoryRail({
 
                 {isOpen && (
                   <div className="flex flex-col gap-1.5">
-                    <div className="flex h-[132px] w-full flex-col gap-2 overflow-hidden rounded-[6px] border border-[var(--border-subtle)] bg-[var(--background)] px-2.5 py-2">
+                    <div className="flex max-h-[132px] min-h-[38px] w-full flex-col gap-2 overflow-hidden rounded-[6px] border border-[var(--border-subtle)] bg-[var(--background)] px-2.5 py-2">
                       {step.logs.length > 0 ? (
-                        <ScrollArea className="h-full">
+                        <ScrollArea className="max-h-[114px]">
                           <div className="flex flex-col gap-[3px]">
                             {step.logs.map((entry, index) => (
                               <div
@@ -258,12 +258,8 @@ export function FactoryRail({
                       )}
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="text-[10px] leading-[1.5] text-[var(--text-muted)]">
-                        {step.logs.length} step logs · {step.logs.length} entries
-                      </span>
-                      <span className="flex-1" />
-                      <span className="text-[10px] leading-[1.5] text-[var(--text-muted)]">
-                        Open step log ↗
+                      <span className="font-mono text-[10px] leading-[1.5] text-[var(--text-muted)] tabular-nums">
+                        {step.logs.length} {step.logs.length === 1 ? "entry" : "entries"}
                       </span>
                     </div>
                   </div>
@@ -338,7 +334,7 @@ export function FactoryRail({
               ))}
             </div>
           </>
-        ) : (
+        ) : detail.lane === "triage" && !run ? null : (
           <span className="text-[11px] leading-[1.5] text-[var(--text-muted)]">
             {detail.usage.detail}
           </span>
@@ -362,10 +358,10 @@ export function FactoryRail({
         </span>
 
         <div className="flex w-full items-center gap-3 border-y border-[var(--border-subtle)] px-0 py-2">
-          <span className="w-16 shrink-0 font-mono text-[10px] tracking-[0.4px] text-[var(--text-muted)] uppercase">
+          <span className="w-14 shrink-0 font-mono text-[10px] tracking-[0.4px] text-[var(--text-muted)] uppercase sm:w-16">
             TIME
           </span>
-          <span className="w-[88px] shrink-0 font-mono text-[10px] tracking-[0.4px] text-[var(--text-muted)] uppercase">
+          <span className="w-[72px] shrink-0 font-mono text-[10px] tracking-[0.4px] text-[var(--text-muted)] uppercase sm:w-[88px]">
             TOOL / EVENT
           </span>
           <span className="flex-1 font-mono text-[10px] tracking-[0.4px] text-[var(--text-muted)] uppercase">
@@ -381,12 +377,12 @@ export function FactoryRail({
                   key={line.id}
                   className="flex w-full items-start gap-3 border-b border-[var(--border-subtle)] px-0 py-[5px]"
                 >
-                  <span className="w-16 shrink-0 font-mono text-[11px] leading-[1.5] text-[var(--text-muted)]">
+                  <span className="w-14 shrink-0 font-mono text-[11px] leading-[1.5] text-[var(--text-muted)] sm:w-16">
                     {line.timestamp}
                   </span>
                   <span
                     className={cn(
-                      "w-[88px] shrink-0 truncate font-mono text-[11px] leading-[1.5]",
+                      "w-[72px] shrink-0 truncate font-mono text-[11px] leading-[1.5] sm:w-[88px]",
                       line.event === "PASS" || line.event === "merged"
                         ? "text-[var(--success)]"
                         : line.event === "FAIL" || line.event === "failed"

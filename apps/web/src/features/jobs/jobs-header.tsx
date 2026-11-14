@@ -1,4 +1,5 @@
 import { Bell, ChevronDown, Columns3, List, LoaderCircle, Pause, Square } from "lucide-react";
+import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import type { JobsBoardModel } from "./jobs-model";
@@ -39,6 +40,12 @@ export function JobsHeader({
   onProjectAdded?: (project: Project) => void;
 }) {
   const { state, isMobile } = useSidebar();
+  const activeWorkers = Number.parseInt(
+    board.kpis.find((kpi) => kpi.label === "Active workers")?.value ?? "0",
+    10,
+  );
+  const workingLaneCount = board.lanes.find((lane) => lane.id === "working")?.count ?? 0;
+  const isRunning = activeWorkers > 0 || workingLaneCount > 0;
 
   return (
     <header className="flex min-h-[76px] shrink-0 flex-wrap items-center gap-3 border-b border-[var(--border-subtle)] px-7 py-3 sm:gap-5">
@@ -79,7 +86,7 @@ export function JobsHeader({
             type="button"
             disabled
             title="List view is not implemented yet"
-            className="flex h-[30px] items-center gap-[7px] rounded-[6px] px-[11px] text-xs leading-[1.4] text-text-secondary disabled:cursor-default disabled:opacity-50"
+            className="flex h-[30px] items-center gap-[7px] rounded-[7px] px-[11px] text-xs leading-[1.4] text-text-secondary transition-[color,background-color,border-color,scale] duration-150 ease-out enabled:active:scale-[0.96] motion-reduce:transform-none disabled:cursor-default disabled:opacity-50"
           >
             <List aria-hidden="true" className="size-3.5 shrink-0" />
             <span>List</span>
@@ -87,7 +94,7 @@ export function JobsHeader({
           <button
             type="button"
             aria-pressed="true"
-            className="flex h-[30px] items-center gap-[7px] rounded-[6px] bg-secondary px-[11px] text-xs leading-[1.4] text-foreground"
+            className="flex h-[30px] items-center gap-[7px] rounded-[7px] bg-secondary px-[11px] text-xs leading-[1.4] text-foreground transition-[color,background-color,border-color,scale] duration-150 ease-out enabled:active:scale-[0.96] motion-reduce:transform-none"
           >
             <Columns3 aria-hidden="true" className="size-3.5 shrink-0" />
             <span>Kanban</span>
@@ -103,11 +110,14 @@ export function JobsHeader({
         <button
           type="button"
           aria-pressed="true"
-          className="flex h-[30px] items-center gap-[5px] rounded-[6px] bg-secondary px-2 py-[5px]"
+          className="flex h-[30px] items-center gap-[5px] rounded-[7px] bg-secondary px-2 py-[5px] transition-[color,background-color,border-color,scale] duration-150 ease-out enabled:active:scale-[0.96] motion-reduce:transform-none"
         >
           <LoaderCircle
             aria-hidden="true"
-            className="size-[11px] shrink-0 animate-spin text-accent motion-reduce:animate-none"
+            className={cn(
+              "size-[11px] shrink-0 text-accent",
+              isRunning && "animate-spin motion-reduce:animate-none",
+            )}
           />
           <span className="text-[11.5px] leading-[1.2] font-medium text-foreground">Running</span>
         </button>
@@ -115,7 +125,7 @@ export function JobsHeader({
           type="button"
           disabled
           title="Paused jobs are not wired yet"
-          className="flex h-[30px] items-center gap-[5px] rounded-[6px] px-2 py-[5px] disabled:cursor-default disabled:opacity-50"
+          className="flex h-[30px] items-center gap-[5px] rounded-[7px] px-2 py-[5px] transition-[color,background-color,border-color,scale] duration-150 ease-out enabled:active:scale-[0.96] motion-reduce:transform-none disabled:cursor-default disabled:opacity-50"
         >
           <Pause aria-hidden="true" className="size-[11px] shrink-0 text-text-secondary" />
           <span className="text-[11.5px] leading-[1.2] text-text-secondary">Paused</span>
@@ -124,7 +134,7 @@ export function JobsHeader({
           type="button"
           disabled
           title="Stopped jobs are not wired yet"
-          className="flex h-[30px] items-center gap-[5px] rounded-[6px] px-2 py-[5px] disabled:cursor-default disabled:opacity-50"
+          className="flex h-[30px] items-center gap-[5px] rounded-[7px] px-2 py-[5px] transition-[color,background-color,border-color,scale] duration-150 ease-out enabled:active:scale-[0.96] motion-reduce:transform-none disabled:cursor-default disabled:opacity-50"
         >
           <Square aria-hidden="true" className="size-[11px] shrink-0 text-text-secondary" />
           <span className="text-[11.5px] leading-[1.2] text-text-secondary">Stopped</span>
@@ -136,7 +146,7 @@ export function JobsHeader({
           type="button"
           aria-label="Notifications, 2 unread"
           title="Notifications, 2 unread"
-          className="flex items-center px-1 py-2 text-foreground transition-colors hover:text-text-secondary"
+          className="flex items-center px-1 py-2 text-foreground transition-[color,scale] duration-150 ease-out hover:text-text-secondary enabled:active:scale-[0.96] motion-reduce:transform-none"
         >
           <Bell aria-hidden="true" className="size-[18px]" />
         </button>

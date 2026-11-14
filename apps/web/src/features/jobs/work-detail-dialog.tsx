@@ -197,7 +197,11 @@ export function WorkDetailDialog({
             disabled={state.phase === "loading"}
           >
             <RefreshCw
-              className={state.phase === "loading" ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"}
+              className={
+                state.phase === "loading"
+                  ? "h-3.5 w-3.5 animate-spin motion-reduce:animate-none"
+                  : "h-3.5 w-3.5"
+              }
             />
             <span>Refresh</span>
           </Button>
@@ -227,7 +231,7 @@ export function WorkDetailDialog({
           </p>
         )}
 
-        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
           {state.phase === "loading" ? (
             <p
               role="status"
@@ -287,7 +291,7 @@ export function WorkDetailDialog({
                   role="region"
                   tabIndex={0}
                   aria-label="Contract body"
-                  className="max-h-48 overflow-y-auto rounded-[6px] text-[11px] leading-[1.5] text-text-secondary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
+                  className="max-h-48 overflow-y-auto overscroll-contain rounded-[6px] text-[11px] leading-[1.5] text-text-secondary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
                 >
                   <p className="whitespace-pre-wrap break-words">{detail.contract.body}</p>
                 </div>

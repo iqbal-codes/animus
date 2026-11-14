@@ -65,6 +65,7 @@ export function JobsScreen({
         projectId={projectId ?? "default"}
         onClose={handleClose}
         onExpand={handleExpand}
+        onSelectWork={(workId) => setSelectedWorkId(workId)}
         factory={factory}
       />
     ) : undefined;
@@ -76,6 +77,7 @@ export function JobsScreen({
         projectId={projectId ?? "default"}
         onClose={handleClose}
         onCollapse={handleCollapse}
+        onSelectWork={(workId) => setSelectedWorkId(workId)}
         factory={factory}
       />
     ) : undefined;
@@ -102,6 +104,7 @@ export function JobsScreen({
           board={board}
           backendState={backendState}
           density={density}
+          selectedWorkId={selectedWorkId}
           loading={loading}
           error={error}
           onRefresh={onRefresh}
