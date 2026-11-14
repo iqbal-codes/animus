@@ -226,6 +226,16 @@ export async function runLocalDispatchTick(
       if (resumed.claimed) claimedDetail = resumed.claimed;
       if (resumed.tick) return resumed.tick;
 
+      if (options.dispatch.countTotalActiveRuns() >= options.dispatch.getMachineCapacity()) {
+        return {
+          action: "skipped",
+          reason: "capacity_full",
+          projectId: project.id,
+          planId: plan.id,
+          error: `Machine capacity is full (${options.dispatch.countTotalActiveRuns()}/${options.dispatch.getMachineCapacity()})`,
+        };
+      }
+
       try {
         const run = await options.dispatch.dispatch(project.id, {
           plan_id: plan.id,

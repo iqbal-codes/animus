@@ -385,6 +385,20 @@ describe("web header parity, all repositories, engine control & new job UI", () 
     expect((await screen.findAllByText(/aaaaaaa/)).length).toBeGreaterThan(0);
   });
 
+  test("mergeOperatorBoards preserves machine-wide capacity instead of summing across repos", () => {
+    const boardA = makeRawBoard("prj_alpha", "owner/alpha", "triage", "wrk_a", 11, "Alpha triage");
+    const boardB = makeRawBoard("prj_beta", "owner/beta", "approval", "wrk_b", 22, "Beta approval");
+    boardA.counts.capacity = 2;
+    boardB.counts.capacity = 2;
+    boardA.counts.workers = 1;
+    boardB.counts.workers = 0;
+
+    const merged = mergeOperatorBoards([boardA, boardB]);
+    const workerKpi = merged.kpis.find((k) => k.label === "Active workers");
+    expect(workerKpi?.value).toBe("1 / 2");
+    expect(workerKpi?.description).toBe("1 slots available");
+  });
+
   test("Engine Control: switches to Paused directly, confirms before Stopped, and shows errors", async () => {
     const mock = makeMockFactory("running", 3);
     const onRefresh = vi.fn();

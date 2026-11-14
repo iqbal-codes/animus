@@ -971,6 +971,39 @@ describe("local dispatch ownership and frozen execution", () => {
     expect(runB.state).toBe("succeeded");
   });
 
+  test("machine-wide capacity blocks dispatch when total active runs reach machineCapacity", async () => {
+    writeSchedule({ parallel: 5 });
+    addIssue(460, ticketBody({}));
+    addIssue(461, ticketBody({}));
+    const planA = await plans.importPlan(projectId, { issue_number: 460, kind: "standalone" });
+    const planB = await plans.importPlan(projectId, { issue_number: 461, kind: "standalone" });
+
+    const startedA = deferred<void>();
+    const release = deferred<void>();
+    const runner: DispatchRunner = async (context) => {
+      if (context.issue_number === 460) startedA.resolve();
+      await release.promise;
+      return {
+        success: true,
+        headSha: commitInWorktree(context.worktree_path, `machine-${context.issue_number}.txt`),
+      };
+    };
+
+    const service = makeService({ runner, machineCapacity: 1 });
+    const first = service.dispatch(projectId, { plan_id: planA.id, actor: "first" });
+    await startedA.promise;
+
+    await expect(
+      service.dispatch(projectId, { plan_id: planB.id, actor: "second" }),
+    ).rejects.toMatchObject({
+      code: "capacity_full",
+      message: expect.stringContaining("Machine capacity is full"),
+    });
+
+    release.resolve();
+    await first;
+  });
+
   test("AC4/B2: reconciliation refuses a remote branch effect not present locally", async () => {
     addIssue(450, ticketBody({}));
     const plan = await plans.importPlan(projectId, { issue_number: 450, kind: "standalone" });

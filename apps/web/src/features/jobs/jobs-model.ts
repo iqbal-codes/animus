@@ -404,12 +404,14 @@ export function mergeOperatorBoards(boards: OperatorBoard[], now = Date.now()): 
   if (boards.length === 0) return emptyBoard("All repositories");
   if (boards.length === 1) return mapOperatorBoard(boards[0]!, now);
 
+  const machineCapacity = Math.max(...boards.map((b) => b.counts.capacity), 1);
+
   const counts: OperatorBoard["counts"] = {
     tickets: 0,
     specs: 0,
     unplanned: 0,
     workers: 0,
-    capacity: 0,
+    capacity: machineCapacity,
   };
   let anyUsage = false;
   let tokensIn = 0;
@@ -425,7 +427,6 @@ export function mergeOperatorBoards(boards: OperatorBoard[], now = Date.now()): 
     counts.specs += board.counts.specs;
     counts.unplanned += board.counts.unplanned;
     counts.workers += board.counts.workers;
-    counts.capacity += board.counts.capacity;
     if (board.generatedAt > latestGeneratedAt) latestGeneratedAt = board.generatedAt;
     if (board.usage.available) {
       anyUsage = true;
