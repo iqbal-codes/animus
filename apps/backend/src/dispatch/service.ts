@@ -31,6 +31,7 @@ import {
   resolveAnimusStateDir,
   resolveProjectWorkspace,
 } from "@animus/contracts/paths";
+import { readMachineConfig } from "@animus/contracts/machine-config";
 import { BrakeService } from "../command/brakes";
 import { CommandLedger } from "../command/ledger";
 import { readVerifiedBranchIntegrations } from "../intake/admission";
@@ -189,6 +190,11 @@ export interface DispatchServiceOptions {
   clock?: () => number;
   leaseMs?: number;
   schedule?: (checkoutPath: string) => { parallel: number; max_laps: number };
+  /**
+   * Machine-wide parallel capacity limit. Defaults to reading `~/.animus/config.yaml`
+   * (`automation.parallelJobs`, default 2).
+   */
+  machineCapacity?: number | (() => number);
   legacyActiveLaps?: (checkoutPath: string) => number;
   gitRunner?: (cmd: string[], options: { cwd: string }) => string;
   engine?: DispatchEngineOptions;
@@ -351,6 +357,7 @@ export class DispatchService {
     runId: string,
   ) => DeliveryRoleProcessState[];
   private readonly terminateRole: DispatchTerminator;
+  private readonly machineCapacityOption?: number | (() => number);
 
   constructor(
     private readonly db: DatabaseSync,
@@ -366,6 +373,7 @@ export class DispatchService {
     this.clock = options.clock ?? (() => Date.now());
     this.leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
     this.schedule = options.schedule ?? ((checkoutPath) => loadScheduleConfig(checkoutPath));
+    this.machineCapacityOption = options.machineCapacity;
     this.legacyActiveLaps =
       options.legacyActiveLaps ??
       ((checkoutPath) => countActiveLaps(resolveProjectWorkspace(checkoutPath).runsDir));
@@ -403,6 +411,21 @@ export class DispatchService {
     }
 
     this.assertBrakes(project, submission, targetBranch);
+
+    const totalActiveRuns = this.countTotalActiveRuns();
+    const machineCapacity = this.getMachineCapacity();
+    if (totalActiveRuns >= machineCapacity) {
+      this.recordRejection(project, submission, "capacity_full", {
+        plan_id: plan.id,
+        work_id: member.work_id,
+        active_runs: totalActiveRuns,
+        capacity: machineCapacity,
+      });
+      throw new DispatchError(
+        "capacity_full",
+        `Machine capacity is full (${totalActiveRuns}/${machineCapacity})`,
+      );
+    }
 
     const activeRuns = this.countActiveRuns(projectId);
     const legacy = this.legacyActiveLaps(project.checkout_path);
@@ -2612,6 +2635,33 @@ export class DispatchService {
     return row.count;
   }
 
+  countTotalActiveRuns(): number {
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS count FROM dispatch_runs WHERE ${activeStateCondition()}`)
+      .get() as { count: number };
+    return row.count;
+  }
+
+  getMachineCapacity(): number {
+    if (this.machineCapacityOption !== undefined) {
+      const val =
+        typeof this.machineCapacityOption === "function"
+          ? this.machineCapacityOption()
+          : this.machineCapacityOption;
+      return Math.max(1, val);
+    }
+    try {
+      const machine = readMachineConfig();
+      if (
+        typeof machine?.automation?.parallelJobs === "number" &&
+        machine.automation.parallelJobs > 0
+      ) {
+        return machine.automation.parallelJobs;
+      }
+    } catch {}
+    return 2;
+  }
+
   private revalidateClaim(input: {
     project: ProjectRow;
     plan: PlanRecord;
@@ -2693,6 +2743,15 @@ export class DispatchService {
       )
     ) {
       throw new DispatchError("already_succeeded", "Work already succeeded");
+    }
+
+    const totalActiveRuns = this.countTotalActiveRuns();
+    const machineCapacity = this.getMachineCapacity();
+    if (totalActiveRuns >= machineCapacity) {
+      throw new DispatchError(
+        "capacity_full",
+        `Machine capacity is full (${totalActiveRuns}/${machineCapacity})`,
+      );
     }
 
     const activeRuns = this.countActiveRuns(project.id);

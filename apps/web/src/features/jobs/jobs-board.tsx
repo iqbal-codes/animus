@@ -18,6 +18,7 @@ export function JobsBoard({
   board,
   backendState,
   density,
+  selectedWorkId,
   loading = false,
   error = null,
   onRefresh,
@@ -28,6 +29,7 @@ export function JobsBoard({
   board: JobsBoardModel;
   backendState: BackendState;
   density?: CardDensity;
+  selectedWorkId?: string | null;
   loading?: boolean;
   error?: string | null;
   onRefresh?: () => void;
@@ -36,9 +38,21 @@ export function JobsBoard({
   expandedWorkspace?: React.ReactNode;
 }) {
   const [query, setQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);
   const [scroll, setScroll] = useState({ thumb: 1, progress: 0 });
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "k") return;
+      event.preventDefault();
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   useEffect(() => {
     const el = viewportRef.current;
@@ -89,7 +103,7 @@ export function JobsBoard({
     <div className="flex min-h-0 flex-1 flex-col gap-0.5">
       <div
         ref={viewportRef}
-        className="min-h-0 flex-1 overflow-x-auto overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className="min-h-0 flex-1 overflow-x-auto overflow-y-auto overscroll-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         <div className="flex w-max min-h-full items-start gap-4">
           {board.lanes.map((lane) => {
@@ -102,6 +116,7 @@ export function JobsBoard({
                 lane={lane}
                 cards={cards}
                 density={density}
+                selectedWorkId={selectedWorkId}
                 onOpenWork={onOpenWork}
               />
             );
@@ -127,18 +142,21 @@ export function JobsBoard({
   );
 
   const toolbar = (
-    <div className="flex h-8 shrink-0 items-center gap-3">
-      <h2 className="text-sm leading-[1.45] font-medium text-foreground">All jobs</h2>
-      <span className="text-xs leading-[1.45] text-text-muted">{board.totalJobs}</span>
-      <span className="flex-1" />
+    <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-x-3 gap-y-2">
+      <div className="flex shrink-0 items-center gap-2">
+        <h2 className="text-sm leading-[1.45] font-medium text-foreground">All jobs</h2>
+        <span className="text-xs leading-[1.45] text-text-muted">{board.totalJobs}</span>
+      </div>
+      <span className="hidden flex-1 sm:block" />
 
       <div
         data-focus-ring="container"
-        className="flex h-8 w-52 items-center justify-between rounded-full border border-[var(--border)] px-3 transition-colors focus-within:border-[var(--ring)]"
+        className="flex h-8 min-w-[140px] max-w-[208px] flex-1 items-center justify-between rounded-full border border-[var(--border)] px-3 transition-colors focus-within:border-[var(--ring)]"
       >
-        <label className="flex min-w-0 items-center gap-2">
+        <label className="flex min-w-0 flex-1 items-center gap-2">
           <Search aria-hidden="true" className="size-3.5 shrink-0 text-text-muted" />
           <input
+            ref={searchInputRef}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             aria-label="Search jobs"
@@ -153,7 +171,7 @@ export function JobsBoard({
         type="button"
         disabled
         title="Job filters are not implemented yet"
-        className="flex items-center gap-[7px] px-[10px] py-[7px] disabled:cursor-default disabled:opacity-50"
+        className="flex shrink-0 items-center gap-[7px] px-[10px] py-[7px] disabled:cursor-default disabled:opacity-50"
       >
         <SlidersHorizontal aria-hidden="true" className="size-3.5 shrink-0 text-text-secondary" />
         <span className="text-xs leading-[1.45] text-text-secondary">Filter</span>
@@ -163,8 +181,11 @@ export function JobsBoard({
 
   return (
     <div
-      className="flex min-h-0 flex-1 flex-col px-7 pt-7 pb-5"
-      style={{ gap: expandedWorkspace ? 20 : 26 }}
+      data-testid="jobs-board"
+      className={cn(
+        "@container flex min-h-0 flex-1 flex-col px-4 pt-4 pb-3 md:px-7 md:pt-7 md:pb-5",
+        expandedWorkspace ? "gap-3 md:gap-5" : "gap-4 md:gap-[26px]",
+      )}
     >
       {(loading || error) && (
         <div className="flex flex-wrap items-center gap-3 rounded-[10px] border border-[var(--border-subtle)] px-3 py-2">
@@ -199,7 +220,7 @@ export function JobsBoard({
 
       <div
         data-testid="kpi-row"
-        className="grid shrink-0 grid-cols-2 items-stretch gap-3 sm:grid-cols-5"
+        className="grid shrink-0 auto-cols-[minmax(160px,1fr)] grid-flow-col gap-2.5 overflow-x-auto overscroll-x-contain pb-1 [scrollbar-width:none] @[860px]:grid-flow-row @[860px]:grid-cols-5 @[860px]:gap-3 @[860px]:overflow-visible @[860px]:pb-0 [&::-webkit-scrollbar]:hidden"
       >
         {board.kpis.map((kpi) => (
           <KpiCard key={kpi.label} kpi={kpi} />
@@ -209,12 +230,16 @@ export function JobsBoard({
       {expandedWorkspace ? (
         <div className="flex min-h-0 flex-1 flex-col">{expandedWorkspace}</div>
       ) : (
-        <div data-testid="kanban-wrapper" className="flex min-h-0 flex-1">
+        <div data-testid="kanban-wrapper" className="flex min-h-0 flex-1 gap-3 overflow-hidden">
           <div className="flex min-w-0 flex-1 flex-col gap-4">
             {toolbar}
             {lanes}
           </div>
-          {sideSheet && <div className="flex min-h-0 w-[500px] shrink-0 flex-col">{sideSheet}</div>}
+          {sideSheet && (
+            <div className="flex min-h-0 w-full flex-col max-md:fixed max-md:inset-0 max-md:z-40 md:w-[390px] md:shrink-0 xl:w-[500px]">
+              {sideSheet}
+            </div>
+          )}
         </div>
       )}
 

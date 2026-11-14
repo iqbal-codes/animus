@@ -27,12 +27,14 @@ export function CompactSideSheet({
   projectId,
   onClose,
   onExpand,
+  onSelectWork,
   factory = client,
 }: {
   workId: string;
   projectId: string;
   onClose: () => void;
   onExpand: () => void;
+  onSelectWork?: (workId: string) => void;
   factory?: typeof client;
 }) {
   const [state, setState] = useState<LoadState>({ phase: "loading" });
@@ -63,7 +65,7 @@ export function CompactSideSheet({
     <aside
       data-testid="compact-side-sheet"
       aria-label="Compact Issue Inspector"
-      className="flex h-full min-h-0 w-[500px] shrink-0 flex-col overflow-hidden border-l border-[var(--border-subtle)] bg-[var(--elevation-stage)]"
+      className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden border-l border-[var(--border-subtle)] bg-[var(--elevation-stage)]"
     >
       {state.phase === "loading" ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-10">
@@ -73,7 +75,7 @@ export function CompactSideSheet({
           </p>
         </div>
       ) : state.phase === "error" ? (
-        <div className="flex flex-1 flex-col items-start gap-3 px-[22px] py-6">
+        <div className="flex flex-1 flex-col items-start gap-3 px-4 py-6 sm:px-[22px]">
           <Alert variant="destructive" className="py-2.5">
             <AlertTitle className="text-xs font-semibold">Issue unavailable</AlertTitle>
             <AlertDescription role="alert" className="text-xs">
@@ -86,11 +88,15 @@ export function CompactSideSheet({
           </Button>
         </div>
       ) : (
-        <ScrollArea className="min-h-0 flex-1" data-testid="compact-side-sheet-scroll">
+        <ScrollArea
+          className="min-h-0 flex-1 overscroll-contain"
+          data-testid="compact-side-sheet-scroll"
+        >
           <IssueInspector
             detail={state.detail}
             projectId={projectId}
             onRefresh={load}
+            onSelectWork={onSelectWork}
             isCompact
             onClose={onClose}
             onExpand={onExpand}

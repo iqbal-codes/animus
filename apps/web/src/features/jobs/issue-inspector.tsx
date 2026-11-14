@@ -1,12 +1,11 @@
 import { useState } from "react";
 import {
-  ChevronRight,
+  ArrowUpRight,
   CircleAlert,
   CircleCheck,
   CircleDashed,
   CircleX,
   Clock,
-  Ellipsis,
   GitBranch,
   GitPullRequest,
   Layers,
@@ -27,12 +26,10 @@ import {
   BodyText,
   ComparisonTable,
   DetailButton,
-  DetailButtonShell,
   DetailPrimaryButton,
   DetailSecondaryButton,
   DisclosureRow,
   FieldLabel,
-  KeyValueRow,
   Mono,
   StatusPill,
   TONE_TEXT,
@@ -208,11 +205,9 @@ export function IssueInspector({
   const issueNum = detail.work.issue_number ?? detail.contract.sourceUrl.split("/").pop();
   const repoName = detail.work.repo_name || detail.work.revision.provenance.repo_name || "animus";
   const pr = detail.publication?.pullRequests[0] ?? null;
-  const branch =
-    run?.branch ??
-    detail.retained?.branch ??
-    detail.latestRun?.run.target_branch ??
-    `issue-${issueNum}`;
+  const actualBranch = run?.branch ?? detail.retained?.branch ?? null;
+  const hasBranch = Boolean(pr || actualBranch);
+  const branch = actualBranch ?? detail.latestRun?.run.target_branch ?? `issue-${issueNum}`;
   const targetBranch = run?.target_branch ?? detail.plan?.delivery_branch ?? "main";
   const headSha = run?.head_sha?.slice(0, 7) ?? detail.contract.contentHash.slice(0, 7);
   const phase = phaseOf(detail);
@@ -246,6 +241,10 @@ export function IssueInspector({
 
   const outcome = (() => {
     switch (phase) {
+      case "triage":
+        if (needsClarification) return "Waiting for clarification";
+        if (draft) return "Draft plan ready for review";
+        return "Awaiting triage evaluation";
       case "implementing":
         return `Implementing · lap ${lap} of ${allowedAttempts}`;
       case "verifying":
@@ -276,7 +275,9 @@ export function IssueInspector({
         ? `PR ${pr ? `#${pr.number}` : "candidate"} · ${headSha} · ${checks.length} checks · ${criteria.length} criteria`
         : run?.error && phase !== "implementing"
           ? run.error
-          : `Branch ${branch} → ${targetBranch} · head ${headSha}`;
+          : phase === "triage" || (!actualBranch && !run)
+            ? detail.detail || `Target branch · ${targetBranch}`
+            : `Branch ${branch} → ${targetBranch} · head ${headSha}`;
 
   const lapRows = (detail.executionSteps ?? [])
     .filter((step) => step.status !== "pending")
@@ -331,6 +332,15 @@ export function IssueInspector({
               : `${remainingAttempts} laps left after this one`,
         };
       case "triage":
+        if (needsClarification) {
+          return { tone: "warning" as DetailTone, text: "Blocked on operator clarification" };
+        }
+        if (draft) {
+          return {
+            tone: "accent" as DetailTone,
+            text: "Draft plan prepared · awaiting operator decision",
+          };
+        }
         return { tone: "muted" as DetailTone, text: "Not started · triage reads before code" };
       case "ready":
         return { tone: "muted" as DetailTone, text: `Queued · ${remainingAttempts} laps reserved` };
@@ -450,27 +460,57 @@ export function IssueInspector({
     parked: { list: "Preserved state", note: "Reason", useWorkers: false },
   };
   const phaseLabels = detailLabels[phase];
+  const refinedPlanBody =
+    draft?.latest_revision.plan && draft.latest_revision.plan.kind !== "clarification"
+      ? draft.latest_revision.plan.body
+      : null;
   const noteValue = phaseLabels.useWorkers
     ? `${metrics.provider} · ${metrics.model}`
     : phase === "merged"
       ? checkSummaryOf(detail)
       : phase === "triage"
-        ? (draft?.latest_revision.questions[0]?.question ?? riskLine)
+        ? (draft?.latest_revision.questions[0]?.question ?? "")
         : riskLine;
   const listValue =
-    phase === "triage" && draft
-      ? draft.latest_revision.plan.kind === "clarification"
-        ? detail.detail
-        : draft.latest_revision.plan.body
-      : phase === "approval" && checks.length > 0
-        ? checks
-            .slice(0, 3)
-            .map((check) => `• ${check.name} — ${check.result.toLowerCase()}`)
-            .join("\n")
-        : lapRows.map((row) => `• ${row.label} — ${row.state}`).join("\n");
+    phase === "triage"
+      ? draft
+        ? draft.latest_revision.plan.kind === "clarification"
+          ? draft.latest_revision.plan.reason || detail.detail
+          : draft.latest_revision.plan.body
+        : ""
+      : phase === "ready"
+        ? refinedPlanBody || detail.detail || ""
+        : phase === "approval" && checks.length > 0
+          ? checks
+              .slice(0, 3)
+              .map((check) => `• ${check.name} — ${check.result.toLowerCase()}`)
+              .join("\n")
+          : lapRows.map((row) => `• ${row.label} — ${row.state}`).join("\n");
 
   const PhaseIcon = PHASE_ICON[phase];
   const phaseTone = PHASE_TONE[phase];
+
+  const showNoteValue = Boolean(
+    noteValue &&
+    noteValue !== commitLine &&
+    noteValue !== listValue &&
+    !(phase === "triage" && questions.length > 0),
+  );
+  const showListValue = Boolean(listValue && listValue !== commitLine);
+  const showRationale = Boolean(
+    rationale &&
+    rationale !== commitLine &&
+    (!showListValue || rationale !== listValue) &&
+    (!showNoteValue || rationale !== noteValue),
+  );
+
+  const hasRecordedCost = detail.usage.available && metrics.costFormatted !== "Cost not recorded";
+  const hasExecutionMeta = Boolean(
+    run || detail.usage.available || draft?.latest_revision.planner_metadata?.model,
+  );
+  const showEvidenceSection = checks.length > 0 || (phase !== "triage" && phase !== "ready");
+  const showRefinedTicketDisclosure =
+    phase !== "triage" || Boolean(refinedPlanBody) || criteria.length > 0;
 
   const triageActions = (
     <>
@@ -511,45 +551,49 @@ export function IssueInspector({
 
   return (
     <div data-testid="issue-inspector-pane" className="flex flex-col">
-      <header className="sticky top-0 z-10 flex flex-col gap-3 border-b border-[var(--border-subtle)] bg-[var(--elevation-stage)] px-[22px] py-4">
-        <div className="flex items-center gap-[10px]">
-          <span className="min-w-0 flex-1 truncate font-mono text-[11px] leading-[1.5] text-[var(--text-muted)]">
-            #{issueNum}
-            <span className="px-1.5">/</span>
-            {branch}
-          </span>
-          {isCompact ? (
-            onExpand && (
+      <header className="sticky top-0 z-10 flex flex-col gap-3 border-b border-[var(--border-subtle)] bg-[var(--elevation-stage)] px-4 py-4 sm:px-[22px]">
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 font-mono text-xs leading-4 text-[var(--text-muted)]">
+            <span className="shrink-0 tabular-nums">#{issueNum}</span>
+            <span aria-hidden="true" className="shrink-0 text-[var(--border)]">
+              ·
+            </span>
+            <span className="min-w-0 truncate">{repoName}</span>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {isCompact ? (
+              onExpand && (
+                <DetailButton
+                  label="Expand"
+                  icon={Maximize2}
+                  onClick={onExpand}
+                  ariaLabel="Expand to full workspace"
+                />
+              )
+            ) : (
               <DetailButton
-                label="Expand"
-                icon={Maximize2}
-                onClick={onExpand}
-                ariaLabel="Expand to full workspace"
+                label="Collapse"
+                icon={Minimize2}
+                onClick={onCollapse ?? onClose}
+                ariaLabel="Back to Kanban"
               />
-            )
-          ) : (
-            <DetailButton
-              label="Collapse"
-              icon={Minimize2}
-              onClick={onCollapse ?? onClose}
-              ariaLabel="Back to Kanban"
-            />
-          )}
-          {onClose && (
-            <DetailButton
-              label="Close"
-              icon={X}
-              onClick={onClose}
-              ariaLabel={isCompact ? "Close side-sheet" : "Close workspace"}
-            />
-          )}
+            )}
+            {onClose && (
+              <DetailButton
+                label="Close"
+                icon={X}
+                onClick={onClose}
+                ariaLabel={isCompact ? "Close side-sheet" : "Close workspace"}
+              />
+            )}
+          </div>
         </div>
 
-        <h1 className="text-[20px] leading-[1.5] font-medium tracking-[-0.4px] text-foreground">
+        <h1 className="text-[18px] leading-[1.35] font-medium tracking-[-0.35px] text-foreground sm:text-[20px]">
           {detail.contract.title}
         </h1>
 
-        <div className="flex items-center gap-[10px]">
+        <div className="flex flex-wrap items-center gap-2">
           <StatusPill label={detail.stageLabel} tone={phaseTone} soft />
           <StatusPill
             label={
@@ -563,38 +607,73 @@ export function IssueInspector({
             }
             tone={needsClarification ? "warning" : phaseTone === "muted" ? "muted" : phaseTone}
           />
-          <span className="inline-flex min-w-0 max-w-[260px] shrink items-center gap-[7px] overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface)] px-[11px] py-[7px]">
-            <GitBranch aria-hidden="true" className="size-3.5 shrink-0 text-[var(--accent)]" />
-            <span className="truncate text-xs leading-[1.5] text-[var(--accent)]">
-              {pr ? `PR #${pr.number} · ${pr.state}` : `Branch · ${branch}`}
-            </span>
-          </span>
-          <span className="flex-1" />
+          {hasBranch &&
+            (pr?.url ? (
+              <a
+                href={pr.url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex h-7 max-w-[240px] min-w-0 shrink items-center gap-1.5 overflow-hidden rounded-[7px] border border-[var(--border)] bg-[var(--surface)] px-2.5 text-xs text-[var(--accent)] transition-[color,background-color,border-color,scale] duration-150 ease-out hover:border-[var(--elevation-edge)] hover:bg-[var(--white-04)] active:scale-[0.96] motion-reduce:transform-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
+              >
+                <GitPullRequest aria-hidden="true" className="size-3.5 shrink-0" />
+                <span className="truncate leading-[1.5]">{`PR #${pr.number} · ${pr.state}`}</span>
+                <ArrowUpRight aria-hidden="true" className="size-3 shrink-0 opacity-75" />
+              </a>
+            ) : (
+              <span className="inline-flex h-7 max-w-[240px] min-w-0 shrink items-center gap-1.5 overflow-hidden rounded-[7px] border border-[var(--border)] bg-[var(--surface)] px-2.5 text-xs">
+                {pr ? (
+                  <GitPullRequest
+                    aria-hidden="true"
+                    className="size-3.5 shrink-0 text-[var(--accent)]"
+                  />
+                ) : (
+                  <GitBranch
+                    aria-hidden="true"
+                    className="size-3.5 shrink-0 text-[var(--accent)]"
+                  />
+                )}
+                <span className="truncate leading-[1.5] text-[var(--accent)]">
+                  {pr ? `PR #${pr.number} · ${pr.state}` : `Branch · ${branch}`}
+                </span>
+              </span>
+            ))}
           <a
             href={detail.contract.sourceUrl}
             target="_blank"
             rel="noreferrer"
             aria-label="Open source issue on GitHub"
-            className="inline-flex shrink-0 items-center gap-[7px] rounded-[7px] border border-[var(--border)] bg-[var(--surface)] px-[11px] py-[7px] transition-colors hover:bg-[var(--white-04)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
+            className="ml-auto inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[7px] border border-[var(--border)] bg-[var(--surface)] px-2.5 text-xs text-foreground transition-[color,background-color,border-color,scale] duration-150 ease-out hover:border-[var(--elevation-edge)] hover:bg-[var(--white-04)] active:scale-[0.96] motion-reduce:transform-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
           >
             <GithubMark className="size-3.5 shrink-0 text-[var(--text-secondary)]" />
-            <span className="text-xs leading-[1.5] text-foreground">Github</span>
+            <span className="leading-[1.5]">GitHub</span>
           </a>
-          <DetailButtonShell label="More" icon={Ellipsis} />
         </div>
 
-        <div className="flex items-center gap-[10px]">
-          <span className="min-w-0 flex-1 truncate text-[11px] leading-[1.5] text-[var(--text-secondary)]">
-            {repoName}
-          </span>
-          <span className="shrink-0 text-[11px] leading-[1.5] text-[var(--text-secondary)]">
-            {metrics.provider} · {metrics.costFormatted ?? "cost not recorded"}
-          </span>
-        </div>
+        {hasExecutionMeta && (
+          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-[1.5] text-[var(--text-secondary)]">
+            <span>{metrics.provider}</span>
+            {metrics.model && metrics.model !== "Not recorded" && (
+              <>
+                <span aria-hidden="true" className="text-[var(--text-muted)]">
+                  ·
+                </span>
+                <span>{metrics.model}</span>
+              </>
+            )}
+            {hasRecordedCost && (
+              <>
+                <span aria-hidden="true" className="text-[var(--text-muted)]">
+                  ·
+                </span>
+                <span className="tabular-nums">{metrics.costFormatted}</span>
+              </>
+            )}
+          </div>
+        )}
       </header>
 
       {(actionError || notice) && (
-        <div className="px-[22px] pt-4">
+        <div className="px-4 pt-4 sm:px-[22px]">
           {actionError ? (
             <Alert variant="destructive" className="py-2.5">
               <AlertTitle className="text-xs font-semibold">Action failed</AlertTitle>
@@ -613,7 +692,7 @@ export function IssueInspector({
         </div>
       )}
 
-      <div className="flex flex-col px-[22px] pb-5">
+      <div className="flex flex-col px-4 pb-5 sm:px-[22px]">
         {detail.specProgress && (
           <section
             aria-label="Spec Coordination & Progress"
@@ -647,43 +726,81 @@ export function IssueInspector({
 
         <section
           aria-label={PHASE_HEADING[phase]}
-          className="flex flex-col gap-1.5 border-b border-[var(--border-subtle)] py-3.5"
+          className="flex flex-col gap-3 border-b border-[var(--border-subtle)] py-4"
         >
           <h2 className="text-[13px] leading-[1.5] font-medium text-foreground">
             {PHASE_HEADING[phase]}
           </h2>
 
-          <div className="flex items-center gap-[10px]">
-            <PhaseIcon
-              aria-hidden="true"
-              className={cn(
-                "size-[17px] shrink-0",
-                TONE_TEXT[phaseTone],
-                (phase === "implementing" || phase === "verifying" || phase === "retrying") &&
-                  "animate-spin motion-reduce:animate-none",
-              )}
-            />
-            <span className={cn("text-[15px] leading-[1.5] font-medium", TONE_TEXT[phaseTone])}>
-              {outcome}
-            </span>
-            <span className="flex-1" />
-            <span className="text-[11px] leading-[1.5] text-[var(--text-muted)]">
-              {duration || clockOf(run?.created_at) || "—"}
-            </span>
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-center gap-[10px]">
+              <PhaseIcon
+                aria-hidden="true"
+                className={cn(
+                  "size-[17px] shrink-0",
+                  TONE_TEXT[phaseTone],
+                  (phase === "implementing" || phase === "verifying" || phase === "retrying") &&
+                    "animate-spin motion-reduce:animate-none",
+                )}
+              />
+              <span className={cn("text-[15px] leading-[1.5] font-medium", TONE_TEXT[phaseTone])}>
+                {outcome}
+              </span>
+              <span className="flex-1" />
+              <span className="text-[11px] leading-[1.5] text-[var(--text-muted)] tabular-nums">
+                {duration || clockOf(run?.created_at) || "—"}
+              </span>
+            </div>
+
+            <BodyText>{commitLine}</BodyText>
+            {showRationale && <BodyText>{rationale}</BodyText>}
           </div>
 
-          <BodyText>{commitLine}</BodyText>
-          {rationale !== commitLine && <BodyText>{rationale}</BodyText>}
-
-          {listValue.length > 0 && (
-            <>
+          {showListValue && (
+            <div className="flex flex-col gap-1.5 rounded-[8px] border border-[var(--border-subtle)] bg-[var(--surface)]/45 p-3">
               <FieldLabel>{phaseLabels.list}</FieldLabel>
               <BodyText>{listValue}</BodyText>
-            </>
+            </div>
           )}
 
-          <FieldLabel>{phaseLabels.note}</FieldLabel>
-          <BodyText>{noteValue}</BodyText>
+          {showNoteValue && (
+            <div className="flex flex-col gap-1.5 rounded-[8px] border border-[var(--border-subtle)] bg-[var(--surface)]/45 p-3">
+              <FieldLabel>{phaseLabels.note}</FieldLabel>
+              <BodyText>{noteValue}</BodyText>
+            </div>
+          )}
+
+          {phase === "triage" && (
+            <div className="flex flex-col gap-1.5 rounded-[8px] border border-[var(--border-subtle)] bg-[var(--surface)]/45 p-3">
+              <FieldLabel>Original issue</FieldLabel>
+              <BodyText>
+                {detail.contract.body?.trim()
+                  ? detail.contract.body
+                  : "No issue description provided in the source GitHub issue."}
+              </BodyText>
+            </div>
+          )}
+
+          {(phase === "triage" || phase === "ready") && criteria.length > 0 && (
+            <div className="flex flex-col gap-1.5 rounded-[8px] border border-[var(--border-subtle)] bg-[var(--surface)]/45 p-3">
+              <FieldLabel>Acceptance criteria</FieldLabel>
+              <ul className="flex flex-col gap-1.5">
+                {criteria.map((item) => (
+                  <li key={item.id} className="flex items-start gap-2">
+                    <CircleDashed
+                      aria-hidden="true"
+                      className="mt-0.5 size-3.5 shrink-0 text-[var(--text-muted)]"
+                    />
+                    <span className="text-xs leading-[1.5] text-[var(--text-secondary)]">
+                      <span className="font-mono text-[11px] text-foreground">{item.id}</span>
+                      {" · "}
+                      {item.text}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           <div className="flex items-center gap-[10px]">
             <Target
@@ -694,7 +811,7 @@ export function IssueInspector({
           </div>
 
           {phase === "triage" && draft?.latest_revision.questions.length ? (
-            <div className="mt-1 flex flex-col gap-2">
+            <div className="flex flex-col gap-2 rounded-[8px] border border-[var(--border-subtle)] bg-[var(--surface)]/45 p-3">
               {draft.latest_revision.questions.map((question) => (
                 <div key={question.id} className="flex flex-col gap-1">
                   <span className="text-xs leading-[1.5] text-foreground">{question.question}</span>
@@ -713,292 +830,351 @@ export function IssueInspector({
             </div>
           ) : null}
 
-          <div className="mt-1.5 flex flex-wrap items-center gap-[10px]">
-            {phase === "triage" && (
-              <div className="mt-1.5 flex flex-wrap items-center gap-[10px]">{triageActions}</div>
-            )}
+          {((phase === "triage" && Boolean(draft)) || phase !== "triage") && (
+            <div className="flex flex-wrap items-center gap-2">
+              {phase === "triage" && triageActions}
 
-            {(phase === "ready" || phase === "implementing" || phase === "verifying") && (
-              <>
-                <DetailSecondaryButton
-                  label="Pause"
-                  onClick={() => handleControl("hold")}
-                  disabled={busy !== null || !runId}
-                />
-                <DetailSecondaryButton
-                  label="Extend a lap"
-                  onClick={handleGrant}
-                  disabled={busy !== null || !runId}
-                />
-                <DetailSecondaryButton
-                  label="Stop for good"
-                  onClick={() => handleControl("stop")}
-                  disabled={busy !== null || !runId}
-                />
-              </>
-            )}
+              {(phase === "ready" || phase === "implementing" || phase === "verifying") && (
+                <>
+                  <DetailSecondaryButton
+                    label="Pause"
+                    onClick={() => handleControl("hold")}
+                    disabled={busy !== null || !runId}
+                  />
+                  <DetailSecondaryButton
+                    label="Extend a lap"
+                    onClick={handleGrant}
+                    disabled={busy !== null || !runId}
+                  />
+                  <DetailSecondaryButton
+                    label="Stop for good"
+                    onClick={() => handleControl("stop")}
+                    disabled={busy !== null || !runId}
+                  />
+                </>
+              )}
 
-            {phase === "parked" && (
-              <>
-                <DetailPrimaryButton
-                  label="Resume"
-                  icon={CircleCheck}
-                  onClick={handleResumeOrRetry}
+              {phase === "parked" && (
+                <>
+                  <DetailPrimaryButton
+                    label="Resume"
+                    icon={CircleCheck}
+                    onClick={handleResumeOrRetry}
+                    disabled={busy !== null}
+                  />
+                  <DetailSecondaryButton
+                    label="Stop for good"
+                    onClick={() => handleControl("stop")}
+                    disabled={busy !== null || !runId}
+                  />
+                </>
+              )}
+
+              {phase === "retrying" && (
+                <>
+                  <DetailPrimaryButton
+                    label="Grant 2 more laps"
+                    icon={Clock}
+                    onClick={handleGrant}
+                    disabled={busy !== null || !runId}
+                  />
+                  <DetailSecondaryButton
+                    label="Stop for good"
+                    onClick={() => handleControl("stop")}
+                    disabled={busy !== null || !runId}
+                  />
+                </>
+              )}
+
+              {phase === "approval" && (
+                <>
+                  <DetailPrimaryButton
+                    label="Approve & merge"
+                    icon={CircleCheck}
+                    onClick={handleVerify}
+                    disabled={busy !== null}
+                  />
+                  <DetailSecondaryButton
+                    label="Request changes"
+                    onClick={handleResumeOrRetry}
+                    disabled={busy !== null}
+                  />
+                </>
+              )}
+
+              {phase === "blocked" && (
+                <>
+                  <DetailPrimaryButton
+                    label="Grant access"
+                    icon={CircleCheck}
+                    onClick={handleResumeOrRetry}
+                    disabled={busy !== null}
+                  />
+                  <DetailSecondaryButton
+                    label="Keep blocked"
+                    onClick={() => handleControl("hold")}
+                    disabled={busy !== null || !runId}
+                  />
+                </>
+              )}
+
+              {phase === "failed" && (
+                <>
+                  <DetailPrimaryButton
+                    label="Retry run"
+                    icon={CircleCheck}
+                    onClick={handleResumeOrRetry}
+                    disabled={busy !== null}
+                  />
+                  <DetailSecondaryButton
+                    label="Take over"
+                    onClick={() => handleControl("takeover")}
+                    disabled={busy !== null || !runId}
+                  />
+                  <DetailSecondaryButton
+                    label="Stop for good"
+                    onClick={() => handleControl("stop")}
+                    disabled={busy !== null || !runId}
+                  />
+                </>
+              )}
+
+              {phase === "merged" && (
+                <DetailSecondaryButton
+                  label="Open full history"
+                  onClick={onRefresh}
                   disabled={busy !== null}
                 />
-                <DetailSecondaryButton
-                  label="Stop for good"
-                  onClick={() => handleControl("stop")}
-                  disabled={busy !== null || !runId}
-                />
-              </>
-            )}
+              )}
 
-            {phase === "retrying" && (
-              <>
-                <DetailPrimaryButton
-                  label="Grant 2 more laps"
-                  icon={Clock}
-                  onClick={handleGrant}
-                  disabled={busy !== null || !runId}
-                />
-                <DetailSecondaryButton
-                  label="Stop for good"
-                  onClick={() => handleControl("stop")}
-                  disabled={busy !== null || !runId}
-                />
-              </>
-            )}
-
-            {phase === "approval" && (
-              <>
-                <DetailPrimaryButton
-                  label="Approve & merge"
-                  icon={CircleCheck}
-                  onClick={handleVerify}
-                  disabled={busy !== null}
-                />
-                <DetailSecondaryButton
-                  label="Request changes"
-                  onClick={handleResumeOrRetry}
-                  disabled={busy !== null}
-                />
-              </>
-            )}
-
-            {phase === "blocked" && (
-              <>
-                <DetailPrimaryButton
-                  label="Grant access"
-                  icon={CircleCheck}
-                  onClick={handleResumeOrRetry}
-                  disabled={busy !== null}
-                />
-                <DetailSecondaryButton
-                  label="Keep blocked"
-                  onClick={() => handleControl("hold")}
-                  disabled={busy !== null || !runId}
-                />
-              </>
-            )}
-
-            {phase === "failed" && (
-              <>
-                <DetailPrimaryButton
-                  label="Retry run"
-                  icon={CircleCheck}
-                  onClick={handleResumeOrRetry}
-                  disabled={busy !== null}
-                />
-                <DetailSecondaryButton
-                  label="Take over"
-                  onClick={() => handleControl("takeover")}
-                  disabled={busy !== null || !runId}
-                />
-                <DetailSecondaryButton
-                  label="Stop for good"
-                  onClick={() => handleControl("stop")}
-                  disabled={busy !== null || !runId}
-                />
-              </>
-            )}
-
-            {phase === "merged" && (
-              <DetailSecondaryButton
-                label="Open full history"
-                onClick={onRefresh}
-                disabled={busy !== null}
-              />
-            )}
-
-            {busy && <Spinner className="size-3.5 text-[var(--text-secondary)]" />}
-          </div>
+              {busy && <Spinner className="size-3.5 text-[var(--text-secondary)]" />}
+            </div>
+          )}
         </section>
 
-        <section
-          aria-label="Evidence"
-          className="flex flex-col gap-[5px] border-b border-[var(--border-subtle)] py-3.5"
-        >
-          <h2 className="text-[13px] leading-[1.5] font-medium text-foreground">Evidence</h2>
+        {showEvidenceSection && (
+          <section
+            aria-label="Evidence"
+            className="flex flex-col gap-[5px] border-b border-[var(--border-subtle)] py-3.5"
+          >
+            <h2 className="text-[13px] leading-[1.5] font-medium text-foreground">Evidence</h2>
 
-          <div className="flex items-center gap-[10px]">
-            {checks.length > 0 && checks.every((check) => check.result === "PASS") ? (
-              <CircleCheck aria-hidden="true" className="size-4 shrink-0 text-[var(--success)]" />
-            ) : (
-              <CircleDashed
-                aria-hidden="true"
-                className="size-4 shrink-0 text-[var(--text-muted)]"
-              />
-            )}
-            <span className="text-[13px] leading-[1.5] text-[var(--text-secondary)]">
-              {checkSummaryOf(detail)}
-            </span>
-            <span className="flex-1" />
-            <Mono>{checkRevisionOf(detail)}</Mono>
-          </div>
-
-          {(checks.length > 0 ? checks : []).map((check) => (
-            <div key={check.id} className="flex h-[29px] items-center gap-[10px]">
-              {check.result === "PASS" ? (
-                <CircleCheck
-                  aria-hidden="true"
-                  className="size-3.5 shrink-0 text-[var(--success)]"
-                />
-              ) : check.result === "FAIL" ? (
-                <CircleX aria-hidden="true" className="size-3.5 shrink-0 text-[var(--error)]" />
-              ) : check.result === "BLOCKED" ? (
-                <CircleAlert
-                  aria-hidden="true"
-                  className="size-3.5 shrink-0 text-[var(--warning)]"
-                />
+            <div className="flex items-center gap-[10px]">
+              {checks.length > 0 && checks.every((check) => check.result === "PASS") ? (
+                <CircleCheck aria-hidden="true" className="size-4 shrink-0 text-[var(--success)]" />
               ) : (
                 <CircleDashed
                   aria-hidden="true"
-                  className="size-3.5 shrink-0 text-[var(--text-muted)]"
+                  className="size-4 shrink-0 text-[var(--text-muted)]"
                 />
               )}
-              <span className="text-xs leading-[1.5] text-foreground">{check.name}</span>
-              <span className="font-mono text-[11px] leading-[1.5] text-[var(--text-muted)]">
-                {check.command}
+              <span className="text-[13px] leading-[1.5] text-[var(--text-secondary)]">
+                {checkSummaryOf(detail)}
               </span>
               <span className="flex-1" />
-              <span className="text-[11px] leading-[1.5] text-[var(--text-muted)]">
-                {check.result === "PASS"
-                  ? check.durationMs != null
-                    ? `passed · ${Math.round(check.durationMs / 1000)}s`
-                    : "passed"
-                  : check.result === "FAIL"
-                    ? "failed"
-                    : check.result === "BLOCKED"
-                      ? "blocked"
-                      : "not run"}
-              </span>
-              <ChevronRight
-                aria-hidden="true"
-                className="size-[13px] shrink-0 text-[var(--text-secondary)]"
-              />
+              <Mono>{checkRevisionOf(detail)}</Mono>
             </div>
-          ))}
 
-          {checks.length === 0 && (
-            <p className="pt-1 text-[11px] leading-[1.5] text-[var(--text-muted)]">
-              No gate has reported on this candidate yet.
-            </p>
-          )}
+            {(checks.length > 0 ? checks : []).map((check) => (
+              <div key={check.id} className="flex min-h-[29px] items-center gap-2.5 py-1">
+                {check.result === "PASS" ? (
+                  <CircleCheck
+                    aria-hidden="true"
+                    className="size-3.5 shrink-0 text-[var(--success)]"
+                  />
+                ) : check.result === "FAIL" ? (
+                  <CircleX aria-hidden="true" className="size-3.5 shrink-0 text-[var(--error)]" />
+                ) : check.result === "BLOCKED" ? (
+                  <CircleAlert
+                    aria-hidden="true"
+                    className="size-3.5 shrink-0 text-[var(--warning)]"
+                  />
+                ) : (
+                  <CircleDashed
+                    aria-hidden="true"
+                    className="size-3.5 shrink-0 text-[var(--text-muted)]"
+                  />
+                )}
+                <div className="flex min-w-0 flex-1 items-baseline gap-2">
+                  <span className="shrink-0 text-xs leading-[1.5] text-foreground">
+                    {check.name}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-[11px] leading-[1.5] text-[var(--text-muted)]">
+                    {check.command}
+                  </span>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  {check.detail && (
+                    <span className="max-w-[140px] truncate text-[11px] leading-[1.5] text-[var(--text-secondary)]">
+                      {check.detail}
+                    </span>
+                  )}
+                  <span className="text-[11px] leading-[1.5] text-[var(--text-muted)] tabular-nums">
+                    {check.result === "PASS"
+                      ? check.durationMs != null
+                        ? `passed · ${Math.round(check.durationMs / 1000)}s`
+                        : "passed"
+                      : check.result === "FAIL"
+                        ? "failed"
+                        : check.result === "BLOCKED"
+                          ? "blocked"
+                          : "not run"}
+                  </span>
+                </div>
+              </div>
+            ))}
 
-          <div className="pt-2">
-            <ComparisonTable
-              title={`Verified behavior · ${detail.contract.labels[0] ?? "candidate"}`}
-              rows={checks.slice(0, 3).map((check) => ({
-                label: check.criterionKey ?? check.name,
-                before: "Not run",
-                after:
-                  check.result === "PASS"
-                    ? (check.detail ?? "passed")
-                    : (check.detail ?? check.result.toLowerCase()),
-              }))}
-            />
-          </div>
-        </section>
+            {checks.length === 0 && (
+              <p className="pt-1 text-[11px] leading-[1.5] text-[var(--text-muted)]">
+                No gate has reported on this candidate yet.
+              </p>
+            )}
 
-        {phase === "blocked" && (
-          <section
-            aria-label="Unblock"
-            className="flex flex-col gap-[10px] border-b border-[var(--border-subtle)] py-3.5"
-          >
-            <h2 className="text-[13px] leading-[1.5] font-medium text-foreground">Unblock</h2>
-            <BodyText>
-              {detail.detail ||
-                "Resolve the blocking condition, then resume. The branch, lap work and spend are preserved."}
-            </BodyText>
-            <div className="flex flex-wrap items-center gap-[10px]">
-              <DetailPrimaryButton
-                label="Grant access"
-                icon={CircleCheck}
-                onClick={handleResumeOrRetry}
-                disabled={busy !== null}
-              />
-              <DetailSecondaryButton
-                label="Keep blocked"
-                onClick={() => handleControl("hold")}
-                disabled={busy !== null || !runId}
-              />
-            </div>
-          </section>
-        )}
-
-        {phase === "blocked" && (
-          <section
-            aria-label="Job context"
-            className="flex flex-col gap-[10px] border-b border-[var(--border-subtle)] py-3.5"
-          >
-            <h2 className="text-[13px] leading-[1.5] font-medium text-foreground">Job context</h2>
-            <KeyValueRow label="Repository" value={repoName} />
-            <KeyValueRow label="Branch" value={branch} />
-            <KeyValueRow label="Laps used" value={`${consumedAttempts} of ${allowedAttempts}`} />
-            <KeyValueRow label="Spend so far" value={metrics.costFormatted ?? "Not recorded"} />
+            {checks.length > 0 && (
+              <div className="pt-2">
+                <ComparisonTable
+                  title={`Verified behavior · ${detail.contract.labels[0] ?? "candidate"}`}
+                  rows={checks.slice(0, 3).map((check) => ({
+                    label: check.criterionKey ?? check.name,
+                    before: check.kind.toUpperCase(),
+                    after:
+                      check.result === "PASS"
+                        ? "Passed"
+                        : check.result === "FAIL"
+                          ? (check.detail ?? "Failed")
+                          : check.result === "BLOCKED"
+                            ? (check.detail ?? "Blocked")
+                            : "Pending",
+                  }))}
+                />
+              </div>
+            )}
           </section>
         )}
 
         <div className="flex flex-col">
-          <DisclosureRow
-            label="Refined ticket & original issue"
-            summary={`${criteria.length} acceptance criteria`}
-          />
+          {showRefinedTicketDisclosure && (
+            <DisclosureRow
+              label="Refined ticket & original issue"
+              summary={
+                criteria.length > 0
+                  ? `${criteria.length} acceptance criteria`
+                  : refinedPlanBody
+                    ? "Refined plan"
+                    : "Original issue"
+              }
+            >
+              {refinedPlanBody && (
+                <div className="flex flex-col gap-1.5">
+                  <FieldLabel>Refined plan</FieldLabel>
+                  <div className="rounded-[8px] border border-[var(--border-subtle)] bg-[var(--surface)]/45 p-3 text-xs leading-[1.5] whitespace-pre-wrap text-[var(--text-secondary)]">
+                    {refinedPlanBody}
+                  </div>
+                </div>
+              )}
+
+              {criteria.length > 0 && (
+                <div className="flex flex-col gap-1.5">
+                  <FieldLabel>Acceptance criteria</FieldLabel>
+                  <ul className="flex flex-col gap-1.5">
+                    {criteria.map((item) => {
+                      const met = checks.some(
+                        (check) => check.criterionKey === item.id && check.result === "PASS",
+                      );
+                      return (
+                        <li key={item.id} className="flex items-start gap-2">
+                          {met ? (
+                            <CircleCheck
+                              aria-hidden="true"
+                              className="mt-0.5 size-3.5 shrink-0 text-[var(--success)]"
+                            />
+                          ) : (
+                            <CircleDashed
+                              aria-hidden="true"
+                              className="mt-0.5 size-3.5 shrink-0 text-[var(--text-muted)]"
+                            />
+                          )}
+                          <span className="text-xs leading-[1.5] text-[var(--text-secondary)]">
+                            <span className="font-mono text-[11px] text-foreground">{item.id}</span>
+                            {" · "}
+                            {item.text}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+
+              {phase !== "triage" && detail.contract.body && (
+                <div className="flex flex-col gap-1.5">
+                  <FieldLabel>Original issue</FieldLabel>
+                  <div className="rounded-[8px] border border-[var(--border-subtle)] bg-[var(--surface)]/45 p-3 text-xs leading-[1.5] whitespace-pre-wrap text-[var(--text-secondary)]">
+                    {detail.contract.body}
+                  </div>
+                </div>
+              )}
+            </DisclosureRow>
+          )}
+
           <DisclosureRow
             label="Audit log"
-            summary={
-              detail.precedence[0]
-                ? `${detail.precedence[0]} · ${detail.stageLabel}`
-                : detail.stageLabel
-            }
+            summary={`${detail.precedence[0] ?? "imported"} · ${detail.runs.length} ${detail.runs.length === 1 ? "run" : "runs"} · rev #${detail.contract.revisionNumber}`}
             divided={false}
-          />
+          >
+            {detail.precedence.length > 0 && (
+              <div className="flex flex-col gap-1.5">
+                <FieldLabel>Precedence stack</FieldLabel>
+                <div className="flex flex-wrap gap-1.5">
+                  {detail.precedence.map((entry, index) => (
+                    <span
+                      key={`${entry}-${index}`}
+                      className="inline-flex h-6 items-center rounded-[6px] border border-[var(--border-subtle)] bg-[var(--surface)] px-2 font-mono text-[11px] text-[var(--text-secondary)]"
+                    >
+                      {entry}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-col gap-1.5">
+              <FieldLabel>Runs</FieldLabel>
+              {detail.runs.length > 0 ? (
+                <ul className="flex flex-col gap-1.5">
+                  {detail.runs.map((item) => (
+                    <li
+                      key={item.id}
+                      className="flex items-center justify-between gap-2 rounded-[8px] border border-[var(--border-subtle)] bg-[var(--surface)]/45 px-2.5 py-1.5 font-mono text-[11px] leading-[1.5]"
+                    >
+                      <span className="min-w-0 truncate text-foreground">
+                        lap {item.lap} · {item.role} · {item.state}
+                      </span>
+                      <span className="shrink-0 text-[var(--text-muted)]">{item.id}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <span className="text-xs leading-[1.5] text-[var(--text-muted)]">
+                  No runs recorded yet
+                </span>
+              )}
+            </div>
+
+            <div className="font-mono text-[11px] leading-[1.5] text-[var(--text-muted)]">
+              Contract hash: {detail.contract.contentHash.slice(0, 7)}
+            </div>
+          </DisclosureRow>
         </div>
 
         {detail.parent && (
           <button
             type="button"
             onClick={() => onSelectWork?.(detail.parent?.workId ?? "")}
-            className="mt-2 flex items-center gap-[10px] text-left text-[11px] leading-[1.5] text-[var(--text-secondary)] hover:underline"
+            className="mt-2 flex items-center gap-[10px] text-left text-[11px] leading-[1.5] text-[var(--text-secondary)] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
           >
             Part of #{detail.parent.issueNumber} · {detail.parent.title}
           </button>
-        )}
-
-        {pr && (
-          <a
-            href={pr.url ?? "#"}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-3 inline-flex items-center gap-[7px] self-start rounded-[7px] border border-[var(--border)] bg-[var(--surface)] px-[11px] py-[7px] text-xs leading-[1.5] text-foreground hover:bg-[var(--white-04)]"
-          >
-            <GitPullRequest
-              aria-hidden="true"
-              className="size-3.5 shrink-0 text-[var(--success)]"
-            />
-            <span>Pull request #{pr.number}</span>
-          </a>
         )}
       </div>
     </div>

@@ -43,13 +43,13 @@ export function AppSidebar({
   return (
     <Sidebar collapsible="icon" className="border-r border-[var(--border-subtle)]">
       <SidebarHeader className="flex-row items-center px-3 pt-5 pb-0">
-        <div className="flex h-9 w-full items-center gap-2.5 px-2 transition-transform duration-200 ease-linear group-data-[collapsible=icon]:-translate-x-[2.5px] group-data-[collapsible=icon]:pr-0">
+        <div className="flex h-9 w-full items-center gap-2.5 px-2 transition-transform duration-150 ease-out motion-reduce:transition-none group-data-[collapsible=icon]:-translate-x-[2.5px] group-data-[collapsible=icon]:pr-0">
           <img
             src="/brand/animus-emblem.webp"
             alt=""
             width={28}
             height={28}
-            className="size-7 shrink-0 rounded-[7px] object-cover"
+            className="size-7 shrink-0 rounded-[7px] object-cover outline outline-1 -outline-offset-1 outline-white/10"
           />
           <span className="truncate text-[22px] leading-[1.4] font-semibold tracking-[-0.7px] group-data-[collapsible=icon]:hidden">
             animus

@@ -611,4 +611,68 @@ describe("Expanded Issue Workspace (vDp5q)", () => {
     expect(workspace.querySelector('[data-testid="issue-inspector-scroll"]')).toBeTruthy();
     expect(workspace.querySelector('[data-testid="factory-rail-scroll"]')).toBeTruthy();
   });
+
+  test("IssueInspector: un-triaged issue displays honest outcome and original issue directly while omitting empty evidence and branch pills", async () => {
+    const rawTriageDetail = {
+      ...mockDetail,
+      lane: "triage",
+      stageLabel: "Needs triage",
+      detail: "Imported work is not part of an approved plan.",
+      plan: null,
+      planId: null,
+      draft: null,
+      latestRun: null,
+      runs: [],
+      evidence: null,
+      executionSteps: [],
+      realtimeLogs: [],
+      publication: null,
+      specProgress: null,
+      usage: {
+        available: false,
+        tokensIn: null,
+        tokensOut: null,
+        cacheReadTokens: null,
+        costMicros: null,
+        detail: "No token records stored for triage",
+      },
+    };
+
+    render(
+      <IssueExpandedWorkspace
+        workId="work-raw-triage"
+        projectId="proj-1"
+        onClose={() => {}}
+        factory={{
+          forProject: () => ({
+            workDetail: vi.fn().mockResolvedValue(rawTriageDetail as unknown as OperatorWorkDetail),
+          }),
+        }}
+      />,
+    );
+
+    // Honest outcome instead of repeating "Needs triage"
+    await screen.findByText("Awaiting triage evaluation");
+
+    // Original issue displayed directly in the main section
+    expect(screen.getByText("Original issue")).toBeTruthy();
+    expect(
+      screen.getByText(/Accented characters are not normalized during search matching/),
+    ).toBeTruthy();
+
+    // No fake branch or PR pill
+    expect(screen.queryByText(/Branch · issue-102/)).toBeNull();
+
+    // Evidence section omitted when no checks and in triage
+    expect(screen.queryByRole("region", { name: "Evidence" })).toBeNull();
+    expect(screen.queryByText("No checks ran")).toBeNull();
+
+    // Refined ticket disclosure omitted when 0 acceptance criteria and no draft
+    expect(screen.queryByText("Refined ticket & original issue")).toBeNull();
+
+    // GitHub link has proper casing
+    expect(screen.getByRole("link", { name: "Open source issue on GitHub" }).textContent).toContain(
+      "GitHub",
+    );
+  });
 });

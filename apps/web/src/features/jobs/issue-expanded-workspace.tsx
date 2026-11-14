@@ -32,12 +32,14 @@ export function IssueExpandedWorkspace({
   projectId,
   onClose,
   onCollapse,
+  onSelectWork,
   factory = client,
 }: {
   workId: string;
   projectId: string;
   onClose: () => void;
   onCollapse?: () => void;
+  onSelectWork?: (workId: string) => void;
   factory?: typeof client;
 }) {
   const [state, setState] = useState<LoadState>({ phase: "loading" });
@@ -106,18 +108,22 @@ export function IssueExpandedWorkspace({
   return (
     <div
       data-testid="expanded-issue-workspace"
-      className="flex min-h-0 flex-1 overflow-hidden rounded-[10px] border border-[var(--border-subtle)] bg-[var(--elevation-stage)]"
+      className="@container flex min-h-0 flex-1 overflow-hidden rounded-[10px] border border-[var(--border-subtle)] bg-[var(--elevation-stage)]"
     >
-      <div className="grid h-full min-h-0 w-full grid-cols-1 lg:grid-cols-2">
+      <div className="grid h-full min-h-0 w-full grid-cols-1 overflow-y-auto overscroll-contain @[680px]:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)] @[680px]:overflow-hidden">
         <section
           aria-label="Issue Inspector"
-          className="flex min-h-0 min-w-0 flex-col overflow-hidden"
+          className="flex min-h-0 min-w-0 flex-col @[680px]:overflow-hidden"
         >
-          <ScrollArea className="min-h-0 flex-1" data-testid="issue-inspector-scroll">
+          <ScrollArea
+            className="min-h-0 flex-1 overscroll-contain"
+            data-testid="issue-inspector-scroll"
+          >
             <IssueInspector
               detail={detail}
               projectId={projectId}
               onRefresh={load}
+              onSelectWork={onSelectWork}
               isCompact={false}
               onClose={onClose}
               onCollapse={onCollapse}
@@ -128,9 +134,12 @@ export function IssueExpandedWorkspace({
 
         <section
           aria-label="Factory Rail"
-          className="flex min-h-0 min-w-0 flex-col overflow-hidden border-t border-[var(--border-subtle)] lg:border-t-0 lg:border-l"
+          className="flex min-h-0 min-w-0 flex-col border-t border-[var(--border-subtle)] @[680px]:overflow-hidden @[680px]:border-t-0 @[680px]:border-l"
         >
-          <ScrollArea className="min-h-0 flex-1" data-testid="factory-rail-scroll">
+          <ScrollArea
+            className="min-h-0 flex-1 overscroll-contain"
+            data-testid="factory-rail-scroll"
+          >
             <FactoryRail detail={detail} metrics={metrics} />
           </ScrollArea>
         </section>

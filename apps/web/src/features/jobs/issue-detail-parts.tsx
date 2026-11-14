@@ -1,4 +1,4 @@
-import type { ComponentType, ReactNode } from "react";
+import { useState, type ComponentType, type ReactNode } from "react";
 import { ChevronRight, type LucideIcon } from "lucide-react";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
@@ -61,7 +61,7 @@ export function DetailButton({
         rel="noreferrer"
         aria-label={ariaLabel ?? label}
         className={cn(
-          "inline-flex h-8 shrink-0 items-center gap-[7px] rounded-[7px] border border-[var(--border)] bg-[var(--surface)] px-[11px] py-0 transition-colors hover:bg-[var(--white-04)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]",
+          "inline-flex h-7 shrink-0 items-center gap-[7px] rounded-[7px] border border-[var(--border)] bg-[var(--surface)] px-2.5 py-0 text-xs transition-[color,background-color,border-color,scale] duration-150 ease-out hover:bg-[var(--white-04)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)] active:scale-[0.96] motion-reduce:transform-none",
           className,
         )}
       >
@@ -76,7 +76,7 @@ export function DetailButton({
       onClick={onClick}
       aria-label={ariaLabel ?? label}
       className={cn(
-        "inline-flex h-8 shrink-0 items-center gap-[7px] rounded-[7px] border border-[var(--border)] bg-[var(--surface)] px-[11px] py-0 transition-colors hover:bg-[var(--white-04)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]",
+        "inline-flex h-7 shrink-0 items-center gap-[7px] rounded-[7px] border border-[var(--border)] bg-[var(--surface)] px-2.5 py-0 text-xs transition-[color,background-color,border-color,scale] duration-150 ease-out hover:bg-[var(--white-04)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)] enabled:active:scale-[0.96] motion-reduce:transform-none",
         className,
       )}
     >
@@ -96,7 +96,7 @@ export function DetailButtonShell({
   tone?: DetailTone;
 }) {
   return (
-    <span className="inline-flex h-8 shrink-0 items-center gap-[7px] rounded-[7px] border border-[var(--border)] bg-[var(--surface)] px-[11px] py-0">
+    <span className="inline-flex h-7 shrink-0 items-center gap-[7px] rounded-[7px] border border-[var(--border)] bg-[var(--surface)] px-2.5 py-0 text-xs">
       <Icon aria-hidden="true" className={cn("size-3.5 shrink-0", TONE_TEXT[tone])} />
       <span className="text-xs leading-[1.5] text-foreground">{label}</span>
     </span>
@@ -178,8 +178,13 @@ export function StatusPill({
             : "bg-[var(--white-04)]";
 
   return (
-    <span className={cn("inline-flex shrink-0 items-center rounded-[5px] px-2 py-[3px]", fill)}>
-      <span className={cn("text-[11px] leading-[1.5]", TONE_TEXT[tone])}>{label}</span>
+    <span
+      className={cn(
+        "inline-flex h-7 shrink-0 items-center gap-[5px] rounded-[7px] px-2.5 text-[11px] leading-[14px] font-medium whitespace-nowrap",
+        fill,
+      )}
+    >
+      <span className={TONE_TEXT[tone]}>{label}</span>
     </span>
   );
 }
@@ -235,26 +240,40 @@ export function DisclosureRow({
   label,
   summary,
   divided = true,
+  defaultOpen = false,
+  children,
 }: {
   label: string;
   summary?: string;
   divided?: boolean;
+  defaultOpen?: boolean;
+  children?: ReactNode;
 }) {
+  const [open, setOpen] = useState(defaultOpen);
+
   return (
-    <button
-      type="button"
-      className={cn(
-        "flex w-full items-center gap-[10px] py-[18px] text-left transition-colors hover:opacity-80 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]",
-        divided && "border-b border-[var(--border-subtle)]",
-      )}
-    >
-      <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-[var(--text-secondary)]" />
-      <span className="text-xs leading-[1.5] text-foreground">{label}</span>
-      <span className="flex-1" />
-      {summary && (
-        <span className="text-[11px] leading-[1.5] text-[var(--text-muted)]">{summary}</span>
-      )}
-    </button>
+    <div className={cn(divided && "border-b border-[var(--border-subtle)]")}>
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-[10px] py-[18px] text-left transition-[color,background-color] duration-150 ease-out hover:bg-[var(--white-04)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
+      >
+        <ChevronRight
+          aria-hidden="true"
+          className={cn(
+            "size-3.5 shrink-0 text-[var(--text-muted)] transition-transform duration-150 ease-out motion-reduce:transition-none",
+            open && "rotate-90",
+          )}
+        />
+        <span className="text-xs leading-[1.5] text-foreground">{label}</span>
+        <span className="flex-1" />
+        {summary && (
+          <span className="text-[11px] leading-[1.5] text-[var(--text-muted)]">{summary}</span>
+        )}
+      </button>
+      {open && children && <div className="flex flex-col gap-2.5 pt-0.5 pb-3.5">{children}</div>}
+    </div>
   );
 }
 
@@ -302,19 +321,19 @@ export function ComparisonTable({
       <span className="text-xs leading-[1.5] font-medium text-foreground">{title}</span>
       <div className="w-full overflow-hidden rounded-[6px] border border-[var(--border-subtle)]">
         <div className="flex h-[30px] w-full border-b border-[var(--border-subtle)] bg-[var(--white-04)]">
-          <div className="flex w-[112px] shrink-0 items-center border-r border-[var(--border-subtle)] px-3">
-            <span className="text-[11px] leading-[1.5] font-medium text-[var(--text-secondary)]">
-              Evidence
+          <div className="flex w-[112px] min-w-0 shrink-0 items-center border-r border-[var(--border-subtle)] px-3">
+            <span className="min-w-0 break-words text-[11px] leading-[1.5] font-medium text-[var(--text-secondary)]">
+              Check
             </span>
           </div>
-          <div className="flex flex-1 items-center border-r border-[var(--border-subtle)] px-3">
-            <span className="text-[11px] leading-[1.5] font-medium text-[var(--text-secondary)]">
-              Before
+          <div className="flex min-w-0 flex-1 items-center border-r border-[var(--border-subtle)] px-3">
+            <span className="min-w-0 break-words text-[11px] leading-[1.5] font-medium text-[var(--text-secondary)]">
+              Kind
             </span>
           </div>
-          <div className="flex flex-1 items-center border-r border-[var(--border-subtle)] px-3">
-            <span className="text-[11px] leading-[1.5] font-medium text-[var(--accent)]">
-              After
+          <div className="flex min-w-0 flex-1 items-center px-3">
+            <span className="min-w-0 break-words text-[11px] leading-[1.5] font-medium text-[var(--accent)]">
+              Result
             </span>
           </div>
         </div>
@@ -326,18 +345,20 @@ export function ComparisonTable({
               index < rows.length - 1 && "border-b border-[var(--border-subtle)]",
             )}
           >
-            <div className="flex w-[112px] shrink-0 items-center border-r border-[var(--border-subtle)] px-3 py-3">
-              <span className="text-[11px] leading-[1.5] text-[var(--text-secondary)]">
+            <div className="flex w-[112px] min-w-0 shrink-0 items-center border-r border-[var(--border-subtle)] px-3 py-3">
+              <span className="min-w-0 break-words text-[11px] leading-[1.5] text-[var(--text-secondary)]">
                 {row.label}
               </span>
             </div>
-            <div className="flex flex-1 items-center border-r border-[var(--border-subtle)] px-3 py-3">
-              <span className="text-xs leading-[1.5] text-[var(--text-secondary)]">
+            <div className="flex min-w-0 flex-1 items-center border-r border-[var(--border-subtle)] px-3 py-3">
+              <span className="min-w-0 break-words text-xs leading-[1.5] text-[var(--text-secondary)]">
                 {row.before}
               </span>
             </div>
-            <div className="flex flex-1 items-center border-r border-[var(--border-subtle)] px-3 py-3">
-              <span className="text-xs leading-[1.5] text-[var(--accent)]">{row.after}</span>
+            <div className="flex min-w-0 flex-1 items-center px-3 py-3">
+              <span className="min-w-0 break-words text-xs leading-[1.5] text-[var(--accent)]">
+                {row.after}
+              </span>
             </div>
           </div>
         ))}
