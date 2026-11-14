@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { JobsBoard } from "./jobs-board";
 import { JobsHeader } from "./jobs-header";
 import { IssueExpandedWorkspace } from "./issue-expanded-workspace";
@@ -6,7 +6,7 @@ import { CompactSideSheet } from "./compact-side-sheet";
 import { DispatchControl } from "@/features/dispatch/dispatch-control";
 import { BackupPanel } from "@/features/backup/backup-panel";
 import { AuthorityPanel } from "@/features/authority/authority-panel";
-import type { JobsBoardModel } from "./jobs-model";
+import { ALL_PROJECTS_ID, type JobsBoardModel } from "./jobs-model";
 import type { BackendState } from "./factory-status";
 import type { CardDensity } from "@/lib/preferences";
 import type { Project } from "@animus/contracts/operator";
@@ -40,6 +40,17 @@ export function JobsScreen({
   const [selectedWorkId, setSelectedWorkId] = useState<string | null>(null);
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
 
+  const selectedWorkProjectId = useMemo(() => {
+    if (selectedWorkId) {
+      for (const lane of board.lanes) {
+        const match = lane.cards.find((card) => card.workId === selectedWorkId);
+        if (match?.projectId) return match.projectId;
+      }
+    }
+    if (projectId && projectId !== ALL_PROJECTS_ID) return projectId;
+    return projects?.[0]?.id ?? "default";
+  }, [selectedWorkId, board.lanes, projectId, projects]);
+
   const handleCardClick = (workId: string) => {
     setSelectedWorkId(workId);
     setIsExpanded(false);
@@ -62,7 +73,7 @@ export function JobsScreen({
     selectedWorkId && !isExpanded ? (
       <CompactSideSheet
         workId={selectedWorkId}
-        projectId={projectId ?? "default"}
+        projectId={selectedWorkProjectId}
         onClose={handleClose}
         onExpand={handleExpand}
         onSelectWork={(workId) => setSelectedWorkId(workId)}
@@ -74,7 +85,7 @@ export function JobsScreen({
     selectedWorkId && isExpanded ? (
       <IssueExpandedWorkspace
         workId={selectedWorkId}
-        projectId={projectId ?? "default"}
+        projectId={selectedWorkProjectId}
         onClose={handleClose}
         onCollapse={handleCollapse}
         onSelectWork={(workId) => setSelectedWorkId(workId)}
@@ -90,6 +101,8 @@ export function JobsScreen({
         currentProjectId={projectId}
         onSelectProject={onSelectProject}
         onProjectAdded={() => onRefresh?.()}
+        onRefresh={onRefresh}
+        factory={factory}
       />
 
       {/* Screen-reader accessible container preserving operational controls & test contracts without cluttering canvas */}

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { ForgeComment, ForgeIssue } from "../registry/forge";
 
@@ -195,4 +195,75 @@ export function scanLocalAnimusIssues(checkoutPath: string): ForgeIssue[] {
   readMarkdownDir(specsDir, true);
 
   return results;
+}
+
+/**
+ * Persists a new local issue markdown contract under `.animus/issues/` for
+ * local-only projects (`repo_id === 0`) without requiring a GitHub forge.
+ */
+export function createLocalAnimusIssue(
+  checkoutPath: string,
+  params: {
+    title: string;
+    body: string;
+    labels?: string[];
+    existingNumbers?: number[];
+  },
+): ForgeIssue {
+  const existing = scanLocalAnimusIssues(checkoutPath);
+  const usedNumbers = new Set<number>([
+    ...existing.map((issue) => issue.number),
+    ...(params.existingNumbers ?? []),
+  ]);
+  let nextNumber = 1;
+  while (usedNumbers.has(nextNumber)) {
+    nextNumber += 1;
+  }
+
+  const issuesDir = join(checkoutPath, ".animus", "issues");
+  mkdirSync(issuesDir, { recursive: true });
+
+  const cleanTitle = params.title.replace(/[\r\n]+/g, " ").trim() || `Issue ${nextNumber}`;
+  const cleanBody = params.body.trim();
+  const cleanLabels = (params.labels ?? [])
+    .map((label) =>
+      label
+        .replace(/[\r\n,]/g, "")
+        .replace(/\[|\]/g, "")
+        .trim(),
+    )
+    .filter(Boolean);
+  const effectiveLabels = cleanLabels.length > 0 ? cleanLabels : ["ready-for-agent"];
+
+  const slug =
+    cleanTitle
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48) || "job";
+  const fileName = `${String(nextNumber).padStart(4, "0")}-${slug}.md`;
+  const filePath = join(issuesDir, fileName);
+
+  const frontmatter = [
+    "---",
+    `number: ${nextNumber}`,
+    "state: OPEN",
+    `labels: [${effectiveLabels.join(", ")}]`,
+    "---",
+  ].join("\n");
+
+  const content = cleanBody
+    ? `${frontmatter}\n\n# ${cleanTitle}\n\n${cleanBody}\n`
+    : `${frontmatter}\n\n# ${cleanTitle}\n`;
+
+  writeFileSync(filePath, content, "utf-8");
+
+  return {
+    number: nextNumber,
+    title: cleanTitle,
+    state: "OPEN",
+    body: cleanBody,
+    labels: effectiveLabels.map((name) => ({ name })),
+    comments: [],
+  };
 }

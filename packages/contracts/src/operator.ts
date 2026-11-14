@@ -1009,7 +1009,7 @@ export const intakePreviewResultSchema = z.object({
 export type IntakePreviewResult = z.infer<typeof intakePreviewResultSchema>;
 
 export const intakePublishSubmissionSchema = z.object({
-  title: z.string().min(1),
+  title: z.string().trim().min(1),
   body: z.string(),
   labels: z.array(z.string()).optional(),
 });
@@ -1529,6 +1529,27 @@ export const projectBrakeSubmissionSchema = z.object({
   actor: z.string().optional(),
 });
 export type ProjectBrakeSubmission = z.infer<typeof projectBrakeSubmissionSchema>;
+
+export const factoryEngineModeSchema = z.enum(["running", "paused", "stopped"]);
+export type FactoryEngineMode = z.infer<typeof factoryEngineModeSchema>;
+
+export const factoryEngineStateSchema = z.object({
+  mode: factoryEngineModeSchema,
+  global_launch_brake: z.boolean(),
+  schedule_pause: z.boolean(),
+  active_runs: z.number().int().nonnegative(),
+  stopped_runs: z.number().int().nonnegative().optional(),
+  failed_runs: z.number().int().nonnegative().optional(),
+  updated_at: z.string(),
+});
+export type FactoryEngineState = z.infer<typeof factoryEngineStateSchema>;
+
+export const factoryEngineSubmissionSchema = z.object({
+  mode: factoryEngineModeSchema,
+  reason: z.string().optional(),
+  actor: z.string().optional(),
+});
+export type FactoryEngineSubmission = z.infer<typeof factoryEngineSubmissionSchema>;
 
 export const backupSubmissionSchema = z.object({
   destinationPath: z.string().min(1),
