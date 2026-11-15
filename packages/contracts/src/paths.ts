@@ -824,13 +824,17 @@ export function checkWorkspaceBrakes(
 
   for (const dir of rootsToCheck) {
     const animusStop = join(dir, ".animus", "STOP");
-    if (!stopPath && existsSync(animusStop)) {
-      stopPath = animusStop;
+    const factoryStop = join(dir, ".factory", "STOP");
+    if (!stopPath) {
+      if (existsSync(animusStop)) stopPath = animusStop;
+      else if (existsSync(factoryStop)) stopPath = factoryStop;
     }
 
     const animusPause = join(dir, ".animus", "PAUSE");
-    if (!pausePath && existsSync(animusPause)) {
-      pausePath = animusPause;
+    const factoryPause = join(dir, ".factory", "PAUSE");
+    if (!pausePath) {
+      if (existsSync(animusPause)) pausePath = animusPause;
+      else if (existsSync(factoryPause)) pausePath = factoryPause;
     }
   }
 
@@ -900,8 +904,12 @@ export function mutateWorkspaceBrakes(
   }
   const stopPath = join(primaryAnimusDir, "STOP");
   const pausePath = join(primaryAnimusDir, "PAUSE");
+  const legacyStopPath = join(ws.primaryRoot, ".factory", "STOP");
+  const legacyPausePath = join(ws.primaryRoot, ".factory", "PAUSE");
   const localStopPath = join(ws.root, ".animus", "STOP");
   const localPausePath = join(ws.root, ".animus", "PAUSE");
+  const localLegacyStopPath = join(ws.root, ".factory", "STOP");
+  const localLegacyPausePath = join(ws.root, ".factory", "PAUSE");
 
   switch (action) {
     case "halt":
@@ -910,7 +918,7 @@ export function mutateWorkspaceBrakes(
       }
       break;
     case "unhalt":
-      for (const p of [stopPath, localStopPath]) {
+      for (const p of [stopPath, legacyStopPath, localStopPath, localLegacyStopPath]) {
         if (existsSync(p)) {
           try {
             unlinkSync(p);
@@ -924,7 +932,7 @@ export function mutateWorkspaceBrakes(
       }
       break;
     case "unpause":
-      for (const p of [pausePath, localPausePath]) {
+      for (const p of [pausePath, legacyPausePath, localPausePath, localLegacyPausePath]) {
         if (existsSync(p)) {
           try {
             unlinkSync(p);
@@ -1034,8 +1042,14 @@ function resolveRepoScheduleLayer(ws: ProjectWorkspace): ScheduleLayer | null {
   const fromRoot = readRepoSchedule(ws.root);
   if (fromRoot) return fromRoot;
 
+  const factorySchedule = parseScheduleJson(join(ws.root, ".factory/schedule.json"));
+  if (factorySchedule) return factorySchedule as ScheduleLayer;
+
   if (ws.primaryRoot !== ws.root) {
-    return readRepoSchedule(ws.primaryRoot);
+    return (
+      readRepoSchedule(ws.primaryRoot) ??
+      (parseScheduleJson(join(ws.primaryRoot, ".factory/schedule.json")) as ScheduleLayer | null)
+    );
   }
   return null;
 }
