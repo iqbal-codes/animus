@@ -5,7 +5,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { runAnimusLoop, runLocalLoop } from "./support/loop-harness";
 import * as animusLoopMod from "../../scripts/animus-loop";
-import * as localLoopMod from "../../scripts/local-loop";
 import type { LocalIssue, AgentTransport } from "../../scripts/animus-loop";
 
 function runCmd(cwd: string, ...args: string[]): string {
@@ -60,31 +59,22 @@ describe("Canonical Animus Loop Orchestrator & Facade Shim", () => {
     expect(runLocalLoop).toBe(runAnimusLoop);
   });
 
-  test("AC2: scripts/local-loop.ts transparently re-exports all animus-loop exports", () => {
-    const animusKeys = Object.keys(animusLoopMod).sort();
-    const localKeys = Object.keys(localLoopMod).sort();
-
-    // Verify all keys from animus-loop exist in local-loop facade
-    for (const key of animusKeys) {
-      expect(localKeys).toContain(key);
-      expect((localLoopMod as any)[key]).toBe((animusLoopMod as any)[key]);
-    }
-
-    // Verify critical named exports remain resolvable from local-loop
-    expect(typeof localLoopMod.runAnimusLoop).toBe("function");
-    expect(typeof localLoopMod.runLocalLoop).toBe("function");
-    expect(typeof localLoopMod.computeExternalBlastRadius).toBe("function");
-    expect(typeof localLoopMod.extractRequiredAcIds).toBe("function");
-    expect(typeof localLoopMod.annotateDiffWithLineNumbers).toBe("function");
-    expect(typeof localLoopMod.assembleRolePromptContext).toBe("function");
-    expect(typeof localLoopMod.validateIssue).toBe("function");
-    expect(typeof localLoopMod.inspectLocalLoop).toBe("function");
-    expect(typeof localLoopMod.findExistingWorktreeForBranch).toBe("function");
-    expect(typeof localLoopMod.acquireIssueLock).toBe("function");
-    expect(typeof localLoopMod.prepareLoopWorktree).toBe("function");
-    expect(typeof localLoopMod.assertCandidate).toBe("function");
-    expect(typeof localLoopMod.executeSubticketAutoMerge).toBe("function");
-    expect(typeof localLoopMod.executeTerminalReflection).toBe("function");
+  test("AC2: scripts/animus-loop.ts exports expected public loop symbols", () => {
+    // Verify critical named exports remain resolvable from animus-loop
+    expect(typeof animusLoopMod.runAnimusLoop).toBe("function");
+    expect(typeof animusLoopMod.runLocalLoop).toBe("function");
+    expect(typeof animusLoopMod.computeExternalBlastRadius).toBe("function");
+    expect(typeof animusLoopMod.extractRequiredAcIds).toBe("function");
+    expect(typeof animusLoopMod.annotateDiffWithLineNumbers).toBe("function");
+    expect(typeof animusLoopMod.assembleRolePromptContext).toBe("function");
+    expect(typeof animusLoopMod.validateIssue).toBe("function");
+    expect(typeof animusLoopMod.inspectLocalLoop).toBe("function");
+    expect(typeof animusLoopMod.findExistingWorktreeForBranch).toBe("function");
+    expect(typeof animusLoopMod.acquireIssueLock).toBe("function");
+    expect(typeof animusLoopMod.prepareLoopWorktree).toBe("function");
+    expect(typeof animusLoopMod.assertCandidate).toBe("function");
+    expect(typeof animusLoopMod.executeSubticketAutoMerge).toBe("function");
+    expect(typeof animusLoopMod.executeTerminalReflection).toBe("function");
   });
 
   test("AC4: internal stage-bag helpers are removed from public exports and barrels", async () => {
@@ -105,7 +95,6 @@ describe("Canonical Animus Loop Orchestrator & Facade Shim", () => {
 
     for (const helper of obsoleteStageHelpers) {
       expect((animusLoopMod as any)[helper]).toBeUndefined();
-      expect((localLoopMod as any)[helper]).toBeUndefined();
       expect((loopExports as any)[helper]).toBeUndefined();
     }
   });

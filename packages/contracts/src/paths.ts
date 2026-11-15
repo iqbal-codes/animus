@@ -2,7 +2,6 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
-  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -491,47 +490,6 @@ export function enforceSecureFilePermissions(filePath: string): void {
   }
 }
 
-/**
- * Transparent migration helper: if legacy ~/.factory/state exists and target ~/.animus/state does not,
- * copies legacy database and session secret files to the new ~/.animus location.
- */
-export function migrateLegacyState(
-  targetStateDir?: string,
-  sourceStateDir?: string,
-): { migrated: string[]; errors: string[] } {
-  const targetDir = resolveAnimusStateDir(targetStateDir);
-  const sourceDir = sourceStateDir ? resolve(sourceStateDir) : join(homedir(), ".factory", "state");
-
-  const migrated: string[] = [];
-  const errors: string[] = [];
-
-  if (!existsSync(sourceDir)) {
-    return { migrated, errors };
-  }
-
-  ensureSecureDirectory(targetDir);
-
-  const filesToMigrate = ["console.db", "console.db-wal", "console.db-shm", "session.secret"];
-
-  for (const file of filesToMigrate) {
-    const src = join(sourceDir, file);
-    const dest = join(targetDir, file);
-
-    if (existsSync(src) && !existsSync(dest)) {
-      try {
-        copyFileSync(src, dest);
-        enforceSecureFilePermissions(dest);
-        migrated.push(file);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        errors.push(`Failed to migrate ${file}: ${msg}`);
-      }
-    }
-  }
-
-  return { migrated, errors };
-}
-
 function canonicalizePath(targetPath: string): string {
   try {
     return realpathSync(targetPath);
@@ -842,7 +800,7 @@ export function findWorkspaceRunDirectory(
 }
 
 /**
- * Checks filesystem Brake markers (.factory/STOP and .factory/PAUSE) across checkout root,
+ * Checks filesystem Brake markers (.animus/STOP and .animus/PAUSE) across checkout root,
  * primary worktree root, and Git common roots.
  */
 export function checkWorkspaceBrakes(
@@ -927,7 +885,7 @@ export function checkBrakes(
 }
 
 /**
- * Mutates filesystem Brake markers (.factory/STOP and .factory/PAUSE) in primary worktree.
+ * Mutates filesystem Brake markers (.animus/STOP and .animus/PAUSE) in primary worktree.
  */
 export function mutateWorkspaceBrakes(
   workspaceOrRoot: ProjectWorkspace | string,
@@ -991,8 +949,8 @@ export function mutateWorkspaceBrakes(
 
 /**
  * Reads a legacy `schedule.json` file and validates it with the shared
- * schedule schema. Kept for `.factory/schedule.json` and pre-migration user
- * overrides; the runtime policy itself now lives in each layer's `config.yaml`.
+ * schedule schema. Kept for user-level `~/.animus/schedule.json` migration;
+ * the runtime policy itself now lives in each layer's `config.yaml`.
  */
 export function parseScheduleJson(filePath: string): Partial<ScheduleConfig> | null {
   if (!existsSync(filePath)) return null;
@@ -1298,7 +1256,7 @@ export function getMergedIssueNumbers(runsDir: string): Set<number> {
 
 /**
  * Evaluates operational readiness in a single unified preflight check:
- * 1. Filesystem Brakes (.factory/STOP and .factory/PAUSE across roots)
+ * 1. Filesystem Brakes (.animus/STOP and .animus/PAUSE across roots)
  * 2. SQLite BrakeService records (isLaunchPermitted / isScheduledLaunchPermitted)
  * 3. Cascaded schedule configuration with strict validation
  * 4. Work-window timezone evaluation (including overnight spans)

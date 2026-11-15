@@ -14,15 +14,15 @@ import {
 } from "../../scripts/loop/prompt-context";
 import * as loopExports from "../../scripts/loop/index";
 import {
-  extractRequiredAcIds as localLoopExtractAcIds,
-  formatEscalationHandoff as localLoopFormatHandoff,
-  annotateDiffWithLineNumbers as localLoopAnnotateDiff,
-  validateIssue as localLoopValidateIssue,
-  assembleRolePromptContext as localLoopAssembleContext,
-  type BuilderCommentReport as LocalLoopBuilderCommentReport,
-  type EscalationReviewReport as LocalLoopEscalationReviewReport,
-  type AssembleRolePromptContextOptions as LocalLoopAssembleOptions,
-} from "../../scripts/local-loop";
+  extractRequiredAcIds as animusLoopExtractAcIds,
+  formatEscalationHandoff as animusLoopFormatHandoff,
+  annotateDiffWithLineNumbers as animusLoopAnnotateDiff,
+  validateIssue as animusLoopValidateIssue,
+  assembleRolePromptContext as animusLoopAssembleContext,
+  type BuilderCommentReport as AnimusLoopBuilderCommentReport,
+  type EscalationReviewReport as AnimusLoopEscalationReviewReport,
+  type AssembleRolePromptContextOptions as AnimusLoopAssembleOptions,
+} from "../../scripts/animus-loop";
 import type { LocalIssue } from "../../scripts/loop/types";
 
 const tempDirs: string[] = [];
@@ -313,12 +313,12 @@ Contract:
       expect((loopExports as any).assembleRolePromptContext).toBeFunction();
     });
 
-    test("backward compatibility re-exports in scripts/local-loop.ts match direct exports", () => {
-      expect(localLoopExtractAcIds).toBe(extractRequiredAcIds);
-      expect(localLoopFormatHandoff).toBe(formatEscalationHandoff);
-      expect(localLoopAnnotateDiff).toBe(annotateDiffWithLineNumbers);
-      expect(localLoopValidateIssue).toBe(validateIssue);
-      expect(localLoopAssembleContext).toBe(assembleRolePromptContext);
+    test("re-exports in scripts/animus-loop.ts match direct exports", () => {
+      expect(animusLoopExtractAcIds).toBe(extractRequiredAcIds);
+      expect(animusLoopFormatHandoff).toBe(formatEscalationHandoff);
+      expect(animusLoopAnnotateDiff).toBe(annotateDiffWithLineNumbers);
+      expect(animusLoopValidateIssue).toBe(validateIssue);
+      expect(animusLoopAssembleContext).toBe(assembleRolePromptContext);
 
       // Verify direct and facade TypeScript types compile and are compatible
       const directBReport: BuilderCommentReport = { summary: "done" };
@@ -327,9 +327,9 @@ Contract:
         role: "builder",
         issue: makeValidIssue(),
       };
-      const bReport: LocalLoopBuilderCommentReport = directBReport;
-      const eReport: LocalLoopEscalationReviewReport = directEReport;
-      const aOpts: LocalLoopAssembleOptions = directAOpts;
+      const bReport: AnimusLoopBuilderCommentReport = directBReport;
+      const eReport: AnimusLoopEscalationReviewReport = directEReport;
+      const aOpts: AnimusLoopAssembleOptions = directAOpts;
       expect(bReport.summary).toBe("done");
       expect(eReport.reason).toBe("halt");
       expect(aOpts.role).toBe("builder");

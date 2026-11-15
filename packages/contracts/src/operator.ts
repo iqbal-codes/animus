@@ -2578,6 +2578,20 @@ export const draftPublicationSubmissionSchema = z
   .strict();
 export type DraftPublicationSubmission = z.infer<typeof draftPublicationSubmissionSchema>;
 
+export const directJobCreateSubmissionSchema = z
+  .object({
+    title: z.string().min(1).max(200).optional(),
+    prompt: z.string().min(1).max(50000),
+  })
+  .strict();
+export type DirectJobCreateSubmission = z.infer<typeof directJobCreateSubmissionSchema>;
+
+export const directJobCreateResultSchema = z.object({
+  work: workRecordSchema,
+  issue_number: z.number().int().positive(),
+});
+export type DirectJobCreateResult = z.infer<typeof directJobCreateResultSchema>;
+
 export const publicationEvidenceBindingRequestSchema = z
   .object({
     hosted_url: z.string().min(1).max(2000),

@@ -219,6 +219,91 @@ export class WorkService {
     }
   }
 
+  createRevision(
+    scope: WorkProjectScope,
+    workId: string,
+    source: {
+      title: string;
+      body: string;
+      labels: string[];
+      state: "OPEN" | "CLOSED";
+      comments?: WorkSourceComment[];
+    },
+  ): WorkRecord {
+    this.verifyProject(scope);
+    const existing = this.readRecord(workId, scope.id);
+    if (!existing) throw new WorkPersistenceError("work_not_found", `Work ${workId} not found`);
+
+    const nextRevNum = existing.revision.revision_number + 1;
+    const now = Date.now();
+    const provenance: WorkProvenance = {
+      repo_id: scope.repo_id,
+      repo_name: scope.repo_name,
+      issue_number: existing.issue_number,
+      source_url:
+        scope.repo_id > 0
+          ? `https://github.com/${scope.repo_name}/issues/${existing.issue_number}`
+          : `local://${scope.id}/issues/${existing.issue_number}`,
+      captured_at: now,
+    };
+    const contentHash = createHash("sha256")
+      .update(
+        JSON.stringify({
+          repo_id: provenance.repo_id,
+          repo_name: provenance.repo_name,
+          issue_number: provenance.issue_number,
+          title: source.title,
+          body: source.body,
+          state: source.state,
+          labels: source.labels,
+          comments: source.comments ?? [],
+        }),
+      )
+      .digest("hex");
+
+    this.db.exec("BEGIN IMMEDIATE;");
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO work_revisions
+             (id, work_id, project_id, revision_number, content_hash, source_title,
+              source_body, source_state, source_labels, source_comments, source_url,
+              provenance, imported_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          `wrev_${randomUUID()}`,
+          workId,
+          scope.id,
+          nextRevNum,
+          contentHash,
+          source.title,
+          source.body,
+          source.state,
+          JSON.stringify(source.labels),
+          JSON.stringify(source.comments ?? []),
+          provenance.source_url,
+          JSON.stringify(provenance),
+          now,
+        );
+
+      this.db
+        .prepare("UPDATE work_items SET updated_at = ? WHERE id = ? AND project_id = ?")
+        .run(now, workId, scope.id);
+
+      this.db.exec("COMMIT;");
+      const record = this.readRecord(workId, scope.id);
+      if (!record) throw storageFailure(new Error("Updated work revision is unreadable"));
+      return record;
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK;");
+      } catch {}
+      if (error instanceof WorkPersistenceError) throw error;
+      throw storageFailure(error);
+    }
+  }
+
   listWork(projectId: string): WorkRecord[] {
     try {
       const rows = this.db

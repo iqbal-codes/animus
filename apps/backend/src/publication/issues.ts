@@ -268,6 +268,94 @@ export class DraftPublicationService {
     return this.publish(projectId, publication.id);
   }
 
+  async admitDraftDirectly(projectId: string, draftId: string): Promise<PlanRecord> {
+    this.assertInstallationReady();
+    let draft = this.loadDraft(projectId, draftId);
+
+    // If draft is needs_review or changes_requested, auto-approve it when operator triggers direct admission
+    if (draft.status !== "approved") {
+      draft = this.drafts.decide(projectId, draftId, {
+        revision_number: draft.latest_revision.revision_number,
+        decision: "approve",
+        actor: "operator",
+        reason: "Operator approved and admitted directly to ready from board inspector",
+      });
+    }
+
+    this.assertPublishable(draft);
+    const plan = draft.latest_revision.plan;
+    if (plan.kind === "clarification") {
+      throw new DraftPublicationError(
+        "draft_publication_not_publishable",
+        "A clarification draft cannot be admitted",
+      );
+    }
+
+    const project = this.project(projectId);
+    const rootWork = this.work.getWorkById(projectId, draft.work_id);
+
+    if (plan.kind === "standalone") {
+      const canonicalBody = canonicalBodyOf(plan);
+      const updatedWork = this.work.createRevision(
+        { id: project.id, repo_id: project.repo_id, repo_name: project.repo_name },
+        rootWork.id,
+        {
+          title: plan.title,
+          body: canonicalBody,
+          labels: ["ready-for-agent"],
+          state: "OPEN",
+        },
+      );
+      return await this.plans.importPlan(projectId, {
+        work_id: updatedWork.id,
+        kind: "standalone",
+      });
+    }
+
+    // Spec plan
+    const canonicalBody = canonicalBodyOf(plan);
+    const updatedRoot = this.work.createRevision(
+      { id: project.id, repo_id: project.repo_id, repo_name: project.repo_name },
+      rootWork.id,
+      {
+        title: plan.title,
+        body: canonicalBody,
+        labels: ["spec", "ready-for-human"],
+        state: "OPEN",
+      },
+    );
+
+    let nextSyntheticNumber = 10001;
+    const row = this.db
+      .prepare("SELECT MAX(issue_number) AS max_num FROM work_items WHERE project_id = ?")
+      .get(project.id) as { max_num: number | null } | undefined;
+    if (row && typeof row.max_num === "number" && row.max_num >= 10001) {
+      nextSyntheticNumber = row.max_num + 1;
+    }
+
+    for (const child of plan.children) {
+      const childBody = [`Part of #${updatedRoot.issue_number}`, "", canonicalBodyOf(child)].join(
+        "\n",
+      );
+      this.work.importIssue(
+        { id: project.id, repo_id: project.repo_id, repo_name: project.repo_name },
+        {
+          number: nextSyntheticNumber++,
+          title: child.title,
+          body: childBody,
+          labels: ["ready-for-agent"],
+          state: "OPEN",
+          comments: [],
+        },
+      );
+    }
+
+    return await this.plans.importPlan(projectId, {
+      work_id: updatedRoot.id,
+      kind: "spec",
+    });
+  }
+
   async publish(projectId: string, publicationId: string): Promise<DraftPublication> {
     this.assertInstallationReady();
     return this.serialize(publicationId, async () => {

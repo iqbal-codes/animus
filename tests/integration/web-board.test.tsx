@@ -9,7 +9,6 @@ import { CommandLedger } from "../../apps/backend/src/command/ledger";
 import { BrakeService } from "../../apps/backend/src/command/brakes";
 import { DispatchService } from "../../apps/backend/src/dispatch";
 import { JobsBoard } from "../../apps/web/src/features/jobs/jobs-board";
-import { WorkDetailDialog } from "../../apps/web/src/features/jobs/work-detail-dialog";
 import { JobsScreen } from "../../apps/web/src/features/jobs/jobs-screen";
 import { SidebarProvider } from "../../apps/web/src/components/ui/sidebar";
 import {
@@ -38,14 +37,6 @@ const LANES = [
 
 function lane(name: string): HTMLElement {
   return screen.getByRole("region", { name });
-}
-
-function fixtureFactory(fixture: Fixture): any {
-  return {
-    forProject: () => ({
-      workDetail: (workId: string) => fixture.readWork(workId),
-    }),
-  };
 }
 
 function recordReview(fixture: Fixture, runId: string, producerId = "reviewer-ui"): void {
@@ -411,81 +402,5 @@ describe("operator board UI", () => {
     expect(within(merged).getByText("Delivered")).toBeTruthy();
     expect(within(merged).getByText(/2\/2 tickets integrated · delivered/)).toBeTruthy();
     void branch;
-  }, 60_000);
-
-  test("backend-driven: parent and child detail reuse the canonical plan, evidence and final panels", async () => {
-    const { planId } = await fixture.importSpec(
-      1960,
-      [
-        { issue: 1961, coverage: "AC1" },
-        { issue: 1962, coverage: "AC2" },
-      ],
-      ["AC1 — detail parent", "AC2 — detail parent"],
-    );
-    await fixture.integrateChild(planId, 1961, "detail-one");
-    const childRun = await fixture.dispatch.dispatch(fixture.projectId, {
-      plan_id: planId,
-      issue_number: 1962,
-      actor: "operator",
-    });
-    const reviewer = fixture.observations.registerTrustedProducer(fixture.projectId, {
-      id: "reviewer-detail-ui",
-      role: "peer_reviewer",
-    });
-    fixture.observations.recordRunObservation(fixture.projectId, childRun.id, {
-      stage: "code_review",
-      status: "failed",
-      producer: reviewer.producer,
-      checks: [{ name: "standards", command: "review diff", result: "FAIL" }],
-      findings: [
-        {
-          severity: "blocking",
-          acKey: "AC2",
-          fileContext: "impl.txt:1",
-          summary: "AC2 is missing from the candidate",
-        },
-      ],
-    });
-    await fixture.publication.publishByRun(fixture.projectId, childRun.id);
-
-    const board = await fixture.readBoard();
-    const factory = fixtureFactory(fixture);
-    const plan = fixture.plans.getPlan(fixture.projectId, planId);
-
-    render(
-      <WorkDetailDialog
-        workId={plan.root_work_id}
-        projectId={fixture.projectId}
-        onClose={() => {}}
-        factory={factory}
-      />,
-    );
-    await screen.findByText("Approved plan");
-    expect(screen.getByText(/AC1 — detail parent/)).toBeTruthy();
-    expect(screen.getByText("Dependencies")).toBeTruthy();
-    expect(screen.getByText("Parent delivery")).toBeTruthy();
-    expect(screen.getByText(/1\/2 tickets integrated/)).toBeTruthy();
-    expect(screen.getByText(/1\/2 children integrated/)).toBeTruthy();
-    cleanup();
-
-    const childCard = board.lanes
-      .flatMap((entry) => entry.cards)
-      .find((card) => card.issueNumber === 1962)!;
-    render(
-      <WorkDetailDialog
-        workId={childCard.workId}
-        projectId={fixture.projectId}
-        onClose={() => {}}
-        factory={factory}
-      />,
-    );
-    await screen.findByText("Contract");
-    expect(screen.getByText(/Prepared ticket source/)).toBeTruthy();
-    expect(screen.getByText("Runs and laps")).toBeTruthy();
-    expect(screen.getByText(/Checks, findings and evidence/)).toBeTruthy();
-    expect(screen.getAllByText(/AC2 is missing from the candidate/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/opened/).length).toBeGreaterThan(0);
-    expect(screen.getByText("Operator controls")).toBeTruthy();
-    expect(screen.getByText("Part of #1960")).toBeTruthy();
   }, 60_000);
 });

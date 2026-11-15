@@ -111,7 +111,7 @@ export async function loadMonitorRuntime(
   const [scheduler, loop, contracts, config, triageModule, backlogModule, processModule] =
     await Promise.all([
       import(new URL("scripts/loop/scheduler.ts", factory).href),
-      import(new URL("scripts/local-loop.ts", factory).href),
+      import(new URL("scripts/animus-loop.ts", factory).href),
       import(new URL("scripts/loop.ts", factory).href),
       import(new URL("scripts/loop/config.ts", factory).href),
       import(new URL("scripts/loop/triage.ts", factory).href),

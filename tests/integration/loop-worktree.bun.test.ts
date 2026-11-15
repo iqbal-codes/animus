@@ -14,12 +14,12 @@ import {
 } from "../../scripts/loop/worktree";
 import * as loopExports from "../../scripts/loop/index";
 import {
-  inspectLocalLoop as localLoopInspect,
-  findExistingWorktreeForBranch as localLoopFindWorktree,
-  acquireIssueLock as localLoopAcquireLock,
-  prepareLoopWorktree as localLoopPrepareWorktree,
-  assertCandidate as localLoopAssertCandidate,
-} from "../../scripts/local-loop";
+  inspectLocalLoop as animusLoopInspect,
+  findExistingWorktreeForBranch as animusLoopFindWorktree,
+  acquireIssueLock as animusLoopAcquireLock,
+  prepareLoopWorktree as animusLoopPrepareWorktree,
+  assertCandidate as animusLoopAssertCandidate,
+} from "../../scripts/animus-loop";
 
 const tempDirs: string[] = [];
 
@@ -504,12 +504,12 @@ describe("scripts/loop/worktree", () => {
       await reacquired();
     });
 
-    test("scripts/local-loop.ts re-exports inspectLocalLoop and findExistingWorktreeForBranch", () => {
-      expect(typeof localLoopInspect).toBe("function");
-      expect(typeof localLoopFindWorktree).toBe("function");
-      expect(typeof localLoopAcquireLock).toBe("function");
-      expect(typeof localLoopPrepareWorktree).toBe("function");
-      expect(typeof localLoopAssertCandidate).toBe("function");
+    test("scripts/animus-loop.ts re-exports inspectLocalLoop and findExistingWorktreeForBranch", () => {
+      expect(typeof animusLoopInspect).toBe("function");
+      expect(typeof animusLoopFindWorktree).toBe("function");
+      expect(typeof animusLoopAcquireLock).toBe("function");
+      expect(typeof animusLoopPrepareWorktree).toBe("function");
+      expect(typeof animusLoopAssertCandidate).toBe("function");
     });
 
     test("isPidAlive accurately identifies PID liveness without relying on age", () => {

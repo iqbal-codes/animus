@@ -117,7 +117,7 @@ export interface BackendAppOptions {
 }
 
 export interface BackendApp {
-  fetch(request: Request, server?: any): Promise<Response>;
+  fetch(input: Request | string, serverOrInit?: any): Promise<Response>;
   websocket: {
     open(ws: ServerWebSocket<WsClientData>): void;
     message(ws: ServerWebSocket<WsClientData>, raw: unknown): void;
@@ -189,6 +189,7 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     stateRoot: options?.stateDir ?? resolveStateDir(),
   });
   const planService = new PlanService(registryService.getDb(), registryService.getForge());
+  sharedIntakeService.setPlans(planService);
   const onboardingService = new ProjectOnboardingService(
     registryService,
     options?.stateDir ?? resolveStateDir(),
@@ -490,7 +491,8 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     return stopPromise;
   };
 
-  const appFetch = async (request: Request, server?: any): Promise<Response> => {
+  const appFetch = async (input: Request | string, server?: any): Promise<Response> => {
+    const request = typeof input === "string" ? new Request(input, server as RequestInit) : input;
     try {
       validateCsrfProtection(request);
     } catch {
@@ -1022,6 +1024,32 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
         return Response.json({ error: "not_found" }, { status: 404 });
       }
 
+      if (scopedAction === "jobs") {
+        if (parts[2] === "create" && request.method === "POST") {
+          let body: unknown;
+          try {
+            body = await request.json();
+          } catch {
+            return Response.json({ error: "invalid_payload" }, { status: 400 });
+          }
+          const { directJobCreateSubmissionSchema } = await import("@animus/contracts/operator");
+          const parsed = directJobCreateSubmissionSchema.safeParse(body);
+          if (!parsed.success) {
+            return Response.json({ error: "invalid_payload" }, { status: 400 });
+          }
+          try {
+            const result = await sharedIntakeService.createDirectJob(projectId, parsed.data);
+            try {
+              await draftService.refine(projectId, { work_id: result.work.id, answers: [] });
+            } catch {}
+            return Response.json(result);
+          } catch {
+            return Response.json({ error: "intake_unavailable" }, { status: 503 });
+          }
+        }
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }
+
       if (scopedAction === "work") {
         const workRes = await handleProjectWorkRoute(request, projectId, parts, workService);
         if (workRes) return workRes;
@@ -1029,6 +1057,24 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
       }
 
       if (scopedAction === "drafts") {
+        if (parts.length === 4 && parts[3] === "admit") {
+          if (request.method !== "POST") {
+            return Response.json(
+              { error: "method_not_allowed" },
+              { status: 405, headers: { Allow: "POST" } },
+            );
+          }
+          try {
+            const draftId = decodeURIComponent(parts[2]!);
+            const plan = await draftPublicationService.admitDraftDirectly(projectId, draftId);
+            return Response.json(plan);
+          } catch (err: any) {
+            return Response.json(
+              { error: err?.code ?? "draft_admission_failed", message: err?.message },
+              { status: 400 },
+            );
+          }
+        }
         const draftRes = await handleProjectDraftRoute(request, projectId, parts, draftService);
         if (draftRes) return draftRes;
         return Response.json({ error: "not_found" }, { status: 404 });

@@ -98,8 +98,8 @@ export class PromotionService {
     const shared = resolveSharedRoot(this.repoRoot);
     const pauseExists =
       existsSync(join(this.repoRoot, ".animus/PAUSE")) ||
-      existsSync(join(shared, ".animus/PAUSE")) ||
       existsSync(join(this.repoRoot, ".factory/PAUSE")) ||
+      existsSync(join(shared, ".animus/PAUSE")) ||
       existsSync(join(shared, ".factory/PAUSE"));
     const existingPr = this.getExistingPromotionPr();
     const deliveredTickets = Array.from(ticketNumbers).sort((a, b) => a - b);

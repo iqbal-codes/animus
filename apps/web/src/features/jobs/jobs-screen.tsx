@@ -3,6 +3,7 @@ import { JobsBoard } from "./jobs-board";
 import { JobsHeader } from "./jobs-header";
 import { IssueExpandedWorkspace } from "./issue-expanded-workspace";
 import { CompactSideSheet } from "./compact-side-sheet";
+import { CreateJobDialog } from "./create-job-dialog";
 import { DispatchControl } from "@/features/dispatch/dispatch-control";
 import { BackupPanel } from "@/features/backup/backup-panel";
 import { AuthorityPanel } from "@/features/authority/authority-panel";
@@ -39,6 +40,7 @@ export function JobsScreen({
 }) {
   const [selectedWorkId, setSelectedWorkId] = useState<string | null>(null);
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
+  const [isCreateJobOpen, setIsCreateJobOpen] = useState<boolean>(false);
 
   const selectedWorkProjectId = useMemo(() => {
     if (selectedWorkId) {
@@ -102,6 +104,18 @@ export function JobsScreen({
         onSelectProject={onSelectProject}
         onProjectAdded={() => onRefresh?.()}
         onRefresh={onRefresh}
+        onNewJob={() => setIsCreateJobOpen(true)}
+        factory={factory}
+      />
+
+      <CreateJobDialog
+        open={isCreateJobOpen}
+        onOpenChange={setIsCreateJobOpen}
+        projectId={selectedWorkProjectId}
+        onJobCreated={(workId) => {
+          onRefresh?.();
+          setSelectedWorkId(workId);
+        }}
         factory={factory}
       />
 

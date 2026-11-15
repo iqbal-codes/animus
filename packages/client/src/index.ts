@@ -82,6 +82,10 @@ import {
   intakePublishSubmissionSchema,
   intakePublishResultSchema,
   intakeUpdateSubmissionSchema,
+  directJobCreateSubmissionSchema,
+  directJobCreateResultSchema,
+  type DirectJobCreateSubmission,
+  type DirectJobCreateResult,
   targetBindingSubmissionSchema,
   targetBindingResultSchema,
   branchIntegrationSubmissionSchema,
@@ -322,6 +326,10 @@ export {
   intakePublishSubmissionSchema,
   intakePublishResultSchema,
   intakeUpdateSubmissionSchema,
+  directJobCreateSubmissionSchema,
+  directJobCreateResultSchema,
+  type DirectJobCreateSubmission,
+  type DirectJobCreateResult,
   targetBindingSubmissionSchema,
   targetBindingResultSchema,
   branchIntegrationSubmissionSchema,
@@ -879,6 +887,11 @@ export function createFactoryClient(options: {
           if (!parsed.success) throw new FactoryClientError("invalid_payload");
           return postJson(`${scopedBase}/intake/publish`, parsed.data, intakePublishResultSchema);
         },
+        async createJob(submission: DirectJobCreateSubmission): Promise<DirectJobCreateResult> {
+          const parsed = directJobCreateSubmissionSchema.safeParse(submission);
+          if (!parsed.success) throw new FactoryClientError("invalid_payload");
+          return postJson(`${scopedBase}/jobs/create`, parsed.data, directJobCreateResultSchema);
+        },
         async updateTicket(
           number: number,
           submission: IntakeUpdateSubmission,
@@ -987,6 +1000,13 @@ export function createFactoryClient(options: {
           const parsed = draftPublicationSubmissionSchema.safeParse({ draft_id: draftId });
           if (!parsed.success) throw new FactoryClientError("invalid_payload");
           return postJson(`${scopedBase}/draft-publications`, parsed.data, draftPublicationSchema);
+        },
+        async admitDraft(draftId: string): Promise<PlanRecord> {
+          return postJson(
+            `${scopedBase}/drafts/${encodeURIComponent(draftId)}/admit`,
+            {},
+            planRecordSchema,
+          );
         },
         async reconcileDraftPublication(publicationId: string): Promise<DraftPublication> {
           return postJson(
