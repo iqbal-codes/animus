@@ -83,7 +83,6 @@ forge.addIssue("owner/backup-ui", {
 
 const app = await createBackendApp({
   stateDir: join(root, "state"),
-  startMonitor: false,
   forge,
   webDir: fileURLToPath(new URL("../../apps/web/dist", import.meta.url)),
 });

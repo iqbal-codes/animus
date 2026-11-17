@@ -9,10 +9,9 @@ import { ProjectRegistryService, SyntheticForgeAdapter } from "../../apps/backen
 import { CommandLedger } from "../../apps/backend/src/command/ledger";
 import { SpecCoordinatorService } from "../../apps/backend/src/coordination";
 import { ChildIntegrationService } from "../../apps/backend/src/integration";
-import {
-  InstallationHeldError,
-  assertInstallationNotHeldAtStateDir,
-} from "@animus/contracts/installation-hold";
+import { assertInstallationNotHeldAtStateDir } from "@animus/contracts/installation-hold";
+import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
+import { runSchedulerCliCommand } from "../../scripts/cli/commands/loop";
 import { createBackendApp, type BackendApp } from "../../apps/backend/src/main";
 
 const REPO = "owner/hold-gates";
@@ -146,7 +145,6 @@ describe("restored installation hold fences every outward writer", () => {
 
     app = await createBackendApp({
       stateDir,
-      startMonitor: false,
       forge,
       dispatch: { processAlive: () => true, ownerPid: () => 4242 },
     });
@@ -236,35 +234,30 @@ describe("restored installation hold fences every outward writer", () => {
     });
   }, 20000);
 
-  test("B2: legacy CLI, native launch and scheduler launchers fail closed while held", async () => {
-    const { runLoopCliCommand } = await import("../../scripts/cli/commands/loop");
-    const { runAnimusLoop } = await import("../../scripts/animus-loop");
-    hold(db);
+  test("B2: removed legacy launchers fail closed and the hold gate blocks first", async () => {
+    const originalError = console.error;
+    const messages: string[] = [];
+    console.error = (...args: unknown[]) => {
+      messages.push(args.map(String).join(" "));
+    };
+    try {
+      hold(db);
+      expect(await runSchedulerCliCommand({ repoRoot: checkout, once: true })).toBe(1);
+      expect(messages.join("\n")).toContain("installation_held");
 
-    expect(() => assertInstallationNotHeldAtStateDir()).toThrow(InstallationHeldError);
-
-    const code = await runLoopCliCommand({
-      subcommand: "run",
-      positionals: ["loop", "run"],
-      repoRoot: checkout,
-      issue: "501",
-      json: true,
-    });
-    expect(code).toBe(1);
-
-    await expect(
-      runAnimusLoop(
-        checkout,
-        {
-          number: 501,
-          title: "Blocked child",
-          body: ticketBody(),
-          labels: ["ready-for-agent"],
-          state: "OPEN",
-        } as never,
-        { stateRoot: stateDir },
-      ),
-    ).rejects.toMatchObject({ code: "installation_held" });
+      // A reconciled installation no longer trips the hold; the legacy launcher
+      // is still gone, so it refuses instead of starting a lap.
+      messages.length = 0;
+      db.prepare(
+        "UPDATE installation_holds SET status = 'reconciled', reconciled_at = ?, reconciled_by = 'test' WHERE id = 'installation'",
+      ).run(Date.now());
+      writeExecutionAuthority("legacy", { stateDir });
+      expect(await runSchedulerCliCommand({ repoRoot: checkout, once: true })).toBe(1);
+      expect(messages.join("\n")).toContain("legacy_launcher_removed");
+      expect(messages.join("\n")).not.toContain("installation_held");
+    } finally {
+      console.error = originalError;
+    }
   }, 20000);
 
   test("B4: the hold read-only path tolerates a pre-v11 database without a hold table", () => {

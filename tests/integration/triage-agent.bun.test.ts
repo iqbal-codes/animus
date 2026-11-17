@@ -40,6 +40,11 @@ describe("Triage Agent & Turn-Taking Subsystem", () => {
     delete process.env.FACTORY_LOOP_EFFORT;
     delete process.env.FACTORY_LOOP_ROLE;
     delete process.env.PI_OFFLINE;
+    // Isolate the machine skills store so a developer's ~/.animus/skills cannot
+    // satisfy the required triage playbook.
+    const skillsHome = mkdtempSync(join(tmpdir(), "triage-agent-machine-skills-"));
+    tempDirs.push(skillsHome);
+    process.env.ANIMUS_SKILLS_HOME = skillsHome;
   });
 
   afterEach(() => {

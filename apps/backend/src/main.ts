@@ -13,7 +13,6 @@ import {
   evaluatedIssueSchema,
   projectSchema,
   projectListSchema,
-  monitoringStatusSchema,
   projectRegistrationSchema,
   projectRetargetSchema,
   deregisterResultSchema,
@@ -53,8 +52,7 @@ import {
 } from "./registry";
 import { CommandService } from "./command";
 import { ProjectOnboardingService } from "./registry/onboarding";
-import { RegisteredProjectMonitor } from "./monitor/service";
-import { loadMonitorRuntime, type MonitorRuntime } from "./monitor/runtime";
+import { BackendScheduler } from "./scheduler/service";
 import { SpecCoordinatorService, handleProjectCoordinationRoute } from "./coordination";
 import {
   EvidenceService,
@@ -107,9 +105,9 @@ export interface BackendAppOptions {
   token?: string;
   origin?: string;
   webDir?: string;
-  startMonitor?: boolean;
-  monitorIntervalMs?: number;
-  monitorRuntime?: MonitorRuntime;
+  startScheduler?: boolean;
+  schedulerIntervalMs?: number;
+  scheduler?: BackendScheduler;
   forge?: ForgeAdapter;
   dispatch?: Omit<DispatchServiceOptions, "plans" | "ledger" | "brakes">;
   draftPlanner?: DraftPlanner;
@@ -123,7 +121,6 @@ export interface BackendApp {
     message(ws: ServerWebSocket<WsClientData>, raw: unknown): void;
     close(ws: ServerWebSocket<WsClientData>): void;
   };
-  monitor: RegisteredProjectMonitor;
   db: DatabaseSync;
   publication: PublicationService;
   backup: BackupRestoreService;
@@ -365,7 +362,33 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
   const integrationService = localRuntime.integration;
   const deliveryService = localRuntime.gate;
   const finalService = localRuntime.final;
-  const deliveryRuntime = localRuntime.delivery;
+
+  const scheduler =
+    options?.scheduler ??
+    new BackendScheduler({
+      projects: registryService,
+      intake: sharedIntakeService,
+      authority: () => readExecutionAuthority().authority,
+      dispatchLocal: () => {
+        // Preserve interrupted/unknown ownership before a new scheduling tick,
+        // exactly like the standalone CLI schedulers.
+        try {
+          dispatchService.reconcile();
+        } catch {}
+        return runLocalDispatchTick({
+          db: registryService.getDb(),
+          registry: registryService,
+          plans: planService,
+          dispatch: dispatchService,
+          actor: "scheduler",
+          deliveryRuntime: localRuntime.delivery,
+          finalDeliveryRuntime: finalService,
+        });
+      },
+      ...(options?.schedulerIntervalMs !== undefined
+        ? { intervalMs: options.schedulerIntervalMs }
+        : {}),
+    });
 
   const backupService = new BackupRestoreService(db, {
     stateDir: options?.stateDir ?? resolveStateDir(),
@@ -392,32 +415,7 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     drafts: draftService,
   });
 
-  const monitorRuntime =
-    options?.monitorRuntime ?? (await loadMonitorRuntime({ forge: options?.forge }));
-  const monitorInterval =
-    options?.monitorIntervalMs ??
-    (process.env.FACTORY_MONITOR_INTERVAL_MS !== undefined
-      ? Number(process.env.FACTORY_MONITOR_INTERVAL_MS)
-      : undefined);
-
-  const monitor = new RegisteredProjectMonitor(registryService, {
-    runtime: monitorRuntime,
-    intervalMs: monitorInterval,
-    authority: () => readExecutionAuthority().authority,
-    localDispatch: () =>
-      runLocalDispatchTick({
-        db: registryService.getDb(),
-        registry: registryService,
-        plans: planService,
-        dispatch: dispatchService,
-        actor: "monitor",
-        deliveryRuntime,
-        finalDeliveryRuntime: finalService,
-      }),
-  });
-
   const githubWebhookService = new GitHubWebhookService(registryService, {
-    onProjectWake: (projectId) => monitor.wakeProject(projectId),
     authority: () => readExecutionAuthority().authority,
   });
 
@@ -472,15 +470,15 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     broadcastWsEvent,
   };
 
-  if (options?.startMonitor) {
-    monitor.start();
+  if (options?.startScheduler) {
+    scheduler.start();
   }
 
   let stopPromise: Promise<void> | null = null;
   const stop = async () => {
     if (stopPromise) return stopPromise;
     stopPromise = (async () => {
-      await monitor.stop();
+      await scheduler.stop();
       wsClients.clear();
       if (ownsDb) {
         try {
@@ -710,10 +708,6 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
       } catch {
         return Response.json({ error: "intake_unavailable" }, { status: 503 });
       }
-    }
-
-    if (path === "/api/v1/monitoring" && request.method === "GET") {
-      return Response.json(monitoringStatusSchema.parse(monitor.status()));
     }
 
     if (path === "/api/v1/projects") {
@@ -1307,7 +1301,6 @@ export async function createBackendApp(options?: BackendAppOptions): Promise<Bac
     board: boardService,
     fetch: appFetch,
     websocket,
-    monitor,
     db,
     stop,
   };
@@ -1336,7 +1329,7 @@ if (import.meta.main) {
   try {
     const config = configuration();
     const origin = hostOrigin();
-    const createdApp = await createBackendApp({ config, origin, startMonitor: true });
+    const createdApp = await createBackendApp({ config, origin, startScheduler: true });
     app = createdApp;
     server = Bun.serve<WsClientData>({
       hostname: config.hostname,

@@ -32,7 +32,6 @@ describe("factory engine control and new job creation through HTTP & client", ()
     const stateDir = join(root, "state");
     app = await createBackendApp({
       stateDir,
-      startMonitor: false,
       forge,
     });
     seedActivatedAuthority(app.db, { stateDir });

@@ -39,14 +39,12 @@ import {
   recordLapAttempt,
   shouldTriggerReflection,
   runPostIssueReflection,
-  resolveVerificationProfile,
-  getProfileInstructions,
+  findExistingWorktreeForBranch,
   getIssuesWaitingApproval,
   getMergedIssueNumbers,
   countActiveLaps,
   type BacklogCandidate,
 } from "../../scripts/loop/index";
-import { findExistingWorktreeForBranch } from "../../scripts/animus-loop";
 
 const tempDirs: string[] = [];
 afterEach(async () => {
@@ -72,11 +70,11 @@ test("1. Model Tiering: resolves roles to tiers and config models", async () => 
 
 test("2. Prompts: loads decoupled markdown files from scripts/prompts and interpolates", () => {
   const root = join(import.meta.dir, "../..");
-  const workPrompt = loadPrompt("loop-work", root);
-  expect(workPrompt).toContain("# Make the move");
+  const planPrompt = loadPrompt("plan", root);
+  expect(planPrompt).toContain("# Plan");
 
-  const qaPrompt = loadPrompt("loop-check-app", root);
-  expect(qaPrompt).toContain("# Check the app as a user would");
+  const triagePrompt = loadPrompt("triage", root);
+  expect(triagePrompt).toContain("# Interactive Issue Triage Policy & Schema");
 
   const rendered = renderPrompt(
     "Do $INPUTS.route in $ARTIFACTS_DIR",
@@ -246,6 +244,9 @@ test("10. Scheduler: evaluates brakes, work window, capacity slots, dependency a
 
   const pausedRes = await runSchedulerTick({
     root: tmp,
+    config: {
+      work_window: { enabled: false, start_time: "00:00", end_time: "00:00", timezone: "UTC" },
+    },
     fetchBacklog: async () => ({ issues: candidates, closedNumbers: closedSet }),
     launchLap: dummyLaunch,
   });
@@ -264,7 +265,10 @@ test("10. Scheduler: evaluates brakes, work window, capacity slots, dependency a
   const capRes = await runSchedulerTick({
     root: tmp,
     runsDir,
-    config: { parallel: 1 },
+    config: {
+      parallel: 1,
+      work_window: { enabled: false, start_time: "00:00", end_time: "00:00", timezone: "UTC" },
+    },
     fetchBacklog: async () => ({ issues: candidates, closedNumbers: closedSet }),
     launchLap: dummyLaunch,
   });
@@ -277,7 +281,10 @@ test("10. Scheduler: evaluates brakes, work window, capacity slots, dependency a
   const successRes = await runSchedulerTick({
     root: tmp,
     runsDir,
-    config: { parallel: 2 }, // Allow up to 2 parallel laps
+    config: {
+      parallel: 2, // Allow up to 2 parallel laps
+      work_window: { enabled: false, start_time: "00:00", end_time: "00:00", timezone: "UTC" },
+    },
     fetchBacklog: async () => ({ issues: candidates, closedNumbers: closedSet }),
     launchLap: dummyLaunch,
   });
@@ -684,67 +691,8 @@ test("accepted harness injection, terminal trigger, and fail-closed legacy learn
   }
 });
 
-test("13. Verification Profiles: resolves appropriate profile and generates tuned instructions", () => {
+test("13. Repo skill resolution: allowed skills stay bounded to the accepted revision", () => {
   const root = join(import.meta.dir, "../..");
-
-  // Explicit label: docs
-  const docsIssue = {
-    number: 101,
-    url: "https://github.com/org/repo/issues/101",
-    title: "Update API guide",
-    body: "Please update docs",
-    comments: [],
-    dependencies: [],
-    activeClaim: false,
-    labels: ["profile:docs"],
-  };
-  expect(resolveVerificationProfile(docsIssue)).toBe("docs");
-  const docsInst = getProfileInstructions("docs", root);
-  expect(docsInst.depth).toBe("light");
-  expect(docsInst.skipAppLaunch).toBe(true);
-  expect(docsInst.runtimeInstructions).toContain("Documentation only");
-
-  // Body directive: api
-  const apiIssue = {
-    number: 102,
-    url: "https://github.com/org/repo/issues/102",
-    title: "Add GET /api/v1/healthcheck endpoint",
-    body: "Verification Profile: api\nImplement new endpoint",
-    comments: [],
-    dependencies: [],
-    activeClaim: false,
-    labels: [],
-  };
-  expect(resolveVerificationProfile(apiIssue)).toBe("api");
-  const apiInst = getProfileInstructions("api", root);
-  expect(apiInst.depth).toBe("normal");
-  expect(apiInst.skipAppLaunch).toBe(false);
-  expect(apiInst.runtimeInstructions).toContain("HTTP requests or curl");
-
-  // Changed files: UI
-  const genericIssue = {
-    number: 103,
-    url: "https://github.com/org/repo/issues/103",
-    title: "Change button styling",
-    body: "Make the button red",
-    comments: [],
-    dependencies: [],
-    activeClaim: false,
-    labels: [],
-  };
-  expect(
-    resolveVerificationProfile(genericIssue, [
-      "apps/web/src/Button.tsx",
-      "apps/web/src/button.css",
-    ]),
-  ).toBe("ui");
-  const uiInst = getProfileInstructions("ui", root);
-  expect(uiInst.depth).toBe("normal");
-  expect(uiInst.skipAppLaunch).toBe(false);
-  expect(uiInst.runtimeInstructions).toContain("Frontend / UI change");
-  expect(uiInst.runtimeInstructions).toContain("1440px");
-  expect(uiInst.runtimeInstructions).toContain("390px");
-  expect(uiInst.runtimeInstructions).toContain(".agents/skills/ui-quality/SKILL.md");
 
   const acceptedRef = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], {
     encoding: "utf8",
@@ -800,23 +748,6 @@ test("13. Verification Profiles: resolves appropriate profile and generates tune
 
   const repoPlannerSkills = resolveAllowedSkills(root, "planner", acceptedRef);
   expect(repoPlannerSkills.some((s) => s.endsWith(".agents/skills/blueprint"))).toBe(true);
-
-  // Core auth / security
-  const secIssue = {
-    number: 104,
-    url: "https://github.com/org/repo/issues/104",
-    title: "Rotate auth JWT signature secret",
-    body: "Update session token auth validation",
-    comments: [],
-    dependencies: [],
-    activeClaim: false,
-    labels: ["security"],
-  };
-  expect(resolveVerificationProfile(secIssue)).toBe("core");
-  const coreInst = getProfileInstructions("core", root);
-  expect(coreInst.depth).toBe("deep");
-  expect(coreInst.skipAppLaunch).toBe(false);
-  expect(coreInst.runtimeInstructions).toContain("Probe security");
 });
 
 test("14. Scheduler waiting_approval protection: prevents re-dispatching delivered items awaiting human review", async () => {

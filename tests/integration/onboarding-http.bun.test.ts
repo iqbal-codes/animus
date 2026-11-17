@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -10,11 +10,9 @@ import { createBackendApp } from "../../apps/backend/src/main";
 import { initializeDatabase } from "../../apps/backend/src/registry/db";
 import { ProjectRegistryService } from "../../apps/backend/src/registry/service";
 import { SyntheticForgeAdapter } from "../../apps/backend/src/registry/forge";
-import { RegisteredProjectMonitor } from "../../apps/backend/src/monitor/service";
-import { loadMonitorRuntime } from "../../apps/backend/src/monitor/runtime";
-import { processRun, withProcessPolicy } from "../../scripts/loop/process";
+import { processRun } from "../../scripts/loop/process";
 
-test("real backend enrolls a checkout, provisions labels, reports held setup, and preserves admission", async () => {
+test("real backend enrolls a checkout, provisions labels, and preserves admission", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "factory-onboarding-http-")));
   const checkout = join(root, "product");
   const bin = join(root, "bin");
@@ -53,7 +51,6 @@ test("real backend enrolls a checkout, provisions labels, reports held setup, an
       FACTORY_HOST_URL: host.url.origin,
       FACTORY_HOST_TOKEN: secret,
       FACTORY_RUNTIME_CANDIDATE: "onboarding-test",
-      FACTORY_MONITOR_INTERVAL_MS: "20",
     },
     stdin: "ignore",
     stdout: "pipe",
@@ -89,15 +86,12 @@ test("real backend enrolls a checkout, provisions labels, reports held setup, an
       "ready-for-human",
       "wontfix",
     ]);
-    let monitoring = await client.monitoring();
-    const deadline = Date.now() + 5000;
-    while (monitoring.projects[0]?.state !== "held" && Date.now() < deadline) {
-      await Bun.sleep(20);
-      monitoring = await client.monitoring();
-    }
-    expect(monitoring.enabled).toBe(true);
-    expect(monitoring.projects[0]?.reason).toBe("setup_incomplete");
-    expect(monitoring.projects[0]?.run_id).toBeUndefined();
+    const enrolled = (await client.projects()).find((entry) => entry.id === project.id);
+    expect(enrolled).toMatchObject({
+      repo_name: "acme/product",
+      checkout_path: checkout,
+      status: "active",
+    });
     expect((await client.deregisterProject(project.id)).status).toBe("tombstone");
     expect(await client.projects()).toEqual([]);
   } finally {
@@ -113,15 +107,14 @@ test("real backend enrolls a checkout, provisions labels, reports held setup, an
   }
 }, 15000);
 
-describe("In-Process Backend Application Kernel & Monitor Runtime (Ticket #147)", () => {
-  test("AC1: createBackendApp exports { fetch, websocket, monitor, db, stop } for direct in-process testing", async () => {
+describe("In-Process Backend Application Kernel (Ticket #147)", () => {
+  test("AC1: createBackendApp exports { fetch, websocket, db, stop } for direct in-process testing", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "backend-kernel-test-")));
     const token = randomBytes(16).toString("hex");
     try {
       const app = await createBackendApp({
         stateDir: join(root, "state"),
         token,
-        startMonitor: false,
       });
 
       expect(typeof app.fetch).toBe("function");
@@ -129,7 +122,6 @@ describe("In-Process Backend Application Kernel & Monitor Runtime (Ticket #147)"
       expect(typeof app.websocket.open).toBe("function");
       expect(typeof app.websocket.message).toBe("function");
       expect(typeof app.websocket.close).toBe("function");
-      expect(app.monitor).toBeInstanceOf(RegisteredProjectMonitor);
       expect(app.db).toBeInstanceOf(DatabaseSync);
       expect(typeof app.stop).toBe("function");
 
@@ -157,7 +149,6 @@ describe("In-Process Backend Application Kernel & Monitor Runtime (Ticket #147)"
       const appWithInjectedDb = await createBackendApp({
         db: callerDb,
         stateDir: join(root, "state1"),
-        startMonitor: false,
       });
 
       expect(appWithInjectedDb.db).toBe(callerDb);
@@ -177,7 +168,6 @@ describe("In-Process Backend Application Kernel & Monitor Runtime (Ticket #147)"
       // 2. Internally created DB ownership
       const appWithInternalDb = await createBackendApp({
         stateDir: join(root, "state2"),
-        startMonitor: false,
       });
       const internalDb = appWithInternalDb.db;
       expect(internalDb).toBeInstanceOf(DatabaseSync);
@@ -282,7 +272,6 @@ describe("In-Process Backend Application Kernel & Monitor Runtime (Ticket #147)"
         stateDir: join(root, "state"),
         token,
         origin: mockHost.url.origin,
-        startMonitor: false,
         forge,
       });
 
@@ -445,80 +434,6 @@ describe("In-Process Backend Application Kernel & Monitor Runtime (Ticket #147)"
     }
   });
 
-  test("AC4: monitor runtime executes backlog polling, contract binding, and triage passes in-process without worker.ts", async () => {
-    // 1. Verify worker.ts is deleted
-    const workerPath = join(import.meta.dir, "../../apps/backend/src/monitor/worker.ts");
-    expect(existsSync(workerPath)).toBe(false);
-
-    // 2. Verify loadMonitorRuntime executes in-process
-    const mockBacklogIssues = [
-      {
-        number: 42,
-        title: "Test Issue",
-        state: "OPEN",
-        labels: ["ready-for-agent"],
-        dependencies: [],
-      },
-    ];
-
-    const runtime = await loadMonitorRuntime({
-      fetchBacklog: async () => ({
-        issues: mockBacklogIssues,
-        closedNumbers: new Set<number>(),
-      }),
-      triage: async () => ({
-        processed: [{ issueNumber: 42, status: "succeeded" }],
-        skippedCount: 0,
-        successCount: 1,
-        failureCount: 0,
-        heldCount: 0,
-      }),
-    });
-
-    const backlog = await runtime.fetchBacklog("dummy-root", "owner/repo");
-    expect(backlog.issues).toEqual(mockBacklogIssues);
-    expect(backlog.closedNumbers.size).toBe(0);
-
-    const triageResult = await runtime.triage!({
-      root: "dummy-root",
-      repo: "owner/repo",
-      stateRoot: "dummy-state",
-      issueNumber: 42,
-    });
-    expect(triageResult.successCount).toBe(1);
-    expect(triageResult.processed[0]?.issueNumber).toBe(42);
-  });
-
-  test("remediation: concurrent app.stop() calls drain monitor together without early return", async () => {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "backend-concurrent-stop-")));
-    try {
-      const callerDb = initializeDatabase(":memory:");
-      const app = await createBackendApp({
-        db: callerDb,
-        stateDir: join(root, "state"),
-        startMonitor: false,
-      });
-
-      let drained = false;
-      const originalDrain = app.monitor.drain.bind(app.monitor);
-      app.monitor.drain = async () => {
-        await Bun.sleep(50);
-        drained = true;
-        await originalDrain();
-      };
-
-      const [stop1, stop2, stop3] = await Promise.all([app.stop(), app.stop(), app.stop()]);
-      expect(stop1).toBeUndefined();
-      expect(stop2).toBeUndefined();
-      expect(stop3).toBeUndefined();
-      expect(drained).toBe(true);
-      expect(app.monitor.status().stopping).toBe(true);
-      callerDb.close();
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
   test("remediation: in-process processRun with manageSignals: false does not leak process signal handlers", async () => {
     const beforeListeners = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")];
 
@@ -533,21 +448,6 @@ describe("In-Process Backend Application Kernel & Monitor Runtime (Ticket #147)"
 
     const afterListeners = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")];
     expect(afterListeners).toEqual(beforeListeners);
-  });
-
-  test("embedded subprocess policy propagates across await without taking host signal ownership", async () => {
-    const before = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")];
-    await withProcessPolicy({ manageSignals: false }, async () => {
-      await Promise.resolve();
-      const child = processRun(
-        [process.execPath, "-e", "console.log('done')"],
-        process.cwd(),
-        1000,
-      );
-      expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(before);
-      expect((await child).exitCode).toBe(0);
-    });
-    expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(before);
   });
 
   test("remediation: arbitrary observer on SIGTERM does not disable CLI signal exit", async () => {
@@ -578,91 +478,6 @@ describe("In-Process Backend Application Kernel & Monitor Runtime (Ticket #147)"
     ]);
 
     expect(exitedCode).toBe(143);
-  });
-
-  test("remediation: real in-process monitor cancellation and draining during in-flight operations", async () => {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "backend-monitor-cancellation-")));
-    const checkout = join(root, "checkout");
-    mkdirSync(checkout);
-    execFileSync("git", ["init", "-q", checkout]);
-    execFileSync("git", [
-      "-C",
-      checkout,
-      "remote",
-      "add",
-      "origin",
-      "https://github.com/test-org/cancel-repo.git",
-    ]);
-
-    try {
-      const forge = new SyntheticForgeAdapter({ "test-org/cancel-repo": 2002 });
-      let triageStarted = false;
-      let triageCompleted = false;
-
-      const runtime = await loadMonitorRuntime({
-        forge,
-        fetchBacklog: async () => ({
-          issues: [
-            {
-              number: 1,
-              title: "Pending",
-              state: "OPEN",
-              labels: ["ready-for-agent"],
-              dependencies: [],
-            },
-          ],
-          closedNumbers: new Set<number>(),
-        }),
-        triage: async () => {
-          triageStarted = true;
-          await Bun.sleep(120);
-          triageCompleted = true;
-          return {
-            processed: [{ issueNumber: 1, status: "succeeded" }],
-            skippedCount: 0,
-            successCount: 1,
-            failureCount: 0,
-            heldCount: 0,
-          };
-        },
-      });
-
-      const app = await createBackendApp({
-        stateDir: join(root, "state"),
-        startMonitor: false,
-        monitorRuntime: runtime,
-        forge,
-      });
-
-      const registry = new ProjectRegistryService(app.db, forge);
-      await registry.registerProject({
-        method: "local_checkout",
-        name: "Cancel Project",
-        checkout_path: checkout,
-      });
-
-      app.monitor.start();
-      app.monitor.wakeProject("test-org/cancel-repo");
-
-      for (let i = 0; i < 30; i++) {
-        if (triageStarted) break;
-        await Bun.sleep(20);
-      }
-      expect(triageStarted).toBe(true);
-
-      const stopStartTime = Date.now();
-      await app.monitor.stop();
-      const stopDuration = Date.now() - stopStartTime;
-
-      expect(app.monitor.status().stopping).toBe(true);
-      expect(app.monitor.status().enabled).toBe(false);
-      expect(triageCompleted).toBe(true);
-      expect(stopDuration).toBeGreaterThanOrEqual(40);
-
-      await app.stop();
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
   });
 
   test("remediation: graceful SIGTERM to backend server process exits with code 0 without fake success", async () => {
@@ -740,7 +555,6 @@ describe("In-Process Backend Application Kernel & Monitor Runtime (Ticket #147)"
       };
       const app = await createBackendApp({
         stateDir: join(root, "state"),
-        startMonitor: false,
         forge,
       });
 

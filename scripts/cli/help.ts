@@ -79,8 +79,8 @@ export const helpEntries: readonly HelpEntry[] = [
   },
   {
     command: "loop",
-    spec: "loop <run|watch|evidence>",
-    description: "Run, watch, or bind/publish evidence for local autonomous issue loops",
+    spec: "loop <watch|evidence>",
+    description: "Watch a loop run or bind/publish evidence for issue loops",
   },
   {
     command: "scheduler",
@@ -116,7 +116,7 @@ export const helpEntries: readonly HelpEntry[] = [
   },
   {
     command: "project",
-    spec: "project <list|get|register|remove|monitoring>",
+    spec: "project <list|get|register|remove>",
     description: "Manage projects through the selected factory API",
   },
   {
@@ -353,7 +353,7 @@ export const orderedFlags: readonly FlagHelp[] = [
   },
   {
     spec: "--issue, -i <number>",
-    description: "Target GitHub issue number for loop run/watch, intake or plan import",
+    description: "Target GitHub issue number for loop watch, intake or plan import",
     commands: ["loop", "intake", "plan"],
   },
   {
@@ -364,7 +364,7 @@ export const orderedFlags: readonly FlagHelp[] = [
   {
     spec: "--dry-run",
     description: "Run preflight validation or simulation without executing changes",
-    commands: ["loop", "scheduler", "intake"],
+    commands: ["scheduler", "intake"],
   },
   {
     spec: "--no-push",
@@ -374,7 +374,7 @@ export const orderedFlags: readonly FlagHelp[] = [
   {
     spec: "--once",
     description: "Execute a single poll/tick and exit",
-    commands: ["loop", "scheduler"],
+    commands: ["scheduler"],
   },
   {
     spec: "--history",
@@ -455,7 +455,7 @@ export const orderedExamples: readonly ExampleHelp[] = [
   { text: "animus control status", command: "control" },
   { text: "animus lap list --json", command: "lap" },
   { text: 'animus lap run "Fix login validation for issue #42"', command: "lap" },
-  { text: "animus loop run --issue 72 --dry-run", command: "loop" },
+  { text: "animus loop watch --issue 72", command: "loop" },
   { text: "animus loop evidence --issue 72", command: "loop" },
   {
     text: "animus loop evidence --issue 72 --mapping evidence-map.json --publish",

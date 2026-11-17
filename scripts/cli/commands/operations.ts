@@ -1617,22 +1617,6 @@ export async function runProjectCommand(
 
   try {
     const service = createRegistrationClient(opts);
-    if (sub === "monitoring") {
-      const status = await service.monitoring();
-      if (opts.json) console.log(JSON.stringify(status, null, 2));
-      else {
-        console.log(
-          `Factory monitoring: ${status.enabled ? "enabled" : "disabled"}${status.stopping ? " (stopping)" : ""}`,
-        );
-        if (status.error) console.log(`  Error: ${status.error}`);
-        for (const project of status.projects) {
-          console.log(`  ${project.project_id} [${project.state}] ${project.reason}`);
-          if (project.error) console.log(`    Error: ${project.error}`);
-          if (project.next_check_at) console.log(`    Next check: ${project.next_check_at}`);
-        }
-      }
-      return 0;
-    }
     if (sub === "list") {
       const projects = await service.projects();
       if (opts.json) {
@@ -1696,7 +1680,7 @@ export async function runProjectCommand(
     }
 
     throw new Error(
-      `Unknown project subcommand: ${sub}. Expected list, get, register, remove, or monitoring.`,
+      `Unknown project subcommand: ${sub}. Expected list, get, register, or remove.`,
     );
   } catch (err: unknown) {
     const msg = registrationErrorMessage(err);

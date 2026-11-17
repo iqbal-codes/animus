@@ -5,30 +5,11 @@ import { tmpdir } from "node:os";
 import { resolveProjectWorkspace } from "@animus/contracts/paths";
 import {
   issueSpecification,
-  parseIssueArgs,
   readIssueContract,
   validateIssue,
   type GithubRead,
 } from "../../scripts/loop";
 import { bindIssueContract } from "../../apps/backend/src/intake";
-
-test("parses the requested issue and refuses missing, malformed or unsafe IDs", () => {
-  expect(parseIssueArgs(["--issue", "72", "--dry-run"])).toEqual({
-    issue: 72,
-    dryRun: true,
-    push: true,
-  });
-  expect(parseIssueArgs(["--issue", "72", "--no-push"])).toEqual({
-    issue: 72,
-    dryRun: false,
-    push: false,
-  });
-  for (const id of ["0", "-1", "72abc", "1.2", "9007199254740992"]) {
-    expect(() => parseIssueArgs(["--issue", id])).toThrow();
-  }
-  expect(() => parseIssueArgs([])).toThrow();
-  expect(() => parseIssueArgs(["--issue", "72", "--merge", "auto"])).toThrow();
-});
 
 test("refuses a different repository, issue, closed issue or blocking label", () => {
   const issue = {

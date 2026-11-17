@@ -1,10 +1,3 @@
-import { parseArgs } from "node:util";
-import { readExecutionAuthority } from "@animus/contracts/execution-authority";
-import { assertInstallationNotHeldAtStateDir } from "@animus/contracts/installation-hold";
-import { join, resolve } from "node:path";
-import { inspectLocalLoop, runAnimusLoop, type LocalIssue } from "./animus-loop";
-import { getMergedIssueNumbers, resolveProjectWorkspace } from "../packages/contracts/src/paths";
-import { isActiveClaim, parseDependencies } from "../apps/backend/src/intake/parser";
 import {
   bindIssueContract,
   type BoundIssueContract,
@@ -12,25 +5,6 @@ import {
 } from "../apps/backend/src/intake";
 
 export { bindIssueContract, type BoundIssueContract, type GithubRead };
-
-export function parseIssueArgs(args: string[]): { issue: number; dryRun: boolean; push: boolean } {
-  const { values } = parseArgs({
-    args,
-    strict: true,
-    allowPositionals: false,
-    options: {
-      issue: { type: "string" },
-      "dry-run": { type: "boolean", default: false },
-      "no-push": { type: "boolean", default: false },
-    },
-  });
-  if (!values.issue || !/^[1-9]\d*$/.test(values.issue)) {
-    throw new Error("Usage: bun run loop --issue <positive issue number> [--dry-run] [--no-push]");
-  }
-  const issue = Number(values.issue);
-  if (!Number.isSafeInteger(issue)) throw new Error("Issue number is too large");
-  return { issue, dryRun: values["dry-run"] ?? false, push: !values["no-push"] };
-}
 
 export function issueSpecification(url: string): string {
   return [
@@ -88,50 +62,4 @@ export function readIssueContract(
   validateSections = false,
 ): BoundIssueContract {
   return bindIssueContract({ root, number, repo, read, validateSections });
-}
-
-if (import.meta.main) {
-  try {
-    // Fail closed before any GitHub read, worktree, forge or builder spawn.
-    assertInstallationNotHeldAtStateDir();
-    if (readExecutionAuthority().authority !== "legacy") {
-      throw new Error("execution_authority_moved: use animus plan dispatch with an admitted plan");
-    }
-    const { issue, dryRun, push } = parseIssueArgs(process.argv.slice(2));
-    const root = resolve(import.meta.dir, "..");
-    const repository = githubJson(["repo", "view", "--json", "nameWithOwner"], root) as {
-      nameWithOwner?: string;
-    };
-    if (!repository.nameWithOwner) throw new Error("Unable to identify repository");
-    const contract = readIssueContract(root, issue, repository.nameWithOwner);
-    const workspace = resolveProjectWorkspace(root);
-    if (dryRun) {
-      console.log(
-        JSON.stringify(
-          {
-            dryRun: true,
-            engine: "local-pi",
-            repository: repository.nameWithOwner,
-            issue: contract,
-            merge: "approve",
-            model: process.env.FACTORY_LOOP_MODEL || "Pi configured default",
-            stateDirectory: workspace.stateRoot,
-            specification: issueSpecification(contract.url),
-          },
-          null,
-          2,
-        ),
-      );
-    } else {
-      console.error(
-        "Local trusted-code execution, not a sandbox. No automatic publication or merge. Holdouts are omitted from checkout but Git history/host remain reachable.",
-      );
-      const result = await runAnimusLoop(root, contract, { push });
-      console.log(JSON.stringify(result, null, 2));
-      if (result.status !== "waiting_approval" && result.status !== "merged") process.exitCode = 1;
-    }
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : "Loop launch failed");
-    process.exitCode = 1;
-  }
 }

@@ -54,11 +54,9 @@ can never start a runner, lease or tool.
 | Consumer | Legacy | Migrating | Local |
 | --- | --- | --- | --- |
 | `apps/backend/src/dispatch` | `authority_not_activated` | `authority_not_activated` | dispatch admitted plans |
-| `apps/backend/src/monitor` | GitHub/filesystem schedule | local tick fails closed | local dispatch tick |
 | `scripts/scheduler.ts` | local scheduler refused | refused | local scheduler |
-| `scripts/cli/commands/loop.ts` | GitHub loop | `execution_authority_moved` | local scheduler |
+| `scripts/cli/commands/loop.ts` | `watch`/`evidence` only; lap launcher removed | `execution_authority_moved` | local scheduler |
 | `apps/engine-host/src/native.ts` | native launch | `execution_authority_moved` | `execution_authority_moved` |
-| `scripts/loop/session.ts` (mid-lap) | legacy lap may run | `execution_authority_moved` before save/role/CI/publisher | `execution_authority_moved` |
 | `scripts/loop/merge-queue.ts` | legacy ref/DB/push/merge | `execution_authority_moved` (no DB row, no push) | `execution_authority_moved` |
 | `apps/backend/src/publication` (PR + draft issues) | publish/reconcile | 409 `execution_authority_moving` | publish/reconcile |
 | `apps/backend/src/integration` (child land) | land | 409 `execution_authority_moving` | land |

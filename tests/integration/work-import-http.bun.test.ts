@@ -19,7 +19,6 @@ describe("work import through backend, client and CLI readers", () => {
   async function startApp(): Promise<BackendApp> {
     return await createBackendApp({
       stateDir: join(root, "state"),
-      startMonitor: false,
       forge,
     });
   }

@@ -112,7 +112,6 @@ describe("candidate-bound evidence through backend HTTP, client and CLI", () => 
 
     app = await createBackendApp({
       stateDir: join(root, "state"),
-      startMonitor: false,
       forge,
       dispatch: {
         processAlive: () => true,

@@ -72,8 +72,13 @@ A stale succeeded candidate re-enters a new bounded builder lap when the target 
 advanced since it was built. Dependents release only after the verified inclusion is
 recorded, not from issue closure or a `MERGED` flag alone.
 
-The normal monitor tick and both local CLI entry points (`scripts/scheduler.ts` and
-the `animus loop` scheduler command) build the same execution composition. Each tick
+Both local CLI entry points (`scripts/scheduler.ts` and the `animus loop` scheduler
+command) build the same execution composition. The backend also runs a periodic
+scheduler that, on each active project's `interval_seconds` (default 300 s), refreshes
+that project's GitHub intake and — when the local execution authority is active — runs
+the frozen-plan dispatch tick so delivery stages re-read remote CI, publish and merge.
+It never reads the GitHub backlog and never launches a legacy lap; work can also start
+from the operator **Dispatch** control or `POST /projects/:id/dispatch`. Each tick
 first resumes a succeeded run whose gate is not terminal — so a builder-only run, a
 pending required-CI read or an interrupted audit continues without a new lap — and
 then dispatches the next eligible plan member. Child, standalone and final runs all
@@ -119,10 +124,8 @@ run. Stop/takeover and cutover staging honor the recorded role process identity:
   interrupted claims even when the builder run has succeeded, with fresh CAS state
   and interrupt/complete controls.
 
-Embedded monitor operations inherit an async-local subprocess policy that leaves
-SIGTERM/SIGINT ownership with the backend. Nested Git and agent processes still have
-bounded owned-process cleanup, but cannot terminate the backend with the standalone
-loop's signal exit code. Standalone loop commands retain their signal handlers.
+Subprocesses started by the loop runtime carry bounded owned-process cleanup, and
+standalone loop commands retain their own SIGTERM/SIGINT handling.
 
 ## Operator authentication and actor attribution
 
@@ -171,7 +174,6 @@ verified). With `FACTORY_REMOTE_ACCESS=true`, every other request requires
 | `/api/v1/authority/*` | Execution-authority state, staging, activation, abort, and backup inspection |
 | `/api/v1/backups/*`, `/api/v1/restores/*` | Backup creation, listing, inspection, and held restore |
 | `GET /api/v1/intake`, `GET /api/v1/intake/:number` | Global intake projection and per-issue admission metadata |
-| `GET /api/v1/monitoring` | Monitor status, capacity, and registered-project projections |
 | `/api/v1/projects`, `/api/v1/projects/:id` | Project registry, retargeting, and deregistration |
 | `/api/v1/projects/:id/*` | Project-scoped intake, work, drafts, plans, dispatch, coordination, evidence, publication, draft-publications, integration, delivery, final, board, laps, controls, promotion, brakes, and commands |
 | `/api/v1/ws` | WebSocket heartbeat and invalidation events |

@@ -10,8 +10,10 @@ import {
   type TickSkipReason,
 } from "./loop/scheduler";
 import { readIssueContract } from "./loop";
-import { runAnimusLoop } from "./animus-loop";
-import { readExecutionAuthority } from "@animus/contracts/execution-authority";
+import {
+  LegacyLauncherRemovedError,
+  readExecutionAuthority,
+} from "@animus/contracts/execution-authority";
 import { resolveProjectWorkspace } from "../packages/contracts/src/paths";
 import { parseDependencies, isActiveClaim } from "../apps/backend/src/intake/parser";
 import { initializeDatabase, ProjectRegistryService } from "../apps/backend/src/registry";
@@ -234,7 +236,7 @@ if (import.meta.main) {
       closedNumbers: Set<number>;
     }> => ({ issues: [], closedNumbers: new Set<number>() });
     const legacyLaunchDisabled = async (): Promise<{ runId: string }> => {
-      throw new Error("Legacy GitHub launch path is disabled for local dispatch");
+      throw new LegacyLauncherRemovedError();
     };
 
     if (once) {

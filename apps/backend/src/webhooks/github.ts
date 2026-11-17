@@ -12,10 +12,6 @@ export interface GitHubWebhookOptions {
    * Remote CI events stay supported for readiness observation.
    */
   authority?: () => ExecutionAuthority;
-  onProjectWake?: (
-    projectId: string,
-    reason: string,
-  ) => { triggered: boolean; pending_wake: boolean } | void;
 }
 
 const SIGNATURE_REGEX = /^sha256=[0-9a-fA-F]{64}$/;
@@ -255,30 +251,18 @@ export class GitHubWebhookService {
       return Response.json(ack, { status: 202 });
     }
 
-    let wakeResult: { triggered: boolean; pending_wake: boolean } | void = undefined;
-    if (this.options.onProjectWake) {
-      try {
-        wakeResult = this.options.onProjectWake(project.id, classification.reason);
-      } catch (err) {
-        console.error("Failed to wake project monitor:", err);
-      }
-    }
-
-    const isPendingWake = Boolean(wakeResult?.pending_wake);
     console.log(
       JSON.stringify({
         event: "github_webhook",
         status: "accepted",
         delivery,
         project_id: project.id,
-        ...(isPendingWake ? { pending_wake: true } : {}),
       }),
     );
     const ack: WebhookAck = {
       status: "accepted",
       delivery: deliveryId,
       project_id: project.id,
-      ...(isPendingWake ? { pending_wake: true } : {}),
     };
     return Response.json(ack, { status: 202 });
   }

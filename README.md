@@ -6,7 +6,7 @@ Autonomous self-improving software factory with unified launcher, React web cons
 durable persistence, and private engine-host coordination on Bun/Vite+.
 
 - Start operations: `bun apps/launcher/src/main.ts --port 3000`; see [runtime contract](docs/runtime.md).
-- Configure and enroll repositories: [onboarding guide](docs/onboarding.md). The backend automatically monitors eligible registered projects while running.
+- Configure and enroll repositories: [onboarding guide](docs/onboarding.md). The backend checks GitHub on a timer (intake refresh plus remote-CI/delivery advance); execution itself still needs the local execution authority and an admitted plan.
 - New health journey: [exact toolchain, independent starts and verification](docs/monorepo-health.md).
   Use Bun **1.4.4**, Node **26.13.0**, `bun install --frozen-lockfile`, then
   `bun run toolchain`. Vite+ **1.4.0** is project-local and Node-backed.

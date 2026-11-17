@@ -3387,8 +3387,6 @@ Depends on: None
         const expectedBunSuites = [
           "tests/integration/health.bun.test.ts",
           "tests/integration/onboarding-http.bun.test.ts",
-          "tests/integration/onboarding-monitor.bun.test.ts",
-          "tests/integration/local-loop.bun.test.ts",
           "tests/integration/local-loop-deadlines.bun.test.ts",
           "tests/integration/loop-script.bun.test.ts",
           "tests/integration/loop-watch.bun.test.ts",

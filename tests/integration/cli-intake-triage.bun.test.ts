@@ -10,6 +10,7 @@ import {
 } from "../../apps/backend/src/registry";
 import { BrakeService } from "../../apps/backend/src/command/brakes";
 import { runIntakeCommand } from "../../scripts/cli/commands/operations";
+import { writeRepoConfig } from "@animus/contracts/repo-config";
 import { runCli } from "../../scripts/cli/cli";
 import type { RunTriagePassOptions, TriagePassResult } from "../../scripts/loop/triage";
 
@@ -21,6 +22,15 @@ describe("CLI animus intake triage", () => {
   let registry: ProjectRegistryService;
   let brakes: BrakeService;
   let projectId: string;
+
+  /**
+   * Pin an open schedule so a developer's machine-level `~/.animus/config.yaml`
+   * cannot decide this suite. Tests that exercise `.animus/schedule.json`
+   * deliberately do not call this: their own schedule must stay authoritative.
+   */
+  function pinOpenSchedule(): void {
+    writeRepoConfig(checkout, { schedule: { work_window: { enabled: false } } });
+  }
 
   beforeEach(async () => {
     root = mkdtempSync(join(tmpdir(), "cli-intake-triage-"));
@@ -60,6 +70,7 @@ describe("CLI animus intake triage", () => {
   });
 
   test("runs triage on registered project with real root, repo, stateRoot in human format", async () => {
+    pinOpenSchedule();
     let capturedOptions: RunTriagePassOptions | undefined;
     const mockRunner = async (opts: RunTriagePassOptions): Promise<TriagePassResult> => {
       capturedOptions = opts;
@@ -108,6 +119,7 @@ describe("CLI animus intake triage", () => {
   });
 
   test("honors --issue flag and targets specific issue", async () => {
+    pinOpenSchedule();
     let capturedOptions: RunTriagePassOptions | undefined;
     const mockRunner = async (opts: RunTriagePassOptions): Promise<TriagePassResult> => {
       capturedOptions = opts;
@@ -140,6 +152,7 @@ describe("CLI animus intake triage", () => {
   });
 
   test("supports positional issue number argument", async () => {
+    pinOpenSchedule();
     let capturedOptions: RunTriagePassOptions | undefined;
     const mockRunner = async (opts: RunTriagePassOptions): Promise<TriagePassResult> => {
       capturedOptions = opts;
@@ -165,6 +178,7 @@ describe("CLI animus intake triage", () => {
   });
 
   test("honors --dry-run flag and outputs structured JSON with --json", async () => {
+    pinOpenSchedule();
     let capturedOptions: RunTriagePassOptions | undefined;
     const mockRunner = async (opts: RunTriagePassOptions): Promise<TriagePassResult> => {
       capturedOptions = opts;
@@ -358,6 +372,7 @@ describe("CLI animus intake triage", () => {
   });
 
   test("returns exit code 1 with honest errors when triage pass fails", async () => {
+    pinOpenSchedule();
     const mockFailingRunner = async (): Promise<TriagePassResult> => {
       return {
         processed: [
