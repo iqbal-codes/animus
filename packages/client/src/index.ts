@@ -1,7 +1,5 @@
 import {
   healthSchema,
-  monitoringStatusSchema,
-  type MonitoringStatus,
   diagnosticsSchema,
   workflowCatalogSchema,
   lapListSchema,
@@ -653,9 +651,6 @@ export function createFactoryClient(options: {
       const parsed = promotionSubmissionSchema.safeParse(submission ?? {});
       if (!parsed.success) throw new FactoryClientError("invalid_payload");
       return postJson("/api/v1/promotion/prepare", parsed.data, promotionResultSchema);
-    },
-    async monitoring(): Promise<MonitoringStatus> {
-      return getJson("/api/v1/monitoring", monitoringStatusSchema);
     },
     async projects(): Promise<ProjectList> {
       return getJson("/api/v1/projects", projectListSchema);

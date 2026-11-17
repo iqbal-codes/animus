@@ -525,7 +525,6 @@ const app = await createBackendApp({
   db,
   forge,
   stateDir: join(root, "state"),
-  startMonitor: false,
   webDir: fileURLToPath(new URL("../../apps/web/dist", import.meta.url)),
 });
 const server = Bun.serve({

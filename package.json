@@ -22,7 +22,6 @@
     "format": "vp fmt --check apps packages scripts/health scripts/release tests/integration vite.config.ts tsconfig.json tsconfig.tools.json package.json",
     "format:write": "vp fmt --write apps packages scripts/health scripts/release tests/integration vite.config.ts tsconfig.json tsconfig.tools.json package.json",
     "lint": "vp lint --deny-warnings apps packages scripts/health scripts/release tests/integration vite.config.ts",
-    "loop": "bun scripts/loop.ts",
     "loop:watch": "bun scripts/loop-watch.ts",
     "package:release": "bun scripts/release/package.ts",
     "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",

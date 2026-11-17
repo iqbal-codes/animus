@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,8 +22,18 @@ import {
 } from "../../scripts/loop/harness-memory";
 
 const roots: string[] = [];
+// Isolate the machine skills store: a developer's ~/.animus/skills must never
+// satisfy the accepted-baseline assertions in this file.
+const originalSkillsHome = process.env.ANIMUS_SKILLS_HOME;
+const machineSkillsHome = mkdtempSync(join(tmpdir(), "harness-memory-machine-skills-"));
+process.env.ANIMUS_SKILLS_HOME = machineSkillsHome;
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+afterAll(() => {
+  if (originalSkillsHome === undefined) delete process.env.ANIMUS_SKILLS_HOME;
+  else process.env.ANIMUS_SKILLS_HOME = originalSkillsHome;
+  rmSync(machineSkillsHome, { recursive: true, force: true });
 });
 function git(root: string, ...args: string[]): string {
   return execFileSync("git", ["-C", root, ...args], {

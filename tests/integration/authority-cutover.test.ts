@@ -88,7 +88,6 @@ describe("authority cutover (#165)", () => {
   async function buildApp() {
     app = await createBackendApp({
       stateDir,
-      startMonitor: false,
       forge,
       dispatch: { engine: { transport: committingTransport() } },
     });

@@ -168,7 +168,6 @@ describe("prepared plan admission through backend, client and CLI", () => {
 
     app = await createBackendApp({
       stateDir: join(root, "state"),
-      startMonitor: false,
       forge,
     });
     const registry = new ProjectRegistryService(app.db, forge);

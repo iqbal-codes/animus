@@ -38,7 +38,6 @@ execFileSync("git", ["-C", checkout, "commit", "--allow-empty", "-q", "-m", "bas
 const forge = new SyntheticForgeAdapter({ "owner/authority-ui": 971 });
 const app = await createBackendApp({
   stateDir,
-  startMonitor: false,
   forge,
   webDir: fileURLToPath(new URL("../../apps/web/dist", import.meta.url)),
 });

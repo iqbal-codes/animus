@@ -155,7 +155,11 @@ describe("Canonical ProjectWorkspace Resolution & Unified Preflight (Issue #142)
 
   describe("AC3: Operational Preflight (evaluateWorkspacePreflight / assertOperationalReadiness)", () => {
     test("returns ready when all preflight checks pass", () => {
-      const preflight = evaluateWorkspacePreflight(repoDir);
+      const preflight = evaluateWorkspacePreflight(repoDir, {
+        config: {
+          work_window: { enabled: false, start_time: "00:00", end_time: "00:00", timezone: "UTC" },
+        },
+      });
       expect(preflight.ok).toBe(true);
       expect(preflight.status).toBe("ready");
       expect(preflight.brakes.halted).toBe(false);
@@ -163,7 +167,11 @@ describe("Canonical ProjectWorkspace Resolution & Unified Preflight (Issue #142)
       expect(preflight.workWindow.withinWindow).toBe(true);
       expect(preflight.capacity.hasCapacity).toBe(true);
 
-      const asserted = assertOperationalReadiness(repoDir);
+      const asserted = assertOperationalReadiness(repoDir, {
+        config: {
+          work_window: { enabled: false, start_time: "00:00", end_time: "00:00", timezone: "UTC" },
+        },
+      });
       expect(asserted.ok).toBe(true);
     });
 
@@ -297,7 +305,10 @@ describe("Canonical ProjectWorkspace Resolution & Unified Preflight (Issue #142)
 
       // Preflight with parallel: 1 should report capacity_full
       const preflight = evaluateWorkspacePreflight(repoDir, {
-        config: { parallel: 1 },
+        config: {
+          parallel: 1,
+          work_window: { enabled: false, start_time: "00:00", end_time: "00:00", timezone: "UTC" },
+        },
       });
       expect(preflight.ok).toBe(false);
       expect(preflight.status).toBe("held");
@@ -307,7 +318,10 @@ describe("Canonical ProjectWorkspace Resolution & Unified Preflight (Issue #142)
 
       // Preflight with parallel: 2 should be ready
       const preflightParallel2 = evaluateWorkspacePreflight(repoDir, {
-        config: { parallel: 2 },
+        config: {
+          parallel: 2,
+          work_window: { enabled: false, start_time: "00:00", end_time: "00:00", timezone: "UTC" },
+        },
       });
       expect(preflightParallel2.ok).toBe(true);
       expect(preflightParallel2.capacity.activeLaps).toBe(1);

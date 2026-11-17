@@ -141,7 +141,7 @@ Inspect generated changes with `git status` and `git diff`. New delivery worktre
 animus project register --repo OWNER/REPOSITORY
 ```
 
-The factory verifies the GitHub repository identity and clones it into its own managed storage. No laptop checkout path is sent. Repositories without usable checks and model configuration remain held by monitoring until their setup is completed. Enrollment alone does not manufacture working checks or credentials.
+The factory verifies the GitHub repository identity and clones it into its own managed storage. No laptop checkout path is sent. Repositories without usable checks and model configuration remain held until their setup is completed. Enrollment alone does not manufacture working checks or credentials.
 
 For a checkout already on the factory machine:
 
@@ -173,21 +173,22 @@ See [issue tracker & triage labels](agents/issue-tracker.md) for admission seman
 
 ## Monitoring and execution
 
-The backend owns registered-project monitoring for its lifetime. It enumerates the durable registry, checks each project's checkout and configuration, and uses that project's scheduler interval, capacity, work window, and admission rules. Global/project database brakes and filesystem brakes prevent dispatch. Changes to the repository identity or a late launch brake are checked again before execution.
+The backend owns the durable project registry and runs a periodic scheduler. On each active project's `interval_seconds` (default 300 s, override with `FACTORY_SCHEDULER_INTERVAL_MS`) it refreshes that project's GitHub intake — issues, admission decisions, and canonical plan fast-track — and, when the local execution authority is active, runs the frozen-plan dispatch tick so delivery stages re-read remote CI, publish and merge. It never reads the GitHub backlog, never launches a lap, and never runs triage.
 
-**Starting the backend enables scheduled execution for eligible registered projects.** Registration is not a separate human approval gate for each future job. Do not label work `ready-for-agent` unless automatic execution is intended under the configured policy. STOP/PAUSE and schedule controls remain the operational brakes. A completed lap is not proof of a merge or deployment.
+Execution can also start on demand: the **Dispatch** control in the UI, `POST /api/v1/projects/:id/dispatch`, or `animus plan dispatch`. Every path runs the same frozen-plan dispatch tick.
 
-Inspect the registry and actual monitor state:
+**Starting the backend is not a promise of execution.** With the local execution authority active, the scheduler and the Dispatch control advance admitted plans; without it, dispatch refuses with `authority_not_activated`. Do not label work `ready-for-agent` unless you intend someone or something to dispatch it. STOP/PAUSE and schedule controls remain the operational brakes. A completed lap is not proof of a merge or deployment.
+
+Inspect the registry:
 
 ```sh
 animus project list
-animus project monitoring
-animus project monitoring --json
+animus project list --json
 ```
 
-The corresponding read endpoint is `GET /api/v1/monitoring`. States distinguish idle, running, held, skipped, completed, and error. `setup_incomplete`, checkout mismatch, label failures, capacity, work-window restrictions, and brakes are not presented as successful execution. A project can be enrolled while held from execution.
+Refusals are never presented as successful execution: `setup_incomplete`, checkout mismatch, label failures, brakes, and authority refusals all hold the project instead of reporting a run. A project can be enrolled while held from execution.
 
-Monitoring stops taking new work during graceful backend shutdown and waits for in-flight work to finish. A crashed monitor lock is not silently stolen; inspect active processes and local-loop evidence before manually recovering a stale lock.
+Graceful backend shutdown stops the scheduler, then waits for in-flight work to finish. A crashed execution lock is not silently stolen; inspect active processes and local-loop evidence before manually recovering a stale lock.
 
 ## Verification boundary
 

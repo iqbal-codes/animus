@@ -395,7 +395,6 @@ export async function createFixture(): Promise<Fixture> {
         db,
         forge,
         stateDir: join(root, "state"),
-        startMonitor: false,
         webDir: join(root, "web"),
       });
       return app;

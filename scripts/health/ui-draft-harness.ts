@@ -280,7 +280,6 @@ async function main() {
 
   const app: BackendApp = await createBackendApp({
     stateDir,
-    startMonitor: false,
     forge,
     draftPlanner: planner,
     webDir,

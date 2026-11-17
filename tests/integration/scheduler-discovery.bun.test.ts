@@ -14,6 +14,17 @@ import {
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { writeRepoConfig } from "@animus/contracts/repo-config";
+
+/**
+ * Temp roots pin their own schedule so a developer's machine-level
+ * `~/.animus/config.yaml` (work window, parallel) never decides test outcomes.
+ */
+async function scheduleRoot(prefix: string): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), prefix));
+  writeRepoConfig(root, { schedule: { work_window: { enabled: false } } });
+  return root;
+}
 
 test("scheduler resolves only shared dependencies of ready open candidates", async () => {
   const forge: IssueForgeAdapter = new SyntheticForgeAdapter({ "owner/repo": 1 });
@@ -162,7 +173,7 @@ test("scheduler dependency outage refuses discovery instead of admitting work", 
 });
 
 test("runSchedulerTick executes non-blocking triage when builder capacity is full and returns before triage finishes", async () => {
-  const tmp = await mkdtemp(join(tmpdir(), "animus-sched-cap-"));
+  const tmp = await scheduleRoot("animus-sched-cap-");
   clearTriageTracking(tmp);
   try {
     const runsDir = join(tmp, "runs");
@@ -360,7 +371,7 @@ test("STOP/PAUSE brakes and work window enforce zero spawn for builder laps and 
 });
 
 test("triage background errors are inspectable without throwing or blocking builder scheduling", async () => {
-  const tmp = await mkdtemp(join(tmpdir(), "animus-sched-err-"));
+  const tmp = await scheduleRoot("animus-sched-err-");
   clearTriageTracking(tmp);
   try {
     let builderRan = false;
@@ -420,7 +431,7 @@ test("triage background errors are inspectable without throwing or blocking buil
 });
 
 test("structured runTriagePass failure records error status and honest counters without being lost", async () => {
-  const tmp = await mkdtemp(join(tmpdir(), "animus-sched-struct-err-"));
+  const tmp = await scheduleRoot("animus-sched-struct-err-");
   clearTriageTracking(tmp);
   try {
     const candidate: BacklogCandidate = {
@@ -491,7 +502,7 @@ test("structured runTriagePass failure records error status and honest counters 
 });
 
 test("triage promotes non-ready issue which becomes eligible for builder dispatch on same tick", async () => {
-  const tmp = await mkdtemp(join(tmpdir(), "animus-sched-promote-same-"));
+  const tmp = await scheduleRoot("animus-sched-promote-same-");
   clearTriageTracking(tmp);
   try {
     let issueLabels = ["needs-triage"];
@@ -541,7 +552,7 @@ test("triage promotes non-ready issue which becomes eligible for builder dispatc
 });
 
 test("deferred triage promotion admits and dispatches issue on next tick", async () => {
-  const tmp = await mkdtemp(join(tmpdir(), "animus-sched-promote-next-"));
+  const tmp = await scheduleRoot("animus-sched-promote-next-");
   clearTriageTracking(tmp);
   try {
     let issueLabels = ["needs-triage"];

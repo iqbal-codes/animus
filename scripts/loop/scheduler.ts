@@ -21,7 +21,6 @@ import {
   getMergedIssueNumbers,
 } from "../../packages/contracts/src/paths";
 import { loadIssueDossier } from "./dossier";
-import { reconcileWaitingApprovalPrCi, type GhRunner, type checkPrCiStatus } from "./ci";
 import { runTriagePass } from "./triage";
 import { resolveTriageStateRoot } from "./triage-state";
 import {
@@ -483,11 +482,6 @@ export interface SchedulerTickOptions {
   repo?: string;
   projectId?: string;
   brakes?: BrakeChecker;
-  reconcileCi?: boolean;
-  ghRun?: GhRunner;
-  checkPrCi?: typeof checkPrCiStatus;
-  /** Canonical installation state dir; re-checked inside legacy CI reconciliation. */
-  installationStateDir?: string;
   triage?: TriagePassHandler | null;
   fetchBacklog: () => Promise<{ issues: BacklogCandidate[]; closedNumbers: Set<number> }>;
   launchLap: (issue: BacklogCandidate) => Promise<{ runId: string }>;
@@ -549,21 +543,7 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
   const stateRoot = options.stateRoot ?? workspace.stateRoot;
   const repo = options.repo ?? detectRepo(root) ?? "";
 
-  // 4. Reconcile PR CI status for runs waiting approval
-  if (options.reconcileCi !== false) {
-    try {
-      await reconcileWaitingApprovalPrCi(runsDir, root, {
-        ghRun: options.ghRun,
-        maxLaps: mergedConfig.max_laps,
-        checkPrCi: options.checkPrCi,
-        installationStateDir: options.installationStateDir,
-      });
-    } catch (reconcileErr) {
-      console.error("Warning: CI reconciliation failed:", reconcileErr);
-    }
-  }
-
-  // 5. Dispatch non-blocking triage pass BEFORE builder capacity check so triage
+  // 4. Dispatch non-blocking triage pass BEFORE builder capacity check so triage
   // executes regardless of builder capacity without blocking builder scheduling
   const triageResult = dispatchTriagePass({
     root,
@@ -572,7 +552,7 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
     triageFn: options.triage,
   });
 
-  // 6. Check active builder laps & capacity across candidate run directories
+  // 5. Check active builder laps & capacity across candidate run directories
   const candidateRunsDirs = [runsDir, ...(workspace.fallbackRunsDirs ?? [])];
   let activeCount = 0;
   const waitingApprovalNumbers = new Set<number>();
@@ -595,7 +575,7 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
     };
   }
 
-  // 7. Fetch & filter backlog
+  // 6. Fetch & filter backlog
   let backlog: { issues: BacklogCandidate[]; closedNumbers: Set<number> };
   try {
     backlog = await options.fetchBacklog();
@@ -632,10 +612,10 @@ export async function runSchedulerTick(options: SchedulerTickOptions): Promise<S
     };
   }
 
-  // 8. Select frontier issue
+  // 7. Select frontier issue
   const target = admitted[0]!;
 
-  // 9. Launch lap
+  // 8. Launch lap
   try {
     const ack = await options.launchLap(target);
     return {

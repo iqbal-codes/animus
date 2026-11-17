@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   evaluateHostReadiness,
   extractReport,
+  parseAgentReport,
   validateBuilderReport,
   validateEvidenceCitations,
   validateQaReport,
@@ -20,7 +21,6 @@ import {
   reviewerReportSchema,
   type ReviewFinding,
 } from "../../scripts/loop/report-schema";
-import { extractRequiredAcIds } from "../../scripts/animus-loop";
 
 describe("Loop Report Schema & Strict Validation", () => {
   test("whitespace in a citation never bypasses file verification", async () => {
@@ -56,6 +56,18 @@ describe("Loop Report Schema & Strict Validation", () => {
     );
     expect(result.problems.some((p) => p.includes("contradictory"))).toBe(true);
   });
+
+  test("accepts a single fenced JSON report without discarding findings and rejects ambiguous or invalid reports", () => {
+    const value = { candidate: "abc", verdict: "pass", findings: ["must fix"], checks: [] };
+    expect(parseAgentReport(JSON.stringify(value))).toEqual(value);
+    expect(parseAgentReport(`QA summary\n\n\`\`\`json\n${JSON.stringify(value)}\n\`\`\``)).toEqual(
+      value,
+    );
+    expect(() => parseAgentReport("I checked it, looks good")).toThrow();
+    expect(() => parseAgentReport("```json\n{}\n```\n```json\n{}\n```")).toThrow();
+    expect(() => parseAgentReport("```json\ninvalid\n```")).toThrow();
+  });
+
   test("HostBoundIdentities requires non-empty SHAs and distinguishes base tip from merge-base", () => {
     const valid = {
       targetBaseTip: "1111111111111111111111111111111111111111",
@@ -640,36 +652,6 @@ Code review completed across Standards and Spec axes.
     ).toBe(true);
   });
 
-  test("extractRequiredAcIds extracts acceptance criteria from issue contract text", () => {
-    const issueWithContract = {
-      number: 101,
-      title: "Implement contract",
-      body: "## Description\nImplement protocol.\n\n## Acceptance Criteria\n- [ ] AC1: Strict validation\n- [x] AC-2: No bypasses",
-      comments: ["Contract\n* C1: Bound candidate\n* AC3: Preserve structured findings"],
-      url: "https://github.com/example/repo/issues/101",
-      dependencies: [],
-      activeClaim: false,
-    };
-
-    const ids = extractRequiredAcIds(issueWithContract);
-    expect(ids).toContain("AC1");
-    expect(ids).toContain("AC-2");
-    expect(ids).toContain("C1");
-    expect(ids).toContain("AC3");
-
-    // Empty text returns empty array
-    const emptyIssue = {
-      number: 102,
-      title: "No ACs",
-      body: "Plain issue",
-      comments: [],
-      url: "https://github.com/example/repo/issues/102",
-      dependencies: [],
-      activeClaim: false,
-    };
-    expect(extractRequiredAcIds(emptyIssue)).toEqual([]);
-  });
-
   test("buildProviderArgv materializes skill content and system prompts without unsupported flags", async () => {
     const tempDir = await mkdtemp(join(tmpdir(), "animus-provider-test-"));
     const skillDir = join(tempDir, "my-skill");
@@ -724,11 +706,7 @@ Code review completed across Standards and Spec axes.
       "holdout-verifier",
       "holdout-writer",
       "investigate",
-      "loop-check-app",
-      "loop-pick",
       "loop-reflect",
-      "loop-review",
-      "loop-work",
       "manage",
       "plan",
       "simplify",

@@ -238,7 +238,6 @@ async function buildFixture(
 
   const app = await createBackendApp({
     stateDir: join(root, "state"),
-    startMonitor: false,
     forge,
     draftPlanner: planner,
   });

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -11,13 +11,10 @@ import {
   assertInstallationNotHeldAtStateDir,
 } from "@animus/contracts/installation-hold";
 import { initializeDatabase } from "../../apps/backend/src/registry/db";
-import { ProjectRegistryService, SyntheticForgeAdapter } from "../../apps/backend/src/registry";
-import { createBackendApp, type BackendApp } from "../../apps/backend/src/main";
-import type { MonitorRuntime } from "../../apps/backend/src/monitor/runtime";
 import { DeliveryRuntimeCoordinator } from "../../apps/backend/src/delivery/runtime";
-import { runAnimusLoop } from "../../scripts/animus-loop";
-import { runLoopCliCommand } from "../../scripts/cli/commands/loop";
+import { runSchedulerCliCommand } from "../../scripts/cli/commands/loop";
 import { launchNativeLap } from "../../apps/engine-host/src/native";
+import { writeExecutionAuthority } from "@animus/contracts/execution-authority";
 
 const REPO = "owner/launch-hold";
 const ORIGINAL_ANIMUS_HOME = process.env.ANIMUS_HOME;
@@ -30,22 +27,6 @@ function git(cwd: string, ...args: string[]): string {
     encoding: "utf-8",
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
-}
-
-function issueBody(): string {
-  return [
-    "## Source and problem",
-    "Held launch probe.",
-    "## Outcome",
-    "No builder may spawn.",
-    "## Invariants",
-    "- Fail closed.",
-    "## Acceptance criteria",
-    "- [ ] AC1: held.",
-    "## Boundary",
-    "Probe.",
-    "Depends on: None",
-  ].join("\n");
 }
 
 function createCheckout(root: string): string {
@@ -75,12 +56,22 @@ function holdDatabase(stateDir: string, now = Date.now()): void {
   }
 }
 
+function reconcileHoldDatabase(stateDir: string, now = Date.now()): void {
+  const db = initializeDatabase(join(stateDir, "console.db"));
+  try {
+    db.prepare(
+      "UPDATE installation_holds SET status = 'reconciled', reconciled_at = ?, reconciled_by = 'test' WHERE id = 'installation'",
+    ).run(now);
+  } finally {
+    db.close();
+  }
+}
+
 describe("native launch wrappers are fenced by the real installation hold", () => {
   let root: string;
   let home: string;
   let stateDir: string;
   let checkout: string;
-  let app: BackendApp | null = null;
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "animus-launch-hold-"));
@@ -94,13 +85,7 @@ describe("native launch wrappers are fenced by the real installation hold", () =
     holdDatabase(stateDir);
   });
 
-  afterEach(async () => {
-    if (app) {
-      try {
-        await app.stop();
-      } catch {}
-      app = null;
-    }
+  afterEach(() => {
     if (ORIGINAL_ANIMUS_HOME === undefined) delete process.env.ANIMUS_HOME;
     else process.env.ANIMUS_HOME = ORIGINAL_ANIMUS_HOME;
     if (ORIGINAL_ANIMUS_STATE_DIR === undefined) delete process.env.ANIMUS_STATE_DIR;
@@ -110,77 +95,37 @@ describe("native launch wrappers are fenced by the real installation hold", () =
     rmSync(root, { recursive: true, force: true });
   });
 
-  test("runAnimusLoop rejects a held installation before any worktree or transport work", async () => {
-    const projectStateRoot = join(root, "project-worktree-state");
-    let transportCalls = 0;
-    await expect(
-      runAnimusLoop(
-        checkout,
-        {
-          number: 1,
-          title: "Held launch",
-          body: issueBody(),
-          labels: ["ready-for-agent"],
-          state: "OPEN",
-        } as never,
-        {
-          stateRoot: projectStateRoot,
-          transport: async () => {
-            transportCalls += 1;
-            throw new Error("builder transport must not run while held");
-          },
-        },
-      ),
-    ).rejects.toMatchObject({ code: "installation_held" });
-    expect(transportCalls).toBe(0);
-    // The project worktree state root has no console.db and is never used for the
-    // hold check; nothing may be allocated before the gate rejects.
-    expect(existsSync(projectStateRoot)).toBe(false);
+  test("the removed legacy launcher fails closed and the hold gate blocks first", async () => {
+    const originalError = console.error;
+    const messages: string[] = [];
+    console.error = (...args: unknown[]) => {
+      messages.push(args.map(String).join(" "));
+    };
+    try {
+      // A held installation refuses before the launcher resolves any work.
+      expect(await runSchedulerCliCommand({ repoRoot: checkout, once: true })).toBe(1);
+      expect(messages.join("\n")).toContain("installation_held");
+
+      // Without the hold the removed legacy path still refuses to start a lap.
+      messages.length = 0;
+      reconcileHoldDatabase(stateDir);
+      writeExecutionAuthority("legacy", { stateDir });
+      expect(await runSchedulerCliCommand({ repoRoot: checkout, once: true })).toBe(1);
+      expect(messages.join("\n")).toContain("legacy_launcher_removed");
+      expect(messages.join("\n")).not.toContain("installation_held");
+    } finally {
+      console.error = originalError;
+    }
   }, 20000);
 
-  test("the CLI loop wrapper refuses before forge access while held", async () => {
-    const code = await runLoopCliCommand({
-      subcommand: "run",
-      positionals: ["loop", "run"],
-      repoRoot: checkout,
-      issue: "1",
-      json: true,
-    });
-    expect(code).toBe(1);
-  }, 20000);
-
-  test("an explicit installationStateDir is honored over the environment", async () => {
-    const cleanHome = join(root, "clean-home");
-    process.env.ANIMUS_HOME = cleanHome;
+  test("an explicit installationStateDir is honored over the environment", () => {
     const explicitHeld = join(root, "explicit-held");
     holdDatabase(explicitHeld);
-    let transportCalls = 0;
-    await expect(
-      runAnimusLoop(
-        checkout,
-        {
-          number: 1,
-          title: "Explicit held",
-          body: issueBody(),
-          labels: ["ready-for-agent"],
-          state: "OPEN",
-        } as never,
-        {
-          installationStateDir: explicitHeld,
-          transport: async () => {
-            transportCalls += 1;
-            throw new Error("builder transport must not run");
-          },
-        },
-      ),
-    ).rejects.toMatchObject({ code: "installation_held" });
-    expect(transportCalls).toBe(0);
-
-    // Divergence: the env home is clean, so only the explicit held dir rejects.
     process.env.ANIMUS_HOME = home;
     const explicitClean = join(root, "explicit-clean");
     mkdirSync(explicitClean, { recursive: true });
     expect(() => assertInstallationNotHeldAtStateDir()).toThrow(InstallationHeldError);
+    expect(() => assertInstallationNotHeldAtStateDir(explicitHeld)).toThrow(InstallationHeldError);
     expect(() => assertInstallationNotHeldAtStateDir(explicitClean)).not.toThrow();
   }, 20000);
 
@@ -196,90 +141,17 @@ describe("native launch wrappers are fenced by the real installation hold", () =
     process.env.ANIMUS_HOME = corruptHome;
     expect(() => assertInstallationNotHeldAtStateDir()).toThrow(InstallationHoldUnavailableError);
 
-    let transportCalls = 0;
-    await expect(
-      runAnimusLoop(
-        checkout,
-        {
-          number: 1,
-          title: "Corrupt state",
-          body: issueBody(),
-          labels: ["ready-for-agent"],
-          state: "OPEN",
-        } as never,
-        {
-          transport: async () => {
-            transportCalls += 1;
-            throw new Error("builder transport must not run");
-          },
-        },
-      ),
-    ).rejects.toMatchObject({ code: "installation_hold_unavailable" });
-    expect(transportCalls).toBe(0);
+    // The surviving launcher fails closed on the unreadable hold instead of launching.
+    const messages: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => messages.push(args.map(String).join(" "));
+    try {
+      expect(await runSchedulerCliCommand({ repoRoot: checkout, once: true })).toBe(1);
+    } finally {
+      console.error = originalError;
+    }
+    expect(messages.join("\n")).toContain("installation_hold_unavailable");
   }, 20000);
-
-  test("the registered project monitor never schedules or launches while held", async () => {
-    const calls = {
-      setup: 0,
-      inspect: 0,
-      schedule: 0,
-      launch: 0,
-      fetchBacklog: 0,
-      readContract: 0,
-    };
-    const runtime: MonitorRuntime = {
-      inspect: async () => {
-        calls.inspect += 1;
-        return { common: checkout, primary: checkout };
-      },
-      setup: () => {
-        calls.setup += 1;
-      },
-      interval: () => 1000,
-      schedule: async () => {
-        calls.schedule += 1;
-        return { action: "skipped", reason: "probe", activeLapsCount: 0 };
-      },
-      fetchBacklog: async () => {
-        calls.fetchBacklog += 1;
-        return { issues: [], closedNumbers: new Set<number>() };
-      },
-      readContract: async () => {
-        calls.readContract += 1;
-        throw new Error("monitor must not read a contract while held");
-      },
-      launch: async () => {
-        calls.launch += 1;
-        return { runId: "probe", status: "failed" };
-      },
-      hasCapacityFull: () => false,
-      checkWorkWindow: () => true,
-    };
-    const forge = new SyntheticForgeAdapter({ [REPO]: 733 });
-    app = await createBackendApp({
-      stateDir,
-      startMonitor: false,
-      forge,
-      monitorRuntime: runtime,
-    });
-    const registry = new ProjectRegistryService(app.db, forge);
-    await registry.registerProject({
-      method: "local_checkout",
-      name: "Launch hold product",
-      checkout_path: checkout,
-    });
-
-    await app.monitor.tick();
-    await app.monitor.drain();
-
-    expect(calls.setup).toBe(0);
-    expect(calls.inspect).toBe(0);
-    expect(calls.schedule).toBe(0);
-    expect(calls.launch).toBe(0);
-    expect(calls.fetchBacklog).toBe(0);
-    expect(calls.readContract).toBe(0);
-    expect(app.monitor.status().projects[0]?.state).toBe("held");
-  }, 30000);
 
   test("the delivery runtime cannot start reviewer/QA work or evidence while held", async () => {
     const db = new DatabaseSync(join(stateDir, "console.db"));

@@ -20,7 +20,6 @@ import type { AutoMergeEvaluationResult } from "../../scripts/loop/types";
 import { resolveAnimusStateDir } from "@animus/contracts/paths";
 import type { IssueDossier } from "../../scripts/loop/dossier";
 import * as loopExports from "../../scripts/loop/index";
-import * as animusLoopExports from "../../scripts/animus-loop";
 
 const tempDirs: string[] = [];
 const ORIGINAL_ANIMUS_STATE_DIR = process.env.ANIMUS_STATE_DIR;
@@ -1491,13 +1490,5 @@ describe("AC3: barrel and facade re-exports", () => {
     expect(typeof loopExports.executeSubticketAutoMerge).toBe("function");
     expect(typeof loopExports.executeTerminalReflection).toBe("function");
     expect(typeof loopExports.createBoundedReflectionTransport).toBe("function");
-  });
-
-  test("scripts/animus-loop.ts re-exports match direct domain exports", () => {
-    expect(animusLoopExports.executeSubticketAutoMerge).toBe(executeSubticketAutoMerge);
-    expect(animusLoopExports.executeTerminalReflection).toBe(executeTerminalReflection);
-    expect(animusLoopExports.createBoundedReflectionTransport).toBe(
-      createBoundedReflectionTransport,
-    );
   });
 });

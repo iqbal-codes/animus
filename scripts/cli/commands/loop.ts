@@ -1,10 +1,11 @@
-import { join, resolve } from "node:path";
-import { readExecutionAuthority } from "@animus/contracts/execution-authority";
+import { resolve } from "node:path";
+import {
+  LegacyLauncherRemovedError,
+  readExecutionAuthority,
+} from "@animus/contracts/execution-authority";
 import { resolveProjectWorkspace } from "../../../packages/contracts/src/paths";
-import { githubJson, issueSpecification, readIssueContract } from "../../loop";
-import { inspectLocalLoop, runAnimusLoop } from "../../animus-loop";
 import { findRun, watchRun } from "../../loop-watch";
-import { fetchGithubBacklog, logTickResult, toSchedulerTick } from "../../scheduler";
+import { logTickResult, toSchedulerTick } from "../../scheduler";
 import {
   DispatchService,
   runLocalDispatchTick,
@@ -50,56 +51,21 @@ export async function runLoopCliCommand(opts: {
   publish?: boolean;
   candidate?: string;
 }): Promise<number> {
-  const sub = opts.subcommand ?? "run";
+  const sub = opts.subcommand;
+
+  if (!sub) {
+    const usage = [
+      "Usage: animus loop <watch|evidence> [options]",
+      "  watch     follow a local loop run directory (--issue <n> or --run <id>)",
+      "  evidence  preview, bind or publish evidence for a run (--issue <n> or --run <id>)",
+      "The legacy single-issue lap launcher is removed; dispatch an admitted plan instead.",
+    ].join("\n");
+    if (opts.json) console.log(JSON.stringify({ ok: false, error: usage }));
+    else console.error(usage);
+    return 1;
+  }
 
   try {
-    if (sub === "run") {
-      assertInstallationNotHeldAtStateDir();
-      if (readExecutionAuthority().authority !== "legacy") {
-        throw new Error("execution_authority_moved: use animus plan dispatch with an admitted plan");
-      }
-      const rawIssue = opts.issue ?? opts.positionals[2];
-      if (!rawIssue || !/^[1-9]\d*$/.test(rawIssue)) {
-        throw new Error(
-          "Usage: factory loop run --issue <positive issue number> [--dry-run] [--no-push]",
-        );
-      }
-      const issueNum = Number(rawIssue);
-      const repository = githubJson(["repo", "view", "--json", "nameWithOwner"], opts.repoRoot) as {
-        nameWithOwner?: string;
-      };
-      if (!repository.nameWithOwner) throw new Error("Unable to identify repository");
-      const contract = readIssueContract(opts.repoRoot, issueNum, repository.nameWithOwner);
-      const workspace = resolveProjectWorkspace(opts.repoRoot);
-
-      if (opts.dryRun) {
-        console.log(
-          JSON.stringify(
-            {
-              dryRun: true,
-              engine: "local-pi",
-              repository: repository.nameWithOwner,
-              issue: contract,
-              merge: "approve",
-              model: process.env.FACTORY_LOOP_MODEL || "Pi configured default",
-              stateDirectory: workspace.stateRoot,
-              specification: issueSpecification(contract.url),
-            },
-            null,
-            2,
-          ),
-        );
-        return 0;
-      }
-
-      console.error(
-        "Local trusted-code execution, not a sandbox. No automatic publication or merge.",
-      );
-      const result = await runAnimusLoop(opts.repoRoot, contract, { push: !opts.noPush });
-      console.log(JSON.stringify(result, null, 2));
-      return result.status === "waiting_approval" || result.status === "merged" ? 0 : 1;
-    }
-
     if (sub === "watch") {
       const rawIssue = opts.issue;
       if (rawIssue && (!/^[1-9]\d*$/.test(rawIssue) || !Number.isSafeInteger(Number(rawIssue)))) {
@@ -187,7 +153,7 @@ export async function runLoopCliCommand(opts: {
       return 0;
     }
 
-    throw new Error(`Unknown loop subcommand: ${sub}. Expected run, watch, or evidence.`);
+    throw new Error(`Unknown loop subcommand: ${sub}. Expected watch or evidence.`);
   } catch (err: any) {
     const msg = err?.message ?? String(err);
     if (opts.json) console.log(JSON.stringify({ ok: false, error: msg }));
@@ -267,7 +233,7 @@ export async function runLocalSchedulerCommand(
       closedNumbers: Set<number>;
     }> => ({ issues: [], closedNumbers: new Set<number>() });
     const legacyLaunchDisabled = async (): Promise<{ runId: string }> => {
-      throw new Error("Legacy GitHub launch path is disabled for local dispatch");
+      throw new LegacyLauncherRemovedError();
     };
 
     if (opts.once) {
@@ -339,72 +305,10 @@ export async function runSchedulerCliCommand(opts: {
         "execution_authority_moved: the installation is fenced for the validated #165 cutover; finish or abort it before scheduling",
       );
     }
-    if (authority === "local") {
-      return await runLocalSchedulerCommand(opts, interval);
+    if (authority !== "local") {
+      throw new LegacyLauncherRemovedError();
     }
-
-    const repoRes = Bun.spawnSync(["gh", "repo", "view", "--json", "nameWithOwner"], {
-      cwd: opts.repoRoot,
-    });
-    if (repoRes.exitCode !== 0) {
-      throw new Error("Unable to identify repository; ensure gh CLI is authenticated");
-    }
-    const repo = (JSON.parse(repoRes.stdout.toString()) as { nameWithOwner: string }).nameWithOwner;
-
-    const workspace = resolveProjectWorkspace(opts.repoRoot);
-    const sharedRoot = workspace.primaryRoot;
-    const runsDir = workspace.runsDir;
-
-    const fetchBacklog = async () => fetchGithubBacklog(opts.repoRoot, repo);
-
-    const launchLap = async (issue: BacklogCandidate): Promise<{ runId: string }> => {
-      if (opts.dryRun) {
-        console.log(
-          `[DRY-RUN] Would launch autonomous lap for issue #${issue.number}: ${issue.title}`,
-        );
-        return { runId: `dry-run-issue-${issue.number}` };
-      }
-      console.log(`Launching autonomous lap for issue #${issue.number}...`);
-      const contract = readIssueContract(opts.repoRoot, issue.number, repo);
-      const result = await runAnimusLoop(opts.repoRoot, contract, { push: true });
-      return { runId: result.candidate || `issue-${issue.number}` };
-    };
-
-    if (opts.once) {
-      const result = await runSchedulerTick({
-        root: opts.repoRoot,
-        sharedRoot,
-        runsDir,
-        config: interval ? { interval_seconds: interval } : undefined,
-        fetchBacklog,
-        launchLap,
-      });
-      if (opts.json) console.log(JSON.stringify(result, null, 2));
-      else logTickResult(result);
-      return 0;
-    }
-
-    console.log(
-      `Starting Factory Autonomous Scheduler (repository: ${repo}, interval: ${interval ?? loadScheduleConfig(opts.repoRoot).interval_seconds}s)...`,
-    );
-    const controller = new AbortController();
-    process.once("SIGINT", () => controller.abort());
-    process.once("SIGTERM", () => controller.abort());
-
-    const loop = startSchedulerLoop({
-      root: opts.repoRoot,
-      sharedRoot,
-      runsDir,
-      config: interval ? { interval_seconds: interval } : undefined,
-      intervalMs: interval ? interval * 1000 : undefined,
-      fetchBacklog,
-      launchLap,
-      onTick: logTickResult,
-      signal: controller.signal,
-    });
-
-    await loop.done;
-    return 0;
+    return await runLocalSchedulerCommand(opts, interval);
   } catch (err: any) {
     const msg = err?.message ?? String(err);
     if (opts.json) console.log(JSON.stringify({ ok: false, error: msg }));

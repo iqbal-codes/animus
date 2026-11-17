@@ -212,103 +212,68 @@ describe("GitHub webhook ingestion endpoint and deduplication", () => {
     expect(await res2.json()).toEqual({ error: "invalid_payload" });
   });
 
-  test("GitHubWebhookService routes eligible events to onProjectWake and handles pending_wake", async () => {
+  test("GitHubWebhookService classifies eligible issues, CI observations, and manual feedback", async () => {
     const fakeProject = { id: "proj_abc", status: "active" };
-    const fakeRegistry: any = {
+    // The service only calls these two lookups; the registry's DB surface is irrelevant here.
+    const fakeRegistry = {
       getProjectByRepoId: (id: number) => (id === 101 ? fakeProject : null),
       getProjectByRepoName: () => null,
-    };
-    const secret = "wake-secret";
-    const wakes: Array<{ projectId: string; reason: string }> = [];
-    let nextWakeReturn: { triggered: boolean; pending_wake: boolean } = {
-      triggered: true,
-      pending_wake: false,
-    };
+    } as unknown as ConstructorParameters<typeof GitHubWebhookService>[0];
+    const secret = "classify-secret";
+    const service = new GitHubWebhookService(fakeRegistry, { secret });
 
-    const service = new GitHubWebhookService(fakeRegistry, {
-      secret,
-      onProjectWake: (projectId, reason) => {
-        wakes.push({ projectId, reason });
-        return nextWakeReturn;
-      },
-    });
+    const post = (delivery: string, event: string, payload: unknown) => {
+      const body = JSON.stringify(payload);
+      return service.handleWebhook(
+        new Request("http://localhost/api/v1/webhooks/github", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Hub-Signature-256": computeSignature(body, secret),
+            "X-GitHub-Delivery": delivery,
+            "X-GitHub-Event": event,
+          },
+          body,
+        }),
+      );
+    };
 
     // 1. Eligible issues.labeled with ready-for-agent
-    const body1 = JSON.stringify({
+    const labeled = await post("del-classify-1", "issues", {
       action: "labeled",
       repository: { id: 101 },
       label: { name: "ready-for-agent" },
     });
-    const req1 = new Request("http://localhost/api/v1/webhooks/github", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Hub-Signature-256": computeSignature(body1, secret),
-        "X-GitHub-Delivery": "del-wake-1",
-        "X-GitHub-Event": "issues",
-      },
-      body: body1,
-    });
-    const res1 = await service.handleWebhook(req1);
-    expect(res1.status).toBe(202);
-    expect(await res1.json()).toEqual({
+    expect(labeled.status).toBe(202);
+    expect(await labeled.json()).toEqual({
       status: "accepted",
-      delivery: "del-wake-1",
+      delivery: "del-classify-1",
       project_id: "proj_abc",
     });
-    expect(wakes).toEqual([{ projectId: "proj_abc", reason: "issues.labeled" }]);
 
-    // 2. Capacity full -> pending_wake: true (remote CI observation still wakes)
-    nextWakeReturn = { triggered: false, pending_wake: true };
-    const body2 = JSON.stringify({
+    // 2. Remote CI observation stays eligible
+    const ci = await post("del-classify-2", "check_run", {
       action: "completed",
       repository: { id: 101 },
     });
-    const req2 = new Request("http://localhost/api/v1/webhooks/github", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Hub-Signature-256": computeSignature(body2, secret),
-        "X-GitHub-Delivery": "del-wake-2",
-        "X-GitHub-Event": "check_run",
-      },
-      body: body2,
-    });
-    const res2 = await service.handleWebhook(req2);
-    expect(res2.status).toBe(202);
-    expect(await res2.json()).toEqual({
+    expect(ci.status).toBe(202);
+    expect(await ci.json()).toEqual({
       status: "accepted",
-      delivery: "del-wake-2",
+      delivery: "del-classify-2",
       project_id: "proj_abc",
-      pending_wake: true,
     });
-    expect(wakes.length).toBe(2);
-    expect(wakes[1]).toEqual({ projectId: "proj_abc", reason: "check_run.completed" });
 
-    // 3. Manual PR feedback -> ignored, onProjectWake NOT called
-    const body3 = JSON.stringify({
+    // 3. Manual PR feedback -> ignored
+    const manual = await post("del-classify-3", "issue_comment", {
       action: "created",
       repository: { id: 101 },
     });
-    const req3 = new Request("http://localhost/api/v1/webhooks/github", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Hub-Signature-256": computeSignature(body3, secret),
-        "X-GitHub-Delivery": "del-wake-3",
-        "X-GitHub-Event": "issue_comment",
-      },
-      body: body3,
-    });
-    const res3 = await service.handleWebhook(req3);
-    expect(res3.status).toBe(202);
-    expect(await res3.json()).toEqual({
+    expect(manual.status).toBe(202);
+    expect(await manual.json()).toEqual({
       status: "ignored",
       reason: "manual_feedback_ignored",
-      delivery: "del-wake-3",
+      delivery: "del-classify-3",
     });
-    // Wake count did not increment
-    expect(wakes.length).toBe(2);
   });
 
   test("POST /api/v1/webhooks/github end-to-end against real backend server", async () => {
@@ -577,7 +542,6 @@ if (args.includes("POST")) {
     }
 
     // Also match by repository full_name if id is missing or different
-    // Since previous validPayload triggered monitor check, this concurrent event queues as pending_wake
     const nameDeliveryId = "delivery-by-name-002";
     const namePayload = JSON.stringify({
       action: "reopened",
@@ -603,7 +567,6 @@ if (args.includes("POST")) {
         status: "accepted",
         delivery: nameDeliveryId,
         project_id: project.id,
-        pending_wake: true,
       });
     }
 
@@ -680,7 +643,7 @@ if (args.includes("POST")) {
       });
     }
 
-    // #118 AC1: issues labeled with ready-for-agent is accepted (with pending_wake coalesced while previous check is in-flight)
+    // #118 AC1: issues labeled with ready-for-agent is accepted
     {
       const readyLabelPayload = JSON.stringify({
         action: "labeled",
@@ -703,7 +666,6 @@ if (args.includes("POST")) {
         status: "accepted",
         delivery: "delivery-ready-label",
         project_id: project.id,
-        pending_wake: true,
       });
     }
 

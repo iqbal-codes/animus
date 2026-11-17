@@ -13,13 +13,6 @@ import {
   readHarnessChecks,
 } from "../../scripts/loop/worktree";
 import * as loopExports from "../../scripts/loop/index";
-import {
-  inspectLocalLoop as animusLoopInspect,
-  findExistingWorktreeForBranch as animusLoopFindWorktree,
-  acquireIssueLock as animusLoopAcquireLock,
-  prepareLoopWorktree as animusLoopPrepareWorktree,
-  assertCandidate as animusLoopAssertCandidate,
-} from "../../scripts/animus-loop";
 
 const tempDirs: string[] = [];
 
@@ -502,14 +495,6 @@ describe("scripts/loop/worktree", () => {
       const reacquired = await loopExports.acquireWorktreeIssueLock(stateRoot, 402);
       expect(typeof reacquired).toBe("function");
       await reacquired();
-    });
-
-    test("scripts/animus-loop.ts re-exports inspectLocalLoop and findExistingWorktreeForBranch", () => {
-      expect(typeof animusLoopInspect).toBe("function");
-      expect(typeof animusLoopFindWorktree).toBe("function");
-      expect(typeof animusLoopAcquireLock).toBe("function");
-      expect(typeof animusLoopPrepareWorktree).toBe("function");
-      expect(typeof animusLoopAssertCandidate).toBe("function");
     });
 
     test("isPidAlive accurately identifies PID liveness without relying on age", () => {

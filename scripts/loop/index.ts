@@ -8,12 +8,8 @@ export * from "./providers";
 export * from "./harness-memory";
 export * from "./dossier";
 export * from "./reflector";
-export * from "./profiles";
-export * from "./ci";
 export * from "./triage-policy";
 export * from "./triage";
-export * from "./blast-radius";
-export * from "./prompt-context";
 export {
   DEFAULT_PROTECTED_PATHS,
   type PrepareLoopWorktreeOptions,
@@ -51,11 +47,4 @@ export {
   verifyDeployment,
   type DeploymentVerificationResult,
 } from "./qa-runner";
-export { LoopPublisher, type LoopPublisherOptions } from "./publisher";
 export { acquireTriageIssueLock } from "./triage";
-export {
-  LapSession,
-  runAnimusLoop,
-  runLocalLoop,
-  type TerminalDispositionInput,
-} from "./session";

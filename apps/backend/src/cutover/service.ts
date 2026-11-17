@@ -909,7 +909,6 @@ export class AuthorityCutoverService {
           tables: snapshotInventory.tables.length,
           artifacts: snapshotInventory.artifacts.count,
           legacyReadersWriters: [
-            "apps/backend/src/monitor/service.ts",
             "apps/backend/src/dispatch/service.ts",
             "apps/backend/src/main.ts",
             "apps/engine-host/src/native.ts",

@@ -346,7 +346,7 @@ describe("workspace backup and isolated restore", () => {
     git(checkoutPath, "branch", "-M", "main");
     git(checkoutPath, "push", "-q", "origin", "main");
 
-    app = await createBackendApp({ stateDir, startMonitor: false, forge });
+    app = await createBackendApp({ stateDir, forge });
     registry = new ProjectRegistryService(app.db, forge);
     const project = await registry.registerProject({
       method: "local_checkout",

@@ -76,6 +76,25 @@ export class ExecutionAuthorityGateError extends Error {
   }
 }
 
+export type LegacyLauncherRemovedCode = "legacy_launcher_removed";
+
+/**
+ * The legacy single-issue launcher was removed. Callers that still reach the
+ * legacy GitHub/filesystem launch path fail closed with this reason and must
+ * use frozen-plan dispatch or an activated local execution authority.
+ */
+export const LEGACY_LAUNCHER_REMOVED_MESSAGE =
+  "legacy_launcher_removed: use frozen-plan dispatch (animus plan dispatch) or activate local authority";
+
+export class LegacyLauncherRemovedError extends Error {
+  readonly code: LegacyLauncherRemovedCode = "legacy_launcher_removed";
+
+  constructor() {
+    super(LEGACY_LAUNCHER_REMOVED_MESSAGE);
+    this.name = "LegacyLauncherRemovedError";
+  }
+}
+
 const AUTHORITY_FILE = "execution-authority.json";
 const AUTHORITY_LOCK_FILE = ".execution-authority.lock";
 const AUTHORITY_VALUES: readonly ExecutionAuthority[] = ["legacy", "migrating", "local"];

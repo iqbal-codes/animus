@@ -4,11 +4,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runBoundedRole, RoleInterrupted } from "../../scripts/loop/role-runner";
-import { runAnimusLoop } from "./support/loop-harness";
 import * as loopExports from "../../scripts/loop/index";
-import * as animusExports from "./support/loop-harness";
 import { git } from "../../scripts/loop/worktree";
-import type { LocalIssue } from "../../scripts/loop/types";
 
 const tempDirs: string[] = [];
 
@@ -51,18 +48,6 @@ roles:
   await git(root, "add", ".");
   await git(root, "commit", "-m", "initial commit");
   return root;
-}
-
-function makeValidIssue(): LocalIssue {
-  return {
-    number: 70,
-    url: "https://github.com/example/repo/issues/70",
-    title: "Implement role runner extraction",
-    body: "AC1: Role runner executes bounded role sessions and enforces deadlines",
-    comments: [],
-    dependencies: [],
-    activeClaim: false,
-  };
 }
 
 describe("scripts/loop/role-runner (unified bounded role runner)", () => {
@@ -177,27 +162,6 @@ describe("scripts/loop/role-runner (unified bounded role runner)", () => {
     expect(existsSync(checkpointPath)).toBe(true);
     const checkpointContent = readFileSync(checkpointPath, "utf8");
     expect(checkpointContent).toContain("Host checkpoint: builder attempt 0");
-  });
-
-  test("AC3: runAnimusLoop handles role interruption and transitions cleanly to interrupted", async () => {
-    const root = await createRepoFixture();
-    const issue = makeValidIssue();
-
-    const result = await runAnimusLoop(root, issue, {
-      push: false,
-      maxContinuations: 0,
-      transport: async () => ({
-        exitCode: 124,
-        stdout: "",
-        stderr: "timed out",
-        timedOut: true,
-      }),
-    });
-
-    expect(result.status).toBe("interrupted");
-    expect(result.error).toContain("interrupted");
-    const checkpointPath = join(result.runDirectory, "artifacts", "handoff", "checkpoint.md");
-    expect(existsSync(checkpointPath)).toBe(true);
   });
 
   test("continuation resumes the observed session in the same session directory", async () => {
@@ -338,9 +302,8 @@ describe("scripts/loop/role-runner (unified bounded role runner)", () => {
     expect(prompts[1]).not.toContain("Your previous conversation in this role is resumed");
   });
 
-  test("AC4: invokeRoleWithDeadlines is NOT exported in barrel or public animus-loop orchestrator", () => {
-    expect((loopExports as any).invokeRoleWithDeadlines).toBeUndefined();
-    expect((animusExports as any).invokeRoleWithDeadlines).toBeUndefined();
+  test("AC4: invokeRoleWithDeadlines is NOT exported in barrel", () => {
+    expect("invokeRoleWithDeadlines" in loopExports).toBe(false);
     expect(typeof loopExports.runBoundedRole).toBe("function");
   });
 

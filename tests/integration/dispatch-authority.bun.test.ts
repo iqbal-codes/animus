@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBackendApp, type BackendApp } from "../../apps/backend/src/main";
@@ -10,7 +10,6 @@ import {
   writeExecutionAuthority,
 } from "@animus/contracts/execution-authority";
 import { seedActivatedAuthorityAt } from "./support/activated-authority";
-import { loadMonitorRuntime } from "../../apps/backend/src/monitor/runtime";
 import { runLoopCliCommand, runSchedulerCliCommand } from "../../scripts/cli/commands/loop";
 import { runLapCommand } from "../../scripts/cli/commands/engine";
 import { launchNativeLap } from "../../apps/engine-host/src/native";
@@ -66,12 +65,10 @@ describe("dispatch execution authority cutover gate", () => {
   let app: BackendApp;
   let projectId: string;
 
-  async function buildApp(options: { startMonitor?: boolean; monitorRuntime?: any } = {}) {
+  async function buildApp() {
     app = await createBackendApp({
       stateDir: join(root, "animus-home", "state"),
-      startMonitor: options.startMonitor ?? false,
       forge,
-      monitorRuntime: options.monitorRuntime,
       dispatch: { engine: { transport: committingTransport() } },
     });
     const registry = new ProjectRegistryService(app.db, forge);
@@ -199,63 +196,6 @@ describe("dispatch execution authority cutover gate", () => {
     expect(run.state).toBe("succeeded");
   });
 
-  test("production monitor dispatches the frozen local manifest without touching GitHub backlog or legacy launch", async () => {
-    seedActivatedAuthorityAt(join(root, "animus-home", "state"));
-    addIssue(601);
-
-    const runtime = await loadMonitorRuntime({ forge });
-    let legacySchedule = 0;
-    let legacyFetch = 0;
-    let legacyLaunch = 0;
-    runtime.schedule = async () => {
-      legacySchedule += 1;
-      throw new Error("legacy GitHub scheduler must not run under local authority");
-    };
-    runtime.fetchBacklog = async () => {
-      legacyFetch += 1;
-      throw new Error("legacy GitHub backlog must not be fetched under local authority");
-    };
-    runtime.launch = async () => {
-      legacyLaunch += 1;
-      throw new Error("legacy lap launch must not run under local authority");
-    };
-
-    await buildApp({ monitorRuntime: runtime });
-    const plan = await importPlan(601);
-
-    // After admission every forge read fails; a live rebind would abort the path.
-    forge.listIssues = async () => {
-      throw new Error("forge reads are forbidden after local admission");
-    };
-    forge.getIssue = async () => {
-      throw new Error("forge reads are forbidden after local admission");
-    };
-
-    await app.monitor.tick();
-    await app.monitor.drain();
-
-    expect(legacySchedule).toBe(0);
-    expect(legacyFetch).toBe(0);
-    expect(legacyLaunch).toBe(0);
-
-    const listResponse = await app.fetch(
-      new Request(
-        `http://127.0.0.1/api/v1/projects/${projectId}/dispatch/runs?plan_id=${encodeURIComponent(plan.id)}`,
-      ),
-    );
-    expect(listResponse.status).toBe(200);
-    const runs = (await listResponse.json()) as Array<{
-      state: string;
-      head_sha: string | null;
-      issue_number: number;
-    }>;
-    expect(runs).toHaveLength(1);
-    expect(runs[0]!.issue_number).toBe(601);
-    expect(runs[0]!.state).toBe("succeeded");
-    expect(runs[0]!.head_sha).toBeTruthy();
-    expect(existsSync(join(root, "animus-home", "state", "execution-authority.json"))).toBe(true);
-  });
-
   test("animus scheduler dispatches locally without resolving a GitHub repository", async () => {
     seedActivatedAuthorityAt(join(root, "animus-home", "state"));
     addIssue(602);
@@ -302,7 +242,7 @@ describe("dispatch execution authority cutover gate", () => {
     } finally {
       (Bun as any).spawnSync = originalSpawnSync;
     }
-  });
+  }, 20_000);
 
   test("local authority refuses every legacy direct launch before forge or process access", async () => {
     seedActivatedAuthorityAt(join(root, "animus-home", "state"));
@@ -318,6 +258,7 @@ describe("dispatch execution authority cutover gate", () => {
     console.error = (...args: unknown[]) => messages.push(args.map(String).join(" "));
     console.log = (...args: unknown[]) => messages.push(args.map(String).join(" "));
     try {
+      // The loop CLI no longer exposes a launch subcommand at all.
       expect(
         await runLoopCliCommand({
           subcommand: "run",
@@ -325,8 +266,11 @@ describe("dispatch execution authority cutover gate", () => {
           repoRoot: checkoutPath,
           issue: "999",
           dryRun: true,
+          json: true,
         }),
       ).toBe(1);
+      expect(messages.join("\n")).toContain("Unknown loop subcommand: run");
+
       for (const subcommand of ["run", "launch"]) {
         expect(
           await runLapCommand({
@@ -341,24 +285,18 @@ describe("dispatch execution authority cutover gate", () => {
         "execution_authority_moved",
       );
       expect(attempted).toHaveLength(0);
-      expect(messages.every((message) => message.includes("execution_authority_moved"))).toBe(true);
+      const refusalMessages = messages.filter(
+        (message) => !message.includes("Unknown loop subcommand"),
+      );
+      expect(refusalMessages.length).toBeGreaterThan(0);
+      expect(
+        refusalMessages.every((message) => message.includes("execution_authority_moved")),
+      ).toBe(true);
     } finally {
       (Bun as any).spawnSync = originalSpawn;
       console.error = originalError;
       console.log = originalLog;
     }
-  });
-
-  test("the standalone loop entry refuses local authority before invoking gh", () => {
-    seedActivatedAuthorityAt(join(root, "animus-home", "state"));
-    const entry = join(import.meta.dir, "../../scripts/loop.ts");
-    const result = Bun.spawnSync([process.execPath, entry, "--issue", "999", "--dry-run"], {
-      env: { ...process.env, PATH: "/nonexistent" },
-      timeout: 30_000,
-    });
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr.toString()).toContain("execution_authority_moved");
-    expect(result.stderr.toString()).not.toContain("GitHub lookup failed");
   });
 
   test("the real default engine runs a bounded builder on the frozen contract and records a verified SHA", async () => {
@@ -367,7 +305,6 @@ describe("dispatch execution authority cutover gate", () => {
     const prompts: string[] = [];
     app = await createBackendApp({
       stateDir: join(root, "animus-home", "state"),
-      startMonitor: false,
       forge,
       dispatch: { engine: { transport: committingTransport(prompts) } },
     });
@@ -443,7 +380,6 @@ describe("dispatch execution authority cutover gate", () => {
     addIssue(604);
     app = await createBackendApp({
       stateDir: join(root, "animus-home", "state"),
-      startMonitor: false,
       forge,
       dispatch: {
         engine: {

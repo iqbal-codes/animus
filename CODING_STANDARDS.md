@@ -1,6 +1,6 @@
 # Coding Standards (Reviewer Reference)
 
-These standards are enforced during **Code Review** (`loop-review` and `/animus-review`), not injected into the Builder's base prompt. This keeps Builder context pressure low while ensuring strict architectural and code quality gates on every pull request.
+These standards are enforced during **Code Review** (the delivery runtime's independent reviewer and `/animus-review`), not injected into the Builder's base prompt. This keeps Builder context pressure low while ensuring strict architectural and code quality gates on every pull request.
 
 ## 1. Module Depth & Seam Discipline (`blueprint` / `codebase-design`)
 
