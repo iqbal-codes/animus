@@ -36,6 +36,7 @@ export interface LessonEntry {
   revision_id?: string;
   provenance?: LessonProvenance[];
   superseded_by?: string;
+  retired?: boolean;
   created_at: string;
 }
 
@@ -281,7 +282,7 @@ export function loadActiveLessons(root: string, acceptedRef?: string): LessonEnt
         if (typeof parsed.topic === "string") vetoedTopics.add(parsed.topic.trim().toLowerCase());
         if (typeof parsed.id === "string") vetoedIds.add(parsed.id);
       }
-      if (parsed?.vetoed === false && !parsed.superseded_by
+      if (parsed?.vetoed === false && !parsed.superseded_by && parsed.retired !== true
         && typeof parsed.id === "string" && typeof parsed.topic === "string"
         && typeof parsed.evidence === "string" && typeof parsed.rule === "string"
         && Array.isArray(parsed.trigger_patterns)

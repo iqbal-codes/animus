@@ -59,13 +59,19 @@ Use this playbook when:
 - **Frozen / Legacy Paths**: <Paths marked [LEGACY - FREEZE] to strangle>
 - **Target Seams & Strangler Path**: <New target modules and migration sequence>
 - **Module Seam Rules**: <Import boundaries and interface locations>
+- **Module Registry (machine-readable)**: <Each module's `owns` globs, `may_import` edges, and seam interface location, recorded as a `modules` block in `.animus/codebase-rules.json` and mirrored in the tree above — the map that ledger generation and `/swarm --modules` join against, so ownership is never hand-transcribed per run>
+- **Registry delivery**: <The registry is the source, never the payload. A worker brief carries only its own ownership slice — owned globs, forbidden paths, and the seam to import through, a few lines — while `AGENTS.md` carries a one-line pointer to the JSON. Do not render the whole registry into `AGENTS.md` or any auto-loaded brief: harnesses inject that text into every worker prompt on every lap, so a full map is paid by all workers while only one module matters to each>
 
 ## 3. Shared Reusable Component & Module Catalog
-| Shared Primitive | Location | Responsibility & Interface | Consumed by Specs |
-| :--- | :--- | :--- | :--- |
-| `<ComponentOrModule>` | `<path>` | `<what it hides behind its seam>` | `<S1, S2, S3>` |
+Map each primitive's name to its path in `.animus/codebase-rules.json`'s `component_registry`, so later tickets reuse the catalog instead of inventing a parallel one.
+
+| Shared Primitive | Location | Responsibility & Interface | States | Consumed by Specs |
+| :--- | :--- | :--- | :--- | :--- |
+| `<ComponentOrModule>` | `<path>` | `<what it hides behind its seam>` | `<default / hover / focus / disabled / loading / error / empty — the subset that applies>` | `<S1, S2, S3>` |
+
+- **Design token source**: <design artifact link plus its version or digest, and the token file it was extracted into — a change to either invalidates the visual baselines that feature tickets compare against>
 
 ## 4. Foundation Prerequisites for `/animus-tickets`
-- **Foundation Slice (`S0`)**: <Project scaffold, shared UI/CRUD primitives, and core seams that must complete before parallel feature tickets>
-- **Enforced Codebase Rules**: <Rules recorded in `.animus/codebase-rules.json` or `AGENTS.md`>
+- **Foundation Slice (`S0`)**: <Project scaffold, shared UI/CRUD primitives, and core seams, **plus one reference slice wired end-to-end** from persistence to UI with its tests green — the walking skeleton that proves the seams compose and gives every later ticket a pattern to imitate rather than a contract to interpret>
+- **Enforced Codebase Rules**: <Boundary and forbidden-API rules in `.animus/codebase-rules.json`, each with a stable `id`, `description`, `file_glob`, and `replacement_hint`. They are evaluated on every agent edit **and** again at commit (`.githooks/pre-commit` Gate 2), so the JSON is the single source of enforcement rather than prose in this document. Reserve `mode: "block"` for violations that are binary and cheap to fix — cross-module imports, `: any` at seams, Node built-ins in the browser app — and use `warn` for anything requiring judgement (naming, file size, comment style). Ship one good/bad fixture per blocking rule so a stale regex cannot rot into false positives.>
 ```

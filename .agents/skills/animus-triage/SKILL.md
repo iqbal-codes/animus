@@ -1,6 +1,7 @@
 ---
 name: animus-triage
 description: Triage incoming GitHub or local issues for Animus. Use whenever an issue is being assessed, clarified, made ready for autonomous work, held for human decisions, or decomposed into a spec and tickets; especially when turning a request into a repo-grounded executable brief. Assume the requester knows the intended outcome unless they say they are exploring; inspect the repository to resolve technical unknowns, and ask only for irreducible human intent.
+disable-model-invocation: true
 ---
 
 # Animus Triage

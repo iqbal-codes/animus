@@ -1,6 +1,6 @@
 ---
 name: animus-learn
-description: Synthesize post-lap memory, extract verified tool guidance and evidence-backed lessons, and author repository skills with observable completion criteria.
+description: Synthesize post-lap memory, extract verified tool guidance and evidence-backed lessons, author repository skills with observable completion criteria, and retire, consolidate, or refresh memory the lap has made stale.
 disable-model-invocation: true
 ---
 
@@ -26,14 +26,21 @@ Use `/animus-learn` when:
    Verify that discovered test, lint, format, typecheck, or build commands exit with code 0 before updating `.animus/tool-guidance.json`. Run each candidate command in the local terminal to confirm successful completion.
    *Completion Criterion*: Each tool guidance command is executed in the local environment and exits with code 0 before recording.
 
-3. **Formulate and Gate Candidate Mutations by the Context-Pressure Hierarchy (`/retro`)**
-   Keep Builder context pressure low by routing each finding to the most deterministic layer: mechanical mistakes become `guard` rules (`.animus/codebase-rules.json`), shared abstractions become `pattern` entries, judgment calls belong in `CODING_STANDARDS.md` (read by Reviewer), and only file-scoped runtime traps become `lesson` entries (`.animus/lessons.jsonl`). Follow `docs/spec-learning-reliability-hardening.md`: resolve candidate-bound artifact evidence, validate each mutation, and evaluate grounding and quality through `evaluateLearningWithHarness` (both approvals, confidence >= 0.70, `hallucinationRisk: "grounded_in_logs"`).
-   *Completion Criterion*: Each proposed mutation is routed to the lowest-context-pressure layer with resolved evidence and a schema-valid harness verdict; held lessons remain inactive.
+3. **Formulate and Gate Candidate Mutations by the Single Enforcement Hierarchy**
+   Route each finding to the lowest-context-cost level in `docs/agents/harness-authoring-standard.md` §1, which is the shared routing authority — do not restate the targets here. Follow `docs/spec-learning-reliability-hardening.md`: resolve candidate-bound artifact evidence, validate each mutation, and evaluate grounding and quality through `evaluateLearningWithHarness` (both approvals, confidence >= 0.70, `hallucinationRisk: "grounded_in_logs"`).
+   *Completion Criterion*: Each proposed mutation names its level from §1 with resolved evidence and a schema-valid harness verdict; held lessons remain inactive.
 
-4. **Propose Reusable Repository Skills**
+4. **Maintain Before Adding (Refresh, Consolidate, Retire)**
+   Memory that only grows becomes its own context load. Before proposing additions, audit the surfaces this lap touched — `.animus/lessons.jsonl`, `.animus/codebase-rules.json` (`rules`, `pattern_registry`), `.animus/tool-guidance.json`, `.agents/skills/`, `AGENTS.md`, `CODING_STANDARDS.md` — and classify each stale, duplicated, or contradicted entry into one action:
+   - **Refresh**: a recipe no longer exits 0, or a rule no longer matches the code. Overwrite by key or by `id`; never leave the stale entry standing beside the new one.
+   - **Consolidate**: two entries say the same thing. Propose the one canonical entry under the existing key, so the map replaces rather than duplicates.
+   - **Retire**: the entry is contradicted and nothing replaces it. A `prune` mutation carries this: a lesson is marked `retired` (line kept for audit, never injected again), a pattern or tool key is deleted, a guard is removed by `id`, and a skill is deleted together with the `AGENTS.md` pointer that reached it. Anything without a mutation target — a `CODING_STANDARDS.md` line — must be escalated to the operator with the exact file and line.
+   *Completion Criterion*: Every surface the lap touched is audited for refresh, consolidate, and retire candidates, and each candidate is either proposed with resolved evidence or explicitly recorded as still current.
+
+5. **Propose Reusable Repository Skills**
    When procedural knowledge spans multiple steps, include a skill mutation for `.agents/skills/<name>/SKILL.md` in the proposal artifact. Follow `.agents/skills/writing-for-agents/SKILL.md` for valid YAML and observable completion criteria.
    *Completion Criterion*: Proposed skills pass YAML parsing and every step concludes with an explicit `*Completion Criterion*`; the invoking checkout remains unchanged.
 
-5. **Verify Isolated Learning Delivery**
+6. **Verify Isolated Learning Delivery**
    Deliver admitted mutations through `deliverLearningProposal` on an isolated follow-up branch. Verify JSON/JSONL, skill structure, and repository checks there, then request independent review using `docs/agents/pr-evidence-contract.md`; activation requires the host's normal merge authority.
    *Completion Criterion*: The delivery candidate has passing checks and a review request, while the verified source candidate and invoking checkout retain their original memory.

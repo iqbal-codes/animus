@@ -41,3 +41,4 @@ playwright-report/
 .claude/worktrees/
 .commandcode/
 .trail/statusline.cjs
+.omp-swarm/

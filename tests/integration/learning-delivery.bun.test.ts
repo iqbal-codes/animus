@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { deliverLearningProposal } from "../../scripts/loop/learning-delivery";
+import { loadActiveLessons } from "../../scripts/loop/harness-memory";
 import { runPostIssueReflection } from "../../scripts/loop/reflector";
 
 async function fixture(
@@ -21,6 +22,7 @@ async function fixture(
     rule: "Assign an explicit port.",
     evidence: "transition",
   },
+  seed?: (root: string) => void,
 ) {
   const root = mkdtempSync(join(tmpdir(), "learning-git-"));
   const git = (...args: string[]) =>
@@ -29,6 +31,7 @@ async function fixture(
   git("config", "user.email", "test@example.test");
   git("config", "user.name", "Test");
   writeFileSync(join(root, "README.md"), "feature\n");
+  seed?.(root);
   git("add", ".");
   git("commit", "-m", "feature");
   const candidate = git("rev-parse", "HEAD");
@@ -446,4 +449,112 @@ test("the harness ledger appends to the accepted baseline instead of replacing i
   );
   expect(changelog).toContain("`lesson:earlier-lesson`");
   expect(changelog).toContain("`pattern:port`");
+});
+
+function registryKeys(value: unknown): string[] {
+  if (value && typeof value === "object" && "pattern_registry" in value) {
+    const registry: unknown = value.pattern_registry;
+    if (registry && typeof registry === "object") return Object.keys(registry);
+  }
+  return [];
+}
+
+function retiredFlag(value: unknown): unknown {
+  return value && typeof value === "object" && "retired" in value ? value.retired : undefined;
+}
+
+test("prune removes an admitted pattern entry from the registry", async () => {
+  const f = await fixture("prune", { target: "pattern", key: "port" }, (root) => {
+    mkdirSync(join(root, ".animus"), { recursive: true });
+    writeFileSync(
+      join(root, ".animus/codebase-rules.json"),
+      JSON.stringify(
+        { schema_version: 1, rules: [], pattern_registry: { port: "Use scripts/port.ts." } },
+        null,
+        2,
+      ),
+    );
+  });
+  const result = await deliverLearningProposal({
+    ...f,
+    verifiedCandidate: f.candidate,
+    baseBranch: "main",
+    publish: false,
+  });
+  expect(result.status).toBe("proposed");
+  expect(result.kind).toBe("structural");
+  expect(
+    registryKeys(
+      JSON.parse(readFileSync(join(result.worktree!, ".animus/codebase-rules.json"), "utf8")),
+    ),
+  ).not.toContain("port");
+});
+
+test("prune of a key that does not exist is held instead of shipping an empty change", async () => {
+  const f = await fixture("prune", { target: "pattern", key: "absent" });
+  const result = await deliverLearningProposal({
+    ...f,
+    verifiedCandidate: f.candidate,
+    baseBranch: "main",
+    publish: false,
+  });
+  expect(result.status).toBe("held");
+  expect(result.reasons.join(" ")).toContain("prune_target_missing:pattern:absent");
+});
+
+test("prune retires a lesson without deleting its audit line", async () => {
+  const f = await fixture("prune", { target: "lesson", key: "lsn-20260101-01" }, (root) => {
+    mkdirSync(join(root, ".animus"), { recursive: true });
+    writeFileSync(
+      join(root, ".animus/lessons.jsonl"),
+      JSON.stringify({
+        id: "lsn-20260101-01",
+        topic: "port",
+        trigger_patterns: ["tests/*"],
+        rule: "Assign an explicit port.",
+        evidence: "transition",
+        vetoed: false,
+        created_at: "2026-01-01T00:00:00Z",
+      }) + "\n",
+    );
+  });
+  const result = await deliverLearningProposal({
+    ...f,
+    verifiedCandidate: f.candidate,
+    baseBranch: "main",
+    publish: false,
+  });
+  expect(result.status).toBe("proposed");
+  const lines = readFileSync(join(result.worktree!, ".animus/lessons.jsonl"), "utf8")
+    .trim()
+    .split("\n");
+  expect(lines).toHaveLength(1);
+  expect(retiredFlag(JSON.parse(lines[0]!))).toBe(true);
+  // The audit line survives, but harness memory must stop selecting it.
+  expect(loadActiveLessons(result.worktree!, "HEAD").map((lesson) => lesson.id)).not.toContain(
+    "lsn-20260101-01",
+  );
+});
+
+test("prune removes a skill and the AGENTS.md pointer that reached it", async () => {
+  const f = await fixture("prune", { target: "skill", key: "old-playbook" }, (root) => {
+    mkdirSync(join(root, ".agents/skills/old-playbook"), { recursive: true });
+    writeFileSync(
+      join(root, ".agents/skills/old-playbook/SKILL.md"),
+      "---\nname: old-playbook\ndescription: retired preview\n---\n",
+    );
+    writeFileSync(
+      join(root, "AGENTS.md"),
+      "# Agents\n\n- **Playbook**: see `.agents/skills/old-playbook/SKILL.md`.\n",
+    );
+  });
+  const result = await deliverLearningProposal({
+    ...f,
+    verifiedCandidate: f.candidate,
+    baseBranch: "main",
+    publish: false,
+  });
+  expect(result.status).toBe("proposed");
+  expect(existsSync(join(result.worktree!, ".agents/skills/old-playbook/SKILL.md"))).toBe(false);
+  expect(readFileSync(join(result.worktree!, "AGENTS.md"), "utf8")).not.toContain("old-playbook");
 });

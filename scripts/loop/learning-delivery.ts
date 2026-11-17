@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, realpathSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { z } from "zod";
@@ -34,8 +34,8 @@ const productionTransport: LearningDeliveryTransport = async ({ argv, cwd }) => 
 };
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const provenanceSchema = z.strictObject({ runId: z.string().min(1), candidate: z.string().min(1), evidenceHash: z.string().regex(/^[a-f0-9]{64}$/) });
-const memoryLessonSchema = z.object({ id: z.string().min(1), topic: z.string().min(1), rule: z.string().min(1), trigger_patterns: z.array(z.string()), evidence: z.string(), vetoed: z.boolean(), created_at: z.string(), occurrence_count: z.number().int().nonnegative().optional(), revision_id: z.string().optional(), provenance: z.array(provenanceSchema).optional(), superseded_by: z.string().optional() }).strict();
-const rulesMemorySchema = z.strictObject({ schema_version: z.literal(1), description: z.string().optional(), rules: z.array(z.strictObject({ id: z.string(), description: z.string(), file_glob: z.string(), forbid_regex: z.string().optional(), require_regex: z.string().optional(), replacement_hint: z.string(), mode: z.enum(["warn", "block"]).optional() })), pattern_registry: z.record(z.string(), z.union([z.string(), z.strictObject({ file_glob: z.string(), guidance: z.string() })])).optional(), component_registry: z.record(z.string(), z.string()).optional() });
+const memoryLessonSchema = z.object({ id: z.string().min(1), topic: z.string().min(1), rule: z.string().min(1), trigger_patterns: z.array(z.string()), evidence: z.string(), vetoed: z.boolean(), created_at: z.string(), occurrence_count: z.number().int().nonnegative().optional(), revision_id: z.string().optional(), provenance: z.array(provenanceSchema).optional(), superseded_by: z.string().optional(), retired: z.boolean().optional() }).strict();
+const rulesMemorySchema = z.strictObject({ schema_version: z.literal(1), description: z.string().optional(), rules: z.array(z.strictObject({ id: z.string(), description: z.string(), file_glob: z.string(), forbid_regex: z.string().optional(), require_regex: z.string().optional(), replacement_hint: z.string(), mode: z.enum(["warn", "block"]).optional() })), pattern_registry: z.record(z.string(), z.union([z.string(), z.strictObject({ file_glob: z.string(), guidance: z.string() })])).optional(), component_registry: z.record(z.string(), z.string()).optional(), modules: z.record(z.string(), z.strictObject({ owns: z.array(z.string()), may_import: z.array(z.string()).optional(), seam: z.string().optional() })).optional() });
 
 function readMemory(worktree: string, path: string): string {
   let current = worktree;
@@ -87,6 +87,55 @@ function applyMutation(worktree: string, mutation: LearningMutation): string[] {
   if (mutation.category === "tool") {
     const path = resolveMemoryPath(worktree, ".animus/tool-guidance.json", ".factory/tool-guidance.json"); const current = z.record(z.string(), z.string()).parse(JSON.parse(readMemory(worktree, path) || "{}"));
     current[mutation.key] = mutation.value.command; writeMemory(worktree, path, JSON.stringify(current, null, 2) + "\n"); return [path];
+  }
+  if (mutation.category === "prune") {
+    const { target, key } = mutation.value;
+    if (target === "lesson") {
+      const path = resolveMemoryPath(worktree, ".animus/lessons.jsonl", ".factory/lessons.jsonl");
+      const entries = readMemory(worktree, path).split("\n").filter(Boolean).map(line => memoryLessonSchema.parse(JSON.parse(line)));
+      const entry = entries.find(e => e.id === key);
+      if (!entry) throw new Error(`prune_target_missing:lesson:${key}`);
+      // Retained for audit, inactive for injection: a retired lesson keeps its evidence but
+      // stops costing Builder context in harness memory.
+      entry.retired = true;
+      writeMemory(worktree, path, entries.map(e => JSON.stringify(e)).join("\n") + "\n"); return [path];
+    }
+    if (target === "pattern") {
+      const path = resolveMemoryPath(worktree, ".animus/codebase-rules.json", ".factory/codebase-rules.json");
+      const current = rulesMemorySchema.parse(JSON.parse(readMemory(worktree, path) || '{"schema_version":1,"rules":[],"pattern_registry":{}}'));
+      if (!current.pattern_registry || !(key in current.pattern_registry)) throw new Error(`prune_target_missing:pattern:${key}`);
+      delete current.pattern_registry[key];
+      writeMemory(worktree, path, JSON.stringify(current, null, 2) + "\n"); return [path];
+    }
+    if (target === "guard") {
+      const path = resolveMemoryPath(worktree, ".animus/codebase-rules.json", ".factory/codebase-rules.json");
+      const current = rulesMemorySchema.parse(JSON.parse(readMemory(worktree, path) || '{"schema_version":1,"rules":[],"pattern_registry":{}}'));
+      const rules = current.rules ?? [];
+      if (!rules.some((r: { id: string }) => r.id === key)) throw new Error(`prune_target_missing:guard:${key}`);
+      current.rules = rules.filter((r: { id: string }) => r.id !== key);
+      writeMemory(worktree, path, JSON.stringify(current, null, 2) + "\n"); return [path];
+    }
+    if (target === "tool") {
+      const path = resolveMemoryPath(worktree, ".animus/tool-guidance.json", ".factory/tool-guidance.json");
+      const current = z.record(z.string(), z.string()).parse(JSON.parse(readMemory(worktree, path) || "{}"));
+      if (!(key in current)) throw new Error(`prune_target_missing:tool:${key}`);
+      delete current[key];
+      writeMemory(worktree, path, JSON.stringify(current, null, 2) + "\n"); return [path];
+    }
+    // A skill is a directory, but SKILL.md is the loadable unit; removing it disables the
+    // skill while leaving any sibling reference material for the reviewer to judge.
+    const skillPath = `.agents/skills/${key}/SKILL.md`;
+    if (!existsSync(join(worktree, skillPath))) throw new Error(`prune_target_missing:skill:${key}`);
+    rmSync(join(worktree, skillPath));
+    const changed: string[] = [skillPath];
+    const agents = readMemory(worktree, "AGENTS.md");
+    const remainingLines = agents.split("\n").filter(line => !line.includes(skillPath));
+    while (remainingLines.length > 0 && remainingLines[remainingLines.length - 1] === "") remainingLines.pop();
+    // End on exactly one newline: a stranded blank line at EOF fails the delivery's
+    // `git diff --cached --check` gate.
+    const remaining = remainingLines.join("\n") + "\n";
+    if (remaining !== agents) { writeMemory(worktree, "AGENTS.md", remaining); changed.push("AGENTS.md"); }
+    return changed;
   }
   if (mutation.category === "pattern" || mutation.category === "guard") {
     const path = resolveMemoryPath(worktree, ".animus/codebase-rules.json", ".factory/codebase-rules.json"); const current = rulesMemorySchema.parse(JSON.parse(readMemory(worktree, path) || '{"schema_version":1,"rules":[],"pattern_registry":{}}'));
@@ -201,7 +250,9 @@ export async function deliverLearningProposal(options: LearningDeliveryRequest):
       if (!verdict.grounding.approved || verdict.grounding.confidence < .7 || !verdict.quality.approved || verdict.quality.confidence < .7 || verdict.hallucinationRisk !== "grounded_in_logs") throw new Error("delivery_evaluation_rejected");
       mutations.push(mutation);
     }
-    const structural = (m: LearningMutation) => ["pattern", "guard", "skill"].includes(m.category);
+    const structural = (m: LearningMutation) =>
+      ["pattern", "guard", "skill"].includes(m.category) ||
+      (m.category === "prune" && ["pattern", "guard", "skill"].includes(m.value.target));
     const kinds = new Set(mutations.map(m => structural(m) ? "structural" : "lightweight"));
     if (kinds.size > 1 && !options.category) throw new Error("mixed_proposal_select_delivery_category");
     result.kind = options.category ?? (structural(mutations[0]!) ? "structural" : "lightweight");
@@ -238,7 +289,7 @@ export async function deliverLearningProposal(options: LearningDeliveryRequest):
         branch,
         sourceCandidate: options.verifiedCandidate,
         receipt: digest(receiptContent),
-        mutations: selected.map(m => ({ category: m.category, key: m.key })),
+        mutations: selected.map(m => ({ category: m.category, key: m.category === "prune" ? `${m.value.target}:${m.value.key}` : m.key })),
       });
       paths.push(LEARNING_LEDGER_PATH, HARNESS_CHANGELOG_PATH);
     }
