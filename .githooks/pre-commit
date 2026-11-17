@@ -10,18 +10,21 @@ echo "==> Running local pre-commit CI gates..."
 echo "==> [Gate 1] Architecture boundary check..."
 node scripts/health/check-architecture.mjs
 
-echo "==> [Gate 2] Format & lint check..."
+echo "==> [Gate 2] Codebase rules (mode: block)..."
+bun scripts/health/check-codebase-rules.ts
+
+echo "==> [Gate 3] Format & lint check..."
 bun run format
 bun run lint
 
-echo "==> [Gate 3] Typecheck..."
+echo "==> [Gate 4] Typecheck..."
 bun run typecheck
 
 if [ "${ANIMUS_PRECOMMIT_FULL_TEST:-0}" = "1" ]; then
-  echo "==> [Gate 4] Full test verification (ANIMUS_PRECOMMIT_FULL_TEST=1)..."
+  echo "==> [Gate 5] Full test verification (ANIMUS_PRECOMMIT_FULL_TEST=1)..."
   bun run test
 else
-  echo "==> [Gate 4] Skipping full test suite on commit (run targeted tests during TDD; set ANIMUS_PRECOMMIT_FULL_TEST=1 for full suite)."
+  echo "==> [Gate 5] Skipping full test suite on commit (run targeted tests during TDD; set ANIMUS_PRECOMMIT_FULL_TEST=1 for full suite)."
 fi
 
 echo "==> All local CI checks passed cleanly."

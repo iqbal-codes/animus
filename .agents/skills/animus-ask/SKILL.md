@@ -58,7 +58,7 @@ The canonical path for designing, specifying, executing, and reviewing features 
    - **`/animus-architecture`**: Formalizes deep modules with small interfaces. Establishes module seams, adapters, and patterns, writing to `docs/architecture.md` and updating `.animus/codebase-rules.json`.
 
 4. **Tracer Bullet Ticket Decomposition**:
-   - **`/animus-tickets`**: Splits the specification into thin, independently verifiable tickets. Defines explicit `Depends on:` lines to construct the dependency DAG. Flags admitted work as `ready-for-agent`.
+   - **`/animus-tickets`**: Splits the specification into coarse-grained vertical milestones sized by disjoint seams, not micro-tickets. Defines explicit `Depends on:` lines to construct the dependency DAG, and sequences wide refactors as expand–contract batches. Flags admitted work as `ready-for-agent`.
 
 5. **Autonomous Implementation**:
    - **`/animus-implement`**: Drives implementation of a single ticket in an isolated session. Executes test-first via `.agents/skills/tdd`, stubs public types via `.agents/skills/blueprint`, hardens boundaries via `.agents/skills/security-hardening`, and verifies UI via `.agents/skills/ui-quality`.

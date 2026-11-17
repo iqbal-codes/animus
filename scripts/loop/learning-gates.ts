@@ -73,6 +73,13 @@ export function validateLearningMutation(mutation: LearningMutation, records: Le
     const blocks = steps?.split(/^\d+\.\s/m).slice(1) ?? [];
     if (skill.skill_markdown.split("\n").length > 150 || !skill.skill_markdown.includes("## When to Use") || !blocks.length || blocks.some(step => !step.includes("*Completion Criterion*")) || !skill.agents_md_pointer.includes(`.agents/skills/${skill.skill_name}/SKILL.md`) || skill.agents_md_pointer.includes("\n")) throw new Error("invalid_skill_structure");
   }
+  if (mutation.category === "prune") {
+    // The base schema already demands evidence; this only refuses a key whose shape cannot
+    // address the chosen target, so a malformed prune fails before a worktree is created.
+    const { target, key } = mutation.value;
+    if (target === "lesson" && !/^lsn-[a-z0-9-]{4,80}$/.test(key)) throw new Error("invalid_prune_key");
+    if (target === "skill" && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(key)) throw new Error("invalid_prune_key");
+  }
 }
 
 export interface GuardReplay {

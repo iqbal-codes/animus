@@ -20,14 +20,9 @@ Use this playbook when:
    Read `.agents/skills/writing-for-agents/SKILL.md` first. Inspect the current session or specified run logs to identify where the agent wasted turns, hit errors, or missed a convention.
    *Completion Criterion*: Every observed friction point is cited from session logs or diffs before proposing changes.
 
-2. **Route each finding by the Context-Pressure Hierarchy**
-   Assign each candidate improvement to the lowest-context-pressure layer that can enforce it:
-   - **Automated Guard / Check (0 Builder context tokens)**: Mechanical mistakes (banned APIs, import shapes, regex patterns) become deterministic `rules` in `.animus/codebase-rules.json`, linter rules, or CI checks. Always prefer building a check over writing prose.
-   - **Reviewer Coding Standards (0 Builder context tokens)**: Judgement calls, module-depth expectations, and cross-file style rules go into `CODING_STANDARDS.md` for the **Reviewer** to enforce during code review, never into `AGENTS.md`.
-   - **Verified Tool Recipes (On-demand on error)**: Working CLI commands (`exit 0`) go into `.animus/tool-guidance.json`.
-   - **File-Scoped Gotchas (On-demand per file)**: Non-obvious runtime traps go into `.animus/lessons.jsonl` with narrow `trigger_patterns` (max 2 sentences, positive imperative).
-   - **Navigation Pointers**: Only genuine repo-wide navigation pointers belong in `AGENTS.md` (strictly <= 150 lines).
-   *Completion Criterion*: Every candidate improvement is mapped to its target artifact with zero judgment-call prose added to the Builder's base prompt.
+2. **Route each finding by the Single Enforcement Hierarchy**
+   Assign each candidate improvement to the lowest-context-cost level that can enforce it, using the seven-level table in `docs/agents/harness-authoring-standard.md` §1. Do not restate that table here: it is the routing authority shared by this playbook, `/animus-learn`, and the loop reflector, so a change to where something belongs is made once.
+   *Completion Criterion*: Every candidate improvement is mapped to a named level from §1 with zero judgment-call prose added to the Builder's base prompt.
 
 3. **Prune no-ops and one-off skill bloat**
    Scan `AGENTS.md`, `.animus/lessons.jsonl`, and `.agents/skills/` for instructions the model already follows by default (no-ops), duplicate rules, or narrow single-issue skills. Recommend deletions or consolidations.

@@ -17,12 +17,22 @@ export const guardDraftSchema = z.strictObject({
 }).refine(v => Boolean(v.forbid_regex || v.require_regex), "guard requires a regex");
 export type GuardDraft = z.infer<typeof guardDraftSchema>;
 export const skillDraftSchema = z.strictObject({ skill_name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/), description: text, agents_md_pointer: text, skill_markdown: text });
+/**
+ * Memory that only grows becomes its own context load, so pruning is a first-class mutation
+ * rather than an operator chore. `key` means an entry `id` for guards and lessons, a registry
+ * key for patterns and tool recipes, and a skill name for skills.
+ */
+export const pruneDraftSchema = z.strictObject({
+  target: z.enum(["lesson", "pattern", "guard", "tool", "skill"]),
+  key: z.string().regex(/^[a-zA-Z0-9_./-]{1,120}$/),
+});
 export const learningMutationSchema = z.discriminatedUnion("category", [
   z.strictObject({ ...base, category: z.literal("lesson"), value: lessonDraftSchema }),
   z.strictObject({ ...base, category: z.literal("tool"), value: z.strictObject({ command: text, executionId: text }) }),
   z.strictObject({ ...base, category: z.literal("pattern"), value: text }),
   z.strictObject({ ...base, category: z.literal("guard"), value: guardDraftSchema }),
   z.strictObject({ ...base, category: z.literal("skill"), value: skillDraftSchema }),
+  z.strictObject({ ...base, category: z.literal("prune"), value: pruneDraftSchema }),
 ]);
 export const learningProposalSchema = z.strictObject({ schema_version: z.literal(1), attribution: z.enum(["helped", "hurt", "no_observed_effect", "confounded"]), mutations: z.array(learningMutationSchema).max(50) });
 const score = z.strictObject({ approved: z.boolean(), confidence: z.number().finite().min(0).max(1) });

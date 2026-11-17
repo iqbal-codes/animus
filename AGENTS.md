@@ -9,7 +9,7 @@
 ## Repository Knowledge, Skills & Memory
 
 - **Canonical Configuration**: `AGENTS.md` and `.agents/skills/` are authoritative sources of truth. Compatibility symlinks (`CLAUDE.md -> AGENTS.md`, `.claude/skills -> ../.agents/skills`) mirror them for tool support.
-- **Stage & Workflow Boundary**: Stage playbooks in `.agents/skills/` (`animus-*`, `retro`, `pr`, `skill-creator`, `writing-for-agents`) are **strictly user- or engine-invoked (`disable-model-invocation: true`)**. Never self-invoke, read, chain, or combine stage playbooks unless explicitly requested for the current turn; when an interactive skill is invoked, follow only that skill without layering extra review or coordinator stages.
+- **Stage & Workflow Boundary**: Stage playbooks in `.agents/skills/` (`animus-*` except `animus-triage`, `retro`, `pr`, `skill-creator`, `writing-for-agents`) are **strictly user- or engine-invoked (`disable-model-invocation: true`)**. Never self-invoke, read, chain, or combine stage playbooks unless explicitly requested for the current turn; when an interactive skill is invoked, follow only that skill without layering extra review or coordinator stages.
 - **Repository Skills**: Canonical playbooks live in `.agents/skills/`. Consult when triggered:
   - Skill router: `/animus-ask` (aliases: `/ask-animus`, `/ask-matt`)
   - Repository setup & onboarding: `/animus-setup` (aliases: `/setup-animus-skills`, `/setup-matt-pocock-skills`)
