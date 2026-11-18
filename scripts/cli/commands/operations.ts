@@ -160,8 +160,10 @@ function findConsoleDb(
     if (existsSync(candidate)) return { path: candidate, explicit: true };
     throw new Error(`Explicit state directory '${stateDir}' does not contain console.db`);
   }
-  const inRepo = join(repoRoot, ".factory/state/console.db");
-  if (existsSync(inRepo)) return { path: inRepo, explicit: false };
+  for (const state of [".factory/state", ".animus/state"]) {
+    const candidate = join(repoRoot, state, "console.db");
+    if (existsSync(candidate)) return { path: candidate, explicit: false };
+  }
 
   const inAnimusState = join(resolveAnimusStateDir(), "console.db");
   if (existsSync(inAnimusState)) return { path: inAnimusState, explicit: false };
@@ -170,15 +172,17 @@ function findConsoleDb(
     const gitRes = Bun.spawnSync(["git", "rev-parse", "--git-common-dir"], { cwd: repoRoot });
     if (gitRes.exitCode === 0) {
       const common = resolve(repoRoot, gitRes.stdout.toString().trim());
-      const inCommon = join(common, "factory-local-loop", "console.db");
-      if (existsSync(inCommon)) return { path: inCommon, explicit: false };
-      const inCommonState = join(common, "state", "console.db");
-      if (existsSync(inCommonState)) return { path: inCommonState, explicit: false };
+      for (const state of ["factory-local-loop", "animus-local-loop", "state"]) {
+        const candidate = join(common, state, "console.db");
+        if (existsSync(candidate)) return { path: candidate, explicit: false };
+      }
     }
   } catch {}
 
-  const inParentState = join(resolve(repoRoot, ".."), ".factory/state/console.db");
-  if (existsSync(inParentState)) return { path: inParentState, explicit: false };
+  for (const state of [".factory/state", ".animus/state"]) {
+    const candidate = join(resolve(repoRoot, ".."), state, "console.db");
+    if (existsSync(candidate)) return { path: candidate, explicit: false };
+  }
 
   return { path: null, explicit: false };
 }
@@ -1979,7 +1983,10 @@ export async function runCommandLedgerCli(opts: {
   json?: boolean;
 }): Promise<number> {
   const sub = opts.subcommand ?? "list";
-  const stateDir = opts.stateDir ?? join(opts.repoRoot, ".factory/state");
+  const legacyState = join(opts.repoRoot, ".factory/state");
+  const stateDir =
+    opts.stateDir ??
+    (existsSync(join(legacyState, "console.db")) ? legacyState : join(opts.repoRoot, ".animus/state"));
   const dbPath = join(stateDir, "console.db");
   const db = initializeDatabase(dbPath);
   const service = new CommandService(db);

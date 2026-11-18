@@ -1087,7 +1087,7 @@ export class FinalDeliveryService {
     integrationTip: string,
     targetTip: string,
   ): Promise<string | null> {
-    const branch = delivery.integration_branch ?? `factory/spec-final-${delivery.id}`;
+    const branch = delivery.integration_branch ?? `animus/spec-final-${delivery.id}`;
     let treeSha: string;
     try {
       const output = this.gitRunner(
@@ -1226,7 +1226,7 @@ export class FinalDeliveryService {
   }
 
   private integrationBranch(plan: PlanRecord): string {
-    return plan.integration_branch ?? `factory/spec-${this.rootIssue(plan)}-integration`;
+    return plan.integration_branch ?? `animus/spec-${this.rootIssue(plan)}-integration`;
   }
 
   private rootIssue(plan: PlanRecord): number {

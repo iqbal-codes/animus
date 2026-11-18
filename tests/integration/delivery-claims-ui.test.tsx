@@ -70,7 +70,7 @@ const RUN = {
   role: "ticket" as const,
   gate_profile: "child" as const,
   merge_policy: "auto_after_gates" as const,
-  target_branch: "factory/spec-151-integration",
+  target_branch: "animus/spec-151-integration",
   ownership_generation: 1,
   state: "succeeded" as const,
   actor: "monitor",

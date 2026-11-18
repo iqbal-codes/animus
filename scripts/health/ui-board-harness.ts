@@ -298,7 +298,7 @@ async function importSpec(
     );
   }
   const plan = await plans.importPlan(project.id, { issue_number: specIssue, kind: "spec" });
-  const branch = `factory/spec-${specIssue}-integration`;
+  const branch = `animus/spec-${specIssue}-integration`;
   git(["branch", "-f", branch, "main"]);
   git(["push", "-q", "origin", branch]);
   return { plan, branch };

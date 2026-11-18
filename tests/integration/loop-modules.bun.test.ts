@@ -1033,9 +1033,9 @@ test("19. Two-Layer Critical Impact & Subticket Auto-Merge Gate: authorizes boun
   expect(depImpact.categories).toContain("dependency_toolchain_or_infra");
 
   // 6. Subticket targeting integration branch with clean bounded change + reviewer eligible -> authorized: true
-  const authorizedEval = evaluateSubticketAutoMerge({
+  const authorizedParams = {
     isSubticket: true,
-    targetBranch: "factory/spec-100-integration",
+    targetBranch: "animus/spec-100-integration",
     baseBranch: "main",
     readinessReady: true,
     changedFiles: ["apps/web/src/features/intake/filter-badge.tsx"],
@@ -1056,15 +1056,22 @@ test("19. Two-Layer Critical Impact & Subticket Auto-Merge Gate: authorizes boun
         rationale: "Bounded UI component slice within intake feature.",
       },
     },
-  });
+  } satisfies Parameters<typeof evaluateSubticketAutoMerge>[0];
+  const authorizedEval = evaluateSubticketAutoMerge(authorizedParams);
   expect(authorizedEval.authorized).toBe(true);
   expect(authorizedEval.decision).toBe("auto_merge");
   expect(authorizedEval.criticalImpacts).toEqual([]);
+  expect(
+    evaluateSubticketAutoMerge({
+      ...authorizedParams,
+      targetBranch: "factory/spec-100-integration",
+    }).authorized,
+  ).toBe(true);
 
   // 7. Subticket passing all quality checks, but deterministic diff touches DB migration -> held for human review (authorized: false)
   const heldByDeterministicDb = evaluateSubticketAutoMerge({
     isSubticket: true,
-    targetBranch: "factory/spec-100-integration",
+    targetBranch: "animus/spec-100-integration",
     baseBranch: "main",
     readinessReady: true,
     changedFiles: ["apps/backend/src/registry/db.ts"],
@@ -1093,7 +1100,7 @@ test("19. Two-Layer Critical Impact & Subticket Auto-Merge Gate: authorizes boun
   // 8. Subticket with clean file names, but Reviewer flags foundational_direction_or_irreversible -> held for human review
   const heldByReviewerSemantic = evaluateSubticketAutoMerge({
     isSubticket: true,
-    targetBranch: "factory/spec-100-integration",
+    targetBranch: "animus/spec-100-integration",
     baseBranch: "main",
     readinessReady: true,
     changedFiles: ["apps/backend/src/coordination/service.ts"],
@@ -1161,7 +1168,7 @@ test("20. Scheduler auto-merged subticket unblocking: getMergedIssueNumbers sati
         issue: "https://github.com/org/repo/issues/201",
         status: "merged",
         partOf: 200,
-        integrationBranch: "factory/spec-200-integration",
+        integrationBranch: "animus/spec-200-integration",
       }),
     );
 

@@ -728,7 +728,7 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
       );
 
       // Integration branch was updated in Git refs
-      const integrationHead = execFileSync("git", ["rev-parse", "factory/spec-58-integration"], {
+      const integrationHead = execFileSync("git", ["rev-parse", "animus/spec-58-integration"], {
         cwd: repoPath,
         encoding: "utf-8",
       }).trim();
@@ -814,7 +814,7 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
       const baseTip = plan.currentIntegrationSha;
 
       const wtDir = join(tempDir, "loop-wt-116");
-      execFileSync("git", ["worktree", "add", "-b", "factory/spec-58/ticket-116", wtDir, baseTip], {
+      execFileSync("git", ["worktree", "add", "-b", "animus/spec-58/ticket-116", wtDir, baseTip], {
         cwd: repoPath,
         stdio: "ignore",
       });
@@ -832,7 +832,7 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
       const mergeResult = await executeSubticketAutoMerge({
         root: repoPath,
         candidate: cand116,
-        integrationBranch: "factory/spec-58-integration",
+        integrationBranch: "animus/spec-58-integration",
         targetBaseTip: baseTip,
         worktree: wtDir,
         issueNumber: 116,
@@ -846,7 +846,7 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
           authorized: true,
           decision: "auto_merge",
           isSubticket: true,
-          targetBranch: "factory/spec-58-integration",
+          targetBranch: "animus/spec-58-integration",
           baseBranch: "main",
           riskLevel: "low",
           scopeAligned: true,
@@ -866,7 +866,7 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
       // Invariant: Git ref was rolled back to baseTip when DB write failed, preventing drift
       const currentBranchSha = execFileSync(
         "git",
-        ["rev-parse", "refs/heads/factory/spec-58-integration"],
+        ["rev-parse", "refs/heads/animus/spec-58-integration"],
         { cwd: repoPath, encoding: "utf-8" },
       ).trim();
       expect(currentBranchSha).toBe(baseTip);
@@ -904,7 +904,7 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
 
       // Create commit for subticket 113 in a separate worktree
       const wtDir = join(tempDir, "loop-wt-113");
-      execFileSync("git", ["worktree", "add", "-b", "factory/spec-58/ticket-113", wtDir, baseTip], {
+      execFileSync("git", ["worktree", "add", "-b", "animus/spec-58/ticket-113", wtDir, baseTip], {
         cwd: repoPath,
         stdio: "ignore",
       });
@@ -925,7 +925,7 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
       const mergeResult = await executeSubticketAutoMerge({
         root: repoPath,
         candidate: candidate113,
-        integrationBranch: "factory/spec-58-integration",
+        integrationBranch: "animus/spec-58-integration",
         targetBaseTip: baseTip,
         worktree: wtDir,
         issueNumber: 113,
@@ -939,7 +939,7 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
           authorized: true,
           decision: "auto_merge",
           isSubticket: true,
-          targetBranch: "factory/spec-58-integration",
+          targetBranch: "animus/spec-58-integration",
           baseBranch: "main",
           riskLevel: "low",
           scopeAligned: true,
@@ -1086,7 +1086,7 @@ describe("Spec Coordination via Targeted animus-implement, Worktree Isolation & 
       const allPrs = await forge.listPullRequests("owner/repo-spec");
       expect(allPrs).toHaveLength(1);
       expect(allPrs[0].number).toBe(finalPr.prNumber);
-      expect(allPrs[0].head).toContain("factory/spec-58-integration");
+      expect(allPrs[0].head).toContain("animus/spec-58-integration");
     });
 
     test("standalone tickets create exactly one PR", async () => {

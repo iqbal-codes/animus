@@ -183,7 +183,7 @@ export async function generateMergePlan(
       ci_policy: "enforced",
       path_policy: "enforced",
     },
-    join(root, ".factory-local-loop/merge-queue"),
+    join(root, ".animus-local-loop/merge-queue"),
   );
 
   return { plan, prompt };
@@ -392,7 +392,7 @@ export function evaluateSubticketAutoMerge(
   const isIntegrationTarget =
     isSubticket &&
     targetBranch !== baseBranch &&
-    /^factory\/spec-\d+-integration$/.test(targetBranch);
+    /^(?:animus|factory)\/spec-\d+-integration$/.test(targetBranch);
 
   if (!isIntegrationTarget) {
     reasons.push(

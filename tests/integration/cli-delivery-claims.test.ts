@@ -66,7 +66,7 @@ describe("CLI delivery claim controls use the backend API", () => {
          (id, project_id, plan_id, kind, delivery_branch, integration_branch, final_pr_base,
           merge_policy_child, merge_policy_standalone, merge_policy_final, manifest_id, graph_hash,
           created_at, updated_at)
-       VALUES ('del-cli', ?, 'plan-cli', 'standalone', 'delivery/cli', 'factory/spec-151-integration',
+       VALUES ('del-cli', ?, 'plan-cli', 'standalone', 'delivery/cli', 'animus/spec-151-integration',
                'main', 'auto_after_gates', 'manual', 'manual', 'manifest_cli', ?, ?, ?)`,
     ).run(project.id, "a".repeat(64), now, now);
     db.prepare(

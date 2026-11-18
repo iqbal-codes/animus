@@ -92,7 +92,7 @@ function installation(held: boolean) {
               projectId: "proj_1",
               issueNumber: 701,
               state: "interrupted",
-              branch: "factory/spec-1/ticket-701",
+              branch: "animus/spec-1/ticket-701",
               worktreePath: "/restored/home/projects/p/worktrees/ticket-701",
               worktreePresent: false,
               ownerPidCleared: true,

@@ -246,7 +246,7 @@ describe("delivery role claims: cutover, restore and recovery", () => {
       comments: [],
     });
     const plan = await plans.importPlan(projectId, { issue_number: issue, kind: "spec" });
-    const branch = `factory/spec-${issue}-integration`;
+    const branch = `animus/spec-${issue}-integration`;
     git(checkoutPath, "branch", "-f", branch, "main");
     git(checkoutPath, "push", "-q", "origin", branch);
     return { plan, branch };

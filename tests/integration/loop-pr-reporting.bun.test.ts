@@ -511,7 +511,7 @@ describe("PR Body and Comment Reporting Lifecycle", () => {
         authorized: false,
         decision: "hold_for_human",
         isSubticket: true,
-        targetBranch: "factory/spec-58-integration",
+        targetBranch: "animus/spec-58-integration",
         baseBranch: "main",
         riskLevel: "high",
         scopeAligned: true,
@@ -539,7 +539,7 @@ describe("PR Body and Comment Reporting Lifecycle", () => {
         authorized: true,
         decision: "auto_merge",
         isSubticket: true,
-        targetBranch: "factory/spec-58-integration",
+        targetBranch: "animus/spec-58-integration",
         baseBranch: "main",
         riskLevel: "low",
         scopeAligned: true,
@@ -552,7 +552,7 @@ describe("PR Body and Comment Reporting Lifecycle", () => {
     });
 
     expect(mergedComment).toContain("`auto_merge`");
-    expect(mergedComment).toContain("factory/spec-58-integration");
+    expect(mergedComment).toContain("animus/spec-58-integration");
     expect(mergedComment).toContain("Auto-merged into integration branch");
 
     const evWithAutoMerge = renderEvidenceContent({
@@ -562,7 +562,7 @@ describe("PR Body and Comment Reporting Lifecycle", () => {
         authorized: false,
         decision: "hold_for_human",
         isSubticket: true,
-        targetBranch: "factory/spec-58-integration",
+        targetBranch: "animus/spec-58-integration",
         baseBranch: "main",
         riskLevel: "high",
         scopeAligned: true,

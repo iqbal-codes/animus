@@ -657,7 +657,7 @@ describe("durable PR publication and per-lap audit", () => {
     addIssue(822, ticketBody({ partOf: 820, coverage: "AC2" }));
     const plan = await plans.importPlan(projectId, { issue_number: 820, kind: "spec" });
     expect(plan.authority).toBe("admitted");
-    git(checkoutPath, "branch", "factory/spec-820-integration", "main");
+    git(checkoutPath, "branch", "animus/spec-820-integration", "main");
 
     const service = makeDispatch();
     const runA = await service.dispatch(projectId, {
@@ -677,8 +677,8 @@ describe("durable PR publication and per-lap audit", () => {
     expect(targetA.target.workId).not.toBe(targetB.target.workId);
     expect(targetA.pullRequests).toHaveLength(1);
     expect(targetB.pullRequests).toHaveLength(1);
-    expect(targetA.pullRequests[0]!.baseBranch).toBe("factory/spec-820-integration");
-    expect(targetB.pullRequests[0]!.baseBranch).toBe("factory/spec-820-integration");
+    expect(targetA.pullRequests[0]!.baseBranch).toBe("animus/spec-820-integration");
+    expect(targetB.pullRequests[0]!.baseBranch).toBe("animus/spec-820-integration");
     expect(targetA.pullRequests[0]!.headBranch).not.toBe(targetB.pullRequests[0]!.headBranch);
     expect(await forge.listPullRequests(REPO)).toHaveLength(2);
   });

@@ -348,7 +348,7 @@ describe("standalone full-delivery gate and verified merge", () => {
     expect(run.gate_profile).toBe("standalone");
     expect(run.merge_policy).toBe("manual");
     expect(run.target_branch).toBe("main");
-    expect(run.branch).toMatch(/^factory\/standalone-1600/);
+    expect(run.branch).toMatch(/^animus\/standalone-1600/);
     expect(run.branch).not.toBe("main");
 
     const published = await publication.publishByRun(projectId, run.id);
@@ -386,7 +386,7 @@ describe("standalone full-delivery gate and verified merge", () => {
       kind: "spec",
     });
     expect(specPlan.authority).toBe("admitted");
-    git(checkoutPath, "branch", "factory/spec-1601-integration", "main");
+    git(checkoutPath, "branch", "animus/spec-1601-integration", "main");
     const childRun = await makeDispatch().dispatch(projectId, {
       plan_id: specPlan.id,
       issue_number: 1602,

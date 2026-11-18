@@ -657,7 +657,7 @@ export class DispatchService {
       branch = this.uniqueBranch(
         project.id,
         project.checkout_path,
-        `factory/spec-${manifest.root.issue_number}-final-repair`,
+        `animus/spec-${manifest.root.issue_number}-final-repair`,
         root.work_id,
       );
     } catch (error) {
@@ -2893,8 +2893,8 @@ export class DispatchService {
   }
 
   private branchFor(manifest: PlanManifest, member: PlanMember): string {
-    if (manifest.kind === "standalone") return `factory/standalone-${member.issue_number}`;
-    return `factory/spec-${manifest.root.issue_number}/ticket-${member.issue_number}`;
+    if (manifest.kind === "standalone") return `animus/standalone-${member.issue_number}`;
+    return `animus/spec-${manifest.root.issue_number}/ticket-${member.issue_number}`;
   }
 
   private uniqueBranch(
