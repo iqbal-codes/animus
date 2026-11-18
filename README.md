@@ -73,7 +73,7 @@ stages. Existing delivery PRs are not automatically adopted by this local engine
 Each run starts from this checkout's committed HEAD in a new Git worktree/branch.
 Uncommitted changes in the invoking checkout are not copied. An exclusive issue
 lock, run state, Pi JSON events, subprocess check output, and findings live under
-`<git-common-dir>/factory-local-loop/`. Builder, QA, and reviewer have fresh Pi
+`<git-common-dir>/animus-local-loop/` for new local workspaces. Builder, QA, and reviewer have fresh Pi
 sessions with extensions and MCP disabled. Ordinary static/unit commands come from
 `harness/harness.config.json` and run as real processes against the exact committed
 candidate. QA/review verdicts must explicitly identify that candidate and provide

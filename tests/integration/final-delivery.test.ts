@@ -281,7 +281,7 @@ describe("final-spec delivery coordination", () => {
       );
     });
     const plan = await plans.importPlan(projectId, { issue_number: specIssue, kind: "spec" });
-    const branch = `factory/spec-${specIssue}-integration`;
+    const branch = `animus/spec-${specIssue}-integration`;
     git(checkoutPath, "branch", "-f", branch, "main");
     git(checkoutPath, "push", "-q", "origin", branch);
     return { plan, branch };

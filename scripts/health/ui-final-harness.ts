@@ -224,7 +224,7 @@ const runtime = new DeliveryRuntimeCoordinator(db, {
 runtimeRef.current = runtime;
 
 const plan = await plans.importPlan(project.id, { issue_number: 900, kind: "spec" });
-const branch = "factory/spec-900-integration";
+const branch = "animus/spec-900-integration";
 git(["branch", branch, "main"]);
 git(["push", "-q", "origin", branch]);
 

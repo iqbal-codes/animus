@@ -123,6 +123,7 @@ interface PlanDraft {
   budgets: { max_laps: number };
   graph: unknown;
   graphHash: string;
+  legacyGraphHash?: string;
 }
 
 interface ExternalResolution {
@@ -191,7 +192,7 @@ export class PlanService {
 
     const draft = await this.buildDraft(project, root, submission);
     const evidenceHash = this.evidenceHash(draft);
-    const existing = this.findReusablePlan(root.id, draft.graphHash, evidenceHash);
+    const existing = this.findReusablePlan(draft, evidenceHash);
     if (existing) return this.record(existing);
 
     const planId = `plan_${randomUUID()}`;
@@ -212,7 +213,7 @@ export class PlanService {
     }
 
     try {
-      const raced = this.findReusablePlan(root.id, draft.graphHash, evidenceHash);
+      const raced = this.findReusablePlan(draft, evidenceHash);
       if (raced) {
         this.db.exec("COMMIT;");
         return this.record(raced);
@@ -497,16 +498,13 @@ export class PlanService {
     }
   }
 
-  private findReusablePlan(
-    rootWorkId: string,
-    graphHash: string,
-    evidenceHash: string,
-  ): PlanRow | undefined {
+  private findReusablePlan(draft: PlanDraft, evidenceHash: string): PlanRow | undefined {
     const rows = this.db
       .prepare(
-        "SELECT * FROM plans WHERE root_work_id = ? AND graph_hash = ? ORDER BY created_at DESC",
+        `SELECT * FROM plans WHERE root_work_id = ? AND graph_hash IN (?, ?)
+         ORDER BY created_at DESC`,
       )
-      .all(rootWorkId, graphHash) as unknown as PlanRow[];
+      .all(draft.root.id, draft.graphHash, draft.legacyGraphHash ?? null) as unknown as PlanRow[];
     for (const row of rows) {
       const latest = this.db
         .prepare(
@@ -776,7 +774,7 @@ export class PlanService {
     const coverage = this.coverageRows(specRoot, finalMembers);
     const deliveryBranch = submission.delivery_branch ?? "main";
     const integrationBranch =
-      submission.kind === "spec" ? `factory/spec-${rootIssue}-integration` : null;
+      submission.kind === "spec" ? `animus/spec-${rootIssue}-integration` : null;
     const maxLaps = this.maxLaps(project);
     const graph = {
       version: 1,
@@ -839,6 +837,16 @@ export class PlanService {
       budgets: { max_laps: maxLaps },
       graph,
       graphHash: computeGraphHash(graph),
+      // Re-importing the same frozen graph must not replace a published integration ref.
+      ...(integrationBranch && {
+        legacyGraphHash: computeGraphHash({
+          ...graph,
+          targets: {
+            ...graph.targets,
+            integration_branch: `factory/spec-${rootIssue}-integration`,
+          },
+        }),
+      }),
     };
   }
 

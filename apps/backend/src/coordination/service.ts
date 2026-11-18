@@ -148,9 +148,11 @@ export class SpecCoordinatorService {
       }
     }
 
-    const integrationBranch = isStandalone
-      ? `factory/standalone-issue-${specIssueNumber}`
-      : `factory/spec-${specIssueNumber}-integration`;
+    const integrationBranch =
+      this.getPlan(projectId, specIssueNumber)?.integrationBranch ??
+      (isStandalone
+        ? `animus/standalone-issue-${specIssueNumber}`
+        : `animus/spec-${specIssueNumber}-integration`);
 
     // Initialize the integration branch from baseSha if it doesn't already exist
     try {
@@ -365,7 +367,7 @@ export class SpecCoordinatorService {
     const requestId = `cmd_coord_${projectId}_${specIssueNumber}_${childIssueNumber}_${Date.now()}`;
     const childBranch = plan.isStandalone
       ? plan.integrationBranch
-      : `factory/spec-${specIssueNumber}/ticket-${childIssueNumber}`;
+      : (child.branch ?? `animus/spec-${specIssueNumber}/ticket-${childIssueNumber}`);
     const worktreeDir = join(
       getProjectWorktreesDir(project.checkout_path),
       `spec-${specIssueNumber}`,

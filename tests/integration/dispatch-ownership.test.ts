@@ -234,10 +234,10 @@ describe("local dispatch ownership and frozen execution", () => {
     expect(run.content_hash).toBe(child.content_hash);
     expect(run.gate_profile).toBe("child");
     expect(run.merge_policy).toBe("auto_after_gates");
-    expect(run.target_branch).toBe("factory/spec-100-integration");
-    expect(run.branch).toBe("factory/spec-100/ticket-101");
+    expect(run.target_branch).toBe("animus/spec-100-integration");
+    expect(run.branch).toBe("animus/spec-100/ticket-101");
     expect(existsSync(run.worktree_path)).toBe(true);
-    expect(git(checkoutPath, "rev-parse", "--verify", "factory/spec-100/ticket-101")).toBe(
+    expect(git(checkoutPath, "rev-parse", "--verify", "animus/spec-100/ticket-101")).toBe(
       run.head_sha,
     );
 
@@ -272,7 +272,7 @@ describe("local dispatch ownership and frozen execution", () => {
     expect(run.gate_profile).toBe("standalone");
     expect(run.merge_policy).toBe("manual");
     expect(run.target_branch).toBe("main");
-    expect(run.branch).toBe("factory/standalone-300");
+    expect(run.branch).toBe("animus/standalone-300");
   });
 
   test("AC3: competing dispatches atomically allocate one claim and persist the command before tools", async () => {
@@ -591,7 +591,7 @@ describe("local dispatch ownership and frozen execution", () => {
       "-m",
       "integrate 381",
     );
-    git(checkoutPath, "branch", "factory/spec-380-integration", integrationCommit);
+    git(checkoutPath, "branch", "animus/spec-380-integration", integrationCommit);
     db.prepare(
       `INSERT INTO project_issue_integrations (project_id, issue_number, branch, commit_sha, integrated_at)
        VALUES (?, ?, ?, ?, ?)`,
@@ -604,7 +604,7 @@ describe("local dispatch ownership and frozen execution", () => {
 
     db.prepare(
       "UPDATE project_issue_integrations SET branch = ?, commit_sha = ? WHERE project_id = ? AND issue_number = ?",
-    ).run("factory/spec-380-integration", integrationCommit, projectId, 381);
+    ).run("animus/spec-380-integration", integrationCommit, projectId, 381);
     const run = await service.dispatch(projectId, {
       plan_id: spec.id,
       work_id: dep.work_id,

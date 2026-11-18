@@ -515,7 +515,7 @@ describe("Candidate-Bound Verification, Landing Guard & Tiered Action Freshness 
         `INSERT INTO project_spec_coordinations (
           id, project_id, spec_issue_number, integration_branch, base_branch,
           base_sha, current_integration_sha, status, plan_snapshot, created_at, updated_at
-        ) VALUES ('coord_1', ?, 58, 'factory/spec-58', 'main', 'sha_base', 'sha_NEW_INTEGRATED_SHA', 'active', '{}', datetime('now'), datetime('now'))`,
+        ) VALUES ('coord_1', ?, 58, 'animus/spec-58', 'main', 'sha_base', 'sha_NEW_INTEGRATED_SHA', 'active', '{}', datetime('now'), datetime('now'))`,
       ).run(projectId);
 
       expect(() => {

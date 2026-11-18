@@ -49,7 +49,7 @@ describe("Canonical ProjectWorkspace Resolution & Unified Preflight (Issue #142)
     test("resolves default local-loop location when no external state is set", () => {
       const ws = resolveProjectWorkspace(repoDir);
       expect(ws.root).toBe(repoDir);
-      expect(ws.stateRoot).toBe(join(ws.canonicalGitCommon, "factory-local-loop"));
+      expect(ws.stateRoot).toBe(join(ws.canonicalGitCommon, "animus-local-loop"));
       expect(ws.runsDir).toBe(join(ws.stateRoot, "runs"));
       expect(ws.worktreesDir).toBe(join(ws.stateRoot, "worktrees"));
       expect(ws.locksDir).toBe(join(ws.stateRoot, "locks"));
@@ -90,7 +90,17 @@ describe("Canonical ProjectWorkspace Resolution & Unified Preflight (Issue #142)
 
       const ws = resolveProjectWorkspace(repoDir, { stateRoot: insideState });
       expect(ws.stateRoot).not.toBe(insideState);
-      expect(ws.stateRoot).toBe(join(ws.canonicalGitCommon, "factory-local-loop"));
+      expect(ws.stateRoot).toBe(join(ws.canonicalGitCommon, "animus-local-loop"));
+    });
+
+    test("keeps existing local worktrees and locks together across a naming upgrade", () => {
+      const workspace = resolveProjectWorkspace(repoDir);
+      const legacyState = join(workspace.canonicalGitCommon, "factory-local-loop");
+      mkdirSync(join(legacyState, "worktrees"), { recursive: true });
+
+      const upgraded = resolveProjectWorkspace(repoDir);
+      expect(upgraded.worktreesDir).toBe(join(legacyState, "worktrees"));
+      expect(upgraded.locksDir).toBe(join(legacyState, "locks"));
     });
 
     test("resolves linked worktree to identical canonicalGitCommon and triageStateRoot", () => {

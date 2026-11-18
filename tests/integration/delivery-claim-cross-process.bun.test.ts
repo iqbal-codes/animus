@@ -142,7 +142,7 @@ describe("delivery-role claim across two OS processes", () => {
     const plans = new PlanService(db, forge);
     const plan = await plans.importPlan(projectId, { issue_number: 9911, kind: "spec" });
     planId = plan.id;
-    const branch = "factory/spec-9911-integration";
+    const branch = "animus/spec-9911-integration";
     git(checkoutPath, "branch", "-f", branch, "main");
     git(checkoutPath, "push", "-q", "origin", branch);
 

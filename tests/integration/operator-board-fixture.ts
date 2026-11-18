@@ -344,7 +344,7 @@ export async function createFixture(): Promise<Fixture> {
         );
       }
       const plan = await plans.importPlan(projectId, { issue_number: specIssue, kind: "spec" });
-      const branch = `factory/spec-${specIssue}-integration`;
+      const branch = `animus/spec-${specIssue}-integration`;
       git(checkout, "branch", "-f", branch, "main");
       git(checkout, "push", "-q", "origin", branch);
       return { planId: plan.id, branch };

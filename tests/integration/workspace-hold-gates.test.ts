@@ -197,7 +197,7 @@ describe("restored installation hold fences every outward writer", () => {
             success: true,
             childIssueNumber: 503,
             headSha: git(checkout, "rev-parse", "HEAD"),
-            branch: "factory/spec-502/ticket-503",
+            branch: "animus/spec-502/ticket-503",
             worktreePath: join(root, "worktrees", "spec-502", "ticket-503"),
           } as never;
         },

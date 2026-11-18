@@ -135,7 +135,7 @@ const project = await new ProjectRegistryService(app.db, forge).registerProject(
   name: "Child integration verification",
   checkout_path: checkout,
 });
-const branch = "factory/spec-700-integration";
+const branch = "animus/spec-700-integration";
 git(["branch", branch, "main"]);
 git(["push", "-q", "origin", branch]);
 

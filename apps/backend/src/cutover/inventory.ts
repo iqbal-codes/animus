@@ -168,6 +168,7 @@ export function resolveLegacyStateRoots(
       continue;
     }
     stateRoots.add(workspace.stateRoot);
+    stateRoots.add(join(workspace.canonicalGitCommon, "animus-local-loop"));
     stateRoots.add(join(workspace.canonicalGitCommon, "factory-local-loop"));
     stateRoots.add(join(workspace.primaryRoot, ".factory-local-loop"));
     stateRoots.add(join(home, "projects", workspace.projectSlug));

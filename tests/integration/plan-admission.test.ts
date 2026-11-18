@@ -227,7 +227,7 @@ describe("prepared spec and ticket plan admission", () => {
     }
     expect(manifest!.targets).toEqual({
       delivery_branch: "main",
-      integration_branch: "factory/spec-100-integration",
+      integration_branch: "animus/spec-100-integration",
       final_pr_base: "main",
     });
     expect(manifest!.merge_policy).toEqual({
@@ -297,6 +297,45 @@ describe("prepared spec and ticket plan admission", () => {
       exclusion_labels: [],
       outcome: "admitted",
     });
+  });
+
+  test("re-importing a frozen spec keeps its existing integration branch and plan identity", async () => {
+    addIssue(192, specBody(["parent outcome"]), ["ready-for-agent", "spec"]);
+    addIssue(193, ticketBody({ partOf: 192, coverage: "AC1" }));
+    const submission = { work_id: await workIdFor(192), kind: "spec" } as const;
+    const plan = await plans.importPlan(projectId, submission);
+    expect(plan.manifest).not.toBeNull();
+
+    const legacyBranch = "factory/spec-192-integration";
+    const manifest = {
+      ...plan.manifest!,
+      targets: { ...plan.manifest!.targets, integration_branch: legacyBranch },
+    };
+    manifest.graph_hash = computeGraphHash(graphFromManifest(manifest));
+    // Seed the isolated database with the rows that the previous version would have inserted.
+    const updateGuards = db
+      .prepare(
+        `SELECT name, sql FROM sqlite_schema
+         WHERE name IN ('plans_immutable_update', 'plan_manifests_immutable_update')`,
+      )
+      .all() as Array<{ name: string; sql: string }>;
+    for (const guard of updateGuards) db.exec(`DROP TRIGGER ${guard.name}`);
+    db.prepare("UPDATE plans SET integration_branch = ?, graph_hash = ? WHERE id = ?").run(
+      legacyBranch,
+      manifest.graph_hash,
+      plan.id,
+    );
+    db.prepare("UPDATE plan_manifests SET graph_hash = ?, manifest = ? WHERE plan_id = ?").run(
+      manifest.graph_hash,
+      JSON.stringify(manifest),
+      plan.id,
+    );
+    for (const guard of updateGuards) db.exec(guard.sql);
+
+    const replay = await plans.importPlan(projectId, submission);
+    expect(replay.id).toBe(plan.id);
+    expect(replay.manifest?.targets.integration_branch).toBe(legacyBranch);
+    expect(plans.listPlans(projectId)).toHaveLength(1);
   });
 
   test("AC3: cyclic internal dependencies hold the plan with an explicit cycle", async () => {

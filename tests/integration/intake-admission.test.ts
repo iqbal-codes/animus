@@ -445,7 +445,7 @@ Depends on: #59, #60
 
     test("evaluates admission, contract binding, and scheduler by verifying SQLite project_issue_integrations parity", async () => {
       const checkoutPath = createMockCheckout("co-sqlite-parity", "owner/repo-sqlite-parity");
-      execFileSync("git", ["checkout", "-b", "factory/spec-50-integration"], { cwd: checkoutPath });
+      execFileSync("git", ["checkout", "-b", "animus/spec-50-integration"], { cwd: checkoutPath });
       execFileSync("git", ["commit", "--allow-empty", "-m", "integrated 201"], {
         cwd: checkoutPath,
       });
@@ -461,7 +461,7 @@ Depends on: #59, #60
       });
 
       // Record verified branch integration for issue #201 in project database
-      intake.recordBranchIntegration(project.id, 201, "factory/spec-50-integration", sha201);
+      intake.recordBranchIntegration(project.id, 201, "animus/spec-50-integration", sha201);
 
       // Verify bindIssueContract with db/projectId recognizes #201 as satisfied even though GitHub state is OPEN
       const readMock = (args: string[]) => {
@@ -533,7 +533,7 @@ Depends on: #59, #60
     });
 
     test("readVerifiedBranchIntegrations scopes by project, rejects unregistered repo, stale/forged rows, and accepts verified commit", () => {
-      // 1. Setup real Git repository with a verified commit on factory/spec-50-integration
+      // 1. Setup real Git repository with a verified commit on animus/spec-50-integration
       const repoDir1 = join(tempDir, "repo-proj1");
       mkdirSync(repoDir1, { recursive: true });
       execFileSync("git", ["init"], { cwd: repoDir1 });
@@ -541,7 +541,7 @@ Depends on: #59, #60
       execFileSync("git", ["config", "user.name", "test"], { cwd: repoDir1 });
       execFileSync("git", ["checkout", "-b", "main"], { cwd: repoDir1 });
       execFileSync("git", ["commit", "--allow-empty", "-m", "initial commit"], { cwd: repoDir1 });
-      execFileSync("git", ["checkout", "-b", "factory/spec-50-integration"], { cwd: repoDir1 });
+      execFileSync("git", ["checkout", "-b", "animus/spec-50-integration"], { cwd: repoDir1 });
       execFileSync("git", ["commit", "--allow-empty", "-m", "integrated #50"], { cwd: repoDir1 });
       const realSha50 = execFileSync("git", ["rev-parse", "HEAD"], {
         cwd: repoDir1,
@@ -567,7 +567,7 @@ Depends on: #59, #60
       // In proj-1:
       // Issue 50: real verified commit
       // Issue 51: forged commit that does not exist in git
-      // Issue 52: commit that exists in git on an unrelated branch, but NOT reachable from factory/spec-50-integration
+      // Issue 52: commit that exists in git on an unrelated branch, but NOT reachable from animus/spec-50-integration
       execFileSync("git", ["checkout", "-b", "unrelated-branch", "main"], { cwd: repoDir1 });
       execFileSync("git", ["commit", "--allow-empty", "-m", "unrelated work"], { cwd: repoDir1 });
       const unrelatedSha = execFileSync("git", ["rev-parse", "HEAD"], {
@@ -577,9 +577,9 @@ Depends on: #59, #60
 
       db.prepare(`
         INSERT INTO project_issue_integrations (project_id, issue_number, branch, commit_sha, integrated_at)
-        VALUES ('proj-1', 50, 'factory/spec-50-integration', ?, datetime('now')),
-               ('proj-1', 51, 'factory/spec-50-integration', 'deadbeef00000000000000000000000000000000', datetime('now')),
-               ('proj-1', 52, 'factory/spec-50-integration', ?, datetime('now'))
+        VALUES ('proj-1', 50, 'animus/spec-50-integration', ?, datetime('now')),
+               ('proj-1', 51, 'animus/spec-50-integration', 'deadbeef00000000000000000000000000000000', datetime('now')),
+               ('proj-1', 52, 'animus/spec-50-integration', ?, datetime('now'))
       `).run(realSha50, unrelatedSha);
 
       // (Case 1) Two projects same issue number:
@@ -607,13 +607,13 @@ Depends on: #59, #60
         db,
         projectId: "proj-1",
         root: repoDir1,
-        integrationRef: "factory/spec-50-integration",
+        integrationRef: "animus/spec-50-integration",
       });
       expect(proj1Verified.has(51)).toBe(false);
       expect(proj1Verified.has(52)).toBe(false);
 
       // (Case 4) Real verified Git commit:
-      // Issue 50 is reachable from factory/spec-50-integration -> verified!
+      // Issue 50 is reachable from animus/spec-50-integration -> verified!
       expect(proj1Verified.has(50)).toBe(true);
       expect(proj1Verified.size).toBe(1);
     });

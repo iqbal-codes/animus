@@ -674,7 +674,7 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
     addIssue(102, ticketBody({ partOf: 100, coverage: "AC2" }));
     const plan = await plans.importPlan(projectId, { issue_number: 100, kind: "spec" });
     expect(plan.authority).toBe("admitted");
-    git(checkoutPath, "branch", "factory/spec-100-integration", "main");
+    git(checkoutPath, "branch", "animus/spec-100-integration", "main");
     register("gate-1", "automated_gate");
     register("reviewer-1", "peer_reviewer");
 
@@ -745,7 +745,7 @@ describe("candidate-bound execution observations, findings and artifacts", () =>
     addIssue(201, ticketBody({ partOf: 200, coverage: "AC1" }));
     addIssue(202, ticketBody({ partOf: 200, coverage: "AC2" }));
     const plan = await plans.importPlan(projectId, { issue_number: 200, kind: "spec" });
-    git(checkoutPath, "branch", "factory/spec-200-integration", "main");
+    git(checkoutPath, "branch", "animus/spec-200-integration", "main");
     register("gate-1", "automated_gate");
 
     const service = makeDispatch();

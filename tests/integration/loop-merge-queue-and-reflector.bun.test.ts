@@ -65,7 +65,7 @@ function makeStubEval(
     authorized: true,
     decision: "auto_merge",
     isSubticket: true,
-    targetBranch: "factory/spec-100-integration",
+    targetBranch: "animus/spec-100-integration",
     baseBranch: "main",
     riskLevel: "low",
     scopeAligned: true,
@@ -80,7 +80,7 @@ function makeStubEval(
 describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
   test("AC1: advances target integration branch ref with candidate commit via update-ref", async () => {
     const { repo, baseSha } = await initGitRepo();
-    const integrationBranch = "factory/spec-100-integration";
+    const integrationBranch = "animus/spec-100-integration";
     await git(repo, "branch", integrationBranch, baseSha);
 
     // Create candidate commit on a separate branch
@@ -117,7 +117,7 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
 
   test("AC1: fast-forward merges when repository HEAD is checked out to integration branch", async () => {
     const { repo, baseSha } = await initGitRepo();
-    const integrationBranch = "factory/spec-100-integration";
+    const integrationBranch = "animus/spec-100-integration";
     await git(repo, "checkout", "-b", integrationBranch);
 
     // Create candidate commit on another branch
@@ -151,7 +151,7 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
 
   test("AC1: fail-closed integration drift detection holds for human review on conflicting tip", async () => {
     const { repo, baseSha } = await initGitRepo();
-    const integrationBranch = "factory/spec-100-integration";
+    const integrationBranch = "animus/spec-100-integration";
     await git(repo, "branch", integrationBranch, baseSha);
 
     // Simulate concurrent drift on the integration branch
@@ -191,7 +191,7 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
 
   test("AC1: executes gh pr merge, push, and issue close when push is enabled", async () => {
     const { repo, baseSha } = await initGitRepo();
-    const integrationBranch = "factory/spec-100-integration";
+    const integrationBranch = "animus/spec-100-integration";
     await git(repo, "branch", integrationBranch, baseSha);
 
     await git(repo, "checkout", "-b", "subticket-45");
@@ -257,7 +257,7 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
 
   test("AC1: creates final parent integration PR when all sibling subtickets are completed", async () => {
     const { repo, baseSha } = await initGitRepo();
-    const integrationBranch = "factory/spec-100-integration";
+    const integrationBranch = "animus/spec-100-integration";
     await git(repo, "branch", integrationBranch, baseSha);
 
     await git(repo, "checkout", "-b", "subticket-46");
@@ -320,7 +320,7 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
 
   test("F2: injected TypeError in assertCandidateFn is propagated/held exactly once without retry", async () => {
     const { repo, baseSha } = await initGitRepo();
-    const integrationBranch = "factory/spec-101-integration";
+    const integrationBranch = "animus/spec-101-integration";
     await git(repo, "branch", integrationBranch, baseSha);
 
     await git(repo, "checkout", "-b", "subticket-47");
@@ -361,7 +361,7 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
 
   test("F2: default assertCandidate validator protects real candidate from uncommitted changes", async () => {
     const { repo, baseSha } = await initGitRepo();
-    const integrationBranch = "factory/spec-102-integration";
+    const integrationBranch = "animus/spec-102-integration";
     await git(repo, "branch", integrationBranch, baseSha);
 
     await git(repo, "checkout", "-b", "subticket-48");
@@ -393,7 +393,7 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
 
   test("AC1: checkout-free CAS ref update preserves dirty uncommitted files in primary checkout", async () => {
     const { repo, baseSha } = await initGitRepo();
-    const integrationBranch = "factory/spec-103-integration";
+    const integrationBranch = "animus/spec-103-integration";
     await git(repo, "branch", integrationBranch, baseSha);
 
     // Create candidate commit in a separate worktree
@@ -435,7 +435,7 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
 
   test("AC5: writes verified SQLite project_issue_integrations and updates project_spec_coordinations when DB is attached", async () => {
     const { repo, baseSha } = await initGitRepo();
-    const integrationBranch = "factory/spec-104-integration";
+    const integrationBranch = "animus/spec-104-integration";
     await git(repo, "branch", integrationBranch, baseSha);
 
     const wtDir = await mkdtemp(join(tmpdir(), "wt-cand-db-"));
@@ -538,7 +538,7 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
   test("Two-Layer Gate: evaluateSubticketAutoMerge fails closed when reviewer auto_merge_judgement is missing", () => {
     const result = evaluateSubticketAutoMerge({
       isSubticket: true,
-      targetBranch: "factory/spec-105-integration",
+      targetBranch: "animus/spec-105-integration",
       baseBranch: "main",
       readinessReady: true,
       changedFiles: ["apps/web/src/button.tsx"],
@@ -605,7 +605,7 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
       projectId,
       specIssueNumber: 106,
       isStandalone: false,
-      integrationBranch: "factory/spec-106-integration",
+      integrationBranch: "animus/spec-106-integration",
       baseBranch: "main",
       baseSha,
       currentIntegrationSha: baseSha,
@@ -633,7 +633,7 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
     testDb
       .prepare(
         `INSERT INTO project_spec_coordinations (id, project_id, spec_issue_number, is_standalone, integration_branch, base_branch, base_sha, current_integration_sha, plan_snapshot, status, updated_at)
-         VALUES (?, ?, ?, 0, 'factory/spec-106-integration', 'main', ?, ?, ?, 'active', ?)`,
+         VALUES (?, ?, ?, 0, 'animus/spec-106-integration', 'main', ?, ?, ?, 'active', ?)`,
       )
       .run(
         "coord_106",
@@ -648,7 +648,7 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
     const res = recordSubticketIntegration({
       root: repo,
       issueNumber: 51,
-      branch: "factory/spec-106-integration",
+      branch: "animus/spec-106-integration",
       candidate: baseSha,
       partOf: 106,
       finalIntegrationPr: "https://github.com/org/repo/pull/148",
@@ -677,7 +677,7 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
 
   test("executeSubticketAutoMerge fails closed without claiming success when attached DB fails", async () => {
     const { repo, baseSha } = await initGitRepo();
-    const integrationBranch = "factory/spec-107-integration";
+    const integrationBranch = "animus/spec-107-integration";
     await git(repo, "branch", integrationBranch, baseSha);
 
     const wtDir = await mkdtemp(join(tmpdir(), "wt-cand-fail-db-"));
@@ -716,7 +716,7 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
 
   test("prMerge fail: stops remote chain immediately, never closes issue, reports remote_reconciliation_pending with no later forge calls", async () => {
     const { repo, baseSha } = await initGitRepo();
-    const integrationBranch = "factory/spec-108-integration";
+    const integrationBranch = "animus/spec-108-integration";
     await git(repo, "branch", integrationBranch, baseSha);
 
     const wtDir = await mkdtemp(join(tmpdir(), "wt-cand-prmerge-fail-"));
@@ -802,7 +802,7 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
 
   test("push fail: stops remote chain immediately, never closes issue, reports remote_reconciliation_pending with no later forge calls", async () => {
     const { repo, baseSha } = await initGitRepo();
-    const integrationBranch = "factory/spec-109-integration";
+    const integrationBranch = "animus/spec-109-integration";
     await git(repo, "branch", integrationBranch, baseSha);
 
     const wtDir = await mkdtemp(join(tmpdir(), "wt-cand-push-fail-"));
@@ -876,7 +876,7 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
 
   test("close fail: stops remote chain, reports remote_reconciliation_pending with no parent PR create", async () => {
     const { repo, baseSha } = await initGitRepo();
-    const integrationBranch = "factory/spec-109b-integration";
+    const integrationBranch = "animus/spec-109b-integration";
     await git(repo, "branch", integrationBranch, baseSha);
 
     const wtDir = await mkdtemp(join(tmpdir(), "wt-cand-close-fail-"));
@@ -945,7 +945,7 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
 
   test("DB constraint fail: triggers rollback to targetBaseTip, returns waiting_approval with no forge calls", async () => {
     const { repo, baseSha } = await initGitRepo();
-    const integrationBranch = "factory/spec-110-integration";
+    const integrationBranch = "animus/spec-110-integration";
     await git(repo, "branch", integrationBranch, baseSha);
 
     const wtDir = await mkdtemp(join(tmpdir(), "wt-cand-db-fail-"));
@@ -1013,7 +1013,7 @@ describe("scripts/loop/merge-queue (executeSubticketAutoMerge)", () => {
 
   test("DB fail with rollback CAS conflict: preserves observed SHA, reports distinct manual intervention error", async () => {
     const { repo, baseSha } = await initGitRepo();
-    const integrationBranch = "factory/spec-111-integration";
+    const integrationBranch = "animus/spec-111-integration";
     await git(repo, "branch", integrationBranch, baseSha);
 
     const wtDir = await mkdtemp(join(tmpdir(), "wt-cand-cas-conflict-"));

@@ -6,7 +6,7 @@ function prJson(overrides: Record<string, unknown> = {}): string {
     number: 12,
     title: "Delivery",
     body: "body",
-    headRefName: "factory/standalone-900",
+    headRefName: "animus/standalone-900",
     baseRefName: "main",
     state: "OPEN",
     url: "https://github.com/owner/repo/pull/12",
@@ -38,7 +38,7 @@ describe("SystemForgeAdapter pull request command transport", () => {
     expect(argv.join(" ")).toContain("headRefOid");
     expect(pr).toMatchObject({
       number: 12,
-      head: "factory/standalone-900",
+      head: "animus/standalone-900",
       base: "main",
       state: "CLOSED",
       headRefOid: "a".repeat(40),

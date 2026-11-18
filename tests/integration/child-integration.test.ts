@@ -211,7 +211,7 @@ describe("child gate integration", () => {
       );
     });
     const plan = await plans.importPlan(projectId, { issue_number: specIssue, kind: "spec" });
-    const branch = `factory/spec-${specIssue}-integration`;
+    const branch = `animus/spec-${specIssue}-integration`;
     git(checkoutPath, "branch", "-f", branch, "main");
     git(checkoutPath, "push", "-q", "origin", branch);
     return { plan, branch };
@@ -371,7 +371,7 @@ describe("child gate integration", () => {
     const missing = await integration.land(projectId, run.id);
     expect(missing.state).toBe("blocked");
     expect(missing.acceptance.reasons).toContain("required_stage_missing:code_review");
-    expect(remoteHead("factory/spec-910-integration")).toBe(run.base_sha);
+    expect(remoteHead("animus/spec-910-integration")).toBe(run.base_sha);
 
     // A builder identity cannot certify its own independent stage.
     const builder = { id: "operator", role: "builder" as const };

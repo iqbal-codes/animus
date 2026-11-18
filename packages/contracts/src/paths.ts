@@ -77,7 +77,7 @@ export interface ProjectWorkspace {
   primaryRoot: string;
   /** Deterministic project slug, e.g. <name>-<sha256[:8]>. */
   projectSlug: string;
-  /** The state root directory (canonical precedence: explicit override outside checkout -> external ~/.animus/state/projects/<projectSlug> -> <canonicalGitCommon>/factory-local-loop). */
+  /** Explicit external override, configured project state, or the checkout's shared local-loop state. */
   stateRoot: string;
   /** Runs directory: <stateRoot>/runs. */
   runsDir: string;
@@ -622,7 +622,7 @@ export function resolveTriageStateRoot(
  * Standardizes state root resolution onto a single canonical rule:
  * 1. Explicit caller override when outside checkout root
  * 2. When ANIMUS_HOME, ANIMUS_STATE_DIR, or ANIMUS_RUNS_DIR is set: ~/.animus/projects/<projectSlug>
- * 3. Default local-loop location: <canonicalGitCommon>/factory-local-loop
+ * 3. Shared local-loop state: existing factory-local-loop, or animus-local-loop for a new workspace
  */
 export function resolveProjectWorkspace(
   root: string,
@@ -642,6 +642,9 @@ export function resolveProjectWorkspace(
   } catch {}
 
   const projectSlug = getProjectSlug(canonicalRoot);
+  const legacyLocalState = join(canonicalGitCommon, "factory-local-loop");
+  const animusLocalState = join(canonicalGitCommon, "animus-local-loop");
+  const localState = existsSync(legacyLocalState) ? legacyLocalState : animusLocalState;
 
   const isExternalState = Boolean(
     options?.customHome ||
@@ -675,7 +678,7 @@ export function resolveProjectWorkspace(
           : baseStateDir;
       stateRoot = join(extStateDir, "projects", projectSlug);
     } else {
-      stateRoot = join(canonicalGitCommon, "factory-local-loop");
+      stateRoot = localState;
     }
   } else if (isExternalState) {
     const extStateDir =
@@ -684,7 +687,7 @@ export function resolveProjectWorkspace(
         : baseStateDir;
     stateRoot = join(extStateDir, "projects", projectSlug);
   } else {
-    stateRoot = join(canonicalGitCommon, "factory-local-loop");
+    stateRoot = localState;
   }
 
   const runsDir = options?.customRunsDir ? resolve(options.customRunsDir) : join(stateRoot, "runs");
@@ -698,7 +701,6 @@ export function resolveProjectWorkspace(
   const animusHome = resolveAnimusHome(options?.customHome);
   const legacyHomeProjectsRunsDir = join(legacyHomeProjectStateRoot, "runs");
   const legacyRunsDir = join(animusHome, "runs", projectSlug);
-  const localCommonRunsDir = join(canonicalGitCommon, "factory-local-loop", "runs");
   const animusDotRunsDir = join(primaryRoot, ".animus-local-loop", "runs");
   const primaryDotRunsDir = existsSync(animusDotRunsDir)
     ? animusDotRunsDir
@@ -714,8 +716,11 @@ export function resolveProjectWorkspace(
   if (legacyRunsDir !== runsDir && !fallbackRunsDirs.includes(legacyRunsDir)) {
     fallbackRunsDirs.push(legacyRunsDir);
   }
-  if (localCommonRunsDir !== runsDir && !fallbackRunsDirs.includes(localCommonRunsDir)) {
-    fallbackRunsDirs.push(localCommonRunsDir);
+  for (const localRoot of [localState, animusLocalState, legacyLocalState]) {
+    const commonRunsDir = join(localRoot, "runs");
+    if (commonRunsDir !== runsDir && !fallbackRunsDirs.includes(commonRunsDir)) {
+      fallbackRunsDirs.push(commonRunsDir);
+    }
   }
   if (primaryDotRunsDir !== runsDir && !fallbackRunsDirs.includes(primaryDotRunsDir)) {
     fallbackRunsDirs.push(primaryDotRunsDir);
